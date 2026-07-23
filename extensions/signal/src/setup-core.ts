@@ -46,6 +46,7 @@ export const signalSetupStateKeys = {
   transportKind: "signalTransportKind",
   cliPath: "signalCliPath",
   cliConfigPath: "signalCliConfigPath",
+  installRequested: "signalInstallRequested",
   serverUrl: "signalServerUrl",
 } as const;
 
