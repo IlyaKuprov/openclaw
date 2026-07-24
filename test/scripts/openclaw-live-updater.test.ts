@@ -17,7 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   acquireMaintenanceLock,
   classifyActions,
@@ -47,6 +47,7 @@ import { listCoreRuntimePostBuildOutputs } from "../../scripts/runtime-postbuild
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const script = path.join(repoRoot, ".agents/skills/openclaw-live-updater/scripts/update-main.mjs");
 const fixtureOrigins = new Map<string, string>();
+const fixtureRoots = new Set<string>();
 let fixtureTemplate: ReturnType<typeof initializeFixture> | undefined;
 
 function git(cwd: string, ...args: string[]) {
@@ -129,6 +130,7 @@ function makeFixture(options?: { includeSeed?: boolean }) {
     throw new Error("fixture template is not initialized");
   }
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "openclaw-live-updater-")));
+  fixtureRoots.add(root);
   const origin = path.join(root, "origin.git");
   const seed = path.join(root, "seed");
   const mirror = path.join(root, "mirror");
@@ -194,6 +196,14 @@ describe("openclaw live updater", () => {
   beforeAll(() => {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "openclaw-live-updater-template-")));
     fixtureTemplate = initializeFixture(root);
+  });
+
+  afterEach(() => {
+    for (const fixtureRoot of fixtureRoots) {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+    fixtureRoots.clear();
+    fixtureOrigins.clear();
   });
 
   afterAll(() => {
