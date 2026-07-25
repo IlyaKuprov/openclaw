@@ -77,8 +77,8 @@ import {
   type PostCorePluginUpdateResult,
 } from "./update-command-plugins.js";
 import {
-  disableUpdatedPackageCompileCacheEnv,
   isPackageManagerUpdateMode,
+  resolvePostInstallDoctorEnv,
   stripGatewayServiceMarkerEnv,
 } from "./update-command-service.js";
 
@@ -474,6 +474,8 @@ export async function continuePostCoreUpdateInFreshProcess(params: {
   preUpdateConfig?: PreUpdateConfigRestoreInput;
   updateStartedAtMs: number;
   nodeRunner?: string;
+  serviceEnv?: NodeJS.ProcessEnv;
+  invocationCwd?: string;
 }): Promise<{
   resumed: boolean;
   pluginUpdate?: PostCorePluginUpdateResult;
@@ -519,10 +521,18 @@ export async function continuePostCoreUpdateInFreshProcess(params: {
     await writePostCoreSourceConfigFile(sourceConfigPath, params.preUpdateConfig);
     const jsonMode = params.opts.json === true;
     const childStdio = resolvePostCoreUpdateChildStdio(process.platform, jsonMode);
+    // The stopped service owns this update; inheriting the caller's profile
+    // would converge plugins and restart a different gateway.
     const child = spawn(params.nodeRunner ?? resolveNodeRunner(), argv, {
       stdio: childStdio,
       env: {
-        ...stripGatewayServiceMarkerEnv(disableUpdatedPackageCompileCacheEnv(process.env)),
+        ...stripGatewayServiceMarkerEnv(
+          resolvePostInstallDoctorEnv({
+            baseEnv: process.env,
+            serviceEnv: params.serviceEnv,
+            invocationCwd: params.invocationCwd,
+          }),
+        ),
         OPENCLAW_UPDATE_IN_PROGRESS: "1",
         [POST_CORE_UPDATE_ENV]: "1",
         [POST_CORE_UPDATE_CHANNEL_ENV]: params.channel,
