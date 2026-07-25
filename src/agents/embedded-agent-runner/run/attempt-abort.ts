@@ -104,7 +104,7 @@ export function createEmbeddedAttemptExternalAbortController(input: {
     if (!input.runAbortController.signal.aborted) {
       input.runAbortController.abort(isTimeout ? (reason ?? createTimeoutAbortReason()) : reason);
     }
-    void abortActiveSession?.();
+    void abortActiveSession?.(input.runAbortController.signal.reason);
   };
 
   return {
@@ -204,7 +204,7 @@ export function createEmbeddedAttemptRunAbort(input: {
       input.runAbortController.abort(reason);
     }
     abortCompaction();
-    void input.abortActiveSession();
+    void input.abortActiveSession(input.runAbortController.signal.reason);
     const queueHandle = input.getQueueHandle();
     if (isTimeout && queueHandle) {
       markActiveEmbeddedRunAbandoned({
