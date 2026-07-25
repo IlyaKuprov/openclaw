@@ -10,6 +10,7 @@ import {
   noteActiveCronJobScheduleMutation,
   noteActiveCronJobTriggerMutation,
 } from "../active-jobs.js";
+import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { cronSchedulingInputsEqual } from "../schedule-identity.js";
 import { deleteCronJobScratch } from "../scratch-store.js";
 import { removeStaleCronJobFamilyRows } from "../store.js";
@@ -29,7 +30,11 @@ import {
 } from "./jobs.js";
 import { locked } from "./locked.js";
 import { normalizeOptionalAgentId } from "./normalize.js";
-import { resolveCurrentDefaultAgentId, resolveEffectiveJobAgentId } from "./ops-shared.js";
+import {
+  resolveCurrentDefaultAgentId,
+  resolveEffectiveJobAgentId,
+  tryResolveEffectiveJobAgentId,
+} from "./ops-shared.js";
 import type {
   CronAddOptions,
   CronServiceState,
@@ -217,7 +222,11 @@ export async function add(state: CronServiceState, input: CronJobCreate, opts?: 
     if (normalizedId) {
       normalizeCronTaskRunJobId(normalizedId);
     }
-    const normalizedInput = normalizedId ? { ...input, id: normalizedId } : input;
+    const normalizedInput = {
+      ...input,
+      ...(normalizedId ? { id: normalizedId } : {}),
+      agentId,
+    };
     const declarationKey = normalizeOptionalString(input.declarationKey);
     const matches = declarationKey
       ? (state.store?.jobs.filter(
@@ -362,6 +371,9 @@ export async function updateLoadedJob(params: {
     if (state.deps.isAgentAvailable?.(agentId) === false) {
       throw new Error(`cron job agent is unavailable: ${agentId}`);
     }
+    if (!parseAgentSessionKey(nextJob.sessionKey)) {
+      nextJob.agentId = agentId;
+    }
   }
   finalizeUpdatedJob({
     job,
@@ -468,16 +480,15 @@ export async function removeAgentJobsTransactional<T>(
     if (!id || !state.store) {
       return await commit();
     }
-    const defaultAgentId = resolveCurrentDefaultAgentId(state);
     const removedJobs = state.store.jobs.filter(
-      (job) => resolveEffectiveJobAgentId(job, defaultAgentId) === id,
+      (job) => tryResolveEffectiveJobAgentId(job, resolveCurrentDefaultAgentId(state)) === id,
     );
     if (removedJobs.length === 0) {
       return await commit();
     }
     const snapshot = snapshotStoreForRollback(state);
     state.store.jobs = state.store.jobs.filter(
-      (job) => resolveEffectiveJobAgentId(job, defaultAgentId) !== id,
+      (job) => tryResolveEffectiveJobAgentId(job, resolveCurrentDefaultAgentId(state)) !== id,
     );
     recomputeNextRunsForMaintenance(state);
     await persistOrRestore(state, snapshot);
