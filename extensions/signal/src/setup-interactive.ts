@@ -9,7 +9,6 @@ import {
 } from "openclaw/plugin-sdk/setup";
 import { detectBinary } from "openclaw/plugin-sdk/setup-tools";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { waitForTransportReady } from "openclaw/plugin-sdk/transport-ready-runtime";
 import type { SignalTransportConfig } from "./account-types.js";
 import {
   listSignalAccountIds,
@@ -17,16 +16,18 @@ import {
   resolveSignalTransport,
   type ResolvedSignalTransport,
 } from "./accounts.js";
-import { spawnSignalDaemon } from "./daemon.js";
 import { installSignalCli } from "./install-signal-cli.js";
 import { normalizeSignalAccountInput, signalSetupStateKeys } from "./setup-core.js";
-import { assertSignalSetupDaemonBindAvailable } from "./setup-daemon-bind.js";
 import { resolveManagedSignalAccount } from "./setup-managed-account.js";
+import {
+  evaluateLiveManagedTransport,
+  probeManagedSignalSetup,
+  type ResolvedManagedSignalTransport,
+} from "./setup-managed-validation.js";
 import {
   detectSignalTransport,
   prepareSignalManagedNativeTransport,
   probeSignalTransport,
-  type SignalTransportProbeResult,
   writeSignalAccountTransport,
 } from "./setup-transport.js";
 
@@ -42,9 +43,6 @@ type ExistingServerPromptParams = {
   prompter: WizardPrompter;
   initialValue?: string;
 };
-type ManagedSignalTransport = Extract<SignalTransportConfig, { kind: "managed-native" }>;
-type ResolvedManagedSignalTransport = Extract<ResolvedSignalTransport, { kind: "managed-native" }>;
-
 export async function prepareSignalInteractiveSetup(params: SignalPrepareParams) {
   const resolvedAccount = resolveSignalAccount({
     cfg: params.cfg,
@@ -88,6 +86,7 @@ export async function finalizeSignalInteractiveSetup(params: SignalFinalizeParam
   let account = normalizeSignalAccountInput(resolvedAccount.config.account) ?? undefined;
   let transport: SignalTransportConfig;
   let resolvedManagedTransport: ResolvedManagedSignalTransport | undefined;
+  let useTemporaryManagedValidationPort = false;
   if (kind === "managed-native") {
     let cliPath = params.credentialValues[signalSetupStateKeys.cliPath] ?? "signal-cli";
     if (
@@ -121,6 +120,23 @@ export async function finalizeSignalInteractiveSetup(params: SignalFinalizeParam
       throw new Error("Signal setup did not resolve a managed signal-cli transport.");
     }
     resolvedManagedTransport = resolvedTransport;
+    const liveTransportState = await evaluateLiveManagedTransport({
+      cfg,
+      accountId: params.accountId,
+      account,
+      activeTransport: resolvedAccount.transport,
+      candidateTransport: resolvedTransport,
+    });
+    if (liveTransportState === "reuse-active-transport") {
+      return {
+        cfg: writeSignalAccountTransport({
+          cfg,
+          accountId: params.accountId,
+          transport,
+        }),
+      };
+    }
+    useTemporaryManagedValidationPort = liveTransportState === "validate-different-store";
     account = await resolveManagedSignalAccount({
       transport: resolvedTransport,
       configuredAccount: account,
@@ -162,6 +178,7 @@ export async function finalizeSignalInteractiveSetup(params: SignalFinalizeParam
             account,
             runtime: params.runtime,
             prompter: params.prompter,
+            useTemporaryPort: useTemporaryManagedValidationPort,
           })
         : await probeSignalTransport({
             cfg,
@@ -229,74 +246,6 @@ export async function finalizeSignalInteractiveSetup(params: SignalFinalizeParam
       transport,
     }),
   };
-}
-
-async function probeManagedSignalSetup(params: {
-  cfg: OpenClawConfig;
-  accountId: string;
-  transport: ManagedSignalTransport;
-  resolvedTransport: ResolvedManagedSignalTransport;
-  account: string;
-  runtime: SignalFinalizeParams["runtime"];
-  prompter: WizardPrompter;
-}): Promise<SignalTransportProbeResult> {
-  const progress = params.prompter.progress("Validating Signal setup...");
-  let daemon: ReturnType<typeof spawnSignalDaemon> | undefined;
-  let successfulProbe: SignalTransportProbeResult | undefined;
-  let result: SignalTransportProbeResult;
-  try {
-    await assertSignalSetupDaemonBindAvailable({
-      httpHost: params.resolvedTransport.httpHost,
-      httpPort: params.resolvedTransport.httpPort,
-    });
-    const spawnedDaemon = spawnSignalDaemon({
-      cliPath: params.resolvedTransport.cliPath,
-      ...(params.resolvedTransport.configPath
-        ? { configPath: params.resolvedTransport.configPath }
-        : {}),
-      account: params.account,
-      httpHost: params.resolvedTransport.httpHost,
-      httpPort: params.resolvedTransport.httpPort,
-      // Setup validation must not drain queued messages before the real monitor owns delivery.
-      receiveMode: "manual",
-    });
-    daemon = spawnedDaemon;
-    const startupTimeoutMs = Math.min(
-      120_000,
-      Math.max(1_000, params.resolvedTransport.startupTimeoutMs),
-    );
-    await waitForTransportReady({
-      label: "signal-cli setup daemon",
-      timeoutMs: startupTimeoutMs,
-      logAfterMs: 10_000,
-      logIntervalMs: 10_000,
-      pollIntervalMs: 150,
-      runtime: params.runtime,
-      check: async () => {
-        if (spawnedDaemon.isExited()) {
-          throw new Error("signal-cli exited before its HTTP server became ready.");
-        }
-        const probe = await probeSignalTransport({
-          cfg: params.cfg,
-          accountId: params.accountId,
-          transport: params.transport,
-          account: params.account,
-          timeoutMs: 1_000,
-        }).catch((error: unknown) => ({ ok: false, error: String(error) }));
-        if (probe.ok) {
-          successfulProbe = probe;
-        }
-        return probe;
-      },
-    });
-    result = successfulProbe ?? { ok: false, error: "Signal transport probe failed." };
-  } catch (error) {
-    result = { ok: false, error: String(error) };
-  } finally {
-    await daemon?.stop();
-  }
-  progress.stop(result.ok ? "Signal setup validated." : "Signal setup validation failed.");
-  return result;
 }
 
 async function promptSignalAccount(prompter: WizardPrompter) {

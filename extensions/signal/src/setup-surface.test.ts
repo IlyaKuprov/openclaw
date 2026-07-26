@@ -146,6 +146,9 @@ describe("signalSetupWizard", () => {
 
   it("keeps account entry reversible until immediately before signal-cli installation", async () => {
     mocks.detectBinary.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    mocks.probeSignalTransport
+      .mockResolvedValueOnce({ ok: false, error: "not running" })
+      .mockResolvedValue({ ok: true, status: 200 });
     const beforePersistentEffect = vi.fn(async () => undefined);
     const queued = createQueuedWizardPrompter({
       selectValues: ["local"],
@@ -285,6 +288,9 @@ describe("signalSetupWizard", () => {
   });
 
   it("clears a managed signal-cli config directory when setup returns to the default", async () => {
+    mocks.probeSignalTransport
+      .mockResolvedValueOnce({ ok: false, error: "not running" })
+      .mockResolvedValue({ ok: true, status: 200 });
     mocks.prepareSignalManagedNativeTransport.mockImplementationOnce(
       (params: {
         cfg: OpenClawConfig;
@@ -521,6 +527,7 @@ describe("signalSetupWizard", () => {
   });
 
   it("stops before linking when the user declines in-TUI account linking", async () => {
+    mocks.probeSignalTransport.mockResolvedValueOnce({ ok: false, error: "not running" });
     mocks.runPluginCommandWithTimeout.mockResolvedValue({
       code: 0,
       stdout: "[]",
@@ -570,7 +577,14 @@ describe("signalSetupWizard", () => {
     });
     expect(mocks.linkSignalCliAccount).not.toHaveBeenCalled();
     expect(mocks.spawnSignalDaemon).not.toHaveBeenCalled();
-    expect(mocks.probeSignalTransport).not.toHaveBeenCalled();
+    expect(mocks.probeSignalTransport).toHaveBeenCalledOnce();
+    expect(mocks.probeSignalTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transport: { kind: "managed-native" },
+        account: "+15555550123",
+        timeoutMs: 1_000,
+      }),
+    );
   });
 
   it("does not start terminal account linking for a gateway-driven wizard", async () => {
@@ -608,13 +622,7 @@ describe("signalSetupWizard", () => {
 
     await runSetupWizardFinalize({
       finalize: signalSetupWizard.finalize,
-      cfg: {
-        channels: {
-          signal: {
-            accounts: { work: { account: "+15555550123" } },
-          },
-        },
-      } as OpenClawConfig,
+      cfg: {},
       accountId: "work",
       credentialValues: {
         signalTransportKind: "managed-native",
@@ -662,13 +670,7 @@ describe("signalSetupWizard", () => {
     await expect(
       runSetupWizardFinalize({
         finalize: signalSetupWizard.finalize,
-        cfg: {
-          channels: {
-            signal: {
-              accounts: { work: { account: "+15555550123" } },
-            },
-          },
-        } as OpenClawConfig,
+        cfg: {},
         accountId: "work",
         credentialValues: {
           signalTransportKind: "managed-native",
@@ -802,6 +804,9 @@ describe("signalSetupWizard", () => {
   });
 
   it("selects another linked local account after a managed probe failure", async () => {
+    mocks.probeSignalTransport
+      .mockResolvedValueOnce({ ok: false, error: "not running" })
+      .mockResolvedValue({ ok: true, status: 200 });
     mocks.runPluginCommandWithTimeout.mockResolvedValue({
       code: 0,
       stdout: '[{"number":"+15555550123"},{"number":"+15555550124"}]',
@@ -846,7 +851,7 @@ describe("signalSetupWizard", () => {
         message: "Choose the linked Signal account for OpenClaw",
       }),
     );
-    expect(mocks.probeSignalTransport).toHaveBeenCalledOnce();
+    expect(mocks.probeSignalTransport).toHaveBeenCalledTimes(2);
     expect(mocks.probeSignalTransport).toHaveBeenLastCalledWith(
       expect.objectContaining({ account: "+15555550124" }),
     );
