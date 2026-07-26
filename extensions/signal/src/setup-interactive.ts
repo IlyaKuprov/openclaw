@@ -20,6 +20,7 @@ import {
 import { spawnSignalDaemon } from "./daemon.js";
 import { installSignalCli } from "./install-signal-cli.js";
 import { normalizeSignalAccountInput, signalSetupStateKeys } from "./setup-core.js";
+import { assertSignalSetupDaemonBindAvailable } from "./setup-daemon-bind.js";
 import { resolveManagedSignalAccount } from "./setup-managed-account.js";
 import {
   detectSignalTransport,
@@ -101,7 +102,7 @@ export async function finalizeSignalInteractiveSetup(params: SignalFinalizeParam
       accountId: params.accountId,
       overrides: {
         cliPath,
-        ...(configPath ? { configPath } : {}),
+        configPath,
       },
     });
   } else if (kind === "external-native" || kind === "container") {
@@ -124,6 +125,7 @@ export async function finalizeSignalInteractiveSetup(params: SignalFinalizeParam
       transport: resolvedTransport,
       configuredAccount: account,
       selectionMode: "reuse-configured-or-only",
+      linkMode: params.options?.deferDeviceLinkToClient ? "deferred-to-client" : "terminal",
       prompter: params.prompter,
       beforePersistentEffect: params.options?.beforePersistentEffect,
     });
@@ -195,6 +197,7 @@ export async function finalizeSignalInteractiveSetup(params: SignalFinalizeParam
         account = await resolveManagedSignalAccount({
           transport: resolvedManagedTransport,
           selectionMode: "choose",
+          linkMode: params.options?.deferDeviceLinkToClient ? "deferred-to-client" : "terminal",
           prompter: params.prompter,
           beforePersistentEffect: params.options?.beforePersistentEffect,
         });
@@ -238,18 +241,26 @@ async function probeManagedSignalSetup(params: {
   prompter: WizardPrompter;
 }): Promise<SignalTransportProbeResult> {
   const progress = params.prompter.progress("Validating Signal setup...");
-  const daemon = spawnSignalDaemon({
-    cliPath: params.resolvedTransport.cliPath,
-    ...(params.resolvedTransport.configPath
-      ? { configPath: params.resolvedTransport.configPath }
-      : {}),
-    account: params.account,
-    httpHost: params.resolvedTransport.httpHost,
-    httpPort: params.resolvedTransport.httpPort,
-  });
+  let daemon: ReturnType<typeof spawnSignalDaemon> | undefined;
   let successfulProbe: SignalTransportProbeResult | undefined;
   let result: SignalTransportProbeResult;
   try {
+    await assertSignalSetupDaemonBindAvailable({
+      httpHost: params.resolvedTransport.httpHost,
+      httpPort: params.resolvedTransport.httpPort,
+    });
+    const spawnedDaemon = spawnSignalDaemon({
+      cliPath: params.resolvedTransport.cliPath,
+      ...(params.resolvedTransport.configPath
+        ? { configPath: params.resolvedTransport.configPath }
+        : {}),
+      account: params.account,
+      httpHost: params.resolvedTransport.httpHost,
+      httpPort: params.resolvedTransport.httpPort,
+      // Setup validation must not drain queued messages before the real monitor owns delivery.
+      receiveMode: "manual",
+    });
+    daemon = spawnedDaemon;
     const startupTimeoutMs = Math.min(
       120_000,
       Math.max(1_000, params.resolvedTransport.startupTimeoutMs),
@@ -262,7 +273,7 @@ async function probeManagedSignalSetup(params: {
       pollIntervalMs: 150,
       runtime: params.runtime,
       check: async () => {
-        if (daemon.isExited()) {
+        if (spawnedDaemon.isExited()) {
           throw new Error("signal-cli exited before its HTTP server became ready.");
         }
         const probe = await probeSignalTransport({
@@ -282,7 +293,7 @@ async function probeManagedSignalSetup(params: {
   } catch (error) {
     result = { ok: false, error: String(error) };
   } finally {
-    await daemon.stop();
+    await daemon?.stop();
   }
   progress.stop(result.ok ? "Signal setup validated." : "Signal setup validation failed.");
   return result;

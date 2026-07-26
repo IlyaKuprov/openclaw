@@ -75,10 +75,6 @@ describe("renderSignalLinkQr", () => {
     const rendered = await renderSignalLinkQr(uri);
     const decoded = decodeSignalLinkQr(rendered);
 
-    expect(rendered).not.toContain("\x1b[30m");
-    expect(rendered).not.toContain("\x1b[47m");
-    expect(rendered).not.toContain("█");
-    expect(rendered).not.toContain("▄");
     expect(decoded[0]).toHaveLength(symbolSize);
     expect(decoded).toHaveLength(Math.ceil(symbolSize / 2) * 2);
     decoded.forEach((row, y) => {

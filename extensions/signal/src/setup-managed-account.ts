@@ -9,6 +9,7 @@ import { renderSignalLinkQr } from "./signal-link-qr.js";
 type ResolvedManagedSignalTransport = Extract<ResolvedSignalTransport, { kind: "managed-native" }>;
 type ManagedSignalAccountChoice = "link" | "stop" | `account:${string}`;
 type ManagedSignalAccountSelectionMode = "reuse-configured-or-only" | "choose";
+type ManagedSignalLinkMode = "terminal" | "deferred-to-client";
 
 const SIGNAL_CLI_ACCOUNT_CHECK_TIMEOUT_MS = 10_000;
 
@@ -16,6 +17,7 @@ export async function resolveManagedSignalAccount(params: {
   transport: ResolvedManagedSignalTransport;
   configuredAccount?: string;
   selectionMode: ManagedSignalAccountSelectionMode;
+  linkMode: ManagedSignalLinkMode;
   prompter: WizardPrompter;
   beforePersistentEffect?: () => Promise<void>;
 }): Promise<string> {
@@ -36,9 +38,20 @@ export async function resolveManagedSignalAccount(params: {
       return account;
     }
   }
+  if (listed.accounts.size === 0 && params.linkMode === "deferred-to-client") {
+    await params.prompter.note(
+      [
+        "No linked Signal account was found on this gateway.",
+        "Run Signal setup from a terminal to link an account with a QR code, then retry here.",
+      ].join("\n"),
+      "Signal account linking",
+    );
+    throw new WizardCancelledError("Signal setup requires a linked account");
+  }
 
   const choice = await promptManagedSignalAccountChoice({
     accounts: listed.accounts,
+    linkMode: params.linkMode,
     prompter: params.prompter,
   });
   if (choice === "stop") {
@@ -57,6 +70,7 @@ export async function resolveManagedSignalAccount(params: {
 
 async function promptManagedSignalAccountChoice(params: {
   accounts: Set<string>;
+  linkMode: ManagedSignalLinkMode;
   prompter: WizardPrompter;
 }): Promise<ManagedSignalAccountChoice> {
   const accounts = [...params.accounts];
@@ -77,7 +91,9 @@ async function promptManagedSignalAccountChoice(params: {
         value: `account:${account}` as const,
         label: account,
       })),
-      { value: "link", label: "Link another Signal account" },
+      ...(params.linkMode === "terminal"
+        ? [{ value: "link" as const, label: "Link another Signal account" }]
+        : []),
     ],
     initialValue: `account:${accounts[0]}`,
   });

@@ -9,6 +9,7 @@ import {
   createPatchedAccountSetupAdapter,
   createSetupInputPresenceValidator,
   DEFAULT_ACCOUNT_ID,
+  patchChannelConfigForAccount,
   promptParsedAllowFromForAccount,
   setAccountAllowFromForChannel,
   setSetupChannelEnabled,
@@ -317,12 +318,23 @@ export const signalNumberTextInputs: ChannelSetupWizardTextInput[] = [
     ...signalNumberTextInput,
     message: "Signal phone number (optional)",
     required: false,
+    applyEmptyValue: true,
     shouldPrompt: ({ credentialValues }) =>
       credentialValues[signalSetupStateKeys.transportKind] === "external-native",
     validate: ({ value }) =>
       normalizeOptionalString(value) && !normalizeSignalAccountInput(value)
         ? INVALID_SIGNAL_ACCOUNT_ERROR
         : undefined,
+    applySet: ({ cfg, accountId, value }) =>
+      patchChannelConfigForAccount({
+        cfg,
+        channel,
+        accountId,
+        patch: {
+          account: normalizeSignalAccountInput(value) ?? undefined,
+          accountUuid: undefined,
+        },
+      }),
   },
 ];
 
