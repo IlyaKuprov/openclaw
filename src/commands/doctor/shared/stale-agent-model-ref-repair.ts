@@ -5,7 +5,6 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   listAgentEntries,
   resolveAgentDir,
-  resolveAgentWorkspaceDir,
   tryResolveDefaultAgentId,
 } from "../../../agents/agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../../../agents/defaults.js";
