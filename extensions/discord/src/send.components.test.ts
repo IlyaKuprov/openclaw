@@ -52,6 +52,7 @@ function resetClassicMocks(): void {
   loadOutboundMediaFromUrlMock.mockResolvedValue({
     buffer: Buffer.from("media"),
     fileName: "report.pdf",
+    contentType: "application/pdf",
   });
   vi.clearAllMocks();
 }
@@ -82,6 +83,26 @@ function readRecordArg(
     throw new Error(`expected mock call #${callIndex + 1} object argument #${argIndex + 1}`);
   }
   return arg as Record<string, unknown>;
+}
+
+function readComponentRestBody(mock: ReturnType<typeof vi.fn>, callIndex = 0) {
+  const body = readRecordArg(mock, callIndex, 1).body;
+  if (!body || typeof body !== "object") {
+    throw new Error(`expected REST call #${callIndex + 1} body object`);
+  }
+  return body as Record<string, unknown>;
+}
+
+function readSingleUploadFile(body: Record<string, unknown>) {
+  const files = body.files;
+  if (!Array.isArray(files) || files.length !== 1) {
+    throw new Error("expected one Discord upload file");
+  }
+  const file = files[0];
+  if (!file || typeof file !== "object") {
+    throw new Error("expected Discord upload file object");
+  }
+  return file as Record<string, unknown>;
 }
 
 describe("sendDiscordComponentMessage", () => {
@@ -399,6 +420,9 @@ describe("sendDiscordComponentMessage classic message downgrade", () => {
 
     expect(sendMessageDiscordMock).not.toHaveBeenCalled();
     expect(postMock).toHaveBeenCalledTimes(1);
+    const uploadFile = readSingleUploadFile(readComponentRestBody(postMock));
+    expect(uploadFile.data).toBeInstanceOf(Blob);
+    expect((uploadFile.data as Blob).type).toBe("application/pdf");
     expect(registerMock).toHaveBeenCalledTimes(1);
     const registration = readRecordArg(registerMock, 0, 0);
     const modals = registration.modals as Array<{

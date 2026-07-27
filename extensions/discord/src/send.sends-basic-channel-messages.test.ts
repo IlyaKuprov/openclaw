@@ -180,6 +180,12 @@ function expectBodyFileName(body: unknown, expectedName: string) {
   expectRecordFields(files[0], "Discord file", { name: expectedName });
 }
 
+function requireBodyFile(body: unknown): Record<string, unknown> {
+  const files = requireArray(requireRecord(body, "Discord REST body").files, "Discord files");
+  expect(files).toHaveLength(1);
+  return requireRecord(files[0], "Discord file");
+}
+
 describe("resolveDiscordTargetChannelId", () => {
   it("creates a DM channel for user targets", async () => {
     const { rest, postMock } = makeDiscordRest();
@@ -697,7 +703,10 @@ describe("sendMessageDiscord", () => {
     });
     expect(res.messageId).toBe("msg");
     expectRestRoute(postMock, 0, Routes.channelMessages("789"));
-    expectBodyFileName(requireRestBody(postMock), "photo.jpg");
+    const file = requireBodyFile(requireRestBody(postMock));
+    expectRecordFields(file, "Discord file", { name: "photo.jpg" });
+    expect(file.data).toBeInstanceOf(Blob);
+    expect((file.data as Blob).type).toBe("image/jpeg");
     expect(loadWebMedia).toHaveBeenCalledWith("file:///tmp/photo.jpg", {
       maxBytes: 100 * 1024 * 1024,
     });
