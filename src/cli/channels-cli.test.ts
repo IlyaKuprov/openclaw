@@ -39,6 +39,35 @@ vi.mock("../runtime.js", () => ({
   defaultRuntime: runtimeMock,
 }));
 
+function createSetupChannel(
+  id: string,
+  fields: NonNullable<PluginPackageChannel["setup"]>["fields"],
+): PluginPackageChannel {
+  return { id, setup: { fields } };
+}
+
+function createCatalogChannel(
+  id: string,
+  label: string,
+  cliAddOptions: NonNullable<PluginPackageChannel["cliAddOptions"]>,
+  blurb: string,
+): ChannelPluginCatalogEntry {
+  return {
+    id,
+    pluginId: id,
+    origin: "global",
+    channel: { id, label, cliAddOptions },
+    meta: {
+      id,
+      label,
+      selectionLabel: label,
+      docsPath: "/channels/" + id,
+      blurb,
+    },
+    install: { npmSpec: "@openclaw/" + id },
+  };
+}
+
 function getChannelAddOptionFlags(program: Command): string[] {
   const channels = program.commands.find((command) => command.name() === "channels");
   const add = channels?.commands.find((command) => command.name() === "add");
@@ -116,24 +145,12 @@ describe("registerChannelsCli", () => {
 
   it("registers setup options from a non-bundled catalog channel", async () => {
     listRawChannelPluginCatalogEntriesMock.mockReturnValueOnce([
-      {
-        id: "installed-chat",
-        pluginId: "installed-chat",
-        origin: "global",
-        channel: {
-          id: "installed-chat",
-          label: "Installed Chat",
-          cliAddOptions: [{ flags: "--installed-key <key>", description: "Installed chat key" }],
-        },
-        meta: {
-          id: "installed-chat",
-          label: "Installed Chat",
-          selectionLabel: "Installed Chat",
-          docsPath: "/channels/installed-chat",
-          blurb: "Installed test channel.",
-        },
-        install: { npmSpec: "@openclaw/installed-chat" },
-      },
+      createCatalogChannel(
+        "installed-chat",
+        "Installed Chat",
+        [{ flags: "--installed-key <key>", description: "Installed chat key" }],
+        "Installed test channel.",
+      ),
     ]);
     const program = new Command().name("openclaw");
 
@@ -152,45 +169,21 @@ describe("registerChannelsCli", () => {
 
   it("dedupes options by switch identity across differing value placeholders", async () => {
     listRawChannelPluginCatalogEntriesMock.mockReturnValueOnce([
-      {
-        id: "chat-a",
-        pluginId: "chat-a",
-        origin: "global",
-        channel: {
-          id: "chat-a",
-          label: "Chat A",
-          cliAddOptions: [
-            { flags: "--url <url>", description: "Chat A URL" },
-            { flags: "--token <payload>", description: "Chat A token" },
-          ],
-        },
-        meta: {
-          id: "chat-a",
-          label: "Chat A",
-          selectionLabel: "Chat A",
-          docsPath: "/channels/chat-a",
-          blurb: "Chat A test channel.",
-        },
-        install: { npmSpec: "@openclaw/chat-a" },
-      },
-      {
-        id: "chat-b",
-        pluginId: "chat-b",
-        origin: "global",
-        channel: {
-          id: "chat-b",
-          label: "Chat B",
-          cliAddOptions: [{ flags: "--url <server>", description: "Chat B server URL" }],
-        },
-        meta: {
-          id: "chat-b",
-          label: "Chat B",
-          selectionLabel: "Chat B",
-          docsPath: "/channels/chat-b",
-          blurb: "Chat B test channel.",
-        },
-        install: { npmSpec: "@openclaw/chat-b" },
-      },
+      createCatalogChannel(
+        "chat-a",
+        "Chat A",
+        [
+          { flags: "--url <url>", description: "Chat A URL" },
+          { flags: "--token <payload>", description: "Chat A token" },
+        ],
+        "Chat A test channel.",
+      ),
+      createCatalogChannel(
+        "chat-b",
+        "Chat B",
+        [{ flags: "--url <server>", description: "Chat B server URL" }],
+        "Chat B test channel.",
+      ),
     ]);
     const program = new Command().name("openclaw");
 
@@ -216,42 +209,18 @@ describe("registerChannelsCli", () => {
 
   it("prefers the selected channel's declaration for a shared switch", async () => {
     listRawChannelPluginCatalogEntriesMock.mockReturnValueOnce([
-      {
-        id: "chat-a",
-        pluginId: "chat-a",
-        origin: "global",
-        channel: {
-          id: "chat-a",
-          label: "Chat A",
-          cliAddOptions: [{ flags: "--url <url>", description: "Chat A URL" }],
-        },
-        meta: {
-          id: "chat-a",
-          label: "Chat A",
-          selectionLabel: "Chat A",
-          docsPath: "/channels/chat-a",
-          blurb: "Chat A test channel.",
-        },
-        install: { npmSpec: "@openclaw/chat-a" },
-      },
-      {
-        id: "chat-b",
-        pluginId: "chat-b",
-        origin: "global",
-        channel: {
-          id: "chat-b",
-          label: "Chat B",
-          cliAddOptions: [{ flags: "--url <server>", description: "Chat B server URL" }],
-        },
-        meta: {
-          id: "chat-b",
-          label: "Chat B",
-          selectionLabel: "Chat B",
-          docsPath: "/channels/chat-b",
-          blurb: "Chat B test channel.",
-        },
-        install: { npmSpec: "@openclaw/chat-b" },
-      },
+      createCatalogChannel(
+        "chat-a",
+        "Chat A",
+        [{ flags: "--url <url>", description: "Chat A URL" }],
+        "Chat A test channel.",
+      ),
+      createCatalogChannel(
+        "chat-b",
+        "Chat B",
+        [{ flags: "--url <server>", description: "Chat B server URL" }],
+        "Chat B test channel.",
+      ),
     ]);
     const program = new Command().name("openclaw");
 
@@ -271,31 +240,26 @@ describe("registerChannelsCli", () => {
 
   it("projects channel-owned setup fields into Commander options", async () => {
     listBundledPackageChannelMetadataMock.mockReturnValueOnce([
-      {
-        id: "signal",
-        setup: {
-          fields: [
-            {
-              key: "signalTransport",
-              kind: "choice",
-              choices: ["external-native", "container"],
-              cli: {
-                flags: "--signal-transport <kind>",
-                description: "Signal transport kind",
-              },
-            },
-            {
-              key: "autoDiscover",
-              kind: "boolean",
-              cli: {
-                flags: "--auto-discover",
-                negatedFlags: "--no-auto-discover",
-                description: "Discover channels automatically",
-              },
-            },
-          ],
+      createSetupChannel("signal", [
+        {
+          key: "signalTransport",
+          kind: "choice",
+          choices: ["external-native", "container"],
+          cli: {
+            flags: "--signal-transport <kind>",
+            description: "Signal transport kind",
+          },
         },
-      },
+        {
+          key: "autoDiscover",
+          kind: "boolean",
+          cli: {
+            flags: "--auto-discover",
+            negatedFlags: "--no-auto-discover",
+            description: "Discover channels automatically",
+          },
+        },
+      ]),
     ]);
     process.argv = ["node", "openclaw", "channels", "add", "--channel", "signal", "--help"];
     const program = new Command().name("openclaw");
@@ -308,30 +272,20 @@ describe("registerChannelsCli", () => {
 
   it("registers only the positional channel setup options", async () => {
     listBundledPackageChannelMetadataMock.mockReturnValueOnce([
-      {
-        id: "telegram",
-        setup: {
-          fields: [
-            {
-              key: "token",
-              kind: "string",
-              cli: { flags: "--telegram-token <token>", description: "Telegram bot token" },
-            },
-          ],
+      createSetupChannel("telegram", [
+        {
+          key: "token",
+          kind: "string",
+          cli: { flags: "--telegram-token <token>", description: "Telegram bot token" },
         },
-      },
-      {
-        id: "signal",
-        setup: {
-          fields: [
-            {
-              key: "signalNumber",
-              kind: "string",
-              cli: { flags: "--signal-number <e164>", description: "Signal account number" },
-            },
-          ],
+      ]),
+      createSetupChannel("signal", [
+        {
+          key: "signalNumber",
+          kind: "string",
+          cli: { flags: "--signal-number <e164>", description: "Signal account number" },
         },
-      },
+      ]),
     ]);
     const program = new Command().name("openclaw");
 
@@ -370,23 +324,18 @@ describe("registerChannelsCli", () => {
 
   it("registers add help when channels reuse a long flag with different placeholders", async () => {
     listBundledPackageChannelMetadataMock.mockReturnValueOnce([
-      {
-        id: "example",
-        setup: {
-          fields: [
-            {
-              key: "apiKey",
-              kind: "string",
-              cli: { flags: "--api-key <token>", description: "Example API key" },
-            },
-            {
-              key: "apiKeyJson",
-              kind: "string",
-              cli: { flags: "--api-key <json>", description: "Example API key JSON" },
-            },
-          ],
+      createSetupChannel("example", [
+        {
+          key: "apiKey",
+          kind: "string",
+          cli: { flags: "--api-key <token>", description: "Example API key" },
         },
-      },
+        {
+          key: "apiKeyJson",
+          kind: "string",
+          cli: { flags: "--api-key <json>", description: "Example API key JSON" },
+        },
+      ]),
     ]);
     process.argv = ["node", "openclaw", "channels", "add", "example", "--help"];
     const program = new Command().name("openclaw");
@@ -541,18 +490,13 @@ describe("registerChannelsCli", () => {
 
   it("registers selected-channel options before Commander parses option-first argv", async () => {
     listBundledPackageChannelMetadataMock.mockReturnValueOnce([
-      {
-        id: "telegram",
-        setup: {
-          fields: [
-            {
-              key: "token",
-              kind: "string",
-              cli: { flags: "--token <token>", description: "Telegram bot token" },
-            },
-          ],
+      createSetupChannel("telegram", [
+        {
+          key: "token",
+          kind: "string",
+          cli: { flags: "--token <token>", description: "Telegram bot token" },
         },
-      },
+      ]),
     ]);
 
     await runChannelsAddCli(["channels", "add", "--token", "test-token", "--channel", "telegram"]);
@@ -598,18 +542,13 @@ describe("registerChannelsCli", () => {
 
   it("resolves a positional channel after a value-taking channel option", async () => {
     const metadata: PluginPackageChannel[] = [
-      {
-        id: "telegram",
-        setup: {
-          fields: [
-            {
-              key: "token",
-              kind: "string",
-              cli: { flags: "--token <token>", description: "Telegram bot token" },
-            },
-          ],
+      createSetupChannel("telegram", [
+        {
+          key: "token",
+          kind: "string",
+          cli: { flags: "--token <token>", description: "Telegram bot token" },
         },
-      },
+      ]),
     ];
     listBundledPackageChannelMetadataMock
       .mockReturnValueOnce(metadata)
@@ -626,18 +565,13 @@ describe("registerChannelsCli", () => {
 
   it("resolves a positional channel after a boolean channel option", async () => {
     const metadata: PluginPackageChannel[] = [
-      {
-        id: "telegram",
-        setup: {
-          fields: [
-            {
-              key: "useEnv",
-              kind: "boolean",
-              cli: { flags: "--use-env", description: "Use Telegram environment credentials" },
-            },
-          ],
+      createSetupChannel("telegram", [
+        {
+          key: "useEnv",
+          kind: "boolean",
+          cli: { flags: "--use-env", description: "Use Telegram environment credentials" },
         },
-      },
+      ]),
     ];
     listBundledPackageChannelMetadataMock
       .mockReturnValueOnce(metadata)
@@ -668,30 +602,20 @@ describe("registerChannelsCli", () => {
 
   it("keeps conflicting all-channel flag arities before a positional channel ambiguous", async () => {
     listBundledPackageChannelMetadataMock.mockReturnValueOnce([
-      {
-        id: "chat-a",
-        setup: {
-          fields: [
-            {
-              key: "mode",
-              kind: "string",
-              cli: { flags: "--mode <mode>", description: "Chat A mode" },
-            },
-          ],
+      createSetupChannel("chat-a", [
+        {
+          key: "mode",
+          kind: "string",
+          cli: { flags: "--mode <mode>", description: "Chat A mode" },
         },
-      },
-      {
-        id: "chat-b",
-        setup: {
-          fields: [
-            {
-              key: "mode",
-              kind: "boolean",
-              cli: { flags: "--mode", description: "Enable Chat B mode" },
-            },
-          ],
+      ]),
+      createSetupChannel("chat-b", [
+        {
+          key: "mode",
+          kind: "boolean",
+          cli: { flags: "--mode", description: "Enable Chat B mode" },
         },
-      },
+      ]),
     ]);
 
     await expect(
@@ -708,18 +632,13 @@ describe("registerChannelsCli", () => {
 
   it("finds a positional channel after shared option-value pairs", async () => {
     listBundledPackageChannelMetadataMock.mockReturnValueOnce([
-      {
-        id: "telegram",
-        setup: {
-          fields: [
-            {
-              key: "token",
-              kind: "string",
-              cli: { flags: "--token <token>", description: "Telegram bot token" },
-            },
-          ],
+      createSetupChannel("telegram", [
+        {
+          key: "token",
+          kind: "string",
+          cli: { flags: "--token <token>", description: "Telegram bot token" },
         },
-      },
+      ]),
     ]);
 
     await runChannelsAddCli(["channels", "add", "--account", "work", "telegram", "--token", "tok"]);
@@ -733,30 +652,20 @@ describe("registerChannelsCli", () => {
 
   it("lets an explicit channel override the positional channel during option registration", async () => {
     listBundledPackageChannelMetadataMock.mockReturnValueOnce([
-      {
-        id: "telegram",
-        setup: {
-          fields: [
-            {
-              key: "token",
-              kind: "string",
-              cli: { flags: "--token <token>", description: "Telegram bot token" },
-            },
-          ],
+      createSetupChannel("telegram", [
+        {
+          key: "token",
+          kind: "string",
+          cli: { flags: "--token <token>", description: "Telegram bot token" },
         },
-      },
-      {
-        id: "signal",
-        setup: {
-          fields: [
-            {
-              key: "signalNumber",
-              kind: "string",
-              cli: { flags: "--signal-number <e164>", description: "Signal account number" },
-            },
-          ],
+      ]),
+      createSetupChannel("signal", [
+        {
+          key: "signalNumber",
+          kind: "string",
+          cli: { flags: "--signal-number <e164>", description: "Signal account number" },
         },
-      },
+      ]),
     ]);
 
     await runChannelsAddCli([
