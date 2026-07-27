@@ -8,8 +8,7 @@ import {
   errorShape,
   type SessionsResolveParams,
 } from "../../packages/gateway-protocol/src/index.js";
-import { listAgentIds } from "../agents/agent-scope-config.js";
-import type { SessionEntry } from "../config/sessions.js";
+import { listKnownSessionStoreAgentIds, type SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveSessionIdMatchSelection } from "../sessions/session-id-resolution.js";
 import { parseSessionLabel } from "../sessions/session-label.js";
@@ -187,12 +186,12 @@ export async function resolveSessionKeyFromResolveParams(params: {
       return { ok: true, key: selection.sessionKey };
     }
     const requestedOwner = normalizeOptionalString(p.agentId);
-    const globalOwners = (requestedOwner ? [requestedOwner] : listAgentIds(cfg)).filter(
-      (agentId) => {
-        const ownerStore = loadCombinedSessionStoreForGateway(cfg, { agentId }).store;
-        return ownerStore.global?.sessionId === sessionId;
-      },
-    );
+    const globalOwners = (
+      requestedOwner ? [requestedOwner] : listKnownSessionStoreAgentIds(cfg)
+    ).filter((agentId) => {
+      const ownerStore = loadCombinedSessionStoreForGateway(cfg, { agentId }).store;
+      return ownerStore.global?.sessionId === sessionId;
+    });
     if (globalOwners.length > 1) {
       return {
         ok: false,
@@ -259,7 +258,9 @@ export async function resolveSessionKeyFromResolveParams(params: {
     return { ok: true, key: labelKey };
   }
   const requestedOwner = normalizeOptionalString(p.agentId);
-  const globalOwners = (requestedOwner ? [requestedOwner] : listAgentIds(cfg)).filter((agentId) => {
+  const globalOwners = (
+    requestedOwner ? [requestedOwner] : listKnownSessionStoreAgentIds(cfg)
+  ).filter((agentId) => {
     const ownerStore = loadCombinedSessionStoreForGateway(cfg, { agentId }).store;
     return filterAndSortSessionEntries({
       cfg,
