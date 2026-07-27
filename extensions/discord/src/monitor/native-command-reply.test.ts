@@ -1,6 +1,7 @@
 // Discord tests cover native command reply plugin behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Container, TextDisplay } from "../internal/discord.js";
+import { createDiscordLoopbackRest } from "../send.test-harness.js";
 import {
   deliverDiscordInteractionReply,
   hasRenderableReplyPayload,
@@ -109,6 +110,45 @@ describe("deliverDiscordInteractionReply", () => {
     expect(uploadedBlob).toBeInstanceOf(Blob);
     expect((uploadedBlob as Blob).type).toBe("image/webp");
     expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("sends the detected WebP media type across a real interaction multipart request", async () => {
+    const loopback = await createDiscordLoopbackRest();
+    loadWebMediaMock.mockResolvedValue({
+      buffer: Buffer.from("webp"),
+      fileName: "sticker.webp",
+      contentType: "image/webp",
+      kind: "image",
+    });
+    const interaction = {
+      reply: vi.fn(async (data: unknown) =>
+        loopback.rest.post("/interactions/123/token/callback", {
+          body: { type: 4, data },
+        }),
+      ),
+      followUp: vi.fn(),
+    };
+
+    try {
+      await deliverDiscordInteractionReply({
+        interaction: interaction as never,
+        payload: {
+          text: "sticker",
+          mediaUrls: ["file:///tmp/sticker.webp"],
+        },
+        textLimit: 2000,
+        preferFollowUp: false,
+        chunkMode: "length",
+      });
+
+      const upload = loopback.requests.find((request) => request.method === "POST");
+      expect(upload?.path).toContain("/interactions/123/token/callback");
+      expect(upload?.contentType).toMatch(/^multipart\/form-data; boundary=/);
+      expect(upload?.body).toContain('name="files[0]"; filename="sticker.webp"');
+      expect(upload?.body).toContain("Content-Type: image/webp");
+    } finally {
+      await loopback.close();
+    }
   });
 });
 
