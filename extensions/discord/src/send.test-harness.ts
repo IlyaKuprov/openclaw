@@ -18,7 +18,7 @@ type DiscordRestFactoryResult = {
   deleteMock: MockFn;
 };
 
-export type DiscordLoopbackRequest = {
+type DiscordLoopbackRequest = {
   body: string;
   contentType: string | undefined;
   method: string | undefined;
