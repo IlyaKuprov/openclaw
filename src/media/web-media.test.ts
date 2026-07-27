@@ -62,7 +62,7 @@ function countAnimatedWebpFrames(buffer: Buffer): number {
     throw new Error("Expected a RIFF WebP image");
   }
   let frameCount = 0;
-  for (let offset = 12; offset + 8 <= buffer.length; ) {
+  for (let offset = 12; offset + 8 <= buffer.length;) {
     const chunkSize = buffer.readUInt32LE(offset + 4);
     if (buffer.toString("ascii", offset, offset + 4) === "ANMF") {
       frameCount += 1;
