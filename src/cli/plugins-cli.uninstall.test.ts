@@ -30,6 +30,31 @@ const ALPHA_INSTALL_PATH = installedPluginRoot(CLI_STATE_ROOT, "alpha");
 const ORIGINAL_OPENCLAW_NIX_MODE = process.env.OPENCLAW_NIX_MODE;
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+function primeUninstallPlan(
+  config: OpenClawConfig,
+  overrides: {
+    actions?: Record<string, boolean>;
+    directoryRemoval?: { target: string } | null;
+  } = {},
+): void {
+  planPluginUninstall.mockReturnValue({
+    ok: true,
+    config,
+    actions: {
+      entry: true,
+      install: true,
+      allowlist: false,
+      denylist: false,
+      loadPath: false,
+      memorySlot: false,
+      contextEngineSlot: false,
+      ...overrides.actions,
+      directory: overrides.actions?.directory ?? false,
+    },
+    directoryRemoval: overrides.directoryRemoval ?? null,
+  });
+}
+
 function expectRuntimeLogIncludes(fragment: string) {
   expect(runtimeLogs.join("\n")).toContain(fragment);
 }
@@ -111,21 +136,7 @@ describe("plugins cli uninstall", () => {
       plugins: [{ id: "alpha", name: "alpha" }],
       diagnostics: [],
     });
-    planPluginUninstall.mockReturnValue({
-      ok: true,
-      config: {} as OpenClawConfig,
-      actions: {
-        entry: true,
-        install: true,
-        allowlist: false,
-        denylist: false,
-        loadPath: false,
-        memorySlot: false,
-        contextEngineSlot: true,
-        directory: false,
-      },
-      directoryRemoval: null,
-    });
+    primeUninstallPlan({} as OpenClawConfig, { actions: { contextEngineSlot: true } });
 
     await runPluginsCommand(["plugins", "uninstall", "alpha", "--dry-run"]);
 
@@ -166,21 +177,7 @@ describe("plugins cli uninstall", () => {
       plugins: [{ id: "alpha", name: "alpha" }],
       diagnostics: [],
     });
-    planPluginUninstall.mockReturnValue({
-      ok: true,
-      config: nextConfig,
-      actions: {
-        entry: true,
-        install: true,
-        allowlist: false,
-        denylist: false,
-        loadPath: false,
-        memorySlot: false,
-        contextEngineSlot: false,
-        directory: false,
-      },
-      directoryRemoval: null,
-    });
+    primeUninstallPlan(nextConfig);
 
     await runPluginsCommand(["plugins", "uninstall", "alpha", "--force", "--keep-files"]);
 
@@ -241,21 +238,8 @@ describe("plugins cli uninstall", () => {
         plugins: [{ id: "alpha", name: "alpha" }],
         diagnostics: [],
       });
-      planPluginUninstall.mockReturnValue({
-        ok: true,
-        config: { plugins: { entries: {}, installs: {} } } as OpenClawConfig,
-        actions: {
-          entry: true,
-          install: true,
-          allowlist: false,
-          denylist: false,
-          loadPath: false,
-          memorySlot: false,
-          contextEngineSlot: false,
-          channelConfig: false,
-          directory: false,
-        },
-        directoryRemoval: null,
+      primeUninstallPlan({ plugins: { entries: {}, installs: {} } } as OpenClawConfig, {
+        actions: { channelConfig: false },
       });
       persistClawPackageRef(
         {
@@ -308,21 +292,7 @@ describe("plugins cli uninstall", () => {
       plugins: [{ id: "alpha", name: "alpha" }],
       diagnostics: [],
     });
-    planPluginUninstall.mockReturnValue({
-      ok: true,
-      config: { plugins: { entries: {}, installs: {} } } as OpenClawConfig,
-      actions: {
-        entry: true,
-        install: true,
-        allowlist: false,
-        denylist: false,
-        loadPath: false,
-        memorySlot: false,
-        contextEngineSlot: false,
-        directory: false,
-      },
-      directoryRemoval: null,
-    });
+    primeUninstallPlan({ plugins: { entries: {}, installs: {} } } as OpenClawConfig);
     promptYesNo.mockRejectedValueOnce(new PromptInputClosedError());
 
     await expect(runPluginsCommand(["plugins", "uninstall", "alpha"])).rejects.toThrow(
@@ -367,21 +337,7 @@ describe("plugins cli uninstall", () => {
       plugins: [{ id: "alpha", name: "alpha" }],
       diagnostics: [],
     });
-    planPluginUninstall.mockReturnValue({
-      ok: true,
-      config: nextConfig,
-      actions: {
-        entry: true,
-        install: true,
-        allowlist: false,
-        denylist: false,
-        loadPath: false,
-        memorySlot: false,
-        contextEngineSlot: false,
-        directory: false,
-      },
-      directoryRemoval: null,
-    });
+    primeUninstallPlan(nextConfig);
     replaceConfigFile.mockRejectedValueOnce(new Error("config changed"));
 
     await expect(
@@ -426,21 +382,7 @@ describe("plugins cli uninstall", () => {
       plugins: [{ id: "alpha", name: "alpha" }],
       diagnostics: [],
     });
-    planPluginUninstall.mockReturnValue({
-      ok: true,
-      config: nextConfig,
-      actions: {
-        entry: true,
-        install: true,
-        allowlist: false,
-        denylist: false,
-        loadPath: false,
-        memorySlot: false,
-        contextEngineSlot: false,
-        directory: false,
-      },
-      directoryRemoval: { target: ALPHA_INSTALL_PATH },
-    });
+    primeUninstallPlan(nextConfig, { directoryRemoval: { target: ALPHA_INSTALL_PATH } });
     applyPluginUninstallDirectoryRemoval.mockResolvedValue({
       directoryRemoved: true,
       warnings: [],
@@ -489,19 +431,7 @@ describe("plugins cli uninstall", () => {
       plugins: [{ id: "alpha", name: "alpha" }],
       diagnostics: [],
     });
-    planPluginUninstall.mockReturnValue({
-      ok: true,
-      config: { plugins: { entries: {}, installs: {} } } as OpenClawConfig,
-      actions: {
-        entry: true,
-        install: true,
-        allowlist: false,
-        denylist: false,
-        loadPath: false,
-        memorySlot: false,
-        contextEngineSlot: false,
-        directory: false,
-      },
+    primeUninstallPlan({ plugins: { entries: {}, installs: {} } } as OpenClawConfig, {
       directoryRemoval: { target: installPath },
     });
     applyPluginUninstallDirectoryRemoval.mockResolvedValue({
@@ -543,21 +473,14 @@ describe("plugins cli uninstall", () => {
       plugins: [],
       diagnostics: [],
     });
-    planPluginUninstall.mockReturnValue({
-      ok: true,
-      config: nextConfig,
+    primeUninstallPlan(nextConfig, {
       actions: {
         entry: false,
         install: false,
         allowlist: true,
         denylist: true,
-        loadPath: false,
-        memorySlot: false,
-        contextEngineSlot: false,
         channelConfig: false,
-        directory: false,
       },
-      directoryRemoval: null,
     });
 
     await runPluginsCommand(["plugins", "uninstall", "alpha", "--force"]);
@@ -582,22 +505,7 @@ describe("plugins cli uninstall", () => {
       plugins: [],
       diagnostics: [],
     });
-    planPluginUninstall.mockReturnValue({
-      ok: true,
-      config: nextConfig,
-      actions: {
-        entry: true,
-        install: false,
-        allowlist: false,
-        denylist: false,
-        loadPath: false,
-        memorySlot: false,
-        contextEngineSlot: false,
-        channelConfig: false,
-        directory: false,
-      },
-      directoryRemoval: null,
-    });
+    primeUninstallPlan(nextConfig, { actions: { install: false, channelConfig: false } });
 
     await runPluginsCommand(["plugins", "uninstall", "alpha", "--force"]);
 
@@ -650,22 +558,7 @@ describe("plugins cli uninstall", () => {
       plugins: [],
       diagnostics: [],
     });
-    planPluginUninstall.mockReturnValue({
-      ok: true,
-      config: nextConfig,
-      actions: {
-        entry: true,
-        install: true,
-        allowlist: false,
-        denylist: false,
-        loadPath: false,
-        memorySlot: false,
-        contextEngineSlot: false,
-        channelConfig: true,
-        directory: false,
-      },
-      directoryRemoval: null,
-    });
+    primeUninstallPlan(nextConfig, { actions: { channelConfig: true } });
 
     await runPluginsCommand(["plugins", "uninstall", "alpha", "--force", "--keep-files"]);
 

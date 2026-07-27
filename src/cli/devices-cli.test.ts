@@ -104,14 +104,15 @@ function pairedDevice(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function primeGatewayPairing(pending: unknown[], paired: unknown[] = []) {
+  return callGateway.mockResolvedValueOnce({ pending, paired });
+}
+
 function mockGatewayPairingList(
   pendingOverrides: Record<string, unknown> = {},
   pairedOverrides: Record<string, unknown> = {},
 ) {
-  callGateway.mockResolvedValueOnce({
-    pending: [pendingDevice(pendingOverrides)],
-    paired: [pairedDevice(pairedOverrides)],
-  });
+  primeGatewayPairing([pendingDevice(pendingOverrides)], [pairedDevice(pairedOverrides)]);
 }
 
 function rejectGatewayForLocalFallback(message = "gateway closed (1008): pairing required") {
@@ -204,12 +205,9 @@ function hasGatewayMethod(method: string): boolean {
 
 describe("devices cli approve", () => {
   it("uses admin scope when approving an admin-scope request", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [pendingDevice({ requestId: "req-123", scopes: ["operator.admin"] })],
-        paired: [],
-      })
-      .mockResolvedValueOnce({ device: { deviceId: "device-1" } });
+    primeGatewayPairing([
+      pendingDevice({ requestId: "req-123", scopes: ["operator.admin"] }),
+    ]).mockResolvedValueOnce({ device: { deviceId: "device-1" } });
 
     await runDevicesApprove(["req-123"]);
 
@@ -223,17 +221,12 @@ describe("devices cli approve", () => {
   });
 
   it("keeps pairing scope for non-admin device approvals", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [
-          pendingDevice({
-            requestId: "req-pairing",
-            scopes: ["operator.pairing"],
-          }),
-        ],
-        paired: [],
-      })
-      .mockResolvedValueOnce({ device: { deviceId: "device-1" } });
+    primeGatewayPairing([
+      pendingDevice({
+        requestId: "req-pairing",
+        scopes: ["operator.pairing"],
+      }),
+    ]).mockResolvedValueOnce({ device: { deviceId: "device-1" } });
 
     await runDevicesApprove(["req-pairing"]);
 
@@ -245,11 +238,7 @@ describe("devices cli approve", () => {
   });
 
   it("retries explicit approval with admin scope when a paired-device session is ownership-denied", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [],
-        paired: [],
-      })
+    primeGatewayPairing([])
       .mockRejectedValueOnce(new Error("GatewayClientRequestError: device pairing approval denied"))
       .mockResolvedValueOnce({ device: { deviceId: "device-2" } });
 
@@ -269,21 +258,19 @@ describe("devices cli approve", () => {
   });
 
   it("uses admin scope when a repair approval would inherit an admin token", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [
-          pendingDevice({
-            requestId: "req-repair",
-            scopes: [],
-          }),
-        ],
-        paired: [
-          pairedDevice({
-            tokens: [{ role: "operator", scopes: ["operator.admin"] }],
-          }),
-        ],
-      })
-      .mockResolvedValueOnce({ device: { deviceId: "device-1" } });
+    primeGatewayPairing(
+      [
+        pendingDevice({
+          requestId: "req-repair",
+          scopes: [],
+        }),
+      ],
+      [
+        pairedDevice({
+          tokens: [{ role: "operator", scopes: ["operator.admin"] }],
+        }),
+      ],
+    ).mockResolvedValueOnce({ device: { deviceId: "device-1" } });
 
     await runDevicesApprove(["req-repair"]);
 
@@ -295,21 +282,19 @@ describe("devices cli approve", () => {
   });
 
   it("inherits non-admin operator token scopes when a repair approval omits explicit scopes", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [
-          pendingDevice({
-            requestId: "req-read-repair",
-            scopes: [],
-          }),
-        ],
-        paired: [
-          pairedDevice({
-            tokens: [{ role: "operator", scopes: ["operator.read"] }],
-          }),
-        ],
-      })
-      .mockResolvedValueOnce({ device: { deviceId: "device-1" } });
+    primeGatewayPairing(
+      [
+        pendingDevice({
+          requestId: "req-read-repair",
+          scopes: [],
+        }),
+      ],
+      [
+        pairedDevice({
+          tokens: [{ role: "operator", scopes: ["operator.read"] }],
+        }),
+      ],
+    ).mockResolvedValueOnce({ device: { deviceId: "device-1" } });
 
     await runDevicesApprove(["req-read-repair"]);
 
@@ -321,21 +306,19 @@ describe("devices cli approve", () => {
   });
 
   it("falls back to paired scopes when a repair approval omits explicit scopes and no operator token is stored", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [
-          pendingDevice({
-            requestId: "req-read-repair-scopes",
-            scopes: [],
-          }),
-        ],
-        paired: [
-          pairedDevice({
-            scopes: ["operator.read"],
-          }),
-        ],
-      })
-      .mockResolvedValueOnce({ device: { deviceId: "device-1" } });
+    primeGatewayPairing(
+      [
+        pendingDevice({
+          requestId: "req-read-repair-scopes",
+          scopes: [],
+        }),
+      ],
+      [
+        pairedDevice({
+          scopes: ["operator.read"],
+        }),
+      ],
+    ).mockResolvedValueOnce({ device: { deviceId: "device-1" } });
 
     await runDevicesApprove(["req-read-repair-scopes"]);
 
@@ -347,8 +330,8 @@ describe("devices cli approve", () => {
   });
 
   it("prints selected details and exits when implicit approval is used", async () => {
-    callGateway.mockResolvedValueOnce({
-      pending: [
+    primeGatewayPairing(
+      [
         {
           requestId: "req-abc",
           deviceId: "device-9",
@@ -359,7 +342,7 @@ describe("devices cli approve", () => {
           ts: 1000,
         },
       ],
-      paired: [
+      [
         {
           deviceId: "device-9",
           displayName: "Device Nine",
@@ -367,7 +350,7 @@ describe("devices cli approve", () => {
           scopes: ["operator.read"],
         },
       ],
-    });
+    );
 
     await runDevicesApprove([]);
 
@@ -384,8 +367,8 @@ describe("devices cli approve", () => {
   });
 
   it("sanitizes preview ip output for implicit approval", async () => {
-    callGateway.mockResolvedValueOnce({
-      pending: [
+    primeGatewayPairing(
+      [
         {
           requestId: "req-abc",
           deviceId: "device-9",
@@ -396,7 +379,7 @@ describe("devices cli approve", () => {
           ts: 1000,
         },
       ],
-      paired: [
+      [
         {
           deviceId: "device-9",
           displayName: "Device Nine",
@@ -404,7 +387,7 @@ describe("devices cli approve", () => {
           scopes: ["operator.read"],
         },
       ],
-    });
+    );
 
     await runDevicesApprove([]);
 
@@ -489,10 +472,7 @@ describe("devices cli approve", () => {
   });
 
   it("returns JSON for implicit approval preview in JSON mode", async () => {
-    callGateway.mockResolvedValueOnce({
-      pending: [{ requestId: "req-json", deviceId: "device-json", ts: 1000 }],
-      paired: [],
-    });
+    primeGatewayPairing([{ requestId: "req-json", deviceId: "device-json", ts: 1000 }]);
 
     await runDevicesApprove(["--latest", "--json", "--url", "ws://gateway.example:18789"]);
 
@@ -528,18 +508,17 @@ describe("devices cli approve", () => {
   });
 
   it("suggests pending node approval when a device IP is approved at the wrong layer", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [],
-        paired: [
-          pairedDevice({
-            deviceId: "android-node",
-            displayName: "Colin's S25",
-            remoteIp: "192.168.0.202",
-            roles: ["node"],
-          }),
-        ],
-      })
+    primeGatewayPairing(
+      [],
+      [
+        pairedDevice({
+          deviceId: "android-node",
+          displayName: "Colin's S25",
+          remoteIp: "192.168.0.202",
+          roles: ["node"],
+        }),
+      ],
+    )
       .mockRejectedValueOnce(new Error("device pairing approval denied"))
       .mockRejectedValueOnce({ message: "unknown requestId", gatewayCode: "INVALID_REQUEST" })
       .mockResolvedValueOnce({
@@ -589,18 +568,17 @@ describe("devices cli approve", () => {
   });
 
   it("does not suggest node approval for a wrong-layer device IP when only display names match", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [],
-        paired: [
-          pairedDevice({
-            deviceId: "android-node",
-            displayName: "Shared Phone",
-            remoteIp: "192.168.0.202",
-            roles: ["node"],
-          }),
-        ],
-      })
+    primeGatewayPairing(
+      [],
+      [
+        pairedDevice({
+          deviceId: "android-node",
+          displayName: "Shared Phone",
+          remoteIp: "192.168.0.202",
+          roles: ["node"],
+        }),
+      ],
+    )
       .mockRejectedValueOnce(new Error("device pairing approval denied"))
       .mockRejectedValueOnce({ message: "unknown requestId", gatewayCode: "INVALID_REQUEST" })
       .mockResolvedValueOnce({
@@ -637,17 +615,16 @@ describe("devices cli approve", () => {
   });
 
   it("does not suggest node approval when the query only matches a paired device display name", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [],
-        paired: [
-          pairedDevice({
-            deviceId: "paired-node",
-            displayName: "Shared Phone",
-            roles: ["node"],
-          }),
-        ],
-      })
+    primeGatewayPairing(
+      [],
+      [
+        pairedDevice({
+          deviceId: "paired-node",
+          displayName: "Shared Phone",
+          roles: ["node"],
+        }),
+      ],
+    )
       .mockRejectedValueOnce({ message: "unknown requestId", gatewayCode: "INVALID_REQUEST" })
       .mockResolvedValueOnce({
         nodes: [
@@ -705,11 +682,10 @@ describe("devices cli clear", () => {
   });
 
   it("clears paired devices and optionally pending requests", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        paired: [{ deviceId: "device-1" }, { deviceId: "device-2" }],
-        pending: [{ requestId: "req-1" }],
-      })
+    primeGatewayPairing(
+      [{ requestId: "req-1" }],
+      [{ deviceId: "device-1" }, { deviceId: "device-2" }],
+    )
       .mockResolvedValueOnce({ deviceId: "device-1" })
       .mockResolvedValueOnce({ deviceId: "device-2" })
       .mockResolvedValueOnce({ requestId: "req-1", deviceId: "device-1" });
@@ -1063,30 +1039,28 @@ describe("devices cli list", () => {
   });
 
   it("shows pending node approval commands for paired node devices", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [],
-        paired: [
-          pairedDevice({
-            deviceId: "android-node",
-            displayName: "Colin's S25",
-            remoteIp: "192.168.0.202",
-            role: "node",
-            roles: [],
-          }),
-        ],
-      })
-      .mockResolvedValueOnce({
-        nodes: [
-          {
-            nodeId: "android-node",
-            displayName: "Colin's S25",
-            remoteIp: "192.168.0.202",
-            approvalState: "pending-reapproval",
-            pendingRequestId: "node-req-1",
-          },
-        ],
-      });
+    primeGatewayPairing(
+      [],
+      [
+        pairedDevice({
+          deviceId: "android-node",
+          displayName: "Colin's S25",
+          remoteIp: "192.168.0.202",
+          role: "node",
+          roles: [],
+        }),
+      ],
+    ).mockResolvedValueOnce({
+      nodes: [
+        {
+          nodeId: "android-node",
+          displayName: "Colin's S25",
+          remoteIp: "192.168.0.202",
+          approvalState: "pending-reapproval",
+          pendingRequestId: "node-req-1",
+        },
+      ],
+    });
 
     await runDevicesCommand([
       "list",
@@ -1108,30 +1082,28 @@ describe("devices cli list", () => {
   });
 
   it("does not show node approval commands for paired node devices when only display names match", async () => {
-    callGateway
-      .mockResolvedValueOnce({
-        pending: [],
-        paired: [
-          pairedDevice({
-            deviceId: "android-node",
-            displayName: "Shared Phone",
-            remoteIp: "192.168.0.202",
-            role: "node",
-            roles: [],
-          }),
-        ],
-      })
-      .mockResolvedValueOnce({
-        nodes: [
-          {
-            nodeId: "unrelated-node",
-            displayName: "Shared Phone",
-            remoteIp: "10.0.0.50",
-            approvalState: "pending-reapproval",
-            pendingRequestId: "node-req-unrelated",
-          },
-        ],
-      });
+    primeGatewayPairing(
+      [],
+      [
+        pairedDevice({
+          deviceId: "android-node",
+          displayName: "Shared Phone",
+          remoteIp: "192.168.0.202",
+          role: "node",
+          roles: [],
+        }),
+      ],
+    ).mockResolvedValueOnce({
+      nodes: [
+        {
+          nodeId: "unrelated-node",
+          displayName: "Shared Phone",
+          remoteIp: "10.0.0.50",
+          approvalState: "pending-reapproval",
+          pendingRequestId: "node-req-unrelated",
+        },
+      ],
+    });
 
     await runDevicesCommand(["list"]);
 
@@ -1153,8 +1125,8 @@ describe("devices cli list", () => {
   });
 
   it("sanitizes device-controlled terminal output", async () => {
-    callGateway.mockResolvedValueOnce({
-      pending: [
+    primeGatewayPairing(
+      [
         {
           requestId: "req-1",
           deviceId: "device-1",
@@ -1165,7 +1137,7 @@ describe("devices cli list", () => {
           ts: 1,
         },
       ],
-      paired: [
+      [
         {
           deviceId: "device-1",
           displayName: "Pair\u001b]8;;https://evil.example\u001b\\ed",
@@ -1174,7 +1146,7 @@ describe("devices cli list", () => {
           remoteIp: "10.0.0.1\u007f",
         },
       ],
-    });
+    );
 
     await runDevicesCommand(["list"]);
 
@@ -1211,9 +1183,9 @@ describe("devices cli list", () => {
   });
 
   it("renders paired devices with operatorLabel then displayName then clientId precedence", async () => {
-    callGateway.mockResolvedValueOnce({
-      pending: [],
-      paired: [
+    primeGatewayPairing(
+      [],
+      [
         pairedDevice({
           deviceId: "dev-label",
           operatorLabel: "Kitchen Mac",
@@ -1235,7 +1207,7 @@ describe("devices cli list", () => {
           displayName: undefined,
         }),
       ],
-    });
+    );
 
     await runDevicesCommand(["list"]);
 
