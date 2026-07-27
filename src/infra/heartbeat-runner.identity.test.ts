@@ -11,6 +11,11 @@ import {
   readSessionStoreForTest,
   withTempHeartbeatSandbox,
 } from "./heartbeat-runner.test-utils.js";
+import {
+  drainSystemEvents,
+  enqueueSystemEvent,
+  resolveSystemEventQueueKey,
+} from "./system-events.js";
 
 installHeartbeatRunnerTestRuntime({ includeSlack: true });
 
@@ -71,6 +76,16 @@ describe("runHeartbeatOnce identity", () => {
           lastTo: "channel:HISTORIAN",
         });
         const mainStoreBefore = readSessionStoreForTest(mainStorePath);
+        const mainEventQueueKey = resolveSystemEventQueueKey({
+          sessionKey: "global",
+          agentId: "main",
+        });
+        const historianEventQueueKey = resolveSystemEventQueueKey({
+          sessionKey: "global",
+          agentId: "historian2",
+        });
+        enqueueSystemEvent("main-only wake", { sessionKey: mainEventQueueKey });
+        enqueueSystemEvent("historian-only wake", { sessionKey: historianEventQueueKey });
         replySpy.mockResolvedValue({ text: "needs attention" });
         const sendSlack = vi.fn().mockResolvedValue({ messageId: "m1", channelId: "HISTORIAN" });
 
@@ -89,6 +104,9 @@ describe("runHeartbeatOnce identity", () => {
           AgentId: "historian2",
           SessionKey: expectedSessionKey,
         });
+        const prompt = JSON.stringify(replySpy.mock.calls[0]?.[0]);
+        expect(prompt).toContain("historian-only wake");
+        expect(prompt).not.toContain("main-only wake");
         expect(sendSlack).toHaveBeenCalledWith(
           "channel:HISTORIAN",
           "needs attention",
@@ -100,6 +118,8 @@ describe("runHeartbeatOnce identity", () => {
         expect(historianStore["agent:historian2:global:heartbeat"] !== undefined).toBe(
           isolatedSession,
         );
+        drainSystemEvents(mainEventQueueKey);
+        drainSystemEvents(historianEventQueueKey);
       });
     },
   );
