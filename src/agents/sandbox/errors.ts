@@ -19,7 +19,7 @@ function isObjectLike(value: unknown): value is object {
 }
 
 /** Fallback wrapper for the rare case where sandbox setup throws a primitive. */
-export class SandboxProvisioningError extends Error {
+class SandboxProvisioningError extends Error {
   readonly code = "sandbox_provisioning_failed";
 
   constructor(message: string, options?: { cause?: unknown }) {
