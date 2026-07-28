@@ -8,6 +8,7 @@ import type { CallGatewayOptions } from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { splitMediaFromOutput } from "../../media/parse.js";
+import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import {
@@ -55,6 +56,7 @@ async function deliverAnnounceReply(params: {
   announceTarget: AnnounceTarget;
   message: string;
   runContextId: string;
+  targetSessionKey: string;
 }) {
   const reply = params.message.trim();
   if (!reply) {
@@ -66,6 +68,11 @@ async function deliverAnnounceReply(params: {
   if (!message && !mediaUrls?.length) {
     return;
   }
+  // Scope attachments to their producing agent without changing outbound
+  // routing or transcript mirroring by passing the full session key.
+  const mediaAgentId = mediaUrls?.length
+    ? parseAgentSessionKey(params.targetSessionKey)?.agentId
+    : undefined;
   try {
     await sessionsSendA2ADeps.callGateway({
       method: "send",
@@ -73,6 +80,7 @@ async function deliverAnnounceReply(params: {
         to: params.announceTarget.to,
         message,
         ...(mediaUrls?.length ? { mediaUrls } : {}),
+        ...(mediaAgentId ? { agentId: mediaAgentId } : {}),
         channel: params.announceTarget.channel,
         accountId: params.announceTarget.accountId,
         threadId: params.announceTarget.threadId,
@@ -176,6 +184,7 @@ export async function runSessionsSendA2AFlow(params: {
         announceTarget,
         message: latestReply,
         runContextId,
+        targetSessionKey: params.targetSessionKey,
       });
       return;
     }
@@ -256,6 +265,7 @@ export async function runSessionsSendA2AFlow(params: {
         announceTarget,
         message: announceReply,
         runContextId,
+        targetSessionKey: params.targetSessionKey,
       });
     }
   } catch (err) {

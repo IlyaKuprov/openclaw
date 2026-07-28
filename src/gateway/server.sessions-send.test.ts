@@ -7,12 +7,15 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { testing as agentStepTesting } from "../agents/tools/agent-step.test-support.js";
 import { runSessionsSendA2AFlow } from "../agents/tools/sessions-send-tool.a2a.js";
+import type { ChannelOutboundContext } from "../channels/plugins/outbound.types.js";
 import {
   loadSessionEntry,
   persistSessionTranscriptTurn,
 } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import { buildOutboundMediaLoadOptions } from "../media/load-options.js";
+import { loadWebMediaRaw } from "../media/web-media.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { captureEnv } from "../test-utils/env.js";
 import {
@@ -308,6 +311,11 @@ describe("sessions_send gateway loopback", () => {
     { name: "multiple generated images in order", scenario: "multiple" },
     { name: "an attachment without a caption", scenario: "media-only" },
     { name: "safe caption text without a traversal attachment", scenario: "traversal" },
+    { name: "an image from a non-default agent workspace", scenario: "non-default" },
+    {
+      name: "safe non-default agent text without a traversal attachment",
+      scenario: "non-default-traversal",
+    },
   ] as const)(
     "delivers $name through the real gateway to a local HTTP channel",
     { timeout: SESSION_SEND_E2E_TIMEOUT_MS },
@@ -316,9 +324,10 @@ describe("sessions_send gateway loopback", () => {
       if (!stateDir) {
         throw new Error("gateway test must own an isolated state directory");
       }
-      // Gateway outbound media is deliberately limited to agent-scoped roots;
-      // generated fixtures must live in the isolated state's allowed workspace.
-      const workspaceDir = path.join(stateDir, "workspace");
+      const isNonDefaultAgent = scenario === "non-default" || scenario === "non-default-traversal";
+      // The non-default workspace must not be inside the default agent's
+      // media roots: only the producing agent can grant access to its image.
+      const workspaceDir = path.join(stateDir, isNonDefaultAgent ? "workspace-orion" : "workspace");
       await fs.mkdir(workspaceDir, { recursive: true });
       const dir = await fs.mkdtemp(path.join(workspaceDir, "sessions-send-http-media-"));
       const firstImage = path.join(dir, "first.png");
@@ -373,16 +382,29 @@ describe("sessions_send gateway loopback", () => {
       const receiverUrl = `http://127.0.0.1:${address.port}/attachments`;
       const postDelivery = async (
         kind: "text" | "media",
-        ctx: { to: string; text: string; mediaUrl?: string },
+        ctx: Pick<
+          ChannelOutboundContext,
+          "to" | "text" | "mediaUrl" | "mediaAccess" | "mediaLocalRoots" | "mediaReadFile"
+        >,
       ) => {
+        const media = ctx.mediaUrl
+          ? await loadWebMediaRaw(
+              ctx.mediaUrl,
+              buildOutboundMediaLoadOptions({
+                mediaAccess: ctx.mediaAccess,
+                mediaLocalRoots: ctx.mediaLocalRoots,
+                mediaReadFile: ctx.mediaReadFile,
+              }),
+            )
+          : undefined;
         const delivery: HttpDelivery = {
           kind,
           to: ctx.to,
           text: ctx.text,
-          ...(ctx.mediaUrl
+          ...(ctx.mediaUrl && media
             ? {
                 mediaUrl: ctx.mediaUrl,
-                contentBase64: (await fs.readFile(ctx.mediaUrl)).toString("base64"),
+                contentBase64: media.buffer.toString("base64"),
               }
             : {}),
         };
@@ -397,9 +419,9 @@ describe("sessions_send gateway loopback", () => {
         return { channel: "whatsapp" as const, messageId: `loopback-${deliveries.length}` };
       };
 
-      const sessionKey = "agent:main:whatsapp:direct:peer-1";
+      const sessionKey = `agent:${isNonDefaultAgent ? "orion" : "main"}:whatsapp:direct:peer-1`;
       const reply =
-        scenario === "single"
+        scenario === "single" || scenario === "non-default"
           ? `Your image is ready.\nMEDIA:${firstImage}`
           : scenario === "multiple"
             ? `Your images are ready.\nMEDIA:${firstImage}\nMEDIA:${secondImage}`
@@ -407,7 +429,7 @@ describe("sessions_send gateway loopback", () => {
               ? `MEDIA:${firstImage}`
               : "Your image is ready.\nMEDIA:../../../etc/passwd";
       const expected: HttpDelivery[] =
-        scenario === "single"
+        scenario === "single" || scenario === "non-default"
           ? [
               {
                 kind: "media",
@@ -477,6 +499,18 @@ describe("sessions_send gateway loopback", () => {
 
       testState.sessionStorePath = path.join(dir, "sessions.json");
       try {
+        if (isNonDefaultAgent) {
+          testState.agentsConfig = {
+            list: [
+              { id: "main", default: true, tools: { fs: { workspaceOnly: true } } },
+              {
+                id: "orion",
+                workspace: workspaceDir,
+                tools: { fs: { workspaceOnly: true } },
+              },
+            ],
+          };
+        }
         await writeSessionStore({
           entries: {
             [sessionKey]: {
@@ -506,6 +540,7 @@ describe("sessions_send gateway loopback", () => {
         await vi.waitFor(() => expect(deliveries).toEqual(expected), { timeout: 5_000 });
       } finally {
         agentStepTesting.setDepsForTest();
+        testState.agentsConfig = undefined;
         testState.sessionStorePath = undefined;
         await new Promise<void>((resolve, reject) => {
           receiver.close((error) => (error ? reject(error) : resolve()));
