@@ -27,12 +27,12 @@ import { registerSessionAutomationSource } from "./session-automation-index.js";
 import { buildGatewaySessionEventFields } from "./session-event-payload.js";
 import { capArrayByJsonBytes } from "./session-transcript-readers.js";
 import { buildSingleRowStoreChildSessionsByKey } from "./session-utils-projection.js";
+import { listSessionsFromStore } from "./session-utils-list.js";
 import {
   buildGatewaySessionRow,
   deriveSessionTitle,
   getSessionDefaults,
   listAgentsForGateway,
-  listSessionsFromStore,
   listSessionsFromStoreAsync,
   loadSessionEntry,
   loadSessionEntryReadOnly,
