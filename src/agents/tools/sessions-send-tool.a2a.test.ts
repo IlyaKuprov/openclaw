@@ -138,6 +138,67 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
     expect(sendParams.message).toBe("Substantive channel reply");
   });
 
+  it.each([
+    {
+      name: "a generated image and its caption",
+      reply: "Your image is ready.\nMEDIA:media/tool-image-generation/example.png",
+      message: "Your image is ready.",
+      mediaUrls: ["media/tool-image-generation/example.png"],
+    },
+    {
+      name: "multiple generated attachments in order",
+      reply: "Your images are ready.\nMEDIA:./first.png\nMEDIA:./second.png",
+      message: "Your images are ready.",
+      mediaUrls: ["./first.png", "./second.png"],
+    },
+    {
+      name: "a media-only announcement",
+      reply: "MEDIA:media/tool-image-generation/example.png",
+      message: "",
+      mediaUrls: ["media/tool-image-generation/example.png"],
+    },
+    {
+      name: "ordinary text without inventing an attachment field",
+      reply: "The MEDIA: tag is mentioned in this explanation.",
+      message: "The MEDIA: tag is mentioned in this explanation.",
+      mediaUrls: undefined,
+    },
+    {
+      name: "a fenced MEDIA example without reading it as an attachment",
+      reply: "Here is an example:\n```text\nMEDIA:./example.png\n```",
+      message: "Here is an example:\n```text\nMEDIA:./example.png\n```",
+      mediaUrls: undefined,
+    },
+    {
+      name: "safe caption text while rejecting a traversal attachment",
+      reply: "Your image is ready.\nMEDIA:../../../etc/passwd",
+      message: "Your image is ready.",
+      mediaUrls: undefined,
+    },
+  ])("projects $name into gateway send", async ({ reply, message, mediaUrls }) => {
+    const sessionKey = "agent:main:discord:channel:target-room";
+
+    await runSessionsSendA2AFlow({
+      targetSessionKey: sessionKey,
+      displayKey: sessionKey,
+      message: "Generate the requested media.",
+      announceTimeoutMs: 10_000,
+      maxPingPongTurns: 0,
+      requesterSessionKey: sessionKey,
+      requesterChannel: "discord",
+      roundOneReply: reply,
+    });
+
+    const sendParams = requireGatewayCall("send").params as Record<string, unknown>;
+    expect(sendParams.message).toBe(message);
+    if (mediaUrls) {
+      expect(sendParams.mediaUrls).toEqual(mediaUrls);
+    } else {
+      expect(sendParams).not.toHaveProperty("mediaUrls");
+    }
+    expect(runAgentStep).not.toHaveBeenCalled();
+  });
+
   it("bypasses the announce decider for delayed same-session channel replies", async () => {
     vi.mocked(readLatestAssistantReplySnapshot).mockResolvedValueOnce({
       text: "Delayed channel reply",

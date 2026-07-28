@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import type { CallGatewayOptions } from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { splitMediaFromOutput } from "../../media/parse.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import {
@@ -55,8 +56,14 @@ async function deliverAnnounceReply(params: {
   message: string;
   runContextId: string;
 }) {
-  const message = params.message.trim();
-  if (!message) {
+  const reply = params.message.trim();
+  if (!reply) {
+    return;
+  }
+  // Announcements reach gateway send directly, so extract media with the
+  // canonical path-safe parser before the channel receives a text-only payload.
+  const { text: message, mediaUrls } = splitMediaFromOutput(reply);
+  if (!message && !mediaUrls?.length) {
     return;
   }
   try {
@@ -65,6 +72,7 @@ async function deliverAnnounceReply(params: {
       params: {
         to: params.announceTarget.to,
         message,
+        ...(mediaUrls?.length ? { mediaUrls } : {}),
         channel: params.announceTarget.channel,
         accountId: params.announceTarget.accountId,
         threadId: params.announceTarget.threadId,
