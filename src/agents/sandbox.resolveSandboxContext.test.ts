@@ -7,7 +7,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import type { SkillUsagePath } from "../skills/types.js";
 import { registerSandboxBackend } from "./sandbox/backend.js";
 import { ensureSandboxWorkspaceForSession, resolveSandboxContext } from "./sandbox/context.js";
-import { SandboxProvisioningError } from "./sandbox/errors.js";
+import { isSandboxProvisioningError } from "./sandbox/errors.js";
 
 const updateRegistryMock = vi.hoisted(() => vi.fn());
 const readRegisteredSandboxRuntimeIdsMock = vi.hoisted(() => vi.fn(async () => [] as string[]));
@@ -279,7 +279,7 @@ describe("resolveSandboxContext", () => {
     }
   }, 15_000);
 
-  it("types backend startup failures as sandbox provisioning errors", async () => {
+  it("marks backend startup failures without replacing their domain error", async () => {
     const cause = new Error("Sandbox image not found: missing-image");
     const restore = registerSandboxBackend("test-failing-backend", async () => {
       throw cause;
@@ -305,8 +305,8 @@ describe("resolveSandboxContext", () => {
         workspaceDir: "/tmp/openclaw-test",
       }).catch((caught: unknown) => caught);
 
-      expect(error).toBeInstanceOf(SandboxProvisioningError);
-      expect(error).toMatchObject({ cause, code: "sandbox_provisioning_failed" });
+      expect(error).toBe(cause);
+      expect(isSandboxProvisioningError(error)).toBe(true);
     } finally {
       restore();
     }

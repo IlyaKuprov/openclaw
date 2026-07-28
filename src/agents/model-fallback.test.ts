@@ -41,7 +41,7 @@ import {
   createAgentRunRestartAbortError,
   resolveAgentRunErrorLifecycleFields,
 } from "./run-termination.js";
-import { SandboxProvisioningError } from "./sandbox/errors.js";
+import { markSandboxProvisioningError } from "./sandbox/errors.js";
 import { resolveSessionSuspensionReason } from "./session-suspension.js";
 import { SessionWriteLockTimeoutError } from "./session-write-lock-error.js";
 import { makeModelFallbackCfg } from "./test-helpers/model-fallback-config-fixture.js";
@@ -1119,8 +1119,10 @@ describe("runWithModelFallback", () => {
 
   it("does not retry sandbox provisioning failures on fallback models", async () => {
     const cfg = makeCfg();
-    const error = new SandboxProvisioningError(
-      "Sandbox image not found: missing-image. Build or pull it first.",
+    const error = markSandboxProvisioningError(
+      Object.assign(new Error("Sandbox image not found: missing-image. Build or pull it first."), {
+        code: "backend_image_missing",
+      }),
     );
     const run = vi.fn().mockRejectedValue(error);
 

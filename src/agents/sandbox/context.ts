@@ -20,7 +20,7 @@ import { getSandboxBackendWorkdirResolver, requireSandboxBackendFactory } from "
 import { ensureSandboxBrowser } from "./browser.js";
 import { resolveSandboxConfigForAgent } from "./config.js";
 import { resolveSandboxDockerUser } from "./docker-user.js";
-import { toSandboxProvisioningError } from "./errors.js";
+import { markSandboxProvisioningError } from "./errors.js";
 import { createSandboxFsBridge } from "./fs-bridge.js";
 import { readRegisteredSandboxRuntimeIds, updateRegistry } from "./registry.js";
 import { resolveSandboxRuntimeStatus } from "./runtime-status.js";
@@ -342,7 +342,7 @@ export async function resolveSandboxContext(params: {
   } catch (error) {
     // Sandbox setup happens before a provider attempt. Preserve that ownership so
     // model fallback cannot retry the same infrastructure failure on every model.
-    throw toSandboxProvisioningError(error);
+    throw markSandboxProvisioningError(error);
   }
 }
 
