@@ -275,7 +275,6 @@ export async function add(state: CronServiceState, input: CronJobCreate, opts?: 
       const now = state.deps.nowMs();
       const nextJob = structuredClone(existing);
       applyDeclarativeJobSpec(nextJob, normalizedInput, {
-        defaultAgentId: state.deps.defaultAgentId,
         enabledExplicit: opts?.enabledExplicit === true,
         nowMs: now,
         cronConfig: state.deps.cronConfig,
@@ -387,7 +386,6 @@ export async function updateLoadedJob(params: {
   await precondition?.(structuredClone(job), now);
   const nextJob = structuredClone(job);
   applyJobPatch(nextJob, patch, {
-    defaultAgentId: state.deps.defaultAgentId,
     scheduleValidationNowMs: now,
     cronConfig: state.deps.cronConfig,
     scheduledToolPolicy: opts?.scheduledToolPolicy,
