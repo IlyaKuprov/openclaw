@@ -82,17 +82,6 @@ export async function runCliFallbackCandidate(params: {
     turn.getActiveSessionEntry(),
     params.cliExecutionProvider,
   );
-  const mediaTaskIdsBefore = getGeneratedMediaTaskIdsForSessionKey(turn.sessionKey);
-  const cliSessionRecovery = createCliSessionRecoveryCallbacks({
-    provider: params.cliExecutionProvider,
-    binding: cliSessionBinding,
-    sessionKey: turn.sessionKey,
-    sessionStore: turn.activeSessionStore,
-    storePath: turn.storePath,
-    getActiveSessionEntry: turn.getActiveSessionEntry,
-    hasCommittedMedia: () =>
-      hasNewGeneratedMediaTaskForSessionKey(turn.sessionKey, mediaTaskIdsBefore),
-  });
   const cliLifecycleStartedAt = Date.now();
   const lifecycleBackstop = createAgentLifecycleTerminalBackstop({
     runId: params.runId,
@@ -142,8 +131,19 @@ export async function runCliFallbackCandidate(params: {
         agentId: turn.followupRun.run.agentId,
         runId: params.runId,
       },
-      () =>
-        runCliAgentWithLifecycle({
+      () => {
+        const mediaTaskIdsBefore = getGeneratedMediaTaskIdsForSessionKey(turn.sessionKey);
+        const cliSessionRecovery = createCliSessionRecoveryCallbacks({
+          provider: params.cliExecutionProvider,
+          binding: cliSessionBinding,
+          sessionKey: turn.sessionKey,
+          sessionStore: turn.activeSessionStore,
+          storePath: turn.storePath,
+          getActiveSessionEntry: turn.getActiveSessionEntry,
+          hasCommittedMedia: () =>
+            hasNewGeneratedMediaTaskForSessionKey(turn.sessionKey, mediaTaskIdsBefore),
+        });
+        return runCliAgentWithLifecycle({
           runId: params.runId,
           lifecycleGeneration: params.lifecycleGeneration,
           provider: params.cliExecutionProvider,
@@ -333,7 +333,8 @@ export async function runCliFallbackCandidate(params: {
             onExecutionPhase: params.signalExecutionPhaseForTyping,
             replyOperation: turn.replyOperation,
           },
-        }),
+        });
+      },
     ),
   );
   if (droppedCliSessionReplacement) {

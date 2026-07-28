@@ -61,7 +61,7 @@ async function clearExpectedCliSessionBinding(params: {
     }
     for (const entry of new Set(
       [storedEntry, params.activeSessionEntry].filter(
-        (entry): entry is SessionEntry => entry !== undefined,
+        (candidate): candidate is SessionEntry => candidate !== undefined,
       ),
     )) {
       if (getCliSessionId(entry, provider) === expectedCliSessionId) {
