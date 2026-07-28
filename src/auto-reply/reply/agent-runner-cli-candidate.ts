@@ -10,6 +10,10 @@ import {
 } from "../../agents/run-termination.js";
 import { withLocalSessionPlacementTurnAdmission } from "../../agents/session-placement-admission.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  getGeneratedMediaTaskIdsForSessionKey,
+  hasNewGeneratedMediaTaskForSessionKey,
+} from "../../tasks/task-status-access.js";
 import type { ThinkLevel } from "../thinking.js";
 import type { ReplyPayload } from "../types.js";
 import {
@@ -24,6 +28,7 @@ import {
   keepCliSessionBindingOnlyWhenReused,
   runCliAgentWithLifecycle,
 } from "./agent-runner-cli-dispatch.js";
+import { createCliSessionRecoveryCallbacks } from "./agent-runner-cli-session-recovery.js";
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 import type { createAgentTurnPresentation } from "./agent-runner-presentation.js";
 import type { AgentTurnTimingTracker } from "./agent-runner-turn-timing.js";
@@ -77,6 +82,17 @@ export async function runCliFallbackCandidate(params: {
     turn.getActiveSessionEntry(),
     params.cliExecutionProvider,
   );
+  const mediaTaskIdsBefore = getGeneratedMediaTaskIdsForSessionKey(turn.sessionKey);
+  const cliSessionRecovery = createCliSessionRecoveryCallbacks({
+    provider: params.cliExecutionProvider,
+    binding: cliSessionBinding,
+    sessionKey: turn.sessionKey,
+    sessionStore: turn.activeSessionStore,
+    storePath: turn.storePath,
+    getActiveSessionEntry: turn.getActiveSessionEntry,
+    hasCommittedMedia: () =>
+      hasNewGeneratedMediaTaskForSessionKey(turn.sessionKey, mediaTaskIdsBefore),
+  });
   const cliLifecycleStartedAt = Date.now();
   const lifecycleBackstop = createAgentLifecycleTerminalBackstop({
     runId: params.runId,
@@ -136,6 +152,7 @@ export async function runCliFallbackCandidate(params: {
           onAgentRunStart: params.notifyAgentRunStart,
           suppressAssistantBridge: turn.followupRun.run.silentExpected,
           onActivity: () => turn.replyOperation?.recordActivity(),
+          onErrorBeforeLifecycle: cliSessionRecovery.onErrorBeforeLifecycle,
           preserveProgressCallbackStartOrder: params.preserveProgressCallbackStartOrder,
           onAssistantText: async (text) => {
             if (!params.preserveProgressCallbackStartOrder) {
@@ -277,6 +294,7 @@ export async function runCliFallbackCandidate(params: {
             ownerNumbers: turn.followupRun.run.ownerNumbers,
             cliSessionId: cliSessionBinding?.sessionId,
             cliSessionBinding,
+            onBeforeFreshCliSessionRetry: cliSessionRecovery.onBeforeFreshCliSessionRetry,
             authProfileId: authProfile.authProfileId,
             bootstrapContextMode: turn.opts?.bootstrapContextMode,
             bootstrapContextRunKind: params.bootstrapContextRunKind,
