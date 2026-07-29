@@ -44,6 +44,7 @@ export { startQaLiveLaneGateway } from "./src/live-transports/shared/live-gatewa
 export { runLiveTransportQaSuiteCommand } from "./src/live-transports/shared/live-transport-suite.runtime.js";
 export {
   acquireQaCredentialLease,
+  resolveQaCredentialSource,
   startQaCredentialLeaseHeartbeat,
 } from "./src/live-transports/shared/credential-lease.runtime.js";
 export {

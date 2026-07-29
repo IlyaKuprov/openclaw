@@ -153,6 +153,7 @@ describe("plugin-sdk qa-runtime", () => {
       release: vi.fn(async () => {}),
     };
     const acquireQaCredentialLease = vi.fn(async () => lease);
+    const resolveQaCredentialSource = vi.fn(() => "env" as const);
     const heartbeat = {
       getFailure: vi.fn(() => null),
       stop: vi.fn(async () => {}),
@@ -161,6 +162,7 @@ describe("plugin-sdk qa-runtime", () => {
     const startQaCredentialLeaseHeartbeat = vi.fn(() => heartbeat);
     loadBundledPluginPublicSurfaceModuleSync.mockReturnValue({
       acquireQaCredentialLease,
+      resolveQaCredentialSource,
       startQaCredentialLeaseHeartbeat,
     });
     const module = await import("./qa-runtime.js");
@@ -171,8 +173,10 @@ describe("plugin-sdk qa-runtime", () => {
     };
 
     await expect(module.acquireQaCredentialLease(options)).resolves.toBe(lease);
+    expect(module.resolveQaCredentialSource("env")).toBe("env");
     expect(module.startQaCredentialLeaseHeartbeat(lease)).toBe(heartbeat);
     expect(acquireQaCredentialLease).toHaveBeenCalledWith(options);
+    expect(resolveQaCredentialSource).toHaveBeenCalledWith("env");
     expect(startQaCredentialLeaseHeartbeat).toHaveBeenCalledWith(lease, undefined);
   });
 

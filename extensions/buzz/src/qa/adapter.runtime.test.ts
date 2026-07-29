@@ -2,7 +2,7 @@ import type {
   QaBusInboundMessageInput,
   QaBusMessage,
 } from "openclaw/plugin-sdk/qa-channel-protocol";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseBuzzQaCredentialPayload } from "./credentials.js";
 
 const credentials = parseBuzzQaCredentialPayload({
@@ -31,6 +31,9 @@ const startQaCredentialLeaseHeartbeat = vi.hoisted(() =>
     stop: heartbeatStop,
     throwIfFailed: vi.fn(),
   })),
+);
+const resolveQaCredentialSource = vi.hoisted(() =>
+  vi.fn((source?: string) => (source === "convex" ? "convex" : "env")),
 );
 const readBuzzQaCredentialFile = vi.hoisted(() => vi.fn());
 const sendMessage = vi.hoisted(() =>
@@ -64,6 +67,7 @@ const createBuzzQaRelayDriver = vi.hoisted(() =>
 
 vi.mock("openclaw/plugin-sdk/qa-runtime", () => ({
   acquireQaCredentialLease,
+  resolveQaCredentialSource,
   startQaCredentialLeaseHeartbeat,
 }));
 vi.mock("./credentials.js", async (importOriginal) => ({
@@ -76,18 +80,16 @@ import { createBuzzQaTransportAdapter } from "./adapter.runtime.js";
 
 describe("Buzz QA transport adapter", () => {
   beforeEach(() => {
-    vi.stubEnv("OPENCLAW_QA_CREDENTIAL_SOURCE", "");
     vi.clearAllMocks();
+    resolveQaCredentialSource.mockImplementation((source?: string) =>
+      source === "convex" ? "convex" : "env",
+    );
     relayDriverState.onMessage = undefined;
     sendMessage.mockResolvedValue({
       eventId: "native-inbound",
       timestamp: 1_750_000_000_000,
     });
     readBuzzQaCredentialFile.mockResolvedValue(credentials);
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it("uses private file credentials by default", async () => {
@@ -113,10 +115,11 @@ describe("Buzz QA transport adapter", () => {
     expect(acquireQaCredentialLease).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "buzz", source: "env" }),
     );
+    expect(resolveQaCredentialSource).toHaveBeenCalledWith(undefined);
   });
 
   it("honors the shared credential source environment override", async () => {
-    vi.stubEnv("OPENCLAW_QA_CREDENTIAL_SOURCE", "convex");
+    resolveQaCredentialSource.mockReturnValue("convex");
 
     await createBuzzQaTransportAdapter({
       channelId: "buzz",
@@ -133,6 +136,7 @@ describe("Buzz QA transport adapter", () => {
     expect(acquireQaCredentialLease).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "buzz", source: "convex" }),
     );
+    expect(resolveQaCredentialSource).toHaveBeenCalledWith(undefined);
   });
 
   it("sends a portable mentioned message through the native Buzz relay driver", async () => {

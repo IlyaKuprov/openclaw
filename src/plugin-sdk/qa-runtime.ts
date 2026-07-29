@@ -28,6 +28,7 @@ type QaRuntimeSurface = {
   ) => string;
   startQaLiveLaneGateway: (...args: unknown[]) => Promise<unknown>;
   runLiveTransportQaSuiteCommand: (params: LiveTransportQaSuiteCommandOptions) => Promise<unknown>;
+  resolveQaCredentialSource: (source?: string) => "env" | "convex";
   startQaCredentialLeaseHeartbeat: (
     lease: Pick<
       QaCredentialLease<unknown>,
@@ -127,6 +128,11 @@ export async function acquireQaCredentialLease<TPayload>(
   options: AcquireQaCredentialLeaseOptions<TPayload>,
 ): Promise<QaCredentialLease<TPayload>> {
   return await loadQaRuntimeModule().acquireQaCredentialLease(options);
+}
+
+/** Resolve the shared live-QA credential source without exposing host environment access. */
+export function resolveQaCredentialSource(source?: string): "env" | "convex" {
+  return loadQaRuntimeModule().resolveQaCredentialSource(source);
 }
 
 /** Keep a shared QA credential lease alive until the runner finishes cleanup. */

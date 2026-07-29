@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { QaRunnerCliRegistration } from "openclaw/plugin-sdk/qa-runner-runtime";
 import {
   acquireQaCredentialLease,
+  resolveQaCredentialSource,
   startQaCredentialLeaseHeartbeat,
 } from "openclaw/plugin-sdk/qa-runtime";
 import type { BuzzInboundMessage } from "../message-event.js";
@@ -57,32 +58,37 @@ export async function createBuzzQaTransportAdapter(
   context: FactoryContext,
 ): Promise<AdapterDefinition> {
   const options = context.adapterOptions ?? {};
-  const requestedCredentialSource =
-    options.credentialSource?.trim().toLowerCase() ||
-    process.env.OPENCLAW_QA_CREDENTIAL_SOURCE?.trim().toLowerCase() ||
-    "file";
-  if (requestedCredentialSource !== "file" && requestedCredentialSource !== "convex") {
+  const requestedCredentialSource = options.credentialSource?.trim().toLowerCase() || undefined;
+  if (
+    requestedCredentialSource &&
+    requestedCredentialSource !== "file" &&
+    requestedCredentialSource !== "convex"
+  ) {
     throw new Error('Buzz QA credential source must be "file" or "convex".');
   }
+  const credentialSource = resolveQaCredentialSource(
+    requestedCredentialSource === "file" ? "env" : requestedCredentialSource,
+  );
+  const usesFileCredentials = credentialSource === "env";
   const credentialFile = options.credentialFile?.trim();
-  if (requestedCredentialSource === "file" && !credentialFile) {
+  if (usesFileCredentials && !credentialFile) {
     throw new Error("Buzz QA file credentials require --credential-file <path>.");
   }
-  if (requestedCredentialSource === "file" && options.credentialRole?.trim()) {
+  if (usesFileCredentials && options.credentialRole?.trim()) {
     throw new Error("Buzz QA --credential-role is only valid with --credential-source convex.");
   }
-  if (requestedCredentialSource === "convex" && credentialFile) {
+  if (credentialSource === "convex" && credentialFile) {
     throw new Error(
       "Buzz QA --credential-file cannot be combined with --credential-source convex.",
     );
   }
   const fileCredentials =
-    requestedCredentialSource === "file" && credentialFile
+    usesFileCredentials && credentialFile
       ? await readBuzzQaCredentialFile({ filePath: credentialFile, repoRoot: options.repoRoot })
       : undefined;
   const lease = await acquireQaCredentialLease({
     kind: "buzz",
-    source: requestedCredentialSource === "convex" ? "convex" : "env",
+    source: credentialSource,
     role: options.credentialRole,
     resolveEnvPayload: () => {
       if (!fileCredentials) {
