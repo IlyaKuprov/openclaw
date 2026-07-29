@@ -180,7 +180,6 @@ export function loadCombinedSessionStoreForGateway(
         ...listAgentEntries(cfg).map((entry) => normalizeAgentId(entry.id)),
         ...listKnownSessionStoreAgentIds(cfg),
         defaultAgentId,
-        LEGACY_IMPLICIT_AGENT_ID,
         ...(requestedAgentId ? [requestedAgentId] : []),
       ]),
     ];
