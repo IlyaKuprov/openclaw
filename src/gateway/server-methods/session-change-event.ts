@@ -50,7 +50,8 @@ export function emitSessionsChanged(
     }
   }
   const activeRunState =
-    sessionRow && defaultAgentId
+    sessionRow &&
+    (sessionRow.key !== "global" || defaultAgentId !== undefined || payload.agentId !== undefined)
       ? resolveVisibleActiveSessionRunState({
           context,
           requestedKey: payload.sessionKey ?? sessionRow.key,
