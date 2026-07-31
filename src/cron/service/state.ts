@@ -267,6 +267,8 @@ export type CronServiceState = {
   /** Runtime state from the last accepted store revision, used to distinguish
    * stale sibling snapshots from intentional runtime cleanup writes. */
   durableRuntimeStateByJobId: Map<string, CronJob["state"]>;
+  /** Runtime timestamps paired with durableRuntimeStateByJobId baselines. */
+  durableRuntimeUpdatedAtMsByJobId: Map<string, number>;
   /** Loaded records proven to originate outside SQLite from the legacy JSON import. */
   legacyImportedJobIds: Set<string>;
   timer: NodeJS.Timeout | null;
@@ -314,6 +316,7 @@ export function createCronServiceState(deps: CronServiceDeps): CronServiceState 
     runtimeRevision: 0,
     durableNextRunAtMsByJobId: new Map<string, number | undefined>(),
     durableRuntimeStateByJobId: new Map<string, CronJob["state"]>(),
+    durableRuntimeUpdatedAtMsByJobId: new Map<string, number>(),
     legacyImportedJobIds: new Set<string>(),
     timer: null,
     running: false,
