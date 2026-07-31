@@ -43,7 +43,7 @@ const RANK: Record<IdentifierAuthentication, number> = {
  * has not earned the strongest claim. It is also the shipped minimum, so silence keeps
  * today's behavior instead of quietly failing closed on every existing channel.
  */
-const DEFAULT_IDENTIFIER_AUTHENTICATION: IdentifierAuthentication = "asserted";
+export const DEFAULT_IDENTIFIER_AUTHENTICATION: IdentifierAuthentication = "asserted";
 
 /** Returns true when `actual` meets or exceeds `minimum`. */
 export function meetsIdentifierAuthentication(

@@ -102,12 +102,19 @@ function mergeResolvedAllowlists(
 function effectiveEntryAuthentication(params: {
   entry: ResolvedIngressAllowlist["normalizedEntries"][number];
   subjectAuthentication: SubjectIdentifierAuthentication;
-  subjectIdentifierKinds: ReadonlySet<string>;
+  subjectIdentifierKinds: ReadonlySet<string> | undefined;
 }): IdentifierAuthentication {
   const entry = identifierAuthenticationFrom(params.entry);
   // A wildcard is normalized against one identity field. It cannot borrow that field's
-  // strength when the inbound subject did not carry the field at all.
-  if (params.entry.wildcard && !params.subjectIdentifierKinds.has(params.entry.kind)) {
+  // strength when the inbound subject did not carry the field at all. Only downgrade when the
+  // subject's carried kinds are actually known: an absent set is a caller that made no claim,
+  // and, exactly like an absent per-message authentication below, must not weaken the entry.
+  // The resolver always populates it, so this preserves the check on the real ingress path.
+  if (
+    params.entry.wildcard &&
+    params.subjectIdentifierKinds &&
+    !params.subjectIdentifierKinds.has(params.entry.kind)
+  ) {
     return "mutable";
   }
   const subject = params.subjectAuthentication[params.entry.kind];
@@ -130,7 +137,12 @@ export function applyIdentifierAuthenticationPolicy(params: {
 }): ResolvedIngressAllowlist {
   const minimum = minimumIdentifierAuthenticationFrom(params.policy);
   const subjectAuthentication = params.subjectAuthentication ?? {};
-  const subjectIdentifierKinds = new Set(params.subjectIdentifierKinds ?? []);
+  // Undefined, not an empty set, when the caller omitted it: an empty set would read as "the
+  // subject carried no kinds" and wrongly downgrade every wildcard. The resolver always
+  // supplies the real kinds; a hand-built state that omits them keeps the pre-policy behavior.
+  const subjectIdentifierKinds = params.subjectIdentifierKinds
+    ? new Set(params.subjectIdentifierKinds)
+    : undefined;
   const { allowlist } = params;
   const rejected = allowlist.normalizedEntries.filter(
     (entry) =>

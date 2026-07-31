@@ -332,6 +332,45 @@ describe("per-message subject claims", () => {
       }),
     ).toMatchObject({ admission: "drop" });
   });
+
+  it("keeps a wildcard authenticated when the subject's carried kinds are unknown", async () => {
+    // A hand-built ChannelIngressState that omits subjectIdentifierKinds must not silently
+    // downgrade every wildcard to mutable. The resolver always supplies the kinds, so the
+    // security downgrade above still holds on the real path; a legacy direct constructor keeps
+    // the pre-policy behavior, matching the "an absent claim does not weaken" rule.
+    const wildcardAdapter: InternalChannelIngressAdapter = {
+      ...adapter,
+      normalizeEntries({ entries }) {
+        return {
+          matchable: entries.map((entry, index) => ({
+            opaqueEntryId: `entry-${index + 1}`,
+            kind: "email" as const,
+            value: entry,
+            wildcard: true,
+          })),
+          invalid: [],
+          disabled: [],
+        };
+      },
+    };
+    const state = await resolveChannelIngressState({
+      ...input(),
+      adapter: wildcardAdapter,
+      subject: {
+        identifiers: [
+          {
+            opaqueId: "alias",
+            kind: "username",
+            value: "name:Stranger",
+            authentication: "unverified",
+          },
+        ],
+      },
+      allowlists: { dm: ["*"] },
+    });
+    const legacy = { ...state, subjectIdentifierKinds: undefined };
+    expect(decideChannelIngress(legacy, allowlistPolicy)).toMatchObject({ admission: "dispatch" });
+  });
 });
 
 describe("raising the minimum", () => {
@@ -476,6 +515,29 @@ describe("origin-subject authorization", () => {
     expect(decideChannelIngress(state, allowlistPolicy)).toMatchObject({
       admission: "dispatch",
     });
+  });
+
+  it("admits a matched origin subject that omits its strength, at the baseline", async () => {
+    // A hand-built state may set originSubjectMatched without a strength. That is treated as
+    // the baseline asserted, which clears the default minimum, rather than silently dropped.
+    const verified = subject({
+      address: "operator@example.com",
+      addressAuthentication: "verified",
+    });
+    const state = await resolveChannelIngressState(
+      input({
+        subject: verified,
+        allowlists: { dm: ["someone-else@example.com"] },
+        event: {
+          kind: "reaction",
+          authMode: "origin-subject",
+          mayPair: false,
+          originSubject: verified,
+        },
+      }),
+    );
+    const legacy = { ...state, event: { ...state.event, originSubjectAuthentication: undefined } };
+    expect(decideChannelIngress(legacy, allowlistPolicy)).toMatchObject({ admission: "dispatch" });
   });
 });
 

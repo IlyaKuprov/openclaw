@@ -11,6 +11,7 @@ import {
 } from "../mention-gating.js";
 import { applyIdentifierAuthenticationPolicy, redactedAllowlistDiagnostics } from "./allowlist.js";
 import {
+  DEFAULT_IDENTIFIER_AUTHENTICATION,
   meetsIdentifierAuthentication,
   minimumIdentifierAuthenticationFrom,
 } from "./identifier-authentication.js";
@@ -188,10 +189,14 @@ function eventGate(params: {
     if (!params.state.event.hasOriginSubject) {
       return eventResult(false, "origin_subject_missing");
     }
-    const authentication = params.state.event.originSubjectAuthentication;
+    // The resolver reports the matched origin identity's strength alongside the match. A
+    // hand-built state may set `originSubjectMatched` without a strength; treat that as the
+    // baseline `asserted` rather than a failed match, so the minimum is applied uniformly
+    // instead of silently dropping a matched legacy state.
+    const authentication =
+      params.state.event.originSubjectAuthentication ?? DEFAULT_IDENTIFIER_AUTHENTICATION;
     const matched =
       params.state.event.originSubjectMatched &&
-      authentication != null &&
       meetsIdentifierAuthentication(
         authentication,
         minimumIdentifierAuthenticationFrom(params.policy),
