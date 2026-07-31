@@ -1,4 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
+import type { IdentifierAuthentication } from "./identifier-authentication.js";
 /**
  * Channel ingress identity adapter helpers.
  *
@@ -56,6 +57,24 @@ function fieldDangerous(field: ResolvedIdentityField, value: string): boolean | 
   return typeof field.dangerous === "function" ? field.dangerous(value) : field.dangerous;
 }
 
+/**
+ * Static strength this field claims for one value.
+ *
+ * `dangerous` still decides when `authentication` is absent, so a channel that has not
+ * migrated keeps producing exactly the entries it produces today.
+ */
+function fieldAuthentication(
+  field: ResolvedIdentityField,
+  value: string,
+): IdentifierAuthentication | undefined {
+  const declared =
+    typeof field.authentication === "function" ? field.authentication(value) : field.authentication;
+  if (declared) {
+    return declared;
+  }
+  return fieldDangerous(field, value) ? "mutable" : undefined;
+}
+
 function identityFields(identity: ChannelIngressIdentityDescriptor): ResolvedIdentityField[] {
   const fields: ResolvedIdentityField[] = [
     {
@@ -96,6 +115,7 @@ function adapterEntry(params: {
       }) ?? `entry-${params.entryIndex + 1}:${params.fallbackSuffix ?? params.field.key}`,
     kind: params.field.kind,
     value: params.value,
+    authentication: fieldAuthentication(params.field, params.entry),
     dangerous: fieldDangerous(params.field, params.entry),
     sensitivity: params.field.sensitivity,
   };
@@ -177,6 +197,11 @@ export function createIdentitySubject(
         opaqueId: field.key,
         kind: field.kind,
         value,
+        // Per-message only. The field's static claim is already carried by the entries this
+        // subject matches, and repeating it here would double-count it; worse, `dangerous`
+        // can be a predicate over the value, so a re-derived subject claim could disagree
+        // with the entry claim for the same field and reject matches that authorize today.
+        authentication: input.authentication?.[field.key],
         dangerous: fieldDangerous(field, value),
         sensitivity: field.sensitivity,
       },

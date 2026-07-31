@@ -4,6 +4,7 @@
  * Defines identity descriptors, resolver inputs, route access, and resolved access results.
  */
 import type { AccessGroupConfig } from "../../config/types.access-groups.js";
+import type { IdentifierAuthentication } from "./identifier-authentication.js";
 import type {
   AccessGroupMembershipFact,
   AccessGraphGate,
@@ -42,7 +43,22 @@ export type ChannelIngressIdentityField = {
   normalizeEntry?: (value: string) => string | null | undefined;
   /** Normalizes inbound subject values for this identity field. */
   normalizeSubject?: (value: string) => string | null | undefined;
-  /** Marks identifiers as dangerous in diagnostics, for example mutable display names. */
+  /**
+   * How strongly this field names its holder, independent of any one message.
+   *
+   * Omitted means `asserted`: usable under the shipped minimum, but not a claim to have
+   * bound the identifier to its holder. Declare `verified` only with a transport fact
+   * behind it. Per-message strength is a separate, weaker-wins claim supplied on the
+   * subject.
+   */
+  authentication?:
+    | IdentifierAuthentication
+    | ((value: string) => IdentifierAuthentication | undefined);
+  /**
+   * Marks identifiers as dangerous in diagnostics, for example mutable display names.
+   *
+   * @deprecated Spelling of `authentication: "mutable"`. Prefer `authentication`.
+   */
   dangerous?: boolean | ((value: string) => boolean | undefined);
   /** Redaction hint for diagnostics and access graph consumers. */
   sensitivity?: "normal" | "pii";
@@ -91,6 +107,14 @@ export type ChannelIngressIdentitySubjectInput = {
   stableId?: string | number | null;
   /** Optional identity aliases keyed by `ChannelIngressIdentityAlias.key`. */
   aliases?: Record<string, string | number | null | undefined>;
+  /**
+   * What *this message* proved about each identity field, keyed the same way as `aliases`
+   * with `stableId` under the primary field key.
+   *
+   * Only for transports that authenticate messages rather than sessions. Omitting it means
+   * the channel makes no per-message claim, so nothing weakens.
+   */
+  authentication?: Record<string, IdentifierAuthentication | undefined>;
 };
 
 /** Minimal config subset consumed by the ingress resolver. */
@@ -240,7 +264,9 @@ export type CreateChannelIngressResolverParams = Pick<
   defaultGroupPolicy?: ChannelIngressPolicyInput["groupPolicy"];
   /** Default group allowlist fallback behavior. */
   groupAllowFromFallbackToAllowFrom?: boolean;
-  /** Mutable identifier matching policy for this resolver. */
+  /** Weakest identifier claim allowed to authorize a sender on this resolver. */
+  minIdentifierAuthentication?: ChannelIngressPolicyInput["minIdentifierAuthentication"];
+  /** @deprecated `enabled` is `minIdentifierAuthentication: "mutable"`. */
   mutableIdentifierMatching?: ChannelIngressPolicyInput["mutableIdentifierMatching"];
 };
 

@@ -193,6 +193,8 @@ function resolveResolverPolicy(params: {
     groupAllowFromFallbackToAllowFrom:
       params.input.policy?.groupAllowFromFallbackToAllowFrom ??
       params.base.groupAllowFromFallbackToAllowFrom,
+    minIdentifierAuthentication:
+      params.input.policy?.minIdentifierAuthentication ?? params.base.minIdentifierAuthentication,
     mutableIdentifierMatching:
       params.input.policy?.mutableIdentifierMatching ?? params.base.mutableIdentifierMatching,
     ...(params.input.policy?.activation ? { activation: params.input.policy.activation } : {}),

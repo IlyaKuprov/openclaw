@@ -5,7 +5,7 @@
  */
 import {
   allowlistFailureReason,
-  applyMutableIdentifierPolicy,
+  applyIdentifierAuthenticationPolicy,
   effectiveGroupSenderAllowlist,
   redactedAllowlistDiagnostics,
 } from "./allowlist.js";
@@ -48,11 +48,17 @@ export function senderGateForDirect(params: {
   state: ChannelIngressState;
   policy: ChannelIngressPolicyInput;
 }): AccessGraphGate {
-  const dm = applyMutableIdentifierPolicy(params.state.allowlists.dm, params.policy);
-  const pairingStore = applyMutableIdentifierPolicy(
-    params.state.allowlists.pairingStore,
-    params.policy,
-  );
+  const subjectAuthentication = params.state.subjectAuthentication;
+  const dm = applyIdentifierAuthenticationPolicy({
+    allowlist: params.state.allowlists.dm,
+    policy: params.policy,
+    subjectAuthentication,
+  });
+  const pairingStore = applyIdentifierAuthenticationPolicy({
+    allowlist: params.state.allowlists.pairingStore,
+    policy: params.policy,
+    subjectAuthentication,
+  });
   const base = {
     policy: params.policy.dmPolicy,
     allowlistSource: dm,

@@ -9,7 +9,7 @@ import {
   allowedImplicitMentionKindsFromConfig,
   resolveInboundMentionDecision,
 } from "../mention-gating.js";
-import { applyMutableIdentifierPolicy, redactedAllowlistDiagnostics } from "./allowlist.js";
+import { applyIdentifierAuthenticationPolicy, redactedAllowlistDiagnostics } from "./allowlist.js";
 import {
   applyEventAuthModeToSenderGate,
   senderGateForDirect,
@@ -95,10 +95,20 @@ function commandGate(params: {
     };
   }
   const useAccessGroups = command.useAccessGroups ?? true;
-  // Command authorization combines owner and group allowlists after mutable-id policy so
-  // command control cannot be granted by identifiers the current policy rejects.
-  const owner = applyMutableIdentifierPolicy(params.state.allowlists.commandOwner, params.policy);
-  const group = applyMutableIdentifierPolicy(params.state.allowlists.commandGroup, params.policy);
+  // Command authorization combines owner and group allowlists after the identifier
+  // authentication gate so command control cannot be granted by identifiers this policy,
+  // or this message, does not support.
+  const subjectAuthentication = params.state.subjectAuthentication;
+  const owner = applyIdentifierAuthenticationPolicy({
+    allowlist: params.state.allowlists.commandOwner,
+    policy: params.policy,
+    subjectAuthentication,
+  });
+  const group = applyIdentifierAuthenticationPolicy({
+    allowlist: params.state.allowlists.commandGroup,
+    policy: params.policy,
+    subjectAuthentication,
+  });
   const authorized = resolveCommandAuthorizedFromAuthorizers({
     useAccessGroups,
     modeWhenAccessGroupsOff: command.modeWhenAccessGroupsOff,

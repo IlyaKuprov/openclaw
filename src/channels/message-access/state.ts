@@ -8,6 +8,10 @@ import {
   uniqueStrings,
 } from "@openclaw/normalization-core/string-normalization";
 import { parseAccessGroupAllowFromEntry } from "../allow-from.js";
+import {
+  weakestIdentifierAuthentication,
+  type IdentifierAuthentication,
+} from "./identifier-authentication.js";
 import type {
   AccessGroupMembershipFact,
   ChannelIngressState,
@@ -19,6 +23,7 @@ import type {
   RedactedIngressMatch,
   ResolvedRouteGateFacts,
   ResolvedIngressAllowlist,
+  SubjectIdentifierAuthentication,
 } from "./types.js";
 
 function redactedEntries(entries: readonly InternalNormalizedEntry[]) {
@@ -94,6 +99,33 @@ async function normalizeAndMatch(params: {
     disabledEntries: normalized.disabled,
     match,
   };
+}
+
+/**
+ * Collects what this message proved, by identifier kind.
+ *
+ * Reads only an explicit `authentication` on the subject. `dangerous` is deliberately not
+ * consulted here: it can be a predicate over the value, so entry and subject sides can
+ * disagree for the same field, and folding it in would silently reject matches that
+ * authorize today. Weakening a channel's identifiers per message stays opt-in.
+ *
+ * When two identifiers of one kind disagree, the weaker wins: the kind is only as good as
+ * the least-supported claim made under it.
+ */
+function resolveSubjectAuthentication(
+  subject: InternalChannelIngressSubject,
+): SubjectIdentifierAuthentication {
+  const resolved: Record<string, IdentifierAuthentication> = {};
+  for (const identifier of subject.identifiers) {
+    if (!identifier.authentication) {
+      continue;
+    }
+    const current = resolved[identifier.kind];
+    resolved[identifier.kind] = current
+      ? weakestIdentifierAuthentication(current, identifier.authentication)
+      : identifier.authentication;
+  }
+  return resolved;
 }
 
 function referencedAccessGroups(entries: readonly string[]): string[] {
@@ -393,6 +425,7 @@ export async function resolveChannelIngressState(
     },
     mentionFacts: input.mentionFacts,
     routeFacts,
+    subjectAuthentication: resolveSubjectAuthentication(input.subject),
     allowlists: {
       dm,
       pairingStore,

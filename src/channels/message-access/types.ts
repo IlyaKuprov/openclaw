@@ -7,6 +7,7 @@ import type { ResolvedChannelImplicitMentions } from "../../config/implicit-ment
 import type { AccessGroupConfig } from "../../config/types.access-groups.js";
 import type { ChatChannelId } from "../ids.js";
 import type { InboundImplicitMentionKind, InboundMentionFacts } from "../mention-gating.js";
+import type { IdentifierAuthentication } from "./identifier-authentication.js";
 
 /** Channel identifier used in ingress diagnostics and config lookups. */
 export type ChannelIngressChannelId = ChatChannelId;
@@ -20,10 +21,24 @@ export type ChannelIngressIdentifierKind =
   | "role"
   | `plugin:${string}`;
 
+/**
+ * Per-message strength for each identifier kind an inbound subject carries.
+ *
+ * Absent kinds do not constrain: a channel whose transport authenticates the session makes
+ * no per-message claim, so nothing here weakens its entries. Populating it is how a channel
+ * says "this message did not prove what it usually proves".
+ */
+export type SubjectIdentifierAuthentication = Readonly<
+  Partial<Record<ChannelIngressIdentifierKind, IdentifierAuthentication>>
+>;
+
 /** Public, redacted identifier material that can participate in allowlist matching. */
 type MatchableIdentifier = {
   opaqueId: string;
   kind: ChannelIngressIdentifierKind;
+  /** How strongly this identifier names its holder. Defaults to `asserted`. */
+  authentication?: IdentifierAuthentication;
+  /** @deprecated Spelling of `authentication: "mutable"`. Set `authentication` instead. */
   dangerous?: boolean;
   sensitivity?: "normal" | "pii";
 };
@@ -42,6 +57,9 @@ export type InternalChannelIngressSubject = {
 type ChannelIngressNormalizedEntry = {
   opaqueEntryId: string;
   kind: ChannelIngressIdentifierKind;
+  /** How strongly this entry names its holder. Defaults to `asserted`. */
+  authentication?: IdentifierAuthentication;
+  /** @deprecated Spelling of `authentication: "mutable"`. Set `authentication` instead. */
   dangerous?: boolean;
   sensitivity?: "normal" | "pii";
 };
@@ -225,6 +243,15 @@ export type ChannelIngressPolicyInput = {
   dmPolicy: "pairing" | "allowlist" | "open" | "disabled";
   groupPolicy: "allowlist" | "open" | "disabled";
   groupAllowFromFallbackToAllowFrom?: boolean;
+  /**
+   * Weakest identifier claim allowed to authorize a sender.
+   *
+   * Defaults to `asserted`, which rejects aliases and unauthenticated identifiers alike.
+   * Takes precedence over `mutableIdentifierMatching`, which expresses the same gate with
+   * only two levels.
+   */
+  minIdentifierAuthentication?: IdentifierAuthentication;
+  /** @deprecated `enabled` is `minIdentifierAuthentication: "mutable"`. */
   mutableIdentifierMatching?: "disabled" | "enabled";
   activation?: {
     requireMention: boolean;
@@ -295,6 +322,7 @@ export type IngressReasonCode =
   | "access_group_unsupported"
   | "access_group_failed"
   | "mutable_identifier_disabled"
+  | "identifier_authentication_too_weak"
   | "no_policy_match";
 
 /** One evaluated gate in the ordered ingress access graph. */
@@ -346,6 +374,17 @@ export type ChannelIngressState = {
   event: RedactedChannelIngressEvent;
   mentionFacts?: InboundMentionFacts;
   routeFacts: ResolvedRouteGateFacts[];
+  /**
+   * What this message proved about the sender, by identifier kind.
+   *
+   * Carries strengths rather than the subject itself so the gate can weigh a message
+   * without any raw sender value reaching a diagnostic surface.
+   *
+   * Optional because this type is public and callers construct it: absent reads the same as
+   * empty, which is a channel making no per-message claim. `resolveChannelIngressState`
+   * always populates it.
+   */
+  subjectAuthentication?: SubjectIdentifierAuthentication;
   allowlists: {
     dm: ResolvedIngressAllowlist;
     pairingStore: ResolvedIngressAllowlist;
