@@ -259,10 +259,15 @@ export type CronServiceState = {
   storeEpoch: number;
   /** Per-row topology loaded with storeEpoch, including revision-blind legacy writes. */
   durableTopologyFingerprintByJobId: Map<string, string>;
+  /** Last accepted schedules, kept separate from locally mutated live job objects. */
+  durableSchedulingJobsById: Map<string, CronJob>;
   /** Runtime-only revision read with the current in-memory state. */
   runtimeRevision: number;
   /** Previous retained owner while a Gateway config candidate is prepared. */
-  pendingConfigAdoption?: { legacyDefaultAgentId: string | undefined };
+  pendingConfigAdoption?: {
+    legacyDefaultAgentId: string | undefined;
+    rollbackDurableAdoption?: () => Promise<void>;
+  };
   /** Last known durable wake for each persisted job. Map presence distinguishes
    * a durably unscheduled job from one that is not part of durable topology. */
   durableNextRunAtMsByJobId: Map<string, number | undefined>;
@@ -316,6 +321,7 @@ export function createCronServiceState(deps: CronServiceDeps): CronServiceState 
     store: null,
     storeEpoch: 0,
     durableTopologyFingerprintByJobId: new Map<string, string>(),
+    durableSchedulingJobsById: new Map<string, CronJob>(),
     runtimeRevision: 0,
     durableNextRunAtMsByJobId: new Map<string, number | undefined>(),
     durableRuntimeStateByJobId: new Map<string, CronJob["state"]>(),

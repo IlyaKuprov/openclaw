@@ -2,8 +2,6 @@
 import { normalizeOptionalString } from "../../../../packages/normalization-core/src/string-coerce.js";
 import { formatCliCommand } from "../../../cli/command-format.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import { materializeLegacyDefaultCronJobOwners as materializeLegacyDefaultCronJobOwnersInStore } from "../../../cron/legacy-default-agent-owner-migration.js";
-import { materializeLegacyDefaultCronJobOwnersInRecords } from "../../../cron/legacy-default-agent-owner-records.js";
 import {
   loadCronJobsStoreWithConfigJobs,
   loadCronJobsStoreWithConfigJobsReadOnly,
@@ -12,8 +10,11 @@ import {
   saveCronJobsStore,
   saveCronJobsStoreWithMetadata,
   saveCronQuarantineFile,
-  transformCronJobsStoreWithMetadata,
 } from "../../../cron/store.js";
+import {
+  materializeCronJobsStoreOwners,
+  type PreparedCronOwnerRollback,
+} from "../../../cron/store/owner-migration.js";
 import type { CronJob } from "../../../cron/types.js";
 import { formatErrorMessage as errorMessage } from "../../../infra/errors.js";
 import { shortenHomePath } from "../../../utils.js";
@@ -79,6 +80,7 @@ export async function materializeLegacyDefaultCronJobOwners(params: {
   expectedStoreEpoch?: number;
   recordCommittedStoreEpoch?: (storeEpoch: number) => void;
   recordLegacyReceiptCreated?: () => void;
+  recordPreparedRollback?: (rollback: PreparedCronOwnerRollback) => void;
 }): Promise<LegacyCronRepairResult> {
   let state: LegacyCronRepairState | null;
   if (params.repairState !== undefined) {
@@ -98,58 +100,52 @@ export async function materializeLegacyDefaultCronJobOwners(params: {
     return { changes: [], warnings: [] };
   }
   const migrationSource = state.legacyMigrationSource;
-  if (!migrationSource || state.legacyMigrationAlreadyImported) {
-    return await materializeLegacyDefaultCronJobOwnersInStore({
+  try {
+    if (migrationSource && !state.legacyMigrationAlreadyImported) {
+      await assertLegacyCronMigrationSourceCurrent(migrationSource);
+    }
+    const importedJobIds = new Set(
+      migrationSource && !state.legacyMigrationAlreadyImported
+        ? state.legacyJobsToImport.flatMap((job) =>
+            typeof job.id === "string" && job.id.trim() ? [job.id.trim()] : [],
+          )
+        : [],
+    );
+    const result = await materializeCronJobsStoreOwners({
       storePath: state.storePath,
       legacyDefaultAgentId: params.legacyDefaultAgentId,
-      env: params.env,
+      records: state.rawJobs as unknown as CronJob[],
+      legacyImportedJobIds: importedJobIds,
       expectedStoreEpoch: params.expectedStoreEpoch,
+      ...(migrationSource && !state.legacyMigrationAlreadyImported
+        ? { acquireMetadata: (db) => acquireLegacyCronMigrationReceipt(db, migrationSource) }
+        : {}),
       recordCommittedStoreEpoch: params.recordCommittedStoreEpoch,
+      recordMetadataAcquired: params.recordLegacyReceiptCreated,
+      recordPreparedRollback: params.recordPreparedRollback,
+      env: params.env,
     });
-  }
-  const persistImportedRecords = async () => {
-    await assertLegacyCronMigrationSourceCurrent(migrationSource);
-    const acquired = await transformCronJobsStoreWithMetadata(
-      state.storePath,
-      (current) => {
-        const currentJobs =
-          current.configJobs.length > 0
-            ? current.configJobs.map((job, index) =>
-                mergeRuntimeEntryIntoConfigJob({
-                  job,
-                  runtimeEntry: current.configJobRuntimeEntries[index],
-                }),
-              )
-            : (current.store.jobs as unknown as Array<Record<string, unknown>>);
-        const merged = mergeLegacyCronJobs({
-          currentJobs,
-          legacyJobs: state.legacyJobsToImport,
-        });
-        materializeLegacyDefaultCronJobOwnersInRecords(merged.jobs, params.legacyDefaultAgentId);
-        return { version: 1, jobs: merged.jobs as unknown as CronJob[] };
-      },
-      (db) => acquireLegacyCronMigrationReceipt(db, migrationSource),
-      params.env,
-      {
-        bumpStoreEpoch: true,
-        expectedStoreEpoch: params.expectedStoreEpoch,
-        recordCommittedStoreEpoch: params.recordCommittedStoreEpoch,
-      },
-    );
-    if (!acquired) {
-      throw new Error("legacy cron import was completed concurrently; retry the config write");
+    if (!result.matched) {
+      throw new Error(
+        migrationSource && !state.legacyMigrationAlreadyImported
+          ? "legacy cron import was completed concurrently; retry the config write"
+          : "cron store changed during legacy owner migration; retry the config write",
+      );
     }
-    params.recordLegacyReceiptCreated?.();
-  };
-  return await materializeLegacyDefaultCronJobOwnersInStore({
-    storePath: state.storePath,
-    legacyDefaultAgentId: params.legacyDefaultAgentId,
-    records: state.rawJobs,
-    env: params.env,
-    expectedStoreEpoch: params.expectedStoreEpoch,
-    recordCommittedStoreEpoch: params.recordCommittedStoreEpoch,
-    persistRecords: persistImportedRecords,
-  });
+    return result.rewritten > 0
+      ? {
+          changes: [
+            `Assigned ${result.rewritten} legacy cron job${result.rewritten === 1 ? "" : "s"} to agent "${params.legacyDefaultAgentId}" before retiring the stored default.`,
+          ],
+          warnings: [],
+        }
+      : { changes: [], warnings: [] };
+  } catch (error) {
+    return {
+      changes: [],
+      warnings: [`Failed writing legacy cron owners at ${state.storePath}: ${errorMessage(error)}`],
+    };
+  }
 }
 
 function pluralize(count: number, noun: string) {

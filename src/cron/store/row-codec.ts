@@ -485,16 +485,28 @@ export function replaceCronRows(
   ) {
     throw new CronStoreEpochMismatchError(options.expectedStoreEpoch, currentStoreEpoch);
   }
+  // A revision-blind writer may have already committed the caller's exact topology.
+  // That is convergence, not a third conflicting state, so the replacement remains safe.
+  const topologyMatchesIncoming = cronStoreTopologyMatches({
+    rows: currentRows,
+    store,
+    normalizeJob: normalizeCronJobForSqlite,
+    loadRow: (row) => {
+      const loaded = loadedCronStoreFromRows([row]);
+      return { job: loaded.store.jobs[0], configJob: loaded.configJobs[0] };
+    },
+  });
   if (options?.expectedTopologyFingerprintByJobId) {
     const currentTopology = new Map(
       currentRows.map((row) => [row.job_id, cronRowTopologyFingerprint(row)]),
     );
     if (
-      currentTopology.size !== options.expectedTopologyFingerprintByJobId.size ||
-      [...currentTopology].some(
-        ([jobId, fingerprint]) =>
-          options.expectedTopologyFingerprintByJobId?.get(jobId) !== fingerprint,
-      )
+      !topologyMatchesIncoming &&
+      (currentTopology.size !== options.expectedTopologyFingerprintByJobId.size ||
+        [...currentTopology].some(
+          ([jobId, fingerprint]) =>
+            options.expectedTopologyFingerprintByJobId?.get(jobId) !== fingerprint,
+        ))
     ) {
       throw new CronStoreTopologyMismatchError();
     }
@@ -525,15 +537,7 @@ export function replaceCronRows(
       currentRuntimeRevision,
     );
   }
-  const topologyChanged = !cronStoreTopologyMatches({
-    rows: currentRows,
-    store,
-    normalizeJob: normalizeCronJobForSqlite,
-    loadRow: (row) => {
-      const loaded = loadedCronStoreFromRows([row]);
-      return { job: loaded.store.jobs[0], configJob: loaded.configJobs[0] };
-    },
-  });
+  const topologyChanged = !topologyMatchesIncoming;
   const nextStoreEpoch =
     options?.bumpStoreEpoch && topologyChanged
       ? incrementCronStoreEpoch(db, storeKey)

@@ -15,6 +15,7 @@ import { loadCronRows } from "../store/row-codec.js";
 import type { CronJob } from "../types.js";
 import {
   beginLegacyDefaultAgentOwnerHandoff,
+  rejectConfigAdoption,
   reloadForConfigAdoption,
   start,
   stop,
@@ -313,6 +314,27 @@ describe("cron legacy owner handoff persistence", () => {
       id: "incoming-json",
       agentId: "ops",
     });
+  });
+
+  it("restores destination rows and receipts when store-changing adoption is rejected", async () => {
+    const { storePath: currentStorePath } = await makeStorePath();
+    const { storePath: incomingStorePath } = await makeStorePath();
+    await writeJobs(currentStorePath, [createOwnerlessJob("current-before-rejection")]);
+    await writeJobs(incomingStorePath, [createOwnerlessJob("incoming-before-rejection")]);
+    const state = createState(currentStorePath);
+    state.deps.legacyDefaultAgentId = "ops";
+    const db = openOpenClawStateDatabase().db;
+    const incomingStoreKey = cronStoreKey(path.resolve(incomingStorePath));
+    const rowsBefore = loadCronRows(db, incomingStoreKey);
+
+    await reloadForConfigAdoption(state, incomingRoster(incomingStorePath));
+    expect((await loadCronStore(incomingStorePath)).jobs[0]?.agentId).toBe("ops");
+    expect(readRetainedLegacyDefaultCronOwnerForStore(incomingStorePath)).toBe("ops");
+
+    await rejectConfigAdoption(state);
+
+    expect(loadCronRows(db, incomingStoreKey)).toEqual(rowsBefore);
+    expect(readRetainedLegacyDefaultCronOwnerForStore(incomingStorePath)).toBeUndefined();
   });
 
   it("keeps source and destination receipt owners distinct during store adoption", async () => {

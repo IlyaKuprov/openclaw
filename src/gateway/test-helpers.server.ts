@@ -10,7 +10,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { WebSocket } from "ws";
 import { PROTOCOL_VERSION } from "../../packages/gateway-protocol/src/index.js";
 import { listAgentIds } from "../agents/agent-scope-config.js";
-import { parseConfigJson5, resetConfigRuntimeState } from "../config/config.js";
+import {
+  clearConfigCache,
+  getRuntimeConfig,
+  parseConfigJson5,
+  resetConfigRuntimeState,
+} from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
 import {
   applySessionEntryLifecycleMutation,
@@ -110,6 +115,12 @@ let activeSuiteHookScopeCount = 0;
 // Keep suite fixtures loopback-stable inside containers; bind-specific tests opt in explicitly.
 const DEFAULT_GATEWAY_TEST_BIND = "loopback" as const;
 
+export function setTestAgentsConfig(config: Record<string, unknown> | undefined): void {
+  testState.agentsConfig = config;
+  clearConfigCache();
+  resetConfigRuntimeState();
+}
+
 function resolveGatewayTestMainSessionKeys(): string[] {
   const configuredAgentIds = listAgentIds({ agents: testState.agentsConfig });
   const agentIds = configuredAgentIds.length > 0 ? configuredAgentIds : [DEFAULT_AGENT_ID];
@@ -202,6 +213,9 @@ async function persistTestSessionConfig(): Promise<void> {
     await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
   }
   resetConfigRuntimeState();
+  // Session-store writes can indirectly read runtime config before the next RPC.
+  // Republish the mutable test overlays now so a stale implicit-main snapshot cannot win.
+  getRuntimeConfig();
   lastSyncedSessionStorePath = testState.sessionStorePath;
   lastSyncedSessionConfigJson = serializeGatewayTestSessionConfig();
 }

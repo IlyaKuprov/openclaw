@@ -1,12 +1,8 @@
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
-import { normalizeAgentId } from "../../routing/session-key.js";
-import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
-import {
-  openOpenClawStateDatabase,
-  runOpenClawStateWriteTransaction,
-} from "../../state/openclaw-state-db.js";
+import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { materializeLegacyDefaultCronJobOwnersInRecords } from "../legacy-default-agent-owner-records.js";
 import type { CronJob } from "../types.js";
 import { cronStoreKey } from "./key.js";
@@ -21,118 +17,154 @@ import {
 import { parseJsonObject } from "./scalar-codec.js";
 import { getCronStoreKysely, type CronJobRow } from "./schema.js";
 
-type CronOwnerRowImage = Pick<CronJobRow, "agent_id" | "job_json" | "session_key">;
-
-export type CronOwnerRollbackSnapshot = {
-  storeEpoch: number;
+export type PreparedCronOwnerRollback = {
   storeKey: string;
   storePath: string;
-  importedRecordIds: ReadonlySet<string>;
-  ownerlessRecordIds: ReadonlySet<string>;
-  rows: ReadonlyMap<string, CronOwnerRowImage>;
-};
-
-export type PreparedCronOwnerRollback = CronOwnerRollbackSnapshot & {
   expectedStoreEpoch: number;
+  observedBeforeRows: ReadonlyMap<string, CronJobRow>;
   changes: ReadonlyMap<
     string,
     {
-      before:
-        | { exists: false }
-        | ({ exists: true } & Pick<CronOwnerRowImage, "agent_id" | "job_json">);
-      after: CronOwnerRowImage;
+      before: { exists: false } | { exists: true; row: CronJobRow };
+      after: CronJobRow;
     }
   >;
 };
 
-function rowOwner(row: CronOwnerRowImage): string | undefined {
-  const jobJson = parseJsonObject<Record<string, unknown>>(row.job_json, {});
-  const rawOwner =
-    row.agent_id ??
-    (typeof jobJson.agentId === "string" ? jobJson.agentId : undefined) ??
-    parseAgentSessionKey(row.session_key ?? undefined)?.agentId;
-  return rawOwner ? normalizeAgentId(rawOwner) : undefined;
-}
-
-/** Captures exact row before-images while the live service operation lock is held. */
-export function snapshotCronOwnerRollbackState(params: {
+function prepareCronOwnerRollback(params: {
+  storeKey: string;
   storePath: string;
-  ownerlessRecordIds: ReadonlySet<string>;
-  importedRecordIds?: ReadonlySet<string>;
-  env?: NodeJS.ProcessEnv;
-}): CronOwnerRollbackSnapshot {
-  const storeKey = cronStoreKey(path.resolve(params.storePath));
-  const { rows, storeEpoch } = loadCronRowsWithEpoch(
-    openOpenClawStateDatabase({ env: params.env }).db,
-    storeKey,
-  );
-  return {
-    storeKey,
-    storePath: params.storePath,
-    importedRecordIds: new Set(params.importedRecordIds ?? []),
-    storeEpoch,
-    ownerlessRecordIds: new Set([
-      ...params.ownerlessRecordIds,
-      ...rows.filter((row) => rowOwner(row) === undefined).map((row) => row.job_id),
-    ]),
-    rows: new Map(rows.map((row) => [row.job_id, row])),
-  };
-}
-
-/** Records only rows whose owner was actually introduced by this handoff. */
-export function finalizeCronOwnerRollbackState(
-  snapshot: CronOwnerRollbackSnapshot,
-  legacyDefaultAgentId: string,
-  env?: NodeJS.ProcessEnv,
-  expectedStoreEpoch?: number,
-): PreparedCronOwnerRollback {
-  const { rows, storeEpoch } = loadCronRowsWithEpoch(
-    openOpenClawStateDatabase({ env }).db,
-    snapshot.storeKey,
-  );
-  const normalizedOwner = normalizeAgentId(legacyDefaultAgentId);
-  if (expectedStoreEpoch !== undefined && storeEpoch !== expectedStoreEpoch) {
-    throw new Error("cron store changed after owner materialization; refusing rollback inference");
-  }
+  beforeRows: readonly CronJobRow[];
+  afterRows: readonly CronJobRow[];
+  expectedStoreEpoch: number;
+}): PreparedCronOwnerRollback {
+  const beforeRows = new Map(params.beforeRows.map((row) => [row.job_id, row]));
+  const afterRows = new Map(params.afterRows.map((row) => [row.job_id, row]));
   const changes = new Map<
     string,
     {
-      before:
-        | { exists: false }
-        | ({ exists: true } & Pick<CronOwnerRowImage, "agent_id" | "job_json">);
-      after: CronOwnerRowImage;
+      before: { exists: false } | { exists: true; row: CronJobRow };
+      after: CronJobRow;
     }
   >();
-  for (const after of rows) {
-    const before = snapshot.rows.get(after.job_id);
-    const importedByHandoff = !before && snapshot.importedRecordIds.has(after.job_id);
-    if (
-      !importedByHandoff &&
-      (!snapshot.ownerlessRecordIds.has(after.job_id) || rowOwner(after) !== normalizedOwner)
-    ) {
+  for (const [jobId, after] of afterRows) {
+    const before = beforeRows.get(jobId);
+    if (before && isDeepStrictEqual(before, after)) {
       continue;
     }
-    if (before && rowOwner(before) !== undefined) {
-      continue;
-    }
-    const beforeJobJson = before
-      ? before.job_json
-      : (() => {
-          const imported = parseJsonObject<Record<string, unknown>>(after.job_json, {});
-          delete imported.agentId;
-          return JSON.stringify(imported);
-        })();
-    if (before?.agent_id === after.agent_id && beforeJobJson === after.job_json) {
-      continue;
-    }
-    changes.set(after.job_id, {
-      before: before
-        ? { exists: true, agent_id: before.agent_id, job_json: beforeJobJson }
-        : { exists: false },
+    changes.set(jobId, {
+      before: before ? { exists: true, row: before } : { exists: false },
       after,
     });
   }
-  return { ...snapshot, expectedStoreEpoch: storeEpoch, changes };
+  return {
+    storeKey: params.storeKey,
+    storePath: params.storePath,
+    expectedStoreEpoch: params.expectedStoreEpoch,
+    observedBeforeRows: beforeRows,
+    changes,
+  };
+}
+
+function restoreEarlierCandidateFields(params: {
+  original: CronJobRow;
+  candidate: CronJobRow;
+  later: CronJobRow;
+}): CronJobRow {
+  const restored = { ...params.later } as Record<string, unknown>;
+  const original = params.original as unknown as Record<string, unknown>;
+  const candidate = params.candidate as unknown as Record<string, unknown>;
+  for (const key of Object.keys(candidate)) {
+    if (key === "job_json") {
+      const originalJob = parseJsonObject<Record<string, unknown>>(String(original[key]), {});
+      const candidateJob = parseJsonObject<Record<string, unknown>>(String(candidate[key]), {});
+      const laterJob = parseJsonObject<Record<string, unknown>>(String(restored[key]), {});
+      for (const jobKey of new Set([...Object.keys(originalJob), ...Object.keys(candidateJob)])) {
+        if (
+          !isDeepStrictEqual(originalJob[jobKey], candidateJob[jobKey]) &&
+          isDeepStrictEqual(laterJob[jobKey], candidateJob[jobKey])
+        ) {
+          if (Object.hasOwn(originalJob, jobKey)) {
+            laterJob[jobKey] = originalJob[jobKey];
+          } else {
+            delete laterJob[jobKey];
+          }
+        }
+      }
+      restored[key] = JSON.stringify(laterJob);
+      continue;
+    }
+    if (
+      !isDeepStrictEqual(original[key], candidate[key]) &&
+      isDeepStrictEqual(restored[key], candidate[key])
+    ) {
+      restored[key] = original[key];
+    }
+  }
+  return restored as CronJobRow;
+}
+
+/** Composes consecutive transaction-owned before-images into one reversible change set. */
+export function mergePreparedCronOwnerRollbacks(
+  earlier: PreparedCronOwnerRollback | undefined,
+  later: PreparedCronOwnerRollback,
+): PreparedCronOwnerRollback {
+  if (!earlier) {
+    return later;
+  }
+  if (earlier.storeKey !== later.storeKey) {
+    throw new Error("cannot combine cron owner rollbacks from different stores");
+  }
+  const changes = new Map(earlier.changes);
+  for (const [jobId, earlierChange] of changes) {
+    const laterBefore = later.observedBeforeRows.get(jobId);
+    if (!laterBefore) {
+      const laterChange = later.changes.get(jobId);
+      if (laterChange) {
+        changes.set(jobId, laterChange);
+      } else {
+        // The later transaction authoritatively observed an epoch-blind deletion.
+        // Preserve it instead of requiring the obsolete candidate row at rollback.
+        changes.delete(jobId);
+      }
+      continue;
+    }
+    const laterAfter = later.changes.get(jobId)?.after ?? laterBefore;
+    changes.set(jobId, {
+      before:
+        !earlierChange.before.exists && !isDeepStrictEqual(earlierChange.after, laterBefore)
+          ? { exists: true, row: laterBefore }
+          : earlierChange.before.exists && isDeepStrictEqual(earlierChange.after, laterBefore)
+            ? earlierChange.before
+            : earlierChange.before.exists
+              ? {
+                  exists: true,
+                  row: restoreEarlierCandidateFields({
+                    original: earlierChange.before.row,
+                    candidate: earlierChange.after,
+                    later: laterBefore,
+                  }),
+                }
+              : earlierChange.before,
+      after: laterAfter,
+    });
+  }
+  for (const [jobId, laterChange] of later.changes) {
+    const earlierChange = changes.get(jobId);
+    if (earlierChange) {
+      continue;
+    }
+    changes.set(jobId, {
+      before: laterChange.before,
+      after: laterChange.after,
+    });
+  }
+  return {
+    ...earlier,
+    expectedStoreEpoch: later.expectedStoreEpoch,
+    observedBeforeRows: later.observedBeforeRows,
+    changes,
+  };
 }
 
 /** Restores exact before-images only while the prepared topology remains current. */
@@ -150,32 +182,24 @@ export async function rollbackMaterializedCronJobsStoreOwners(params: {
       const currentRows = new Map(rows.map((row) => [row.job_id, row]));
       for (const [jobId, change] of params.rollback.changes) {
         const current = currentRows.get(jobId);
-        if (
-          !current ||
-          current.agent_id !== change.after.agent_id ||
-          current.job_json !== change.after.job_json
-        ) {
+        if (!current || !isDeepStrictEqual(current, change.after)) {
           throw new Error(`cron job ${jobId} changed after owner handoff; refusing stale rollback`);
         }
       }
       for (const [jobId, change] of params.rollback.changes) {
+        executeSqliteQuerySync(
+          db,
+          getCronStoreKysely(db)
+            .deleteFrom("cron_jobs")
+            .where("store_key", "=", params.rollback.storeKey)
+            .where("job_id", "=", jobId),
+        );
         if (!change.before.exists) {
-          executeSqliteQuerySync(
-            db,
-            getCronStoreKysely(db)
-              .deleteFrom("cron_jobs")
-              .where("store_key", "=", params.rollback.storeKey)
-              .where("job_id", "=", jobId),
-          );
+          continue;
         } else {
-          const { exists: _exists, ...before } = change.before;
           executeSqliteQuerySync(
             db,
-            getCronStoreKysely(db)
-              .updateTable("cron_jobs")
-              .set(before)
-              .where("store_key", "=", params.rollback.storeKey)
-              .where("job_id", "=", jobId),
+            getCronStoreKysely(db).insertInto("cron_jobs").values(change.before.row),
           );
         }
       }
@@ -196,7 +220,10 @@ export async function materializeCronJobsStoreOwners(params: {
   records: CronJob[];
   legacyImportedJobIds: ReadonlySet<string>;
   expectedStoreEpoch?: number;
+  acquireMetadata?: (db: DatabaseSync) => boolean;
   recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+  recordMetadataAcquired?: () => void;
+  recordPreparedRollback?: (rollback: PreparedCronOwnerRollback) => void;
   env?: NodeJS.ProcessEnv;
 }): Promise<{ matched: boolean; rewritten: number }> {
   const storeKey = cronStoreKey(path.resolve(params.storePath));
@@ -204,7 +231,11 @@ export async function materializeCronJobsStoreOwners(params: {
     ({ db }) => {
       const { rows, storeEpoch } = loadCronRowsWithEpoch(db, storeKey);
       if (params.expectedStoreEpoch !== undefined && params.expectedStoreEpoch !== storeEpoch) {
-        return { matched: false, rewritten: 0 } as const;
+        return { matched: false, metadataAcquired: false, rewritten: 0 } as const;
+      }
+      const metadataAcquired = params.acquireMetadata?.(db) ?? false;
+      if (params.acquireMetadata && !metadataAcquired) {
+        return { matched: false, metadataAcquired: false, rewritten: 0 } as const;
       }
       const existingJobIds = new Set(rows.map((row) => row.job_id));
       const decodedCurrentJobIds = new Set(
@@ -241,16 +272,29 @@ export async function materializeCronJobsStoreOwners(params: {
         existingJobIds.add(record.id);
         rewritten += 1;
       }
+      const committedStoreEpoch = readCronStoreEpoch(db, storeKey);
       return {
         matched: true,
+        metadataAcquired,
         rewritten,
-        storeEpoch: readCronStoreEpoch(db, storeKey),
+        storeEpoch: committedStoreEpoch,
+        rollback: prepareCronOwnerRollback({
+          storeKey,
+          storePath: params.storePath,
+          beforeRows: rows,
+          afterRows: loadCronRowsWithEpoch(db, storeKey).rows,
+          expectedStoreEpoch: committedStoreEpoch,
+        }),
       } as const;
     },
     { env: params.env },
   );
   if (result.matched) {
     params.recordCommittedStoreEpoch?.(result.storeEpoch);
+    if (result.metadataAcquired) {
+      params.recordMetadataAcquired?.();
+    }
+    params.recordPreparedRollback?.(result.rollback);
   }
   return { matched: result.matched, rewritten: result.rewritten };
 }

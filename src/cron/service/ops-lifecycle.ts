@@ -6,11 +6,19 @@ import { normalizeAgentId } from "../../routing/session-key.js";
 import {
   completeLegacyDefaultCronOwnerHandoff,
   readRetainedLegacyDefaultCronOwnerForStore,
+  restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase,
+  restoreRetainedLegacyDefaultCronOwnerHandoffForStore,
   retainLegacyDefaultCronOwnerHandoffForStore,
+  type RetainedLegacyCronOwnerHandoffSnapshot,
 } from "../legacy-default-agent-owner-handoff.js";
 import { materializeLegacyDefaultCronJobOwners } from "../legacy-default-agent-owner-migration.js";
 import { resolveCronJobsStorePathFromConfig } from "../store.js";
-import { materializeCronJobsStoreOwners } from "../store/owner-migration.js";
+import {
+  materializeCronJobsStoreOwners,
+  mergePreparedCronOwnerRollbacks,
+  rollbackMaterializedCronJobsStoreOwners,
+} from "../store/owner-migration.js";
+import type { PreparedCronOwnerRollback } from "../store/owner-migration.js";
 import type { CronJob } from "../types.js";
 import { failureNotificationDeliveryFromJobState } from "./failure-alerts.js";
 import { nextWakeAtMs, recomputeNextRunsForMaintenance } from "./jobs.js";
@@ -30,12 +38,20 @@ import { ensureLoaded, persist } from "./store.js";
 import { tryFindCronTaskRunIdForRecovery, tryFindFinalizedCronTaskRun } from "./task-runs.js";
 import { armTimer, runMissedJobs, stopTimer } from "./timer.js";
 
+function retainedReceiptMatches(
+  left: RetainedLegacyCronOwnerHandoffSnapshot,
+  right: RetainedLegacyCronOwnerHandoffSnapshot,
+): boolean {
+  return left?.agentId === right?.agentId && left?.status === right?.status;
+}
+
 async function materializeLoadedLegacyDefaultAgentOwners(
   state: CronServiceState,
   legacyDefaultAgentId: string,
   options?: {
     expectedStoreEpoch?: () => number | undefined;
     recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+    recordPreparedRollback?: (rollback: PreparedCronOwnerRollback) => void;
   },
 ) {
   const jobs = state.store?.jobs ?? [];
@@ -62,6 +78,7 @@ async function materializeLoadedLegacyDefaultAgentOwners(
           legacyImportedJobIds: state.legacyImportedJobIds,
           expectedStoreEpoch,
           recordCommittedStoreEpoch: options?.recordCommittedStoreEpoch,
+          recordPreparedRollback: options?.recordPreparedRollback,
           env: state.deps.env,
         });
         if (persisted.matched) {
@@ -94,6 +111,7 @@ export async function beginLegacyDefaultAgentOwnerHandoff(
     beforeMigration?: () => Promise<void>;
     expectedStoreEpoch?: () => number | undefined;
     recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+    recordPreparedRollback?: (rollback: PreparedCronOwnerRollback) => void;
   },
 ) {
   const release = await acquireCronOperationLock(state);
@@ -138,6 +156,7 @@ export async function reloadForConfigAdoption(
     state.pendingConfigAdoption = {
       legacyDefaultAgentId: state.deps.legacyDefaultAgentId,
     };
+    const pendingAdoption = state.pendingConfigAdoption;
     await ensureLoaded(state, { skipRecompute: true });
     const incomingStorePath = resolveCronJobsStorePathFromConfig(incomingConfig, state.deps.env);
     const currentRetainedOwner = readRetainedLegacyDefaultCronOwnerForStore(
@@ -181,20 +200,85 @@ export async function reloadForConfigAdoption(
       incomingStoreOwner &&
       incomingAgentIds.has(normalizeAgentId(incomingStoreOwner))
     ) {
+      const durableRollback: {
+        legacyMigrationReceiptCreated: boolean;
+        legacyMigrationSource?: import("../../commands/doctor/cron/legacy-store-migration.js").LegacyCronMigrationSource;
+        prepared?: PreparedCronOwnerRollback;
+        receiptAfter?: RetainedLegacyCronOwnerHandoffSnapshot;
+        receiptBefore?: RetainedLegacyCronOwnerHandoffSnapshot;
+        receiptCaptured: boolean;
+      } = { legacyMigrationReceiptCreated: false, receiptCaptured: false };
+      pendingAdoption.rollbackDurableAdoption = async () => {
+        const restoreMigrationReceipt = durableRollback.legacyMigrationReceiptCreated
+          ? (await import("../../commands/doctor/cron/migration-ledger.js"))
+              .rollbackLegacyCronMigrationReceiptInDatabase
+          : undefined;
+        if (durableRollback.prepared) {
+          await rollbackMaterializedCronJobsStoreOwners({
+            rollback: durableRollback.prepared,
+            restoreMetadata: (db) => {
+              if (durableRollback.receiptCaptured) {
+                restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(
+                  db,
+                  incomingStorePath,
+                  durableRollback.receiptBefore,
+                  { expectedCurrent: durableRollback.receiptAfter },
+                );
+              }
+              if (restoreMigrationReceipt && durableRollback.legacyMigrationSource) {
+                restoreMigrationReceipt(db, durableRollback.legacyMigrationSource);
+              }
+            },
+            env: state.deps.env,
+          });
+        } else if (durableRollback.receiptCaptured) {
+          restoreRetainedLegacyDefaultCronOwnerHandoffForStore(
+            incomingStorePath,
+            durableRollback.receiptBefore,
+            state.deps.env,
+            { expectedCurrent: durableRollback.receiptAfter },
+          );
+        }
+        // Durable restoration is non-idempotent. Disarm it before the later live
+        // scheduler refresh so a refresh failure can be retried safely.
+        pendingAdoption.rollbackDurableAdoption = undefined;
+      };
       if (!incomingRetainedOwner) {
-        retainLegacyDefaultCronOwnerHandoffForStore(
+        const receiptMutation = retainLegacyDefaultCronOwnerHandoffForStore(
           incomingStorePath,
           incomingStoreOwner,
           state.deps.env,
         );
+        durableRollback.receiptBefore = receiptMutation.before;
+        durableRollback.receiptAfter = receiptMutation.after;
+        durableRollback.receiptCaptured = true;
       }
-      const { materializeLegacyDefaultCronJobOwners: repairLegacyDefaultCronJobOwners } =
-        await import("../../commands/doctor/cron/legacy-repair.js");
+      const {
+        loadLegacyCronRepairState,
+        materializeLegacyDefaultCronJobOwners: repairLegacyDefaultCronJobOwners,
+      } = await import("../../commands/doctor/cron/legacy-repair.js");
+      const repairState = await loadLegacyCronRepairState({
+        cfg: incomingConfig,
+        storePath: incomingStorePath,
+        env: state.deps.env,
+        readOnly: true,
+      });
+      durableRollback.legacyMigrationSource = repairState?.legacyMigrationSource;
       const incomingMigration = await repairLegacyDefaultCronJobOwners({
         cfg: incomingConfig,
         storePath: incomingStorePath,
         legacyDefaultAgentId: incomingStoreOwner,
         env: state.deps.env,
+        repairState,
+        recordPreparedRollback: (prepared) => {
+          durableRollback.prepared = mergePreparedCronOwnerRollbacks(
+            durableRollback.prepared,
+            prepared,
+          );
+        },
+        recordLegacyReceiptCreated: () => {
+          durableRollback.legacyMigrationReceiptCreated = true;
+        },
       });
       if (incomingMigration.warnings.length > 0) {
         throw new Error(incomingMigration.warnings.join("\n"));
@@ -203,11 +287,20 @@ export async function reloadForConfigAdoption(
         !incomingRetainedOwner ||
         normalizeAgentId(incomingRetainedOwner) === normalizeAgentId(incomingStoreOwner)
       ) {
-        completeLegacyDefaultCronOwnerHandoff(
+        const receiptMutation = completeLegacyDefaultCronOwnerHandoff(
           incomingStorePath,
           incomingStoreOwner,
           state.deps.env,
         );
+        if (!durableRollback.receiptCaptured) {
+          durableRollback.receiptBefore = receiptMutation.before;
+          durableRollback.receiptCaptured = true;
+        } else if (!retainedReceiptMatches(receiptMutation.before, durableRollback.receiptAfter)) {
+          // Another process replaced the receipt between retain and complete. Its
+          // transaction-owned before-image is now the state rejection must preserve.
+          durableRollback.receiptBefore = receiptMutation.before;
+        }
+        durableRollback.receiptAfter = receiptMutation.after;
       }
     }
     await refreshLegacyDefaultAgentOwnerHandoff(state);
@@ -230,6 +323,7 @@ export async function rejectConfigAdoption(state: CronServiceState) {
   }
   const release = await acquireCronOperationLock(state);
   try {
+    await pending.rollbackDurableAdoption?.();
     state.deps.legacyDefaultAgentId = pending.legacyDefaultAgentId;
     await refreshLegacyDefaultAgentOwnerHandoff(state);
     state.pendingConfigAdoption = undefined;

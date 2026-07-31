@@ -5,17 +5,18 @@ import type { LegacyCronMigrationSource } from "../commands/doctor/cron/legacy-s
 import {
   readRetainedLegacyDefaultCronOwnerForStore,
   restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase,
+  restoreRetainedLegacyDefaultCronOwnerHandoffForStore,
   retainLegacyDefaultCronOwnerHandoffForStore,
-  snapshotRetainedLegacyDefaultCronOwnerHandoffForStore,
   type RetainedLegacyCronOwnerHandoffSnapshot,
 } from "../cron/legacy-default-agent-owner-handoff.js";
 import { beginLegacyDefaultOwnerHandoff } from "../cron/live-service-registry.js";
-import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import {
-  finalizeCronOwnerRollbackState,
+  loadCronJobsStoreWithConfigJobsReadOnly,
+  resolveCronJobsStorePathFromConfig,
+} from "../cron/store.js";
+import {
+  mergePreparedCronOwnerRollbacks,
   rollbackMaterializedCronJobsStoreOwners,
-  snapshotCronOwnerRollbackState,
-  type CronOwnerRollbackSnapshot,
   type PreparedCronOwnerRollback,
 } from "../cron/store/owner-migration.js";
 import {
@@ -142,9 +143,11 @@ export async function prepareLegacyCronOwnerHandoffs(params: {
     legacyMigrationSource?: LegacyCronMigrationSource;
     repairState?: LegacyCronRepairState | null;
     legacyReceiptCreated?: boolean;
+    initialStoreEpoch?: number;
     preparedRollback?: PreparedCronOwnerRollback;
-    receipt: RetainedLegacyCronOwnerHandoffSnapshot;
-    rollbackSnapshot?: CronOwnerRollbackSnapshot;
+    receiptAfter?: RetainedLegacyCronOwnerHandoffSnapshot;
+    receiptBefore?: RetainedLegacyCronOwnerHandoffSnapshot;
+    receiptCaptured: boolean;
     storePath: string;
   }> = [];
   let rollbackLegacyMigrationReceipt:
@@ -164,33 +167,31 @@ export async function prepareLegacyCronOwnerHandoffs(params: {
     const rollbackErrors: unknown[] = [];
     for (const plan of rollbackPlans.toReversed()) {
       try {
-        if (
-          !plan.preparedRollback &&
-          plan.rollbackSnapshot &&
-          plan.committedStoreEpoch !== undefined
-        ) {
-          plan.preparedRollback = finalizeCronOwnerRollbackState(
-            plan.rollbackSnapshot,
-            plan.legacyDefaultAgentId,
-            params.env,
-            plan.committedStoreEpoch,
-          );
-        }
         if (plan.preparedRollback) {
           await rollbackMaterializedCronJobsStoreOwners({
             rollback: plan.preparedRollback,
             restoreMetadata: (db) => {
-              restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(
-                db,
-                plan.storePath,
-                plan.receipt,
-              );
+              if (plan.receiptCaptured) {
+                restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(
+                  db,
+                  plan.storePath,
+                  plan.receiptBefore,
+                  { expectedCurrent: plan.receiptAfter },
+                );
+              }
               if (plan.legacyReceiptCreated && plan.legacyMigrationSource) {
                 rollbackLegacyMigrationReceipt?.(db, plan.legacyMigrationSource);
               }
             },
             env: params.env,
           });
+        } else if (plan.receiptCaptured) {
+          restoreRetainedLegacyDefaultCronOwnerHandoffForStore(
+            plan.storePath,
+            plan.receiptBefore,
+            params.env,
+            { expectedCurrent: plan.receiptAfter },
+          );
         }
       } catch (error) {
         rollbackErrors.push(error);
@@ -216,28 +217,19 @@ export async function prepareLegacyCronOwnerHandoffs(params: {
       const legacyDefaultAgentId =
         readRetainedLegacyDefaultCronOwnerForStore(target.storePath, params.env) ??
         params.legacyDefaultAgentId;
-      const receipt = snapshotRetainedLegacyDefaultCronOwnerHandoffForStore(
-        target.storePath,
-        params.env,
-      );
-      const jobIds = new Set<string>();
-      const importedJobIds = new Set<string>();
       const rollbackPlan: (typeof rollbackPlans)[number] = {
         handoff: undefined as unknown as ReturnType<typeof beginLegacyDefaultOwnerHandoff>,
         legacyDefaultAgentId,
-        receipt,
+        receiptCaptured: false,
         storePath: target.storePath,
       };
       const handoff = beginLegacyDefaultOwnerHandoff({
         storePath: target.storePath,
         legacyDefaultAgentId,
         beforeMigration: async () => {
-          const initialSnapshot = snapshotCronOwnerRollbackState({
-            storePath: target.storePath,
-            ownerlessRecordIds: new Set(),
-            importedRecordIds: new Set(),
-            env: params.env,
-          });
+          const initialStoreEpoch = (
+            await loadCronJobsStoreWithConfigJobsReadOnly(target.storePath, params.env)
+          ).storeEpoch;
           const repairState = await loadLegacyCronRepairState({
             cfg: target.config,
             storePath: target.storePath,
@@ -245,38 +237,24 @@ export async function prepareLegacyCronOwnerHandoffs(params: {
             readOnly: true,
           });
           rollbackPlan.repairState = repairState;
-          for (const job of repairState?.rawJobs ?? []) {
-            const id = typeof job.id === "string" ? job.id.trim() : "";
-            if (id && !resolveExplicitCronOwner(job)) {
-              jobIds.add(id);
-            }
-          }
           rollbackPlan.legacyMigrationSource = repairState?.legacyMigrationSource;
-          for (const job of repairState?.legacyJobsToImport ?? []) {
-            const id = typeof job.id === "string" ? job.id.trim() : "";
-            if (id) {
-              importedJobIds.add(id);
-            }
-          }
-          const verifiedSnapshot = snapshotCronOwnerRollbackState({
-            storePath: target.storePath,
-            ownerlessRecordIds: new Set(),
-            importedRecordIds: new Set(),
-            env: params.env,
-          });
-          if (verifiedSnapshot.storeEpoch !== initialSnapshot.storeEpoch) {
+          const verifiedStoreEpoch = (
+            await loadCronJobsStoreWithConfigJobsReadOnly(target.storePath, params.env)
+          ).storeEpoch;
+          if (verifiedStoreEpoch !== initialStoreEpoch) {
             throw new Error("cron store changed while preparing owner handoff; retry config write");
           }
-          rollbackPlan.rollbackSnapshot = {
-            ...initialSnapshot,
-            ownerlessRecordIds: new Set([...initialSnapshot.ownerlessRecordIds, ...jobIds]),
-            importedRecordIds: new Set(importedJobIds),
-          };
+          rollbackPlan.initialStoreEpoch = initialStoreEpoch;
         },
-        expectedStoreEpoch: () => rollbackPlan.rollbackSnapshot?.storeEpoch,
+        expectedStoreEpoch: () => rollbackPlan.initialStoreEpoch,
         recordCommittedStoreEpoch: (storeEpoch) => {
           rollbackPlan.committedStoreEpoch = storeEpoch;
-          rollbackPlan.preparedRollback = undefined;
+        },
+        recordPreparedRollback: (prepared) => {
+          rollbackPlan.preparedRollback = mergePreparedCronOwnerRollbacks(
+            rollbackPlan.preparedRollback,
+            prepared,
+          );
         },
       });
       handoffs.push(handoff);
@@ -286,14 +264,6 @@ export async function prepareLegacyCronOwnerHandoffs(params: {
       if (liveMigration.warnings.length > 0) {
         throw new Error(
           `Config write refused before live cron ownership was durable: ${liveMigration.warnings.join(" ")}`,
-        );
-      }
-      if (rollbackPlan.rollbackSnapshot) {
-        rollbackPlan.preparedRollback = finalizeCronOwnerRollbackState(
-          rollbackPlan.rollbackSnapshot,
-          legacyDefaultAgentId,
-          params.env,
-          rollbackPlan.committedStoreEpoch ?? rollbackPlan.rollbackSnapshot.storeEpoch,
         );
       }
       const postDrainEpoch = rollbackPlan.preparedRollback?.expectedStoreEpoch;
@@ -306,7 +276,12 @@ export async function prepareLegacyCronOwnerHandoffs(params: {
         repairState: rollbackPlan.repairState,
         recordCommittedStoreEpoch: (storeEpoch) => {
           rollbackPlan.committedStoreEpoch = storeEpoch;
-          rollbackPlan.preparedRollback = undefined;
+        },
+        recordPreparedRollback: (prepared) => {
+          rollbackPlan.preparedRollback = mergePreparedCronOwnerRollbacks(
+            rollbackPlan.preparedRollback,
+            prepared,
+          );
         },
         recordLegacyReceiptCreated: () => {
           rollbackPlan.legacyReceiptCreated = true;
@@ -317,21 +292,16 @@ export async function prepareLegacyCronOwnerHandoffs(params: {
           `Config write refused before retired default ownership was durable: ${migration.warnings.join(" ")}`,
         );
       }
-      if (rollbackPlan.rollbackSnapshot) {
-        rollbackPlan.preparedRollback = finalizeCronOwnerRollbackState(
-          rollbackPlan.rollbackSnapshot,
-          legacyDefaultAgentId,
-          params.env,
-          rollbackPlan.committedStoreEpoch,
-        );
-      }
       // A CLI process cannot fence a separately running pre-upgrade Gateway.
       // Persist this after row migration but before config commit so late rows migrate at startup.
-      retainLegacyDefaultCronOwnerHandoffForStore(
+      const receiptMutation = retainLegacyDefaultCronOwnerHandoffForStore(
         target.storePath,
         legacyDefaultAgentId,
         params.env,
       );
+      rollbackPlan.receiptBefore = receiptMutation.before;
+      rollbackPlan.receiptAfter = receiptMutation.after;
+      rollbackPlan.receiptCaptured = true;
       await handoff.refreshSealedServices();
     }
     return { release, rollback };

@@ -129,4 +129,63 @@ describe("cron service runtime revisions", () => {
       inMemorySibling?.state,
     );
   });
+
+  it("keeps the canonical overdue wake after rejecting a stale schedule edit", async () => {
+    const { storePath } = await makeStorePath();
+    const canonical = {
+      ...job("stale-schedule"),
+      state: { nextRunAtMs: NOW - 1_000 },
+    };
+    await saveCronStore(storePath, { version: 1, jobs: [canonical] });
+    const state = createCronServiceState({
+      storePath,
+      cronEnabled: true,
+      log: logger,
+      nowMs: () => NOW,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+    await ensureLoaded(state, { skipRecompute: true });
+    state.store!.jobs[0]!.schedule = { kind: "every", everyMs: 120_000 };
+
+    const concurrent = await loadCronStore(storePath);
+    concurrent.jobs[0]!.name = "durable rename";
+    await saveCronStore(storePath, concurrent);
+
+    await expect(persist(state)).rejects.toBeInstanceOf(CronStoreEpochMismatchError);
+
+    expect(state.store?.jobs[0]?.schedule).toEqual(canonical.schedule);
+    expect(state.store?.jobs[0]?.state.nextRunAtMs).toBe(NOW - 1_000);
+    expect((await loadCronStore(storePath)).jobs[0]?.state.nextRunAtMs).toBe(NOW - 1_000);
+  });
+
+  it("invalidates a wake when the concurrent durable schedule changed", async () => {
+    const { storePath } = await makeStorePath();
+    const staleWake = NOW + 10_000;
+    await saveCronStore(storePath, {
+      version: 1,
+      jobs: [{ ...job("durable-schedule"), state: { nextRunAtMs: staleWake } }],
+    });
+    const state = createCronServiceState({
+      storePath,
+      cronEnabled: true,
+      log: logger,
+      nowMs: () => NOW,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+    await ensureLoaded(state, { skipRecompute: true });
+    state.store!.jobs[0]!.name = "local rename";
+
+    const concurrent = await loadCronStore(storePath);
+    concurrent.jobs[0]!.schedule = { kind: "every", everyMs: 300_000 };
+    await saveCronStore(storePath, concurrent);
+
+    await expect(persist(state)).rejects.toBeInstanceOf(CronStoreEpochMismatchError);
+
+    expect(state.store?.jobs[0]?.schedule).toEqual({ kind: "every", everyMs: 300_000 });
+    expect(state.store?.jobs[0]?.state.nextRunAtMs).not.toBe(staleWake);
+  });
 });

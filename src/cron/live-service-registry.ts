@@ -1,10 +1,12 @@
 import path from "node:path";
 import type { LegacyDefaultCronOwnerMigrationResult } from "./legacy-default-agent-owner-migration.js";
+import type { PreparedCronOwnerRollback } from "./store/owner-migration.js";
 
 export type LegacyDefaultCronOwnerHandoffOptions = {
   beforeMigration?: () => Promise<void>;
   expectedStoreEpoch?: () => number | undefined;
   recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+  recordPreparedRollback?: (rollback: PreparedCronOwnerRollback) => void;
 };
 
 export type LiveCronOwnerMigration = {
@@ -106,6 +108,7 @@ export function beginLegacyDefaultOwnerHandoff(
         beforeMigration: params.beforeMigration,
         expectedStoreEpoch: params.expectedStoreEpoch,
         recordCommittedStoreEpoch: params.recordCommittedStoreEpoch,
+        recordPreparedRollback: params.recordPreparedRollback,
       });
       handoff.releaseStoreLock = result.release;
       await Promise.all(

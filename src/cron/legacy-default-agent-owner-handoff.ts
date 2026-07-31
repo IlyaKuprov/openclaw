@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   executeSqliteQuerySync,
@@ -21,6 +22,11 @@ type CronOwnerHandoffDatabase = Pick<OpenClawStateDatabase, "migration_runs" | "
 export type RetainedLegacyCronOwnerHandoffSnapshot =
   | { agentId: string; status: "pending" | "completed" }
   | undefined;
+
+export type RetainedLegacyCronOwnerHandoffMutation = {
+  before: RetainedLegacyCronOwnerHandoffSnapshot;
+  after: RetainedLegacyCronOwnerHandoffSnapshot;
+};
 
 function handoffSourceKey(storeKey: string): string {
   return `${MIGRATION_KIND}:${createHash("sha256").update(storeKey).digest("hex")}`;
@@ -125,9 +131,15 @@ export function retainLegacyDefaultCronOwnerHandoffForStore(
   storePath: string,
   legacyDefaultAgentId: string,
   env: NodeJS.ProcessEnv = process.env,
-): void {
-  runOpenClawStateWriteTransaction(
-    ({ db }) => retainLegacyDefaultCronOwnerHandoff(db, storePath, legacyDefaultAgentId),
+): RetainedLegacyCronOwnerHandoffMutation {
+  return runOpenClawStateWriteTransaction(
+    ({ db }) => {
+      // Capture receipt rollback state from the same authoritative transaction
+      // that overwrites it; a preflight read can race an epoch-blind writer.
+      const before = readLegacyDefaultCronOwnerHandoff(db, storePath);
+      retainLegacyDefaultCronOwnerHandoff(db, storePath, legacyDefaultAgentId);
+      return { before, after: readLegacyDefaultCronOwnerHandoff(db, storePath) };
+    },
     { env },
   );
 }
@@ -170,20 +182,19 @@ export function readRetainedLegacyDefaultCronOwnerForStore(
   return readRetainedLegacyDefaultCronOwner(openOpenClawStateDatabase({ env }).db, storePath);
 }
 
-/** Captures the receipt state so a rejected config write can restore it. */
-export function snapshotRetainedLegacyDefaultCronOwnerHandoffForStore(
-  storePath: string,
-  env: NodeJS.ProcessEnv = process.env,
-): RetainedLegacyCronOwnerHandoffSnapshot {
-  return readLegacyDefaultCronOwnerHandoff(openOpenClawStateDatabase({ env }).db, storePath);
-}
-
 /** Restores the receipt that existed before a rejected config-write handoff. */
 export function restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(
   db: DatabaseSync,
   storePath: string,
   snapshot: RetainedLegacyCronOwnerHandoffSnapshot,
+  options?: { expectedCurrent: RetainedLegacyCronOwnerHandoffSnapshot },
 ): void {
+  if (
+    options &&
+    !isDeepStrictEqual(readLegacyDefaultCronOwnerHandoff(db, storePath), options.expectedCurrent)
+  ) {
+    throw new Error("cron owner handoff receipt changed after adoption; refusing stale rollback");
+  }
   const storeKey = cronStoreKey(storePath);
   const stateDb = getNodeSqliteKysely<CronOwnerHandoffDatabase>(db);
   if (!snapshot) {
@@ -218,19 +229,32 @@ export function restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(
   }
 }
 
+export function restoreRetainedLegacyDefaultCronOwnerHandoffForStore(
+  storePath: string,
+  snapshot: RetainedLegacyCronOwnerHandoffSnapshot,
+  env: NodeJS.ProcessEnv = process.env,
+  options?: { expectedCurrent: RetainedLegacyCronOwnerHandoffSnapshot },
+): void {
+  runOpenClawStateWriteTransaction(
+    ({ db }) =>
+      restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(db, storePath, snapshot, options),
+    { env },
+  );
+}
+
 /** Retires a handoff only after a new-code startup has durably consumed its owner. */
 export function completeLegacyDefaultCronOwnerHandoff(
   storePath: string,
   legacyDefaultAgentId: string,
   env: NodeJS.ProcessEnv = process.env,
-): void {
+): RetainedLegacyCronOwnerHandoffMutation {
   const storeKey = cronStoreKey(storePath);
   const agentId = normalizeAgentId(legacyDefaultAgentId);
-  runOpenClawStateWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     ({ db }) => {
       const handoff = readLegacyDefaultCronOwnerHandoff(db, storePath);
       if (handoff?.agentId !== agentId || handoff.status === "completed") {
-        return;
+        return { before: handoff, after: handoff };
       }
       const now = Date.now();
       const report = reportJson(agentId, "completed");
@@ -249,6 +273,7 @@ export function completeLegacyDefaultCronOwnerHandoff(
           .set({ finished_at: now, status: "completed", report_json: report })
           .where("id", "=", handoffRunId(storeKey)),
       );
+      return { before: handoff, after: readLegacyDefaultCronOwnerHandoff(db, storePath) };
     },
     { env },
   );
