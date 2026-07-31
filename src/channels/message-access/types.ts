@@ -57,6 +57,8 @@ export type InternalChannelIngressSubject = {
 type ChannelIngressNormalizedEntry = {
   opaqueEntryId: string;
   kind: ChannelIngressIdentifierKind;
+  /** True when this normalized entry represents the adapter's wildcard contract. */
+  wildcard?: boolean;
   /** How strongly this entry names its holder. Defaults to `asserted`. */
   authentication?: IdentifierAuthentication;
   /** @deprecated Spelling of `authentication: "mutable"`. Set `authentication` instead. */
@@ -209,6 +211,7 @@ export type ChannelIngressEventInput = {
 type RedactedChannelIngressEvent = Omit<ChannelIngressEventInput, "originSubject"> & {
   hasOriginSubject: boolean;
   originSubjectMatched: boolean;
+  originSubjectAuthentication?: IdentifierAuthentication;
 };
 
 /** Complete raw input to the shared ingress state resolver. */
@@ -385,6 +388,8 @@ export type ChannelIngressState = {
    * always populates it.
    */
   subjectAuthentication?: SubjectIdentifierAuthentication;
+  /** Identifier kinds actually carried by this subject, without their raw values. */
+  subjectIdentifierKinds?: ChannelIngressIdentifierKind[];
   allowlists: {
     dm: ResolvedIngressAllowlist;
     pairingStore: ResolvedIngressAllowlist;

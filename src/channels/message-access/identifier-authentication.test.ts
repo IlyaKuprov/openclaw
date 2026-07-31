@@ -255,6 +255,7 @@ describe("per-message subject claims", () => {
             opaqueEntryId: `entry-${index + 1}`,
             kind: "email" as const,
             value: entry,
+            wildcard: true,
           })),
           invalid: [],
           disabled: [],
@@ -265,6 +266,71 @@ describe("per-message subject claims", () => {
     expect(await admit({ ...stateInput, adapter: wildcardAdapter })).toMatchObject({
       admission: "drop",
     });
+  });
+
+  it("does not let open DM policy bypass authentication for a wildcard", async () => {
+    const stateInput = input({
+      subject: subject({ address: "stranger@example.com", addressAuthentication: "unverified" }),
+      allowlists: { dm: ["*"] },
+    });
+    const wildcardAdapter: InternalChannelIngressAdapter = {
+      ...adapter,
+      normalizeEntries({ entries }) {
+        return {
+          matchable: entries.map((entry, index) => ({
+            opaqueEntryId: `entry-${index + 1}`,
+            kind: "email" as const,
+            value: entry,
+            wildcard: true,
+          })),
+          invalid: [],
+          disabled: [],
+        };
+      },
+    };
+
+    expect(
+      await admit(
+        { ...stateInput, adapter: wildcardAdapter },
+        { ...allowlistPolicy, dmPolicy: "open" },
+      ),
+    ).toMatchObject({ admission: "drop" });
+  });
+
+  it("does not authenticate a wildcard through a missing primary identity", async () => {
+    const wildcardAdapter: InternalChannelIngressAdapter = {
+      ...adapter,
+      normalizeEntries({ entries }) {
+        return {
+          matchable: entries.map((entry, index) => ({
+            opaqueEntryId: `entry-${index + 1}`,
+            kind: "email" as const,
+            value: entry,
+            wildcard: true,
+          })),
+          invalid: [],
+          disabled: [],
+        };
+      },
+    };
+
+    expect(
+      await admit({
+        ...input(),
+        adapter: wildcardAdapter,
+        subject: {
+          identifiers: [
+            {
+              opaqueId: "alias",
+              kind: "username",
+              value: "name:Stranger",
+              authentication: "unverified",
+            },
+          ],
+        },
+        allowlists: { dm: ["*"] },
+      }),
+    ).toMatchObject({ admission: "drop" });
   });
 });
 
@@ -362,6 +428,54 @@ describe("command authorization", () => {
     );
 
     expect(decision.graph.gates.find((gate) => gate.kind === "command")?.allowed).toBe(true);
+  });
+});
+
+describe("origin-subject authorization", () => {
+  it("does not let a weak matching origin identity bypass the minimum", async () => {
+    const weak = subject({
+      address: "operator@example.com",
+      addressAuthentication: "unverified",
+    });
+    const state = await resolveChannelIngressState(
+      input({
+        subject: weak,
+        allowlists: { dm: ["someone-else@example.com"] },
+        event: {
+          kind: "reaction",
+          authMode: "origin-subject",
+          mayPair: false,
+          originSubject: weak,
+        },
+      }),
+    );
+
+    expect(state.event.originSubjectMatched).toBe(true);
+    expect(state.event.originSubjectAuthentication).toBe("unverified");
+    expect(decideChannelIngress(state, allowlistPolicy)).toMatchObject({ admission: "drop" });
+  });
+
+  it("admits a matching origin identity that meets the minimum", async () => {
+    const verified = subject({
+      address: "operator@example.com",
+      addressAuthentication: "verified",
+    });
+    const state = await resolveChannelIngressState(
+      input({
+        subject: verified,
+        allowlists: { dm: ["someone-else@example.com"] },
+        event: {
+          kind: "reaction",
+          authMode: "origin-subject",
+          mayPair: false,
+          originSubject: verified,
+        },
+      }),
+    );
+
+    expect(decideChannelIngress(state, allowlistPolicy)).toMatchObject({
+      admission: "dispatch",
+    });
   });
 });
 

@@ -9,6 +9,8 @@ import {
 } from "@openclaw/normalization-core/string-normalization";
 import { parseAccessGroupAllowFromEntry } from "../allow-from.js";
 import {
+  identifierAuthenticationFrom,
+  meetsIdentifierAuthentication,
   weakestIdentifierAuthentication,
   type IdentifierAuthentication,
 } from "./identifier-authentication.js";
@@ -182,6 +184,10 @@ async function normalizeSubjectIdentifiersForMatch(params: {
             opaqueEntryId: `${params.opaquePrefix}-${identifierIndex + 1}:${entryIndex + 1}`,
             kind: entry.kind,
             value: entry.value,
+            authentication: weakestIdentifierAuthentication(
+              identifierAuthenticationFrom(entry),
+              identifierAuthenticationFrom(identifier),
+            ),
             dangerous: entry.dangerous,
             sensitivity: entry.sensitivity,
           }))
@@ -191,22 +197,56 @@ async function normalizeSubjectIdentifiersForMatch(params: {
   return normalized.flat();
 }
 
-async function originSubjectMatched(input: ChannelIngressStateInput): Promise<boolean> {
+function strongestAuthentication(
+  values: readonly IdentifierAuthentication[],
+): IdentifierAuthentication | undefined {
+  return values.reduce<IdentifierAuthentication | undefined>(
+    (strongest, value) =>
+      !strongest || meetsIdentifierAuthentication(value, strongest) ? value : strongest,
+    undefined,
+  );
+}
+
+function matchedEntryAuthentication(params: {
+  entries: readonly InternalNormalizedEntry[];
+  matchedEntryIds: readonly string[];
+  subjectAuthentication: SubjectIdentifierAuthentication;
+}): IdentifierAuthentication | undefined {
+  const matched = new Set(params.matchedEntryIds);
+  return strongestAuthentication(
+    params.entries
+      .filter((entry) => matched.has(entry.opaqueEntryId))
+      .map((entry) => {
+        const entryAuthentication = identifierAuthenticationFrom(entry);
+        const subjectAuthentication = params.subjectAuthentication[entry.kind];
+        return subjectAuthentication
+          ? weakestIdentifierAuthentication(entryAuthentication, subjectAuthentication)
+          : entryAuthentication;
+      }),
+  );
+}
+
+async function originSubjectAuthentication(
+  input: ChannelIngressStateInput,
+): Promise<IdentifierAuthentication | undefined> {
   const origin = input.event.originSubject;
   if (!origin) {
-    return false;
+    return undefined;
   }
-  if (
-    origin.identifiers.some((identifier) =>
-      input.subject.identifiers.some(
-        (current) => current.kind === identifier.kind && current.value === identifier.value,
-      ),
-    )
-  ) {
-    return true;
-  }
-
+  const exactFallback = strongestAuthentication(
+    origin.identifiers.flatMap((identifier) =>
+      input.subject.identifiers
+        .filter((current) => current.kind === identifier.kind && current.value === identifier.value)
+        .map((current) =>
+          weakestIdentifierAuthentication(
+            identifierAuthenticationFrom(identifier),
+            identifierAuthenticationFrom(current),
+          ),
+        ),
+    ),
+  );
   const context = eventSubjectMatchContext(input);
+  const matches: IdentifierAuthentication[] = [];
   const originEntries = await normalizeSubjectIdentifiersForMatch({
     input,
     subject: origin,
@@ -220,7 +260,14 @@ async function originSubjectMatched(input: ChannelIngressStateInput): Promise<bo
       context,
     });
     if (currentMatch.matched) {
-      return true;
+      const authentication = matchedEntryAuthentication({
+        entries: originEntries,
+        matchedEntryIds: currentMatch.matchedEntryIds,
+        subjectAuthentication: resolveSubjectAuthentication(input.subject),
+      });
+      if (authentication) {
+        matches.push(authentication);
+      }
     }
   }
 
@@ -230,15 +277,27 @@ async function originSubjectMatched(input: ChannelIngressStateInput): Promise<bo
     context,
     opaquePrefix: "current",
   });
-  if (currentEntries.length === 0) {
-    return false;
+  if (currentEntries.length > 0) {
+    const originMatch = await input.adapter.matchSubject({
+      subject: origin,
+      entries: currentEntries,
+      context,
+    });
+    const authentication = originMatch.matched
+      ? matchedEntryAuthentication({
+          entries: currentEntries,
+          matchedEntryIds: originMatch.matchedEntryIds,
+          subjectAuthentication: resolveSubjectAuthentication(origin),
+        })
+      : undefined;
+    if (authentication) {
+      matches.push(authentication);
+    }
   }
-  const originMatch = await input.adapter.matchSubject({
-    subject: origin,
-    entries: currentEntries,
-    context,
-  });
-  return originMatch.matched;
+  return (
+    strongestAuthentication(matches) ??
+    (originEntries.length === 0 && currentEntries.length === 0 ? exactFallback : undefined)
+  );
 }
 
 async function resolveAccessGroupEntries(params: {
@@ -410,7 +469,7 @@ export async function resolveChannelIngressState(
         context: "command",
       }),
       resolveRouteFacts(input),
-      originSubjectMatched(input),
+      originSubjectAuthentication(input),
     ]);
   return {
     channelId: input.channelId,
@@ -421,11 +480,13 @@ export async function resolveChannelIngressState(
       authMode: input.event.authMode,
       mayPair: input.event.mayPair,
       hasOriginSubject: input.event.originSubject != null,
-      originSubjectMatched: eventOriginMatched,
+      originSubjectMatched: eventOriginMatched != null,
+      ...(eventOriginMatched ? { originSubjectAuthentication: eventOriginMatched } : {}),
     },
     mentionFacts: input.mentionFacts,
     routeFacts,
     subjectAuthentication: resolveSubjectAuthentication(input.subject),
+    subjectIdentifierKinds: [...new Set(input.subject.identifiers.map((entry) => entry.kind))],
     allowlists: {
       dm,
       pairingStore,

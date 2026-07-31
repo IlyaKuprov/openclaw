@@ -104,6 +104,7 @@ function adapterEntry(params: {
   entryIndex: number;
   value: string;
   fallbackSuffix?: string;
+  wildcard?: boolean;
 }): ChannelIngressAdapterEntry {
   return {
     opaqueEntryId:
@@ -115,6 +116,7 @@ function adapterEntry(params: {
       }) ?? `entry-${params.entryIndex + 1}:${params.fallbackSuffix ?? params.field.key}`,
     kind: params.field.kind,
     value: params.value,
+    ...(params.wildcard ? { wildcard: true } : {}),
     authentication: fieldAuthentication(params.field, params.entry),
     dangerous: fieldDangerous(params.field, params.entry),
     sensitivity: params.field.sensitivity,
@@ -139,6 +141,7 @@ export function createIdentityAdapter(
               entryIndex,
               value: "*",
               fallbackSuffix: "wildcard",
+              wildcard: true,
             }),
           ];
         }

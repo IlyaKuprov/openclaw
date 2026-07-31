@@ -11,6 +11,10 @@ import {
 } from "../mention-gating.js";
 import { applyIdentifierAuthenticationPolicy, redactedAllowlistDiagnostics } from "./allowlist.js";
 import {
+  meetsIdentifierAuthentication,
+  minimumIdentifierAuthenticationFrom,
+} from "./identifier-authentication.js";
+import {
   applyEventAuthModeToSenderGate,
   senderGateForDirect,
   senderGateForGroup,
@@ -103,11 +107,13 @@ function commandGate(params: {
     allowlist: params.state.allowlists.commandOwner,
     policy: params.policy,
     subjectAuthentication,
+    subjectIdentifierKinds: params.state.subjectIdentifierKinds,
   });
   const group = applyIdentifierAuthenticationPolicy({
     allowlist: params.state.allowlists.commandGroup,
     policy: params.policy,
     subjectAuthentication,
+    subjectIdentifierKinds: params.state.subjectIdentifierKinds,
   });
   const authorized = resolveCommandAuthorizedFromAuthorizers({
     useAccessGroups,
@@ -148,6 +154,7 @@ function mergeCommandMatch(
 
 function eventGate(params: {
   state: ChannelIngressState;
+  policy: ChannelIngressPolicyInput;
   senderGate: AccessGraphGate;
   commandGate: AccessGraphGate;
 }): AccessGraphGate {
@@ -181,7 +188,14 @@ function eventGate(params: {
     if (!params.state.event.hasOriginSubject) {
       return eventResult(false, "origin_subject_missing");
     }
-    const matched = params.state.event.originSubjectMatched;
+    const authentication = params.state.event.originSubjectAuthentication;
+    const matched =
+      params.state.event.originSubjectMatched &&
+      authentication != null &&
+      meetsIdentifierAuthentication(
+        authentication,
+        minimumIdentifierAuthenticationFrom(params.policy),
+      );
     return eventResult(matched, matched ? "event_authorized" : "origin_subject_not_matched");
   }
   return eventResult(
@@ -347,7 +361,7 @@ export function decideChannelIngress(
     return decisiveDecision({ admission: "drop", decision: "block", gate: command, gates });
   }
 
-  const event = eventGate({ state, senderGate: eventModeSender, commandGate: command });
+  const event = eventGate({ state, policy, senderGate: eventModeSender, commandGate: command });
   gates.push(event);
   if (!event.allowed) {
     return decisiveDecision({ admission: "drop", decision: "block", gate: event, gates });

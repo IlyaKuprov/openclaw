@@ -102,8 +102,14 @@ function mergeResolvedAllowlists(
 function effectiveEntryAuthentication(params: {
   entry: ResolvedIngressAllowlist["normalizedEntries"][number];
   subjectAuthentication: SubjectIdentifierAuthentication;
+  subjectIdentifierKinds: ReadonlySet<string>;
 }): IdentifierAuthentication {
   const entry = identifierAuthenticationFrom(params.entry);
+  // A wildcard is normalized against one identity field. It cannot borrow that field's
+  // strength when the inbound subject did not carry the field at all.
+  if (params.entry.wildcard && !params.subjectIdentifierKinds.has(params.entry.kind)) {
+    return "mutable";
+  }
   const subject = params.subjectAuthentication[params.entry.kind];
   // An absent subject claim does not weaken: the channel made no per-message statement.
   return subject ? weakestIdentifierAuthentication(entry, subject) : entry;
@@ -120,14 +126,16 @@ export function applyIdentifierAuthenticationPolicy(params: {
   allowlist: ResolvedIngressAllowlist;
   policy: ChannelIngressPolicyInput;
   subjectAuthentication?: SubjectIdentifierAuthentication;
+  subjectIdentifierKinds?: readonly string[];
 }): ResolvedIngressAllowlist {
   const minimum = minimumIdentifierAuthenticationFrom(params.policy);
   const subjectAuthentication = params.subjectAuthentication ?? {};
+  const subjectIdentifierKinds = new Set(params.subjectIdentifierKinds ?? []);
   const { allowlist } = params;
   const rejected = allowlist.normalizedEntries.filter(
     (entry) =>
       !meetsIdentifierAuthentication(
-        effectiveEntryAuthentication({ entry, subjectAuthentication }),
+        effectiveEntryAuthentication({ entry, subjectAuthentication, subjectIdentifierKinds }),
         minimum,
       ),
   );
@@ -189,5 +197,6 @@ export function effectiveGroupSenderAllowlist(params: {
     allowlist: effective,
     policy: params.policy,
     subjectAuthentication: params.state.subjectAuthentication,
+    subjectIdentifierKinds: params.state.subjectIdentifierKinds,
   });
 }

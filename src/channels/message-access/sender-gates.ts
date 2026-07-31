@@ -53,11 +53,13 @@ export function senderGateForDirect(params: {
     allowlist: params.state.allowlists.dm,
     policy: params.policy,
     subjectAuthentication,
+    subjectIdentifierKinds: params.state.subjectIdentifierKinds,
   });
   const pairingStore = applyIdentifierAuthenticationPolicy({
     allowlist: params.state.allowlists.pairingStore,
     policy: params.policy,
     subjectAuthentication,
+    subjectIdentifierKinds: params.state.subjectIdentifierKinds,
   });
   const base = {
     policy: params.policy.dmPolicy,
@@ -86,13 +88,10 @@ export function senderGateForDirect(params: {
     return block("dm_policy_disabled");
   }
   if (params.policy.dmPolicy === "open") {
-    // Open DM policy still requires either wildcard or an explicit normalized entry so
-    // configured allowlists keep their narrowing effect.
-    if (dm.hasWildcard) {
-      return allow("dm_policy_open");
-    }
+    // `hasWildcard` only describes configuration. Authorization must use the filtered
+    // match so a wildcard rejected by identifier authentication cannot reopen the DM.
     if (dm.match.matched) {
-      return allow("dm_policy_allowlisted");
+      return allow(dm.hasWildcard ? "dm_policy_open" : "dm_policy_allowlisted");
     }
     return block("dm_policy_not_allowlisted");
   }
