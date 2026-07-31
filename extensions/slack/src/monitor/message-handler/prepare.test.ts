@@ -169,6 +169,135 @@ describe("slack prepareSlackMessage inbound contract", () => {
     });
   }
 
+  function createAllowlistDeniedRoomCtx(params: {
+    postEphemeral: ReturnType<typeof vi.fn>;
+  }): SlackMonitorContext {
+    const ctx = createInboundSlackCtx({
+      cfg: {
+        channels: {
+          slack: {
+            enabled: true,
+            groupPolicy: "allowlist",
+            channels: { C_ALLOWED: { enabled: true } },
+          },
+        },
+      } as OpenClawConfig,
+      appClient: {
+        chat: { postEphemeral: params.postEphemeral },
+      } as unknown as App["client"],
+      channelsConfig: { C_ALLOWED: { enabled: true } },
+      groupPolicy: "allowlist",
+    });
+    ctx.resolveChannelName = async () => ({ name: "blocked-room", type: "channel" });
+    ctx.resolveUserName = async (userId) => ({
+      name: userId === ctx.botUserId ? "Personal Claw" : "Alice",
+    });
+    return ctx;
+  }
+
+  it.each([
+    ["message", undefined],
+    ["app_mention", true],
+  ] as const)(
+    "sends an ephemeral allowlist notice for an explicit bot mention from %s",
+    async (source, wasMentioned) => {
+      const postEphemeral = vi.fn().mockResolvedValue({ ok: true });
+      const ctx = createAllowlistDeniedRoomCtx({ postEphemeral });
+
+      const prepared = await prepareSlackMessage({
+        ctx,
+        account: defaultAccount,
+        message: createSlackMessage({
+          channel: "C_DENIED",
+          channel_type: "channel",
+          user: "U1",
+          text: "<@B1> hello",
+        }),
+        opts: { source, ...(wasMentioned ? { wasMentioned } : {}) },
+      });
+
+      expect(prepared).toBeNull();
+      expect(postEphemeral).toHaveBeenCalledExactlyOnceWith({
+        token: "token",
+        channel: "C_DENIED",
+        user: "U1",
+        text: "Personal Claw can’t reply here because this channel isn’t in its OpenClaw channel allowlist. Ask the OpenClaw owner to allow this channel. <https://docs.openclaw.ai/channels/slack#access-control-and-routing|Learn how to configure Slack channel access.>",
+      });
+      expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not send an allowlist notice for an unmentioned denied room message", async () => {
+    const postEphemeral = vi.fn().mockResolvedValue({ ok: true });
+    const ctx = createAllowlistDeniedRoomCtx({ postEphemeral });
+
+    const prepared = await prepareSlackMessage({
+      ctx,
+      account: defaultAccount,
+      message: createSlackMessage({
+        channel: "C_DENIED",
+        channel_type: "channel",
+        user: "U1",
+        text: "hello",
+      }),
+      opts: { source: "message" },
+    });
+
+    expect(prepared).toBeNull();
+    expect(postEphemeral).not.toHaveBeenCalled();
+  });
+
+  it("uses generic copy when the bot display-name lookup fails", async () => {
+    const postEphemeral = vi.fn().mockResolvedValue({ ok: true });
+    const ctx = createAllowlistDeniedRoomCtx({ postEphemeral });
+    ctx.resolveUserName = vi.fn().mockRejectedValue(new Error("users.info failed"));
+
+    await expect(
+      prepareSlackMessage({
+        ctx,
+        account: defaultAccount,
+        message: createSlackMessage({
+          channel: "C_DENIED",
+          channel_type: "channel",
+          user: "U1",
+          text: "<@B1> hello",
+        }),
+        opts: { source: "app_mention", wasMentioned: true },
+      }),
+    ).resolves.toBeNull();
+
+    expect(postEphemeral).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        text: expect.stringMatching(/^This OpenClaw bot can’t reply here/),
+      }),
+    );
+  });
+
+  it("keeps the original deny behavior when the ephemeral notice fails", async () => {
+    const postEphemeral = vi.fn().mockRejectedValue(new Error("invalid_auth xoxb-secret-value"));
+    const ctx = createAllowlistDeniedRoomCtx({ postEphemeral });
+    const error = vi.fn();
+    ctx.runtime.error = error;
+
+    await expect(
+      prepareSlackMessage({
+        ctx,
+        account: defaultAccount,
+        message: createSlackMessage({
+          channel: "C_DENIED",
+          channel_type: "group",
+          user: "U1",
+          text: "<@B1> hello",
+        }),
+        opts: { source: "app_mention", wasMentioned: true },
+      }),
+    ).resolves.toBeNull();
+
+    expect(error).toHaveBeenCalledOnce();
+    expect(error.mock.calls[0]?.[0]).toContain("slack allowlist denial notice failed");
+    expect(error.mock.calls[0]?.[0]).not.toContain("xoxb-secret-value");
+  });
+
   function createOwnerScopedBotRoomCtx(params: { members: string[] }) {
     const members = vi.fn().mockResolvedValue({
       members: params.members,
@@ -1528,6 +1657,65 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
     assertPrepared(prepared);
     expect(prepared.ctxPayload.RawBody).toBe(fullText);
     expect(prepared.ctxPayload.BodyForAgent).toContain(fullText);
+  });
+
+  it("preserves a pasted table from a non-forwarded attachment", async () => {
+    const prepared = await prepareWithDefaultCtx(
+      createSlackMessage({
+        text: "<@U_BOT> please check whether these are wired up correctly",
+        blocks: [
+          {
+            type: "rich_text",
+            elements: [
+              {
+                type: "rich_text_section",
+                elements: [
+                  { type: "user", user_id: "U_BOT" },
+                  { type: "text", text: " please check whether these are wired up correctly" },
+                ],
+              },
+            ],
+          },
+        ],
+        attachments: [
+          {
+            fallback: "[no preview available]",
+            blocks: [
+              {
+                type: "table",
+                rows: [
+                  [
+                    { type: "raw_text", text: "ID" },
+                    { type: "raw_text", text: "Name" },
+                    { type: "raw_text", text: "Status" },
+                  ],
+                  [
+                    { type: "raw_text", text: "12345" },
+                    { type: "raw_text", text: "Example A" },
+                    { type: "raw_text", text: "enabled" },
+                  ],
+                  [
+                    { type: "raw_text", text: "12346" },
+                    { type: "raw_text", text: "Example B" },
+                    { type: "raw_text", text: "enabled" },
+                  ],
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    assertPrepared(prepared);
+    expect(prepared.ctxPayload.RawBody).toContain(
+      ["ID\tName\tStatus", "12345\tExample A\tenabled", "12346\tExample B\tenabled"].join("\n"),
+    );
+    expect(prepared.ctxPayload.RawBody).toContain(
+      "please check whether these are wired up correctly",
+    );
+    expect(prepared.ctxPayload.RawBody).not.toContain("[no preview available]");
+    expect(prepared.ctxPayload.BodyForAgent).toContain("12346\tExample B\tenabled");
   });
 
   it("ignores non-forward attachments when no direct text/files are present", async () => {

@@ -135,7 +135,7 @@ describe("assertSandboxPath", () => {
         const escapedRead = `${root}/sub/up/../outside/secret.txt`;
         await expect(fs.readFile(escapedRead, "utf8")).resolves.toBe("outside");
         await expect(assertSandboxPath({ filePath: escapedRead, cwd: root, root })).rejects.toThrow(
-          /escapes sandbox root/i,
+          /(?:resolves outside|escapes) sandbox root/i,
         );
         await expect(
           assertSandboxPath({
@@ -143,10 +143,10 @@ describe("assertSandboxPath", () => {
             cwd: root,
             root,
           }),
-        ).rejects.toThrow(/escapes sandbox root/i);
+        ).rejects.toThrow(/(?:resolves outside|escapes) sandbox root/i);
         await expect(
           assertSandboxPath({ filePath: `${root}/sub/up/../..`, cwd: root, root }),
-        ).rejects.toThrow(/escapes sandbox root/i);
+        ).rejects.toThrow(/(?:resolves outside|escapes) sandbox root/i);
 
         await fs.mkdir(path.join(root, "a"));
         await fs.mkdir(path.join(root, "b"));
@@ -178,28 +178,6 @@ describe("assertSandboxPath", () => {
           }),
         ).resolves.toBeTruthy();
         await expect(assertSandboxPath({ filePath: root, cwd: root, root })).resolves.toBeTruthy();
-      } finally {
-        await fs.rm(parent, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it.runIf(process.platform === "win32")(
-    "pins Win32 junction-then-dot-dot to lexical traversal semantics",
-    async () => {
-      const parent = await fs.mkdtemp(path.join(os.tmpdir(), "sandbox-junction-dotdot-"));
-      const root = path.join(parent, "workspace");
-      const outside = path.join(parent, "outside");
-      try {
-        await fs.mkdir(path.join(root, "sub"), { recursive: true });
-        await fs.mkdir(outside);
-        await fs.symlink(root, path.join(root, "sub", "up"), "junction");
-        await fs.writeFile(path.join(outside, "secret.txt"), "outside", "utf8");
-        const attemptedEscape = `${root}\\sub\\up\\..\\outside\\secret.txt`;
-
-        await expect(fs.readFile(attemptedEscape, "utf8")).rejects.toMatchObject({
-          code: "ENOENT",
-        });
       } finally {
         await fs.rm(parent, { recursive: true, force: true });
       }

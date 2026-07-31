@@ -17,7 +17,10 @@ import type { GetReplyOptions, MsgContext } from "openclaw/plugin-sdk/reply-runt
 import { withEnvAsync } from "openclaw/plugin-sdk/test-env";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
+import {
+  createTelegramNativeCommandTestDeps,
+  telegramBotInfoForTest,
+} from "./bot.create-telegram-bot.test-support.js";
 import {
   createTelegramCallbackContext,
   runTelegramTestMiddlewareChain,
@@ -81,6 +84,7 @@ const {
   createTelegramSpooledReplayDeferredParticipant,
   recordTelegramMessageProcessingResult,
   runWithTelegramSpooledReplayUpdate,
+  runWithTelegramUpdateProcessingFrame,
   TelegramSpooledReplayProcessingError,
 } = await import("./bot-processing-outcome.js");
 const { TELEGRAM_RICH_TEXT_LIMIT } = await import("./rich-message.js");
@@ -438,7 +442,10 @@ describe("createTelegramBot", () => {
       createTelegramBotBase({
         botInfo: telegramBotInfoForTest,
         ...opts,
-        telegramDeps: telegramBotDepsForTest,
+        telegramDeps: {
+          ...telegramBotDepsForTest,
+          ...createTelegramNativeCommandTestDeps(dispatchReplyWithBufferedBlockDispatcher),
+        },
       });
     pluginStateTestRuntime.resetPluginStateStoreForTests({ closeDatabase: false });
   });
@@ -2791,6 +2798,28 @@ describe("createTelegramBot", () => {
 
     expect(onUpdateId.mock.calls.map((call) => call[0])).toEqual([102]);
   });
+
+  it("records synchronous update completion on the shared ingress frame", async () => {
+    const { run: runMiddlewareChain } = setupUpdateOffsetTracker({ lastUpdateId: 150 });
+
+    const { result } = await runWithTelegramUpdateProcessingFrame(async () => {
+      await runMiddlewareChain({ update: { update_id: 151 } }, async () => {});
+    });
+
+    expect(result).toEqual({ kind: "completed" });
+  });
+
+  it("preserves an intentionally skipped update through middleware completion", async () => {
+    const { run: runMiddlewareChain } = setupUpdateOffsetTracker({ lastUpdateId: 160 });
+
+    const { result } = await runWithTelegramUpdateProcessingFrame(async () => {
+      await runMiddlewareChain({ update: { update_id: 161 } }, async () => {
+        recordTelegramMessageProcessingResult({ kind: "skipped" });
+      });
+    });
+
+    expect(result).toEqual({ kind: "skipped" });
+  });
   it("logs and swallows update watermark persistence failures", async () => {
     const onUpdateId = vi.fn().mockRejectedValueOnce(new Error("disk boom"));
     const runtime = {
@@ -4346,7 +4375,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     dispatchReplyWithBufferedBlockDispatcher.mockClear();
     replySpy.mockResolvedValue({
-      text: "⚙️ Compaction skipped: already_compacted_recently • ctx 0%",
+      text: "⚙️ Compaction skipped: already_compacted • ctx 0%",
     });
 
     loadConfig.mockReturnValue({

@@ -13,6 +13,7 @@ import {
   isOllamaCloudModel,
   fetchOllamaModels,
   queryOllamaModelShowInfo,
+  readOllamaModelShowInfo,
   resolveOllamaApiBase,
   type OllamaTagModel,
 } from "./provider-models.js";
@@ -146,6 +147,36 @@ describe("ollama provider models", () => {
       }),
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("discovers a chat model after 200 embedding-only catalog entries", async () => {
+    const embeddingModels = Array.from({ length: 200 }, (_, index) => ({
+      name: `embedding-${index}:latest`,
+    }));
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/api/tags")) {
+        return jsonResponse({
+          models: [...embeddingModels, { name: "qwen-chat:latest" }],
+        });
+      }
+      if (url.endsWith("/api/show")) {
+        const body = JSON.parse(requestBodyText(init?.body)) as { name?: string };
+        const completion = body.name === "qwen-chat:latest";
+        return jsonResponse({
+          capabilities: completion ? ["completion", "tools"] : ["embedding"],
+          model_info: completion ? { "qwen.context_length": 32_768 } : {},
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = await buildOllamaProvider("http://127.0.0.1:11434");
+
+    expect(provider.models?.map((model) => model.id)).toEqual(["qwen-chat:latest"]);
+    expect(provider.models?.[0]?.contextWindow).toBe(32_768);
+    expect(fetchMock).toHaveBeenCalledTimes(202);
   });
 
   it("scopes cached show metadata by credential", async () => {
@@ -440,6 +471,27 @@ describe("ollama provider models", () => {
     expect(model.compat?.supportsUsageInStreaming).toBe(true);
   });
 
+  it("keeps failed inspection distinct from omitted and empty capabilities", () => {
+    const uninspected = buildOllamaModelDefinition("deepseek-r1:14b", 65536);
+    const authoritativeEmpty = buildOllamaModelDefinition("deepseek-r1:14b", 65536, []);
+    const inspectionFailed = buildOllamaModelDefinition("deepseek-r1:14b", 65536, undefined, {
+      showInspectionFailed: true,
+    });
+
+    expect(uninspected).toMatchObject({
+      reasoning: true,
+      compat: { supportsTools: true },
+    });
+    expect(authoritativeEmpty).toMatchObject({
+      reasoning: false,
+      compat: { supportsTools: false },
+    });
+    expect(inspectionFailed).toMatchObject({
+      reasoning: true,
+      compat: { supportsTools: false },
+    });
+  });
+
   it.each([
     { parameters: "num_ctx 8192\nnum_ctx 32768", expected: 32768 },
     { parameters: "temperature 0.8\nnum_ctx -1\nnum_ctx 0", expected: undefined },
@@ -475,8 +527,21 @@ describe("ollama provider models", () => {
       vi.fn(async () => showResponse.response),
     );
 
-    await expect(queryOllamaModelShowInfo("http://127.0.0.1:11434", "llama3:8b")).resolves.toEqual(
-      {},
+    await expect(queryOllamaModelShowInfo("http://127.0.0.1:11434", "llama3:8b")).resolves.toEqual({
+      showInspectionFailed: true,
+    });
+    expect(showResponse.wasCanceled()).toBe(true);
+  });
+
+  it("reports failed strict model inspections while releasing their response bodies", async () => {
+    const showResponse = cancelTrackedResponse("model unavailable", { status: 503 });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => showResponse.response),
+    );
+
+    await expect(readOllamaModelShowInfo("http://127.0.0.1:11434", "llama3:8b")).rejects.toThrow(
+      "Ollama model inspection failed with HTTP 503",
     );
     expect(showResponse.wasCanceled()).toBe(true);
   });
@@ -565,7 +630,9 @@ describe("ollama provider models", () => {
       });
       await waitForSocketClose("/api/tags");
 
-      await expect(queryOllamaModelShowInfo(baseUrl, "llama3:8b")).resolves.toEqual({});
+      await expect(queryOllamaModelShowInfo(baseUrl, "llama3:8b")).resolves.toEqual({
+        showInspectionFailed: true,
+      });
       await waitForSocketClose("/api/show");
 
       mode = "success";
@@ -590,6 +657,50 @@ describe("ollama provider models", () => {
             }
             resolve();
           });
+        });
+      }
+    }
+  });
+
+  it("keeps tools off after a live /api/show failure", async () => {
+    const server = createServer((request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      if (request.url === "/api/tags") {
+        response.end(
+          JSON.stringify({
+            models: [{ name: "deepseek-r1:14b", digest: "sha256:show-failure" }],
+          }),
+        );
+        return;
+      }
+      if (request.url === "/api/show") {
+        response.statusCode = 500;
+        response.end(JSON.stringify({ error: "show failed" }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "not found" }));
+    });
+
+    const listening = once(server, "listening");
+    try {
+      server.listen(0, "127.0.0.1");
+      await listening;
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Ollama test server did not expose a TCP address");
+      }
+
+      const provider = await buildOllamaProvider(`http://127.0.0.1:${address.port}`);
+      const model = expectDefined(provider.models?.[0], "show-failed Ollama model");
+
+      expect(model.id).toBe("deepseek-r1:14b");
+      expect(model.compat?.supportsTools).toBe(false);
+      expect(model.reasoning).toBe(true);
+    } finally {
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
         });
       }
     }
@@ -643,7 +754,7 @@ describe("ollama provider models", () => {
       vi.fn(async () => makeOversizedJsonResponse()),
     );
     const showInfo = await queryOllamaModelShowInfo("http://127.0.0.1:11434", "evil-model:latest");
-    expect(showInfo).toEqual({});
+    expect(showInfo).toEqual({ showInspectionFailed: true });
     expect(canceled).toBe(true);
     expect(bytesPulled).toBeLessThan(TOTAL_CHUNKS * ONE_MIB);
   });
