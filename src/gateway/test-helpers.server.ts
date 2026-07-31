@@ -215,7 +215,9 @@ async function persistTestSessionConfig(): Promise<void> {
   resetConfigRuntimeState();
   // Session-store writes can indirectly read runtime config before the next RPC.
   // Republish the mutable test overlays now so a stale implicit-main snapshot cannot win.
-  getRuntimeConfig();
+  if (testState.agentsConfig) {
+    getRuntimeConfig();
+  }
   lastSyncedSessionStorePath = testState.sessionStorePath;
   lastSyncedSessionConfigJson = serializeGatewayTestSessionConfig();
 }
