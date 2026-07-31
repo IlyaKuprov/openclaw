@@ -16,6 +16,7 @@ function metadataSnapshot(workspaceDir: string) {
   return {
     workspaceDir,
     diagnostics: [],
+    manifestRegistry: { plugins: [] },
     owners: {
       providers: new Map(providerIds.map((providerId) => [providerId, ["workspace-plugin"]])),
       modelCatalogProviders: new Map(),
