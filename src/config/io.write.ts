@@ -118,18 +118,15 @@ export async function writeConfigFileFromContext(
   // Retired marker ownership comes from raw input; markerless sole-to-fleet
   // writes have one equally unambiguous previous owner. cron.store is also
   // raw-only, so the snapshot remains authoritative until this handoff commits.
-  const sourceRosterMigrations = [snapshot.sourceConfigBeforeMigrations, snapshot.parsed].map(
-    (source) => migratePersistedImplicitMainRoster(source, deps.env),
+  // The include-resolved pre-migration source owns inserted-path provenance when
+  // present. An empty list is authoritative; parsed root input is only a fallback.
+  const sourceRosterMigration = migratePersistedImplicitMainRoster(
+    snapshot.sourceConfigBeforeMigrations ?? snapshot.parsed,
+    deps.env,
   );
-  const retainedLegacyDefaultAgentId = sourceRosterMigrations
-    .map((migration) => migration.retainedLegacyDefaultAgentId)
-    .find((agentId) => agentId !== undefined);
+  const retainedLegacyDefaultAgentId = sourceRosterMigration.retainedLegacyDefaultAgentId;
   const legacySourceInsertedPaths = retainedLegacyDefaultAgentId
-    ? (sourceRosterMigrations
-        .filter(
-          (migration) => migration.retainedLegacyDefaultAgentId === retainedLegacyDefaultAgentId,
-        )
-        .find((migration) => (migration.insertedPaths?.length ?? 0) > 0)?.insertedPaths ?? [])
+    ? (sourceRosterMigration.insertedPaths ?? [])
     : [];
   const retainedLegacyRuntimeInsertedPaths =
     retainedLegacyDefaultAgentId &&

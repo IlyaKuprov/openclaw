@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { retainLegacyDefaultAgentId } from "../../config/legacy.default-agent-owner.js";
 
 const gatewayCall = vi.fn();
 
@@ -20,18 +21,23 @@ beforeEach(() => {
   gatewayCall.mockReset();
 });
 
-function createTool(options: { a2aEnabled?: boolean; agentId?: string } = {}) {
+function createTool(
+  options: { a2aEnabled?: boolean; agentId?: string; retainedOwner?: string } = {},
+) {
   const agentId = options.agentId ?? "main";
+  const config = {
+    agents: { ownership: "explicit" as const, entries: { main: {}, other: {} } },
+    tools: {
+      agentToAgent: { enabled: options.a2aEnabled ?? false },
+      sessions: { visibility: "all" as const },
+    },
+  };
   return createSessionsSendTool({
     agentId,
     agentSessionKey: `agent:${agentId}:main`,
-    config: {
-      agents: { ownership: "explicit", entries: { main: {}, other: {} } },
-      tools: {
-        agentToAgent: { enabled: options.a2aEnabled ?? false },
-        sessions: { visibility: "all" },
-      },
-    },
+    config: options.retainedOwner
+      ? retainLegacyDefaultAgentId(config, options.retainedOwner)
+      : config,
   });
 }
 
@@ -109,6 +115,91 @@ describe("sessions_send resolved-owner authorization", () => {
       error: expect.stringContaining("ownership could not be verified"),
     });
     expect(gatewayCall).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
+  });
+
+  it("does not assign the compatibility owner to a session-id-derived bare key", async () => {
+    gatewayCall.mockImplementation(
+      async (request: { method?: string; params?: { key?: string; sessionId?: string } }) => {
+        if (request.method !== "sessions.resolve") {
+          return request.method === "agent" ? { runId: "unexpected", acceptedAt: 1 } : {};
+        }
+        if (request.params?.key) {
+          throw new Error("not a session key");
+        }
+        if (request.params?.sessionId) {
+          return { key: "incident-42" };
+        }
+        return {};
+      },
+    );
+
+    const result = await createTool({ agentId: "other", retainedOwner: "main" }).execute(
+      "ownerless-id-bare",
+      {
+        sessionKey: "b0d79b63-0f73-4bc9-a6b5-6d8e20f42c3c",
+        message: "status?",
+        timeoutSeconds: 0,
+      },
+    );
+
+    expect(details(result)).toMatchObject({
+      status: "forbidden",
+      error: expect.stringContaining("Upgrade the gateway"),
+    });
+    expect(gatewayCall).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
+  });
+
+  it("does not assign the compatibility owner to a label-derived bare key", async () => {
+    gatewayCall.mockImplementation(
+      async (request: { method?: string; params?: { key?: string; label?: string } }) => {
+        if (request.method === "sessions.resolve" && request.params?.label) {
+          return { key: "incident-42" };
+        }
+        if (request.method === "sessions.resolve" && request.params?.key) {
+          return { key: "incident-42" };
+        }
+        return request.method === "agent" ? { runId: "unexpected", acceptedAt: 1 } : {};
+      },
+    );
+
+    const result = await createTool({ agentId: "other", retainedOwner: "main" }).execute(
+      "ownerless-label-bare",
+      { label: "incident-room", message: "status?", timeoutSeconds: 0 },
+    );
+
+    expect(details(result)).toMatchObject({
+      status: "forbidden",
+      error: expect.stringContaining("Upgrade the gateway"),
+    });
+    expect(gatewayCall).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
+  });
+
+  it("keeps compatibility ownership for a literal legacy bare key", async () => {
+    gatewayCall.mockImplementation(
+      async (request: { method?: string; params?: { key?: string } }) => {
+        if (request.method === "sessions.resolve" && request.params?.key) {
+          return { key: "incident-42" };
+        }
+        if (request.method === "agent") {
+          return { runId: "literal-legacy", acceptedAt: 1 };
+        }
+        return {};
+      },
+    );
+
+    const result = await createTool({ retainedOwner: "main" }).execute("literal-legacy", {
+      sessionKey: "incident-42",
+      message: "status?",
+      timeoutSeconds: 0,
+    });
+
+    expect(details(result).status).toBe("accepted");
+    expect(gatewayCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "agent",
+        params: expect.objectContaining({ agentId: "main", sessionKey: "incident-42" }),
+      }),
+    );
   });
 
   it("fails closed when an older gateway resolves a session id to an ownerless sentinel", async () => {

@@ -1,4 +1,5 @@
 /** Loads, normalizes, quarantines, and persists cron service store state. */
+import { isDeepStrictEqual } from "node:util";
 import { normalizeCronJobIdentityFields } from "../normalize-job-identity.js";
 import { normalizeCronJobInput } from "../normalize.js";
 import { getInvalidPersistedCronJobReason } from "../persisted-shape.js";
@@ -361,6 +362,7 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
   }
   const stateOnly = !flushedPendingQuarantine && opts?.stateOnly === true;
   let persistedStore = store;
+  let canonicalTopologyChanged = false;
   try {
     const committed = await saveCronJobsStore(
       state.deps.storePath,
@@ -384,6 +386,10 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
           },
     );
     if (committed) {
+      canonicalTopologyChanged = !isDeepStrictEqual(
+        state.durableTopologyFingerprintByJobId,
+        committed.topologyFingerprintByJobId,
+      );
       state.storeEpoch = committed.storeEpoch;
       state.runtimeRevision = committed.runtimeRevision;
       state.durableTopologyFingerprintByJobId = new Map(committed.topologyFingerprintByJobId);
@@ -396,6 +402,15 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
       state.durableRuntimeUpdatedAtMsByJobId = snapshotRuntimeUpdatedAtMsByJobId(
         committed.store.jobs,
       );
+      if (stateOnly && canonicalTopologyChanged && prepareReloadedCronJobsForScheduling(state)) {
+        // Epoch-blind writers can reveal enabled rows without changing the aggregate
+        // revision. Persist their newly computed wakes before treating the reload as live.
+        await persist(state, {
+          stateOnly: true,
+          suppressScheduledJobId: opts?.suppressScheduledJobId,
+        });
+        persistedStore = state.store ?? persistedStore;
+      }
     }
   } catch (error) {
     if (
@@ -471,7 +486,7 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
   publishDurableNextRunChanges({
     state,
     storeJobs: persistedStore.jobs,
-    stateOnly,
+    stateOnly: stateOnly && !canonicalTopologyChanged,
     suppressScheduledJobId: opts?.suppressScheduledJobId,
   });
   return true;

@@ -5,6 +5,7 @@ import { setupCronServiceSuite } from "../service.test-harness.js";
 import * as cronStoreModule from "../store.js";
 import { CronStoreEpochMismatchError, loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
+import { writeCronStoreEpoch } from "../store/row-revisions.js";
 import { getCronStoreKysely } from "../store/schema.js";
 import type { CronJob } from "../types.js";
 import { createCronServiceState } from "./state.js";
@@ -128,6 +129,42 @@ describe("cron service runtime revisions", () => {
     expect(durable.jobs.find((entry) => entry.id === "sibling")?.state).toEqual(
       inMemorySibling?.state,
     );
+  });
+
+  it("schedules a revision-quiet row added by a pre-upgrade writer", async () => {
+    const { storePath } = await makeStorePath();
+    await saveCronStore(storePath, { version: 1, jobs: [job("existing")] });
+    const state = createCronServiceState({
+      storePath,
+      cronEnabled: true,
+      log: logger,
+      nowMs: () => NOW,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+    await ensureLoaded(state, { skipRecompute: true });
+
+    const external = await loadCronStore(storePath);
+    external.jobs.push(job("revision-quiet-add"));
+    await saveCronStore(storePath, external);
+    runOpenClawStateWriteTransaction(({ db }) => {
+      const storeKey = cronStoreKey(storePath);
+      writeCronStoreEpoch(db, storeKey, state.storeEpoch);
+      writeCronStoreEpoch(db, `runtime-revision:${storeKey}`, state.runtimeRevision);
+    });
+
+    await persist(state, { stateOnly: true });
+
+    expect(state.store?.jobs.find((entry) => entry.id === "revision-quiet-add")).toMatchObject({
+      enabled: true,
+      state: { nextRunAtMs: expect.any(Number) },
+    });
+    expect(state.durableNextRunAtMsByJobId.get("revision-quiet-add")).toEqual(expect.any(Number));
+    expect(
+      (await loadCronStore(storePath)).jobs.find((entry) => entry.id === "revision-quiet-add")
+        ?.state.nextRunAtMs,
+    ).toEqual(expect.any(Number));
   });
 
   it("keeps the canonical overdue wake after rejecting a stale schedule edit", async () => {

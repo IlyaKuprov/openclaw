@@ -618,14 +618,16 @@ export function createSessionsSendTool(opts?: {
       const resolvedKey = visibleSession.key;
       const displayKey = visibleSession.displayKey;
       const resolvedKeyAgentId = parseAgentSessionKey(resolvedKey)?.agentId;
+      // Compatibility ownership is valid only for a legacy key the caller supplied.
+      // Gateway-derived keys without an owner must fail closed across mixed versions.
+      const isLiteralLegacyKeyInput =
+        !labelParam && sessionKeyParam !== undefined && !resolvedSession.resolvedViaSessionId;
       const compatibilityTargetAgentId =
-        !resolvedKeyAgentId && !isUnscopedSessionKeySentinel(resolvedKey)
+        isLiteralLegacyKeyInput && !resolvedKeyAgentId && !isUnscopedSessionKeySentinel(resolvedKey)
           ? tryResolveLegacyCompatibilityAgentId(cfg)
           : undefined;
       const mayUseRequesterForLiteralSentinel =
-        !labelParam &&
-        sessionKeyParam !== undefined &&
-        isUnscopedSessionKeySentinel(sessionKeyParam.trim());
+        isLiteralLegacyKeyInput && isUnscopedSessionKeySentinel(sessionKeyParam.trim());
       const targetAgentId =
         visibleSession.agentId ??
         resolvedTargetAgentId ??
