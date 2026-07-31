@@ -497,6 +497,40 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
     });
   });
 
+  it("keeps cross-agent global sessions distinct while alternating A2A roles", async () => {
+    vi.mocked(runAgentStep)
+      .mockResolvedValueOnce("requester reply")
+      .mockResolvedValueOnce("target reply")
+      .mockResolvedValueOnce("ANNOUNCE_SKIP");
+
+    await runSessionsSendA2AFlow({
+      targetSessionKey: "global",
+      targetAgentId: "work",
+      displayKey: "global",
+      message: "Test message",
+      announceTimeoutMs: 10_000,
+      maxPingPongTurns: 2,
+      requesterSessionKey: "global",
+      requesterAgentId: "main",
+      requesterChannel: "webchat",
+      roundOneReply: "initial target reply",
+    });
+
+    expect(runAgentStep).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(runAgentStep).mock.calls[0]?.[0]).toMatchObject({
+      agentId: "main",
+      sessionKey: "global",
+      sourceSessionKey: "global",
+      extraSystemPrompt: expect.stringContaining("Agent 1 (requester)"),
+    });
+    expect(vi.mocked(runAgentStep).mock.calls[1]?.[0]).toMatchObject({
+      agentId: "work",
+      sessionKey: "global",
+      sourceSessionKey: "global",
+      extraSystemPrompt: expect.stringContaining("Agent 2 (target)"),
+    });
+  });
+
   it("does not inject a delayed reply that matches a text-only baseline", async () => {
     vi.mocked(readLatestAssistantReplySnapshot).mockResolvedValueOnce({
       text: "same reply",

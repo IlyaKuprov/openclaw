@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import type { CallGatewayOptions } from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import {
@@ -29,6 +30,21 @@ import {
 } from "./sessions-send-helpers.js";
 
 const log = createSubsystemLogger("agents/sessions-send");
+
+function sameOwnedSession(params: {
+  leftKey: string | undefined;
+  leftAgentId: string | undefined;
+  rightKey: string;
+  rightAgentId: string | undefined;
+}): boolean {
+  if (!params.leftKey || params.leftKey !== params.rightKey) {
+    return false;
+  }
+  if (!params.leftAgentId || !params.rightAgentId) {
+    return true;
+  }
+  return normalizeAgentId(params.leftAgentId) === normalizeAgentId(params.rightAgentId);
+}
 
 type GatewayCaller = <T = unknown>(opts: CallGatewayOptions) => Promise<T>;
 
@@ -158,8 +174,12 @@ export async function runSessionsSendA2AFlow(params: {
     // A same-session send is a human-facing source-channel reply, not a true
     // agent-to-agent announcement. Asking the same session to decide whether to
     // announce can re-run the same prompt and duplicate source-reply side effects.
-    const sameSessionSourceReply =
-      params.requesterSessionKey && params.requesterSessionKey === params.targetSessionKey;
+    const sameSessionSourceReply = sameOwnedSession({
+      leftKey: params.requesterSessionKey,
+      leftAgentId: params.requesterAgentId,
+      rightKey: params.targetSessionKey,
+      rightAgentId: params.targetAgentId,
+    });
     const canDirectDeliverSameSessionReply =
       announceTarget &&
       (!params.requesterChannel || params.requesterChannel === announceTarget.channel);
@@ -178,19 +198,15 @@ export async function runSessionsSendA2AFlow(params: {
       return;
     }
 
-    if (
-      params.maxPingPongTurns > 0 &&
-      params.requesterSessionKey &&
-      params.requesterSessionKey !== params.targetSessionKey
-    ) {
+    if (params.maxPingPongTurns > 0 && params.requesterSessionKey && !sameSessionSourceReply) {
       let currentSessionKey = params.requesterSessionKey;
       let nextSessionKey = params.targetSessionKey;
       let currentAgentId = params.requesterAgentId;
       let nextAgentId = params.targetAgentId;
+      let currentRole: "requester" | "target" = "requester";
+      let nextRole: "requester" | "target" = "target";
       let incomingMessage = latestReply;
       for (let turn = 1; turn <= params.maxPingPongTurns; turn += 1) {
-        const currentRole =
-          currentSessionKey === params.requesterSessionKey ? "requester" : "target";
         const replyPrompt = buildAgentToAgentReplyContext({
           requesterSessionKey: params.requesterSessionKey,
           requesterChannel: params.requesterChannel,
@@ -208,8 +224,7 @@ export async function runSessionsSendA2AFlow(params: {
           timeoutMs: params.announceTimeoutMs,
           lane: resolveNestedAgentLaneForSession(currentSessionKey),
           sourceSessionKey: nextSessionKey,
-          sourceChannel:
-            nextSessionKey === params.requesterSessionKey ? params.requesterChannel : targetChannel,
+          sourceChannel: nextRole === "requester" ? params.requesterChannel : targetChannel,
           sourceTool: "sessions_send",
         });
         if (!replyText || isReplySkip(replyText) || isNonDeliverableSessionsReply(replyText)) {
@@ -223,6 +238,9 @@ export async function runSessionsSendA2AFlow(params: {
         const agentSwap = currentAgentId;
         currentAgentId = nextAgentId;
         nextAgentId = agentSwap;
+        const roleSwap: "requester" | "target" = currentRole;
+        currentRole = nextRole;
+        nextRole = roleSwap;
       }
     }
 

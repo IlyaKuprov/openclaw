@@ -8,6 +8,7 @@ import { resolveStorePath } from "../config/sessions/paths.js";
 import { listSessionEntriesReadOnly } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { parseStrictNonNegativeInteger } from "../infra/parse-finite-number.js";
+import { normalizeAgentId } from "../routing/session-key.js";
 import { getSubagentDepth, parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { resolveDefaultAgentId } from "./agent-scope.js";
 
@@ -112,10 +113,13 @@ function resolveEntryForSessionKey(params: {
       continue;
     }
     const storePath = resolveStorePath(params.cfg.session?.store, { agentId });
-    let store = params.cache.get(storePath);
+    // Fixed/shared stores expose a different logical view per agent even when the
+    // physical path is identical; cache the scoped view, never only the path.
+    const cacheKey = `${storePath}\0${normalizeAgentId(agentId)}`;
+    let store = params.cache.get(cacheKey);
     if (!store) {
       store = readSubagentSessionStore(storePath, agentId);
-      params.cache.set(storePath, store);
+      params.cache.set(cacheKey, store);
     }
     const entry = store[key] ?? findSubagentSessionEntryById(store, params.sessionKey);
     if (entry) {
