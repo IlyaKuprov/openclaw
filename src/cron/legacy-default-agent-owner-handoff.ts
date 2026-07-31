@@ -23,7 +23,7 @@ export type RetainedLegacyCronOwnerHandoffSnapshot =
   | { agentId: string; status: "pending" | "completed" }
   | undefined;
 
-export type RetainedLegacyCronOwnerHandoffMutation = {
+type RetainedLegacyCronOwnerHandoffMutation = {
   before: RetainedLegacyCronOwnerHandoffSnapshot;
   after: RetainedLegacyCronOwnerHandoffSnapshot;
 };
