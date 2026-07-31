@@ -126,7 +126,7 @@ describe("agent session resolution", () => {
       const store = path.join(home, "sessions.json");
       const cfg = mockConfig(home, store, [{ id: "ops" }, { id: "research" }]);
       await replaceSessionEntry(
-        { agentId: "ops", sessionKey: "agent:retired:main", storePath: store },
+        { agentId: "retired", sessionKey: "agent:retired:legacy", storePath: store },
         { sessionId: "retired-session", updatedAt: 1 },
       );
 
@@ -200,7 +200,7 @@ describe("agent session resolution", () => {
         agentId: "dev",
       });
 
-      expect(resolution.sessionKey).toBe("main");
+      expect(resolution.sessionKey).toBe("agent:dev:main");
       expect(resolution.storePath).toBe(store);
     });
   });
@@ -264,7 +264,7 @@ describe("agent session resolution", () => {
         "ops",
       );
       await replaceSessionEntry(
-        { agentId: "research", sessionKey: "main", storePath: store },
+        { agentId: "ops", sessionKey: "main", storePath: store },
         { sessionId: "legacy-owner-session", updatedAt: 1 },
       );
 
