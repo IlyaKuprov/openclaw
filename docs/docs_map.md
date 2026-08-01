@@ -7666,6 +7666,8 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: Runtime resolver
   - H2: Result
+  - H2: Sender authentication strength
+  - H3: Compatibility
   - H2: Access groups
   - H2: Event modes
   - H2: Routes and activation

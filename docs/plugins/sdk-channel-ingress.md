@@ -74,6 +74,73 @@ Deprecated third-party SDK helpers may rebuild older shapes internally. New
 bundled receive paths should not translate modern results back into local
 DTOs.
 
+## Sender authentication strength
+
+`IdentifierAuthentication` grades how strongly an identifier proves its holder,
+as an ordered scale (strongest first):
+
+| Value        | Meaning                                                         |
+| ------------ | --------------------------------------------------------------- |
+| `verified`   | a transport fact proves the holder for this identifier          |
+| `asserted`   | a session-authenticated transport vouches for it (the default)  |
+| `unverified` | an alias two senders could hold at once, such as a display name |
+| `mutable`    | exact and stable, but this message did not prove its ownership  |
+
+Two independent claims feed the gate:
+
+- **Entry side** (static): `ChannelIngressIdentityField.authentication`, how
+  strongly a field names its holder. Omitted means `asserted`; declare
+  `verified` only with a transport fact behind it.
+- **Subject side** (per message): `subject.authentication`, a map keyed like
+  `subject.aliases` (with `stableId` under the primary field key) of what _this
+  message_ proved. Supply it only from a transport that authenticates messages
+  rather than sessions; omitting it weakens nothing. Resolved state exposes it
+  as `SubjectIdentifierAuthentication`.
+
+The gate takes `min(entry, subject)` per identifier kind and compares it to
+`policy.minIdentifierAuthentication` (default `asserted`). An unforgeable
+identifier proves nothing when its message was never authenticated; an
+authenticated message proves nothing when the identifier it carries is an alias.
+
+```ts
+const identity = defineStableChannelIngressIdentity({
+  key: "email",
+  normalize: normalizeEmail,
+  sensitivity: "pii",
+  authentication: "verified", // the address exactly names its holder…
+});
+
+const result = await resolveChannelMessageIngress({
+  // …but a given message only proves that when it arrives DKIM-aligned.
+  identity,
+  subject: {
+    stableId: fromAddress,
+    authentication: { email: dkimAligned ? "verified" : "unverified" },
+  },
+  policy: { dmPolicy, groupPolicy, minIdentifierAuthentication: "verified" },
+  // …
+});
+```
+
+Silence caps an entry at `asserted`: a channel cannot satisfy a `verified`
+minimum by declaring nothing, so reaching `verified` is always an explicit claim.
+
+### Compatibility
+
+The scale supersedes the two-level `dangerous` / `mutableIdentifierMatching`
+boolean, which stay honored but deprecated:
+
+| Legacy                                 | Graded equivalent  |
+| -------------------------------------- | ------------------ |
+| entry with no `dangerous`              | `asserted`         |
+| `dangerous: true`                      | `mutable`          |
+| default policy                         | minimum `asserted` |
+| `mutableIdentifierMatching: "enabled"` | minimum `mutable`  |
+
+`asserted` clears an `asserted` minimum and `mutable` does not, so every
+existing admission and rejection is preserved. `subject.authentication` is
+optional; absent reads the same as empty.
+
 ## Access groups
 
 `accessGroup:<name>` entries stay redacted. Core resolves static
