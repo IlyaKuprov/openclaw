@@ -4,7 +4,9 @@ import {
   fanInChannelIngressLifecycles,
   resolveChannelMessageIngress,
   type ChannelIngressIdentityDescriptor,
+  type IdentifierAuthentication,
   type ResolveChannelMessageIngressParams,
+  type SubjectIdentifierAuthentication,
 } from "./channel-ingress-runtime.js";
 
 const identity = {
@@ -184,5 +186,44 @@ describe("plugin-sdk/channel-ingress-runtime", () => {
 
     expect(result.senderAccess.effectiveAllowFrom).toEqual(["jane@example.test"]);
     expect(result.senderAccess.decision).toBe("block");
+  });
+});
+
+describe("plugin-sdk/channel-ingress-runtime identifier authentication surface", () => {
+  it("surfaces the RFC 0027 authentication scale and subject strength map", () => {
+    // Compile-time proof the primitive is reachable from the plugin-sdk barrel: a downstream
+    // email channel maps its transport auth (DKIM/SPF) onto exactly these exported names.
+    const scale: IdentifierAuthentication[] = ["verified", "asserted", "unverified", "mutable"];
+    const subjectStrength: SubjectIdentifierAuthentication = { email: "verified" };
+    expect(scale).toContain(subjectStrength.email);
+  });
+
+  it("lets minIdentifierAuthentication override the deprecated mutableIdentifierMatching", async () => {
+    // The graded minimum is the newer, narrower statement and outranks the two-level boolean.
+    // mutableIdentifierMatching "enabled" alone admits everything, but a `verified` minimum
+    // rejects the owner, whose primary identity resolves to the default `asserted`.
+    const dropped = await resolve({
+      policy: {
+        dmPolicy: "allowlist",
+        groupPolicy: "disabled",
+        minIdentifierAuthentication: "verified",
+        mutableIdentifierMatching: "enabled",
+      },
+    });
+    // The verified minimum disables the owner's too-weak entry, leaving nothing to match, so
+    // the drop surfaces as not-allowlisted rather than the entry-level too-weak diagnostic.
+    expect(dropped.ingress.admission).toBe("drop");
+    expect(dropped.ingress.reasonCode).toBe("dm_policy_not_allowlisted");
+
+    // Without the graded minimum, the deprecated boolean still admits the same sender, proving
+    // the drop above came from the minimum's precedence, not from the sender being unresolvable.
+    const admitted = await resolve({
+      policy: {
+        dmPolicy: "allowlist",
+        groupPolicy: "disabled",
+        mutableIdentifierMatching: "enabled",
+      },
+    });
+    expect(admitted.ingress.admission).toBe("dispatch");
   });
 });

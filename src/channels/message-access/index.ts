@@ -9,6 +9,7 @@ export {
 } from "./runtime.js";
 export { readChannelIngressStoreAllowFromForDmPolicy } from "./store-allow-from.js";
 
+export type { IdentifierAuthentication } from "./identifier-authentication.js";
 export type {
   ChannelIngressAccessGroupMembershipResolver,
   ChannelIngressCommandPresetInput,

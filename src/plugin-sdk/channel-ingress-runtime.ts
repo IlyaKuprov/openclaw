@@ -37,11 +37,13 @@ export type {
   ChannelIngressState,
   ChannelMessageIngressCommandInput,
   CreateChannelIngressResolverParams,
+  IdentifierAuthentication,
   IngressReasonCode,
   ResolvedChannelMessageIngress,
   ResolveChannelMessageIngressParams,
   ResolveStableChannelMessageIngressParams,
   StableChannelIngressIdentityParams,
+  SubjectIdentifierAuthentication,
 } from "../channels/message-access/index.js";
 export type { ResolvedChannelImplicitMentions } from "../config/implicit-mentions.js";
 

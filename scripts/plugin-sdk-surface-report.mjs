@@ -206,7 +206,10 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +2: shared ingress retention defaults through channel-outbound and channel-message.
       // +1: collision-safe MCP server-name assignment for native harness catalogs.
       // +45: restore typed session-catalog and tool-results exports promised to plugins.
-      4819,
+      // +2: RFC 0027 sender authentication primitive — IdentifierAuthentication and the
+      //     SubjectIdentifierAuthentication per-message strength map, surfaced for downstream
+      //     email channels that map transport auth onto the graded scale.
+      4821,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
