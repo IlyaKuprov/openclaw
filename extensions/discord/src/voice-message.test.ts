@@ -296,6 +296,34 @@ describe("sendDiscordVoiceMessage", () => {
     throw lastError;
   }
 
+  it("keeps the unversioned live attachment base when no provider endpoint is set", async () => {
+    const rest = {
+      options: {
+        baseUrl: "https://discord.test/api",
+        apiBaseUrl: "https://discord.test/api/v10",
+        timeout: 17,
+      },
+      post: vi.fn(async () => ({ id: "msg-1", channel_id: "channel-1" })),
+    } as unknown as RequestClient;
+    mockSuccessfulVoiceUpload();
+
+    await sendDiscordVoiceMessage(
+      rest,
+      "channel-1",
+      Buffer.from("ogg"),
+      metadata,
+      undefined,
+      async (fn) => await fn(),
+      false,
+      "bot-token",
+    );
+
+    const uploadUrlCall = fetchWithSsrFGuardMock.mock.calls.find(
+      ([params]) => params.auditContext === "discord.voice.upload-url",
+    );
+    expect(uploadUrlCall?.[0].url).toBe("https://discord.test/api/channels/channel-1/attachments");
+  });
+
   it("requests a fresh upload URL when rate limited and cancels the successful body", async () => {
     const post = vi.fn(async () => ({ id: "msg-1", channel_id: "channel-1" }));
     const rest = createRest(post);
