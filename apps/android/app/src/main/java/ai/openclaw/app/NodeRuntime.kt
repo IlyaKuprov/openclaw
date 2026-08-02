@@ -2539,6 +2539,8 @@ class NodeRuntime private constructor(
   internal fun installClawHubSkill(
     slug: String,
     acknowledgeClawHubRisk: Boolean = false,
+    dangerouslyForceUnsafeInstall: Boolean = false,
+    installPolicyAcknowledgementId: String? = null,
     version: String? = null,
   ): Job? {
     val normalized = slug.trim()
@@ -2547,6 +2549,8 @@ class NodeRuntime private constructor(
       installClawHubSkillFromGateway(
         slug = normalized,
         acknowledgeClawHubRisk = acknowledgeClawHubRisk,
+        dangerouslyForceUnsafeInstall = dangerouslyForceUnsafeInstall,
+        installPolicyAcknowledgementId = installPolicyAcknowledgementId,
         version = version,
       )
     }
@@ -2560,6 +2564,10 @@ class NodeRuntime private constructor(
         installReview = null,
         acknowledgeSlug = null,
         acknowledgeVersion = null,
+        acknowledgementKind = null,
+        acknowledgeClawHubRisk = false,
+        dangerouslyForceUnsafeInstall = false,
+        installPolicyAcknowledgementId = null,
         errorText = null,
         messageText = null,
       )
@@ -6259,6 +6267,7 @@ class NodeRuntime private constructor(
           installReview = null,
           acknowledgeSlug = null,
           acknowledgeVersion = null,
+          acknowledgementKind = null,
           errorText = null,
           messageText = null,
         )
@@ -6315,6 +6324,7 @@ class NodeRuntime private constructor(
           installReview = null,
           acknowledgeSlug = null,
           acknowledgeVersion = null,
+          acknowledgementKind = null,
           errorText = null,
           messageText = null,
         )
@@ -6356,6 +6366,8 @@ class NodeRuntime private constructor(
   private suspend fun installClawHubSkillFromGateway(
     slug: String,
     acknowledgeClawHubRisk: Boolean,
+    dangerouslyForceUnsafeInstall: Boolean,
+    installPolicyAcknowledgementId: String?,
     version: String?,
   ) {
     val gatewayScope = captureGatewayDataScope()
@@ -6409,6 +6421,10 @@ class NodeRuntime private constructor(
           installReview = null,
           acknowledgeSlug = null,
           acknowledgeVersion = null,
+          acknowledgementKind = null,
+          acknowledgeClawHubRisk = false,
+          dangerouslyForceUnsafeInstall = false,
+          installPolicyAcknowledgementId = null,
           errorText = null,
           messageText = null,
         )
@@ -6418,7 +6434,13 @@ class NodeRuntime private constructor(
         requestGatewayData(
           gatewayScope,
           "skills.install",
-          clawHubInstallParams(slug, attemptedVersion, acknowledgeClawHubRisk),
+          clawHubInstallParams(
+            slug,
+            attemptedVersion,
+            acknowledgeClawHubRisk,
+            dangerouslyForceUnsafeInstall,
+            installPolicyAcknowledgementId,
+          ),
           timeoutMs = CLAWHUB_INSTALL_REQUEST_TIMEOUT_MS,
         )
       val root = json.parseToJsonElement(response).asObjectOrNull()
@@ -6461,13 +6483,23 @@ class NodeRuntime private constructor(
       }
     } catch (err: GatewayRequestRejected) {
       val confirmed = refreshAndConfirmClawHubInstall(gatewayScope, slug, attemptedVersion)
-      val rejection = if (confirmed) null else clawHubInstallRejection(err.gatewayError, attemptedVersion)
+      val warning = if (confirmed) null else installPolicyWarning(err.gatewayError)
+      val rejection = if (confirmed || warning != null) null else clawHubInstallRejection(err.gatewayError, attemptedVersion)
       publishGatewayData(gatewayScope) {
         _clawHubSkillSearchState.value =
           _clawHubSkillSearchState.value.copy(
-            acknowledgeSlug = if (rejection?.requiresAcknowledgement == true) slug else null,
-            acknowledgeVersion = rejection?.acknowledgeVersion,
-            errorText = rejection?.let { formatClawHubInstallMessage(it.message, it.warning) },
+            acknowledgeSlug = if (warning != null || rejection?.requiresAcknowledgement == true) slug else null,
+            acknowledgeVersion = if (warning != null) attemptedVersion else rejection?.acknowledgeVersion,
+            acknowledgementKind =
+              when {
+                warning != null -> GatewayClawHubAcknowledgementKind.INSTALL_POLICY
+                rejection?.requiresAcknowledgement == true -> GatewayClawHubAcknowledgementKind.CLAWHUB_RISK
+                else -> null
+              },
+            acknowledgeClawHubRisk = warning?.let { acknowledgeClawHubRisk } ?: (rejection?.requiresAcknowledgement == true),
+            dangerouslyForceUnsafeInstall = warning != null || (rejection?.requiresAcknowledgement == true && dangerouslyForceUnsafeInstall),
+            installPolicyAcknowledgementId = warning?.acknowledgementId,
+            errorText = warning?.message ?: rejection?.let { formatClawHubInstallMessage(it.message, it.warning) },
             messageText = if (confirmed) "Installed $slug." else null,
           )
       }

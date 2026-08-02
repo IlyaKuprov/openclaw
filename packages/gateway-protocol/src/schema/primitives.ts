@@ -22,6 +22,11 @@ const SESSION_LABEL_MAX_LENGTH = 512;
 
 /** Non-empty string primitive for protocol fields that reject blank values. */
 export const NonEmptyString = Type.String({ minLength: 1 });
+/** Opaque acknowledgement bound to one install-policy warning and staged source. */
+export const InstallPolicyAcknowledgementIdString = Type.String({
+  pattern: "^sha256:[a-f0-9]{64}(?:,sha256:[a-f0-9]{64}){0,31}$",
+  maxLength: 2303,
+});
 /** Maximum stable session key length accepted by chat-send protocol requests. */
 export const CHAT_SEND_SESSION_KEY_MAX_LENGTH = 512;
 /** Chat-send session key string primitive with bounded length. */

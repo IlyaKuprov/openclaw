@@ -356,6 +356,18 @@ export type PersistedClawPackageRef = {
   updatedAtMs: number;
 };
 
+export function ownerInstallIsNewerThanClawPackageRefs(
+  installedAt: string | undefined,
+  refs: PersistedClawPackageRef[],
+): boolean {
+  const timestamp = Date.parse(installedAt ?? "");
+  return (
+    Number.isFinite(timestamp) &&
+    refs.length > 0 &&
+    refs.every((candidate) => timestamp > candidate.updatedAtMs)
+  );
+}
+
 type PackageRefRow = {
   schema_version: string;
   agent_id: string;

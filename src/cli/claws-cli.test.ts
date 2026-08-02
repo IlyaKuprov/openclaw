@@ -1,328 +1,35 @@
-// Tests for the experimental grouped Claws CLI.
-import { mkdir, realpath, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { persistClawInstallRecord } from "../claws/provenance.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { createClawUpdatePlanFixture } from "./claws-cli.test-fixtures.js";
+import {
+  canonicalFuturePath,
+  ClawAddMutationError,
+  ClawUpdateMutationError,
+  getClawsCliMocks,
+  INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+  registerClawsCli,
+  resetClawsCliMocks,
+  resolveClawInstallPolicyAcknowledgement,
+  runClawsAddCommand,
+  runClawsUpdateCommand,
+  runCli,
+  SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+  tempDirs,
+  THIRD_INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+  waitUntilGatewayConfigApplied,
+  writeManifest,
+  writePackage,
+} from "./claws-cli.test-harness.js";
 
-const mocks = vi.hoisted(() => {
-  const logs: string[] = [];
-  const errors: string[] = [];
-  const runtime = {
-    log: vi.fn((value: unknown) => logs.push(String(value))),
-    error: vi.fn((value: unknown) => errors.push(String(value))),
-    writeJson: vi.fn((value: unknown, space = 2) =>
-      logs.push(JSON.stringify(value, null, space > 0 ? space : undefined)),
-    ),
-    writeStdout: vi.fn(),
-    exit: vi.fn((code: number) => {
-      throw new Error(`__exit__:${code}`);
-    }),
-  };
-  return {
-    logs,
-    errors,
-    runtime,
-    loadConfig: vi.fn<() => Record<string, unknown>>(() => ({})),
-    listConfiguredMcpServers: vi.fn(),
-    closeReadOnlyDatabase: vi.fn(),
-    stateTableGet: vi.fn(),
-    openExistingOpenClawStateDatabaseReadOnly: vi.fn(),
-    applyClawAddPlan: vi.fn(),
-    readClawStatus: vi.fn(),
-    buildClawRemovePlan: vi.fn(),
-    applyClawRemovePlan: vi.fn(),
-    applyClawUpdatePlan: vi.fn(),
-    buildClawUpdatePlan: vi.fn(),
-    exportClawAgent: vi.fn(),
-    callGatewayFromCli: vi.fn(),
-    sleep: vi.fn(),
-  };
-});
-
-vi.mock("../runtime.js", async () => ({
-  ...(await vi.importActual<typeof import("../runtime.js")>("../runtime.js")),
-  defaultRuntime: mocks.runtime,
-  writeRuntimeJson: (runtime: typeof mocks.runtime, value: unknown, space = 2) =>
-    runtime.writeJson(value, space),
-}));
-
-vi.mock("../config/config.js", async () => ({
-  ...(await vi.importActual<typeof import("../config/config.js")>("../config/config.js")),
-  getRuntimeConfig: mocks.loadConfig,
-  loadConfig: mocks.loadConfig,
-}));
-
-vi.mock("../config/mcp-config.js", async () => ({
-  ...(await vi.importActual<typeof import("../config/mcp-config.js")>("../config/mcp-config.js")),
-  listConfiguredMcpServers: mocks.listConfiguredMcpServers,
-}));
-
-vi.mock("./gateway-rpc.js", () => ({
-  callGatewayFromCli: mocks.callGatewayFromCli,
-}));
-
-vi.mock("../utils/sleep.js", () => ({
-  sleep: mocks.sleep,
-}));
-
-vi.mock("../state/openclaw-state-db.js", async () => ({
-  ...(await vi.importActual<typeof import("../state/openclaw-state-db.js")>(
-    "../state/openclaw-state-db.js",
-  )),
-  openExistingOpenClawStateDatabaseReadOnly: mocks.openExistingOpenClawStateDatabaseReadOnly,
-}));
-
-vi.mock("../claws/add.js", async () => ({
-  ...(await vi.importActual<typeof import("../claws/add.js")>("../claws/add.js")),
-  applyClawAddPlan: mocks.applyClawAddPlan,
-}));
-
-vi.mock("../claws/lifecycle-state.js", async () => ({
-  ...(await vi.importActual<typeof import("../claws/lifecycle-state.js")>(
-    "../claws/lifecycle-state.js",
-  )),
-  readClawStatus: mocks.readClawStatus,
-  buildClawRemovePlan: mocks.buildClawRemovePlan,
-  applyClawRemovePlan: mocks.applyClawRemovePlan,
-}));
-
-vi.mock("../claws/export.js", async () => ({
-  ...(await vi.importActual<typeof import("../claws/export.js")>("../claws/export.js")),
-  exportClawAgent: mocks.exportClawAgent,
-}));
-
-vi.mock("../claws/update-plan.js", async () => ({
-  ...(await vi.importActual<typeof import("../claws/update-plan.js")>("../claws/update-plan.js")),
-  buildClawUpdatePlan: mocks.buildClawUpdatePlan,
-}));
-
-vi.mock("../claws/update-apply.js", async () => ({
-  ...(await vi.importActual<typeof import("../claws/update-apply.js")>("../claws/update-apply.js")),
-  applyClawUpdatePlan: mocks.applyClawUpdatePlan,
-}));
-
-const { registerClawsCli } = await import("./claws-cli.js");
-const { waitUntilGatewayConfigApplied } = await import("./claws-cli.gateway-readiness.js");
-const { runClawsAddCommand } = await import("./claws-cli.runtime.js");
-const { ClawUpdateMutationError } = await import("../claws/update-apply.js");
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-const minimalManifest = { schemaVersion: 1, agent: { id: "demo-agent", name: "Demo Agent" } };
-
-async function writeManifest(value: unknown = minimalManifest): Promise<string> {
-  const dir = tempDirs.make("openclaw-claws-cli-");
-  const path = join(dir, "openclaw.claw.json");
-  await writeFile(path, JSON.stringify(value), "utf8");
-  return path;
-}
-
-async function writePackage(): Promise<{ root: string; workspace: string }> {
-  const root = tempDirs.make("openclaw-claws-cli-package-");
-  await mkdir(join(root, "workspace"));
-  await writeFile(join(root, "workspace", "AGENTS.md"), "# Demo\n", "utf8");
-  await writeFile(
-    join(root, "package.json"),
-    JSON.stringify({
-      name: "@acme/demo-agent",
-      version: "1.2.3",
-      openclaw: { claw: "openclaw.claw.json" },
-    }),
-    "utf8",
-  );
-  await writeFile(
-    join(root, "openclaw.claw.json"),
-    JSON.stringify({
-      schemaVersion: 1,
-      agent: { id: "demo-agent", name: "Demo Agent" },
-      workspace: {
-        bootstrapFiles: { "AGENTS.md": { source: "workspace/AGENTS.md" } },
-      },
-      packages: [
-        {
-          kind: "skill",
-          source: "clawhub",
-          ref: "@acme/demo-skill",
-          version: "1.0.0",
-        },
-      ],
-    }),
-    "utf8",
-  );
-  return { root, workspace: join(root, "target-workspace") };
-}
-
-async function canonicalFuturePath(target: string): Promise<string> {
-  return join(await realpath(dirname(target)), basename(target));
-}
-
-async function runCli(args: string[]) {
-  const program = new Command();
-  program.exitOverride();
-  registerClawsCli(program);
-  try {
-    await program.parseAsync(args, { from: "user" });
-  } catch (error) {
-    if (!(error instanceof Error && error.message.startsWith("__exit__:"))) {
-      throw error;
-    }
-  }
-}
+const mocks = getClawsCliMocks();
 
 describe("claws cli", () => {
   beforeEach(() => {
-    vi.stubEnv("OPENCLAW_EXPERIMENTAL_CLAWS", "1");
-    mocks.logs.length = 0;
-    mocks.errors.length = 0;
-    mocks.runtime.log.mockClear();
-    mocks.runtime.error.mockClear();
-    mocks.runtime.writeJson.mockClear();
-    mocks.runtime.exit.mockClear();
-    mocks.loadConfig.mockReset();
-    mocks.loadConfig.mockReturnValue({});
-    mocks.listConfiguredMcpServers.mockReset();
-    mocks.listConfiguredMcpServers.mockResolvedValue({
-      ok: true,
-      path: "config",
-      config: {},
-      mcpServers: {},
-    });
-    mocks.callGatewayFromCli.mockReset();
-    mocks.sleep.mockReset();
-    mocks.sleep.mockResolvedValue(undefined);
-    mocks.closeReadOnlyDatabase.mockReset();
-    mocks.stateTableGet.mockReset();
-    mocks.stateTableGet.mockReturnValue({ 1: 1 });
-    mocks.openExistingOpenClawStateDatabaseReadOnly.mockReset();
-    mocks.openExistingOpenClawStateDatabaseReadOnly.mockReturnValue({
-      db: { prepare: () => ({ get: mocks.stateTableGet }) },
-      path: "state.sqlite",
-      walMaintenance: { checkpoint: () => false, close: mocks.closeReadOnlyDatabase },
-    });
-    mocks.applyClawAddPlan.mockReset();
-    mocks.applyClawAddPlan.mockImplementation(async (plan) => ({
-      schemaVersion: "openclaw.clawAddResult.v1",
-      stability: "experimental",
-      dryRun: false,
-      mutationAllowed: true,
-      planIntegrity: plan.planIntegrity,
-      status: "complete",
-      claw: plan.claw,
-      agent: plan.agent,
-      workspaceCreated: true,
-      configCommitted: true,
-      installRecord: { agentId: plan.agent.finalId },
-    }));
-    mocks.readClawStatus.mockReset();
-    mocks.readClawStatus.mockResolvedValue({
-      schemaVersion: "openclaw.clawStatus.v1",
-      records: [],
-      summary: { claws: 0, partial: 0, missingAgents: 0, driftedFiles: 0, packageRefs: 0 },
-    });
-    mocks.buildClawRemovePlan.mockReset();
-    mocks.buildClawRemovePlan.mockResolvedValue({
-      schemaVersion: "openclaw.clawRemovePlan.v1",
-      dryRun: true,
-      mutationAllowed: false,
-      planIntegrity: "sha256:remove-plan",
-      target: "demo-agent",
-      agentId: "demo-agent",
-      actions: [
-        {
-          kind: "agent",
-          id: "demo-agent",
-          action: "remove",
-          target: 'agents.entries["demo-agent"]',
-          blocked: false,
-        },
-      ],
-      blockers: [],
-    });
-    mocks.applyClawRemovePlan.mockReset();
-    mocks.applyClawRemovePlan.mockResolvedValue({
-      schemaVersion: "openclaw.clawRemoveResult.v1",
-      dryRun: false,
-      status: "complete",
-      agentId: "demo-agent",
-      agentRemoved: true,
-      workspaceFiles: [],
-      packages: [],
-      mcpServers: [],
-      cronJobs: [],
-      packageRefsReleased: 1,
-    });
-    mocks.buildClawUpdatePlan.mockReset();
-    mocks.buildClawUpdatePlan.mockResolvedValue({
-      schemaVersion: "openclaw.clawUpdatePlan.v1",
-      stability: "experimental",
-      dryRun: true,
-      mutationAllowed: false,
-      planIntegrity: "sha256:update-plan",
-      found: true,
-      agentId: "demo-agent",
-      currentClaw: { name: "@acme/demo-agent", version: "1.0.0", integrity: "sha256:old" },
-      targetClaw: { name: "@acme/demo-agent", version: "1.2.3", integrity: "sha256:new" },
-      summary: {
-        totalActions: 1,
-        added: 0,
-        changed: 1,
-        removed: 0,
-        released: 0,
-        unchanged: 0,
-        manual: 0,
-        blocked: 0,
-        capabilityChanges: 1,
-        capabilityEscalations: 1,
-      },
-      actions: [],
-      capabilityChanges: [
-        {
-          kind: "agent",
-          id: "demo-agent",
-          path: "agent.sandbox.mode",
-          action: "change",
-          classification: "escalation",
-          requiresDistinctConsent: true,
-          reason: "Agent capability field sandbox.mode changes in the target manifest.",
-          effect: { path: "sandbox.mode", current: "non-main", desired: "all" },
-          current: { summary: "non-main", digest: "sha256:current" },
-          desired: { summary: "all", digest: "sha256:desired" },
-        },
-      ],
-      blockers: [],
-      diagnostics: [],
-    });
-    mocks.applyClawUpdatePlan.mockReset();
-    mocks.applyClawUpdatePlan.mockResolvedValue({
-      schemaVersion: "openclaw.clawUpdateResult.v1",
-      stability: "experimental",
-      dryRun: false,
-      mutationAllowed: true,
-      status: "complete",
-      agentId: "demo-agent",
-      previousClaw: { name: "@acme/demo-agent", version: "1.0.0", integrity: "sha256:old" },
-      targetClaw: { name: "@acme/demo-agent", version: "1.2.3", integrity: "sha256:new" },
-      appliedActions: [],
-      installRecord: { agentId: "demo-agent" },
-    });
-    mocks.exportClawAgent.mockReset();
-    mocks.exportClawAgent.mockResolvedValue({
-      schemaVersion: "openclaw.clawExportResult.v1",
-      stability: "experimental",
-      agentId: "demo-agent",
-      outputDirectory: "/tmp/exported",
-      manifest: {
-        schemaVersion: 1,
-        agent: { id: "demo-agent" },
-        workspace: { bootstrapFiles: {}, files: [] },
-        packages: [],
-        mcpServers: {},
-        cronJobs: [],
-      },
-      filesWritten: ["package.json", "openclaw.claw.json"],
-    });
+    resetClawsCliMocks();
   });
 
   afterEach(() => {
@@ -537,12 +244,18 @@ describe("claws cli", () => {
       plan.planIntegrity,
       "--workspace",
       workspace,
+      "--dangerously-force-unsafe-install",
+      INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
       "--json",
     ]);
 
     expect(mocks.applyClawAddPlan).toHaveBeenCalledWith(
       expect.objectContaining({ planIntegrity: plan.planIntegrity }),
-      expect.objectContaining({ consentPlanIntegrity: plan.planIntegrity }),
+      expect.objectContaining({
+        consentPlanIntegrity: plan.planIntegrity,
+        dangerouslyForceUnsafeInstall: true,
+        installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+      }),
     );
     expect(JSON.parse(mocks.logs[0] ?? "{}")).toMatchObject({
       schemaVersion: "openclaw.clawAddResult.v1",
@@ -550,6 +263,77 @@ describe("claws cli", () => {
       status: "complete",
       agent: { finalId: "demo-agent", workspace: expectedWorkspace },
     });
+  });
+
+  it("prints findings from a fresh warning discovered during final add validation", async () => {
+    const manifestPath = await writeManifest();
+    const workspace = join(tempDirs.make("openclaw-claws-add-"), "workspace");
+    const warning = {
+      reason: "Review the changed package",
+      findings: [
+        {
+          ruleId: "package.network",
+          severity: "warn" as const,
+          message: "Package opens a network connection",
+        },
+      ],
+      acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+    };
+    await runCli(["claws", "add", manifestPath, "--dry-run", "--workspace", workspace, "--json"]);
+    const plan = JSON.parse(mocks.logs[0] ?? "{}");
+    mocks.logs.length = 0;
+    mocks.errors.length = 0;
+    mocks.applyClawAddPlan.mockRejectedValueOnce(
+      new ClawAddMutationError(
+        "install_policy_acknowledgement_required",
+        "Install policy warning requires acknowledgement.",
+        warning,
+      ),
+    );
+
+    await runCli([
+      "claws",
+      "add",
+      manifestPath,
+      "--yes",
+      "--plan-integrity",
+      plan.planIntegrity,
+      "--workspace",
+      workspace,
+    ]);
+
+    expect(mocks.logs).toContain("Install policy warning: Review the changed package");
+    expect(mocks.logs).toContain("  - [warn] package.network: Package opens a network connection");
+    expect(mocks.errors).toContain("Install policy warning requires acknowledgement.");
+
+    mocks.logs.length = 0;
+    mocks.errors.length = 0;
+    mocks.applyClawAddPlan.mockResolvedValueOnce({
+      schemaVersion: "openclaw.clawAddResult.v1",
+      stability: "experimental",
+      status: "partial",
+      claw: plan.claw,
+      agent: plan.agent,
+      error: {
+        code: "install_policy_acknowledgement_required",
+        message: "Install policy warning requires acknowledgement.",
+        installPolicyWarning: warning,
+      },
+    });
+
+    await runCli([
+      "claws",
+      "add",
+      manifestPath,
+      "--yes",
+      "--plan-integrity",
+      plan.planIntegrity,
+      "--workspace",
+      workspace,
+    ]);
+
+    expect(mocks.logs).toContain("Install policy warning: Review the changed package");
+    expect(mocks.errors).toContain("Install policy warning requires acknowledgement.");
   });
 
   it("resumes consented add with the matching in-flight workspace on disk", async () => {
@@ -821,12 +605,31 @@ describe("claws cli", () => {
 
   it("prints capability escalation details in human update previews", async () => {
     const { root } = await writePackage();
+    const fixture = createClawUpdatePlanFixture();
+    fixture.actions.push({
+      kind: "package",
+      id: "skill:@acme/unchanged-skill",
+      action: "unchanged",
+      target: "clawhub:@acme/unchanged-skill@1.0.0",
+      blocked: false,
+      reason: "package is unchanged",
+      installPolicyWarning: {
+        reason: "Stale warning for unchanged package",
+        acknowledgementId: SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+      },
+    });
+    mocks.buildClawUpdatePlan.mockResolvedValueOnce(fixture);
 
     await runCli(["claws", "update", "demo-agent", "--from", root, "--dry-run"]);
 
     const output = mocks.logs.join("\n");
     expect(output).toContain("Capability changes: 1; escalations requiring explicit review: 1");
     expect(output).toContain("Plan integrity: sha256:update-plan");
+    expect(output).toContain("Install policy warning: Review skill behavior");
+    expect(output).toContain("[warn] shell: Runs a shell command");
+    expect(output).toContain(`Install policy acknowledgement: sha256:${"a".repeat(64)}`);
+    expect(output).not.toContain("Stale warning for unchanged package");
+    expect(output).not.toContain(SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID);
     expect(output).toContain(
       "Capability consent: the exact plan-integrity token binds every ! change disclosed below.",
     );
@@ -969,6 +772,8 @@ describe("claws cli", () => {
       "--yes",
       "--plan-integrity",
       "sha256:update-plan",
+      "--dangerously-force-unsafe-install",
+      INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
       "--json",
     ]);
 
@@ -983,6 +788,8 @@ describe("claws cli", () => {
         config: {},
         sourceMcpServers: {},
         consentPlanIntegrity: "sha256:update-plan",
+        dangerouslyForceUnsafeInstall: true,
+        installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
         packagePreflight: expect.any(Function),
         cronGateway: expect.objectContaining({
           add: expect.any(Function),
@@ -996,6 +803,152 @@ describe("claws cli", () => {
       status: "complete",
       agentId: "demo-agent",
     });
+  });
+
+  it("returns the rebuilt plan and exact retry when acknowledgement reveals another warning", async () => {
+    const { root } = await writePackage();
+    const fixture = createClawUpdatePlanFixture();
+    const warning = { reason: "Review", acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID };
+    const plan = {
+      ...fixture,
+      planIntegrity: "sha256:reviewed-update",
+      actions: [{ ...fixture.actions[0]!, installPolicyWarning: warning }],
+    };
+    const nextWarning = {
+      reason: "Review dependency tree",
+      acknowledgementId: SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+    };
+    const nextPlan = {
+      ...plan,
+      planIntegrity: "sha256:dependency-tree-update",
+      actions: [{ ...fixture.actions[0]!, installPolicyWarning: nextWarning }],
+    };
+    mocks.buildClawUpdatePlan.mockResolvedValueOnce(plan).mockResolvedValueOnce(nextPlan);
+    mocks.applyClawUpdatePlan.mockRejectedValueOnce(
+      new ClawUpdateMutationError(
+        "install_policy_acknowledgement_required",
+        "Install policy warning requires acknowledgement.",
+        nextWarning,
+        nextPlan.planIntegrity,
+      ),
+    );
+
+    await expect(
+      runClawsUpdateCommand(
+        "demo-agent",
+        {
+          from: root,
+          yes: true,
+          planIntegrity: plan.planIntegrity,
+          dangerouslyForceUnsafeInstall: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+          json: true,
+        },
+        mocks.runtime,
+      ),
+    ).rejects.toThrow("__exit__:1");
+
+    expect(mocks.buildClawUpdatePlan).toHaveBeenCalledTimes(2);
+    const acknowledgedPreflight = mocks.buildClawUpdatePlan.mock.calls[1]?.[0].packagePreflight;
+    expect(acknowledgedPreflight).not.toBe(
+      mocks.buildClawUpdatePlan.mock.calls[0]?.[0].packagePreflight,
+    );
+    expect(mocks.applyClawUpdatePlan).toHaveBeenCalledWith(
+      nextPlan,
+      expect.anything(),
+      expect.objectContaining({ consentPlanIntegrity: nextPlan.planIntegrity }),
+    );
+    expect(JSON.parse(mocks.logs[0] ?? "{}")).toMatchObject({
+      status: "failed",
+      error: {
+        code: "install_policy_acknowledgement_required",
+        planIntegrity: nextPlan.planIntegrity,
+        retryCommand: `openclaw claws update demo-agent --from ${root} --yes --plan-integrity ${nextPlan.planIntegrity} --dangerously-force-unsafe-install ${SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID}`,
+      },
+    });
+  });
+
+  it("preserves every package acknowledgement after consuming a multi-package warning plan", async () => {
+    const { root } = await writePackage();
+    const fixture = createClawUpdatePlanFixture();
+    const action = fixture.actions[0]!;
+    const firstPlan = {
+      ...fixture,
+      planIntegrity: "sha256:first-warning-plan",
+      actions: [
+        {
+          ...action,
+          installPolicyWarning: {
+            reason: "Review package metadata",
+            acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+          },
+        },
+      ],
+    };
+    const secondPlan = {
+      ...fixture,
+      planIntegrity: "sha256:second-warning-plan",
+      actions: [
+        {
+          ...action,
+          installPolicyWarning: {
+            reason: "Review dependency tree",
+            acknowledgementId: SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+          },
+        },
+        {
+          ...action,
+          id: "plugin:@acme/second-package",
+          installPolicyWarning: {
+            reason: "Review second package dependency tree",
+            acknowledgementId: THIRD_INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+          },
+        },
+      ],
+    };
+    const finalPlan = {
+      ...fixture,
+      planIntegrity: "sha256:acknowledged-plan",
+      actions: secondPlan.actions.map(
+        ({ installPolicyWarning: _warning, ...candidate }) => candidate,
+      ),
+    };
+    const aggregateAcknowledgement = resolveClawInstallPolicyAcknowledgement(
+      secondPlan.actions.map((candidate) => ({
+        packageId: candidate.id,
+        warning: candidate.installPolicyWarning,
+      })),
+    );
+    mocks.buildClawUpdatePlan
+      .mockResolvedValueOnce(firstPlan)
+      .mockResolvedValueOnce(secondPlan)
+      .mockResolvedValueOnce(finalPlan);
+
+    await runClawsUpdateCommand(
+      "demo-agent",
+      {
+        from: root,
+        yes: true,
+        planIntegrity: secondPlan.planIntegrity,
+        dangerouslyForceUnsafeInstall: aggregateAcknowledgement.acknowledgementId,
+        json: true,
+      },
+      mocks.runtime,
+    );
+
+    expect(mocks.buildClawUpdatePlan).toHaveBeenCalledTimes(3);
+    expect(mocks.applyClawUpdatePlan).toHaveBeenCalledWith(
+      finalPlan,
+      expect.anything(),
+      expect.objectContaining({
+        consentPlanIntegrity: finalPlan.planIntegrity,
+        installPolicyAcknowledgementId: aggregateAcknowledgement.acknowledgementId,
+        installPolicyAcknowledgementIds: new Map([
+          [action.id, SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID],
+          ["plugin:@acme/second-package", THIRD_INSTALL_POLICY_ACKNOWLEDGEMENT_ID],
+        ]),
+        packagePreflight: expect.any(Function),
+      }),
+    );
   });
 
   it("reports uncertain update mutations as partial JSON", async () => {
@@ -1022,6 +975,40 @@ describe("claws cli", () => {
       error: { code: "update_partial" },
     });
     expect(mocks.runtime.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("preserves a late update policy warning in JSON", async () => {
+    const { root } = await writePackage();
+    const warning = {
+      reason: "Review the changed package",
+      findings: [{ ruleId: "network", severity: "warn" as const, message: "Opens a socket" }],
+      acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+    };
+    mocks.applyClawUpdatePlan.mockRejectedValueOnce(
+      new ClawUpdateMutationError(
+        "install_policy_acknowledgement_required",
+        "review required",
+        warning,
+      ),
+    );
+
+    await expect(
+      runClawsUpdateCommand(
+        "demo-agent",
+        {
+          from: root,
+          yes: true,
+          planIntegrity: "sha256:update-plan",
+          json: true,
+        },
+        mocks.runtime,
+      ),
+    ).rejects.toThrow("__exit__:1");
+
+    expect(JSON.parse(mocks.logs.at(-1) ?? "{}")).toMatchObject({
+      status: "failed",
+      error: { code: "install_policy_acknowledgement_required", installPolicyWarning: warning },
+    });
   });
 
   it("applies remove only after explicit consent", async () => {

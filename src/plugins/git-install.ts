@@ -18,6 +18,10 @@ import { runCommandWithTimeout } from "../process/exec.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveDefaultPluginGitDir } from "./install-paths.js";
 import {
+  resolveInstallPolicyAcknowledgementSequence,
+  unresolvedInstallPolicyAcknowledgement,
+} from "./install-policy-acknowledgement.js";
+import {
   preflightPluginGitInstallPolicy,
   type InstallSafetyOverrides,
   type InstallSecurityScanResult,
@@ -316,6 +320,9 @@ function buildBlockedGitInstallResult(params: {
   return {
     ok: false,
     error: params.blocked.reason,
+    ...(params.blocked.installPolicyWarning
+      ? { installPolicyWarning: params.blocked.installPolicyWarning }
+      : {}),
     ...(params.blocked.code === "security_scan_failed"
       ? { code: PLUGIN_INSTALL_ERROR_CODE.SECURITY_SCAN_FAILED }
       : params.blocked.code === "security_scan_blocked"
@@ -373,6 +380,7 @@ export async function installPluginFromGitSpec(
   const persistentRepoDir = resolveGitInstallRepoDir({ gitDir: params.gitDir, source: parsed });
   const effectiveMode =
     params.mode === "update" && (await pathExists(persistentRepoDir)) ? "update" : "install";
+  const installPolicyAcknowledgementSequence = resolveInstallPolicyAcknowledgementSequence(params);
   const stagingRepoDir = params.dryRun ? undefined : persistentRepoDir;
   return await withGitStagingDir(stagingRepoDir, async (tmpDir) => {
     const repoDir = path.join(tmpDir, "repo");
@@ -428,6 +436,9 @@ export async function installPluginFromGitSpec(
     };
     const preflight = await preflightPluginGitInstallPolicy({
       config: params.config,
+      dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
+      installPolicyAcknowledgementSequence,
       logger: params.logger ?? {},
       mode: effectiveMode,
       pluginId: params.expectedPluginId ?? parsed.label,
@@ -482,6 +493,8 @@ export async function installPluginFromGitSpec(
 
     const result = await installPluginFromInstalledPackageDir({
       dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
+      installPolicyAcknowledgementSequence,
       config: params.config,
       packageDir: repoDir,
       dryRun: params.dryRun,
@@ -493,6 +506,15 @@ export async function installPluginFromGitSpec(
     });
     if (!result.ok) {
       return result;
+    }
+    const deferred = unresolvedInstallPolicyAcknowledgement(installPolicyAcknowledgementSequence);
+    if (deferred) {
+      return {
+        ok: false,
+        code: PLUGIN_INSTALL_ERROR_CODE.SECURITY_SCAN_BLOCKED,
+        error: deferred.reason,
+        installPolicyWarning: deferred.warning,
+      };
     }
     if (!params.dryRun) {
       const replaceResult = await replaceManagedGitRepo({

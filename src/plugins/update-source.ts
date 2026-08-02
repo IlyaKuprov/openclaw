@@ -1,5 +1,4 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import type { ClawHubTrustErrorCode } from "../infra/clawhub-install-trust.js";
 import { parseClawHubPluginSpec } from "../infra/clawhub-spec.js";
@@ -18,6 +17,7 @@ import { expectedIntegrityForUpdate } from "../infra/package-update-utils.js";
 import { compareValidSemver } from "../infra/semver.js";
 import type { UpdateChannel } from "../infra/update-channels.js";
 import { runCommandWithTimeout } from "../process/exec.js";
+import type { InstallPolicyWarning } from "../security/install-policy.js";
 import { resolveCompatibilityHostVersion } from "../version.js";
 import { CLAWHUB_INSTALL_ERROR_CODE } from "./clawhub-error-codes.js";
 import {
@@ -65,6 +65,7 @@ type BasePluginUpdateOutcome = {
   nextVersion?: string;
   channelFallback?: PluginUpdateChannelFallback;
   warning?: string;
+  installPolicyWarning?: InstallPolicyWarning;
 };
 
 export type PluginUpdateOutcome =
@@ -76,12 +77,6 @@ export type PluginUpdateOutcome =
       status: Exclude<PluginUpdateStatus, "skipped">;
       code?: string;
     });
-
-export type PluginUpdateSummary = {
-  config: OpenClawConfig;
-  changed: boolean;
-  outcomes: PluginUpdateOutcome[];
-};
 
 export type PluginUpdateIntegrityDriftParams = {
   pluginId: string;

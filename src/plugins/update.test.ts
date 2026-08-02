@@ -63,6 +63,8 @@ vi.mock("./install.js", () => ({
   PLUGIN_INSTALL_ERROR_CODE: {
     NPM_METADATA_FAILURE: "npm_metadata_failure",
     NPM_PACKAGE_NOT_FOUND: "npm_package_not_found",
+    SECURITY_SCAN_BLOCKED: "security_scan_blocked",
+    SECURITY_SCAN_FAILED: "security_scan_failed",
   },
 }));
 
@@ -269,6 +271,7 @@ function createEnabledDemoClawHubInstallConfig(): OpenClawConfig {
   const installPath = createInstalledPackageDir({
     name: "demo",
     version: "1.2.3",
+    runnable: true,
   });
   const config = createClawHubInstallConfig({ installPath });
   config.plugins = {
@@ -350,7 +353,7 @@ function createCodexAppServerInstallConfig(params: {
 
 function createInstalledPackageDir(params: {
   name?: string;
-  version: string;
+  version?: string;
   peerDependencies?: Record<string, string>;
   runnable?: boolean;
 }): string {
@@ -361,7 +364,7 @@ function createInstalledPackageDir(params: {
     JSON.stringify(
       {
         name: params.name ?? "test-plugin",
-        version: params.version,
+        ...(params.version ? { version: params.version } : {}),
         ...(params.peerDependencies ? { peerDependencies: params.peerDependencies } : {}),
         ...(params.runnable ? { openclaw: { extensions: ["./index.js"] } } : {}),
       },
@@ -2899,6 +2902,197 @@ describe("updateNpmInstalledPlugins", () => {
     ]);
   });
 
+  it("preserves an installed plugin while a policy warning awaits acknowledgement", async () => {
+    installPluginFromClawHubMock.mockResolvedValue({
+      ok: false,
+      code: "security_scan_blocked",
+      error: "install policy warning requires acknowledgement",
+      installPolicyWarning: {
+        reason: "Review package behavior",
+        findings: [{ ruleId: "shell", severity: "warn", message: "Runs a shell command" }],
+      },
+    });
+    const config = createEnabledDemoClawHubInstallConfig();
+
+    const result = await updatePlugin(config, "demo", { disableOnFailure: true });
+
+    expect(result.changed).toBe(false);
+    expect(result.config.plugins?.entries?.demo).toEqual({
+      enabled: true,
+      config: { preserved: true },
+    });
+    expect(result.outcomes).toEqual([
+      expect.objectContaining({
+        pluginId: "demo",
+        status: "error",
+        installPolicyWarning: {
+          reason: "Review package behavior",
+          findings: [{ ruleId: "shell", severity: "warn", message: "Runs a shell command" }],
+        },
+      }),
+    ]);
+  });
+
+  it("defers an earlier plugin warning until a bulk acknowledgement matches", async () => {
+    const acknowledgementId = `sha256:${"b".repeat(64)}`;
+    const acknowledgementSequence = {
+      presentedId: acknowledgementId,
+      pendingAcknowledgementIds: [acknowledgementId],
+      previousAcknowledgementIds: [],
+      matched: false,
+    };
+    const first = createClawHubInstallConfig({ pluginId: "first" });
+    const second = createClawHubInstallConfig({ pluginId: "second" });
+    const config = {
+      plugins: {
+        installs: { ...first.plugins?.installs, ...second.plugins?.installs },
+      },
+    } as OpenClawConfig;
+    installPluginFromClawHubMock.mockImplementation(
+      async (params: {
+        expectedPluginId?: string;
+        installPolicyAcknowledgementSequence?: typeof acknowledgementSequence;
+      }) => {
+        expect(params.installPolicyAcknowledgementSequence).toBe(acknowledgementSequence);
+        if (params.expectedPluginId === "first") {
+          return {
+            ok: false,
+            code: "security_scan_blocked",
+            error: "install policy warning requires acknowledgement",
+            installPolicyWarning: {
+              reason: "Review first plugin",
+              acknowledgementId: `sha256:${"a".repeat(64)}`,
+            },
+          };
+        }
+        acknowledgementSequence.pendingAcknowledgementIds.length = 0;
+        acknowledgementSequence.matched = true;
+        return {
+          ok: true,
+          pluginId: "second",
+          targetDir: "/tmp/second",
+          version: "1.0.0",
+        };
+      },
+    );
+
+    const result = await updateNpmInstalledPlugins({
+      config,
+      pluginIds: ["first", "second"],
+      dryRun: true,
+      dangerouslyForceUnsafeInstall: true,
+      installPolicyAcknowledgementId: acknowledgementId,
+      installPolicyAcknowledgementSequence: acknowledgementSequence,
+      deferInstallPolicyAcknowledgementMismatch: true,
+    });
+
+    expect(result.installPolicyAcknowledgementMatched).toBe(true);
+    expect(result.deferredInstallPolicyMismatch).toBeUndefined();
+    expect(result.outcomes).toEqual([
+      expect.objectContaining({ pluginId: "first", status: "skipped" }),
+      expect.objectContaining({ pluginId: "second", status: "updated" }),
+    ]);
+  });
+
+  it("preserves a marketplace bundle while a policy warning awaits acknowledgement", async () => {
+    installPluginFromMarketplaceMock.mockResolvedValue({
+      ok: false,
+      code: "security_scan_blocked",
+      error: "install policy warning requires acknowledgement",
+      installPolicyWarning: { reason: "Review bundle behavior" },
+    });
+    const installPath = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-bundle-update-"));
+    tempDirs.push(installPath);
+    fs.mkdirSync(path.join(installPath, ".codex-plugin"), { recursive: true });
+    fs.mkdirSync(path.join(installPath, "skills", "demo"), { recursive: true });
+    fs.writeFileSync(
+      path.join(installPath, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "Demo Bundle", skills: "skills" }),
+    );
+    const config = createMarketplaceInstallConfig({
+      pluginId: "demo",
+      installPath,
+      marketplaceSource: "acme/plugins",
+      marketplacePlugin: "demo",
+    });
+    config.plugins = { ...config.plugins, entries: { demo: { enabled: true } } };
+
+    const result = await updatePlugin(config, "demo", { disableOnFailure: true });
+
+    expect(result.changed).toBe(false);
+    expect(result.config.plugins?.entries?.demo?.enabled).toBe(true);
+    expect(result.outcomes[0]).toMatchObject({
+      pluginId: "demo",
+      status: "error",
+      installPolicyWarning: { reason: "Review bundle behavior" },
+    });
+  });
+
+  it("preserves a runnable versionless plugin while a policy warning awaits acknowledgement", async () => {
+    installPluginFromClawHubMock.mockResolvedValue({
+      ok: false,
+      code: "security_scan_blocked",
+      error: "install policy warning requires acknowledgement",
+      installPolicyWarning: { reason: "Review package behavior" },
+    });
+    const installPath = createInstalledPackageDir({ name: "demo", runnable: true });
+    const config = createClawHubInstallConfig({ installPath });
+    config.plugins = { ...config.plugins, entries: { demo: { enabled: true } } };
+
+    const result = await updatePlugin(config, "demo", { disableOnFailure: true });
+
+    expect(result.changed).toBe(false);
+    expect(result.config.plugins?.entries?.demo?.enabled).toBe(true);
+    expect(result.outcomes[0]).toMatchObject({
+      pluginId: "demo",
+      status: "error",
+      installPolicyWarning: { reason: "Review package behavior" },
+    });
+  });
+
+  it("still disables a missing plugin payload when repair returns a policy warning", async () => {
+    installPluginFromClawHubMock.mockResolvedValue({
+      ok: false,
+      code: "security_scan_blocked",
+      error: "install policy warning requires acknowledgement",
+      installPolicyWarning: { reason: "Review package behavior" },
+    });
+    const installPath = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-missing-plugin-"));
+    tempDirs.push(installPath);
+    const config = createClawHubInstallConfig({ installPath });
+    config.plugins = { ...config.plugins, entries: { demo: { enabled: true } } };
+
+    const result = await updatePlugin(config, "demo", { disableOnFailure: true });
+
+    expect(result.changed).toBe(true);
+    expect(result.config.plugins?.entries?.demo?.enabled).toBe(false);
+    expect(result.outcomes[0]?.installPolicyWarning).toEqual({
+      reason: "Review package behavior",
+    });
+  });
+
+  it("disables an installed plugin with a broken entry while a policy warning awaits", async () => {
+    installPluginFromClawHubMock.mockResolvedValue({
+      ok: false,
+      code: "security_scan_blocked",
+      error: "install policy warning requires acknowledgement",
+      installPolicyWarning: { reason: "Review package behavior" },
+    });
+    const installPath = createInstalledPackageDir({
+      name: "demo",
+      version: "1.2.3",
+      runnable: true,
+    });
+    fs.rmSync(path.join(installPath, "index.js"));
+    const config = createClawHubInstallConfig({ installPath });
+    config.plugins = { ...config.plugins, entries: { demo: { enabled: true } } };
+
+    const result = await updatePlugin(config, "demo", { disableOnFailure: true });
+
+    expect(result.changed).toBe(true);
+    expect(result.config.plugins?.entries?.demo?.enabled).toBe(false);
+  });
+
   it("aborts exact pinned npm plugin updates on integrity drift by default", async () => {
     const warn = vi.fn();
     installPluginFromNpmSpecMock.mockImplementation(
@@ -3348,6 +3542,35 @@ describe("updateNpmInstalledPlugins", () => {
       message: "plugin channel fallback: openclaw-codex-app-server used @latest after @beta failed",
     });
   });
+
+  it.each(["security_scan_blocked", "security_scan_failed"])(
+    "does not fall back from beta after %s",
+    async (code) => {
+      installPluginFromNpmSpecMock.mockResolvedValue({
+        ok: false,
+        code,
+        error: "install policy stopped the beta update",
+        installPolicyWarning:
+          code === "security_scan_blocked" ? { reason: "Review beta package behavior" } : undefined,
+      });
+
+      const result = await updatePlugin(
+        createCodexAppServerInstallConfig({ spec: "openclaw-codex-app-server" }),
+        "openclaw-codex-app-server",
+        { updateChannel: "beta" },
+      );
+
+      expect(installPluginFromNpmSpecMock).toHaveBeenCalledTimes(1);
+      expect(npmInstallCall(0)?.spec).toBe("openclaw-codex-app-server@beta");
+      expect(result.outcomes[0]).toMatchObject({
+        pluginId: "openclaw-codex-app-server",
+        status: "error",
+        message:
+          "Failed to update openclaw-codex-app-server: install policy stopped the beta update",
+      });
+      expect(result.outcomes[0]?.channelFallback).toBeUndefined();
+    },
+  );
 
   it.each([
     {
@@ -4807,6 +5030,25 @@ describe("syncPluginsForUpdateChannel", () => {
     expect(result.changed).toBe(false);
     expect(result.config).toBe(config);
     expect(result.summary.errors).toEqual(["Failed to update legacy-chat: package unavailable"]);
+  });
+
+  it("preserves install-policy warning details when externalized plugin installation pauses", async () => {
+    resolveBundledPluginSourcesMock.mockReturnValue(new Map());
+    installPluginFromNpmSpecMock.mockResolvedValue({
+      ok: false,
+      code: "security_scan_blocked",
+      error: "install policy warning requires acknowledgement",
+      installPolicyWarning: { reason: "Review package behavior" },
+    });
+
+    const result = await syncExternalizedPlugin({ config: createExternalizedPluginConfig() });
+
+    expect(result.summary.installPolicyWarnings).toEqual([
+      {
+        error: "Failed to update legacy-chat: install policy warning requires acknowledgement",
+        warning: { reason: "Review package behavior" },
+      },
+    ]);
   });
 
   it("does not externalize custom local path installs that only share the old plugin id", async () => {

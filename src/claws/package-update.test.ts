@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { digestClawPackageRef } from "./package-update-provenance.js";
 import { applyClawPackageUpdate } from "./package-update.js";
-import { installClawPackages } from "./packages.js";
+import { ClawPackageInstallError, installClawPackages } from "./packages.js";
 import { CLAW_PACKAGE_REF_SCHEMA_VERSION, type PersistedClawPackageRef } from "./provenance.js";
 import { CLAW_OUTPUT_STABILITY, type ClawAddPlan, type ClawManifest } from "./types.js";
 import { CLAW_UPDATE_PLAN_SCHEMA_VERSION, type ClawUpdatePlan } from "./update-plan.js";
@@ -225,6 +225,119 @@ describe("applyClawPackageUpdate", () => {
     await expect(execution.rollback()).resolves.toBeUndefined();
     expect(replaceExpected).toHaveBeenNthCalledWith(1, legacy, undefined, expect.any(Object));
     expect(replaceExpected).toHaveBeenNthCalledWith(2, undefined, legacy, expect.any(Object));
+  });
+
+  it("rolls back provenance when policy stops before a possible package mutation", async () => {
+    const oldSkill = ref("skill", "triage", "1.0.0");
+    const warning = {
+      reason: "Review updated skill",
+      acknowledgementId: `sha256:${"a".repeat(64)}`,
+    };
+    const replaceExpected = vi.fn();
+    const installPackages = vi.fn(
+      async (_plan: ClawAddPlan, options: Parameters<typeof installClawPackages>[1]) => {
+        options?.onExternalMutation?.({
+          kind: "skill",
+          source: "clawhub",
+          ref: "triage",
+          version: "2.0.0",
+        });
+        throw new ClawPackageInstallError(
+          "install_policy_acknowledgement_required",
+          warning.reason,
+          [],
+          warning,
+        );
+      },
+    );
+
+    await expect(
+      applyClawPackageUpdate(
+        plan([
+          {
+            kind: "package",
+            id: "skill:triage",
+            action: "change",
+            target: "clawhub:triage@2.0.0",
+            blocked: false,
+            reason: "changed",
+            currentDigest: digestClawPackageRef(oldSkill),
+          },
+        ]),
+        manifest,
+        addPlan,
+        { installPackages, readRefs: () => [oldSkill], replaceExpected },
+      ),
+    ).rejects.toMatchObject({ partial: false, installPolicyWarning: warning });
+    expect(replaceExpected).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "pending", version: "2.0.0" }),
+      oldSkill,
+      expect.any(Object),
+    );
+  });
+
+  it("retains earlier mutation receipts when a later package stops on policy", async () => {
+    const oldSkill = ref("skill", "triage", "1.0.0");
+    const warning = {
+      reason: "Review added plugin",
+      acknowledgementId: `sha256:${"b".repeat(64)}`,
+    };
+    const replaceExpected = vi.fn();
+    const installPackages = vi.fn(
+      async (current: ClawAddPlan, options: Parameters<typeof installClawPackages>[1]) => {
+        const details = current.actions[0]!.details as {
+          kind: "skill" | "plugin";
+          ref: string;
+          version: string;
+        };
+        options?.onExternalMutation?.({
+          kind: details.kind,
+          source: "clawhub",
+          ref: details.ref,
+          version: details.version,
+        });
+        if (details.kind === "plugin") {
+          throw new ClawPackageInstallError(
+            "install_policy_acknowledgement_required",
+            warning.reason,
+            [],
+            warning,
+          );
+        }
+        return [ref("skill", details.ref, details.version)];
+      },
+    );
+
+    await expect(
+      applyClawPackageUpdate(
+        plan([
+          {
+            kind: "package",
+            id: "skill:triage",
+            action: "change",
+            target: "clawhub:triage@2.0.0",
+            blocked: false,
+            reason: "changed",
+            currentDigest: digestClawPackageRef(oldSkill),
+          },
+          {
+            kind: "package",
+            id: "plugin:audit",
+            action: "add",
+            target: "clawhub:audit@1.0.0",
+            blocked: false,
+            reason: "added",
+          },
+        ]),
+        manifest,
+        addPlan,
+        { installPackages, readRefs: () => [oldSkill], replaceExpected },
+      ),
+    ).rejects.toMatchObject({
+      partial: true,
+      installPolicyWarning: warning,
+      message: expect.stringContaining("skill:triage@2.0.0"),
+    });
   });
 
   it("releases managed package provenance without uninstalling the artifact", async () => {

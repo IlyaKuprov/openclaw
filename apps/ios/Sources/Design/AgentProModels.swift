@@ -246,6 +246,7 @@ struct SkillInstallParams: Encodable {
     let name: String
     let installId: String
     let timeoutMs: Int
+    let acknowledgeInstallPolicyWarning: String?
 }
 
 struct SkillInstallResultLite: Decodable {
@@ -271,6 +272,8 @@ struct ClawHubSearchResultLite: Decodable {
 struct ClawHubInstallParams: Encodable {
     let source = "clawhub"
     let slug: String
+    let version: String?
+    let acknowledgeInstallPolicyWarning: String?
 }
 
 struct SkillStatusMissingLite: Decodable {
@@ -479,6 +482,7 @@ struct ConfigPatchParams: Encodable {
 
 enum SkillMutationError: LocalizedError {
     case liveGatewayUnavailable
+    case gatewayChanged
     case missingConfigHash
     case invalidPatchPayload
 
@@ -486,6 +490,8 @@ enum SkillMutationError: LocalizedError {
         switch self {
         case .liveGatewayUnavailable:
             "Connect a live gateway to edit agent skills."
+        case .gatewayChanged:
+            "The connected gateway changed. Refresh and try again."
         case .missingConfigHash:
             "Config hash missing; refresh and retry."
         case .invalidPatchPayload:

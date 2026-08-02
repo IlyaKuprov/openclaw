@@ -304,7 +304,46 @@ public struct ClawHubSkillInstallRejection: Equatable, Sendable {
     public let requiresAcknowledgement: Bool
 }
 
+public struct SkillInstallPolicyWarning: Equatable, Sendable {
+    public let reason: String
+    public let findings: [String]
+    public let version: String?
+    public let acknowledgementId: String?
+
+    public var message: String {
+        ([self.reason] + self.findings).joined(separator: "\n")
+    }
+}
+
 public enum SkillManagementContract {
+    public static func installPolicyWarning(from error: GatewayResponseError) -> SkillInstallPolicyWarning? {
+        guard let warning = error.details["installPolicyWarning"]?.dictionaryValue,
+              let reason = warning["reason"]?.stringValue?
+                  .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        else { return nil }
+        let findings = warning["findings"]?.arrayValue?.compactMap { value -> String? in
+            guard let finding = value.dictionaryValue,
+                  let rule = finding["ruleId"]?.stringValue,
+                  let severity = finding["severity"]?.stringValue,
+                  let message = finding["message"]?.stringValue
+            else { return nil }
+            let file = finding["file"]?.stringValue
+            let line = finding["line"]?.intValue
+            let location = file.map { " · \($0)\(line.map { ":\($0)" } ?? "")" } ?? ""
+            let evidence = finding["evidence"]?.stringValue.map { " — \($0)" } ?? ""
+            return "• [\(severity.uppercased()) · \(rule)\(location)] \(message)\(evidence)"
+        } ?? []
+        let version = error.details["version"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let acknowledgementId = warning["acknowledgementId"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        return SkillInstallPolicyWarning(
+            reason: reason,
+            findings: findings,
+            version: version,
+            acknowledgementId: acknowledgementId)
+    }
+
     public static func installed(_ skills: [SkillStatus], slug: String, version: String) -> Bool {
         guard let reference = clawHubReference(slug) else { return false }
         return skills.contains {

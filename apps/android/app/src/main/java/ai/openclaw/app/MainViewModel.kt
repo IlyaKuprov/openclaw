@@ -1532,9 +1532,17 @@ class MainViewModel private constructor(
   fun installClawHubSkill(
     slug: String,
     acknowledgeClawHubRisk: Boolean = false,
+    dangerouslyForceUnsafeInstall: Boolean = false,
+    installPolicyAcknowledgementId: String? = null,
     version: String? = null,
   ) {
-    ensureRuntime().installClawHubSkill(slug, acknowledgeClawHubRisk, version)
+    ensureRuntime().installClawHubSkill(
+      slug,
+      acknowledgeClawHubRisk,
+      dangerouslyForceUnsafeInstall,
+      installPolicyAcknowledgementId,
+      version,
+    )
   }
 
   fun clearClawHubSkillMessage() {

@@ -16,6 +16,8 @@ import {
 } from "../../test-utils/openclaw-test-state.js";
 import type { GatewayRequestHandlers } from "./types.js";
 
+const INSTALL_POLICY_ACKNOWLEDGEMENT_ID = `sha256:${"a".repeat(64)}`;
+
 const agentScopeState = vi.hoisted(() => ({
   workspaceDir: "",
 }));
@@ -494,6 +496,7 @@ describe("skill upload gateway handlers", () => {
       source: "upload",
       uploadId: upload.uploadId,
       slug: "scan-blocked",
+      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
     });
 
     expect(install.ok).toBe(false);
@@ -502,10 +505,44 @@ describe("skill upload gateway handlers", () => {
     const scanInput = firstCallArg<{
       origin?: { type?: string; uploadId?: string };
       skillName?: string;
+      dangerouslyForceUnsafeInstall?: boolean;
     }>(installSecurityScanState.evaluateSkillInstallPolicy);
     expect(scanInput.origin?.type).toBe("upload");
     expect(scanInput.origin?.uploadId).toBe(upload.uploadId);
     expect(scanInput.skillName).toBe("scan-blocked");
+    expect(scanInput.dangerouslyForceUnsafeInstall).toBe(true);
+    expect(skillUploadExists(stateDir, upload.uploadId)).toBe(false);
+  });
+
+  it("preserves uploaded archives until a policy warning is acknowledged", async () => {
+    const { handlers, stateDir } = await makeHarness();
+    installSecurityScanState.evaluateSkillInstallPolicy.mockResolvedValueOnce({
+      blocked: {
+        code: "security_scan_blocked",
+        installPolicyWarning: { reason: "review this upload" },
+        requiresAcknowledgement: true,
+        reason: "review required",
+      },
+    });
+    const upload = await uploadArchive(handlers, {
+      archive: await makeSkillArchive({}),
+      slug: "scan-warning",
+    });
+    const request = {
+      source: "upload",
+      uploadId: upload.uploadId,
+      slug: "scan-warning",
+    };
+    const warning = await call(handlers, "skills.install", request);
+    expect(warning.error).toMatchObject({
+      details: { installPolicyWarning: { reason: "review this upload" } },
+    });
+    expect(skillUploadExists(stateDir, upload.uploadId)).toBe(true);
+    const acknowledged = await call(handlers, "skills.install", {
+      ...request,
+      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+    });
+    expect(acknowledged.ok).toBe(true);
     expect(skillUploadExists(stateDir, upload.uploadId)).toBe(false);
   });
 

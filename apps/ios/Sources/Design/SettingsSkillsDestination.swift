@@ -36,12 +36,18 @@ private enum InstalledSkillFilter: String, CaseIterable, Identifiable {
 
 private enum SkillsReviewSheet: Identifiable {
     case install(ClawHubSkillInstallReview, route: GatewayNodeSessionRoute)
-    case risk(ClawHubSkillInstallReview, route: GatewayNodeSessionRoute, message: String, warning: String?)
+    case risk(
+        ClawHubSkillInstallReview,
+        route: GatewayNodeSessionRoute,
+        message: String,
+        warning: String?,
+        acknowledgeRisk: Bool,
+        installPolicyAcknowledgementId: String?)
 
     var id: String {
         switch self {
         case let .install(review, _): "install:\(review.id)"
-        case let .risk(review, _, _, _): "risk:\(review.id)"
+        case let .risk(review, _, _, _, _, _): "risk:\(review.id)"
         }
     }
 }
@@ -99,14 +105,22 @@ struct SettingsSkillsDestination: View {
                     isInstalling: self.installingSlug == review.slug,
                     onCancel: { self.reviewSheet = nil },
                     onInstall: { Task { await self.install(review, route: route, acknowledgeRisk: false) } })
-            case let .risk(review, route, message, warning):
+            case let .risk(review, route, message, warning, acknowledgeRisk, installPolicyAcknowledgementId):
                 SkillsRiskReviewSheet(
                     review: review,
                     message: message,
                     warning: warning,
                     isInstalling: self.installingSlug == review.slug,
                     onCancel: { self.reviewSheet = nil },
-                    onInstall: { Task { await self.install(review, route: route, acknowledgeRisk: true) } })
+                    onInstall: {
+                        Task {
+                            await self.install(
+                                review,
+                                route: route,
+                                acknowledgeRisk: acknowledgeRisk,
+                                installPolicyAcknowledgementId: installPolicyAcknowledgementId)
+                        }
+                    })
             }
         }
     }
@@ -557,7 +571,8 @@ struct SettingsSkillsDestination: View {
     private func install(
         _ review: ClawHubSkillInstallReview,
         route: GatewayNodeSessionRoute,
-        acknowledgeRisk: Bool) async
+        acknowledgeRisk: Bool,
+        installPolicyAcknowledgementId: String? = nil) async
     {
         guard self.canAdmin,
               self.loadedGatewayID == self.appModel.connectedGatewayID,
@@ -580,6 +595,7 @@ struct SettingsSkillsDestination: View {
                 slug: review.slug,
                 version: review.version,
                 acknowledgeClawHubRisk: acknowledgeRisk ? true : nil,
+                acknowledgeInstallPolicyWarning: installPolicyAcknowledgementId,
                 timeoutMs: clawHubInstallTimeoutMilliseconds)
             let data = try await self.request(
                 method: "skills.install",
@@ -616,13 +632,25 @@ struct SettingsSkillsDestination: View {
                 isError: false)
         } catch let error as GatewayResponseError {
             guard self.appModel.connectedGatewayID == gatewayID else { return }
+            if let warning = SkillManagementContract.installPolicyWarning(from: error) {
+                self.reviewSheet = .risk(
+                    review,
+                    route: route,
+                    message: String(localized: "Review the install policy warning before continuing."),
+                    warning: warning.message,
+                    acknowledgeRisk: acknowledgeRisk,
+                    installPolicyAcknowledgementId: warning.acknowledgementId)
+                return
+            }
             let rejection = SkillManagementContract.rejection(from: error, attemptedVersion: review.version)
             if rejection.requiresAcknowledgement, !acknowledgeRisk {
                 self.reviewSheet = .risk(
                     review,
                     route: route,
                     message: rejection.message,
-                    warning: rejection.warning)
+                    warning: rejection.warning,
+                    acknowledgeRisk: true,
+                    installPolicyAcknowledgementId: installPolicyAcknowledgementId)
             } else {
                 self.reviewSheet = nil
                 self.notice = SkillsNotice(
@@ -1103,6 +1131,7 @@ private struct ClawHubInstallRequest: Encodable {
     let slug: String
     let version: String
     let acknowledgeClawHubRisk: Bool?
+    let acknowledgeInstallPolicyWarning: String?
     let timeoutMs: Int
 }
 

@@ -1,7 +1,12 @@
 // Source install tests cover installing skill sources from local and remote inputs.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "../../plugins/hook-runner-global.js";
+import { createMockPluginRegistry } from "../../plugins/hooks.test-helpers.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { withTempDir } from "../../test-helpers/temp-dir.js";
 import { buildWorkspaceSkillStatus } from "../discovery/status.js";
@@ -93,6 +98,10 @@ function capturePolicyConfig(params: { scriptPath: string; capturePath: string }
   };
 }
 
+afterEach(() => {
+  resetGlobalHookRunner();
+});
+
 describe("installSkillFromSource", () => {
   it("installs a local skill directory using the SKILL.md frontmatter name", async () => {
     await withTempDir({ prefix: "openclaw-skill-source-local-" }, async (root) => {
@@ -114,6 +123,32 @@ describe("installSkillFromSource", () => {
       await expect(
         fs.readFile(path.join(workspaceDir, "skills", "frontmatter-skill", "SKILL.md"), "utf8"),
       ).resolves.toContain("frontmatter-skill");
+    });
+  });
+
+  it("installs the reviewed snapshot when a local skill source changes during policy", async () => {
+    await withTempDir({ prefix: "openclaw-skill-source-snapshot-" }, async (root) => {
+      const workspaceDir = path.join(root, "workspace");
+      const sourceDir = path.join(root, "source");
+      const payloadPath = path.join(sourceDir, "payload.js");
+      await writeSkill(sourceDir, { name: "snapshot-skill" });
+      await fs.writeFile(payloadPath, "export const reviewed = true;\n");
+      const handler = vi.fn(async () => {
+        await fs.writeFile(payloadPath, "throw new Error('changed after review');\n");
+        return {};
+      });
+      initializeGlobalHookRunner(
+        createMockPluginRegistry([{ hookName: "before_install", handler }]),
+      );
+
+      const result = await installSkillFromSource({ workspaceDir, spec: sourceDir });
+
+      expect(result.ok).toBe(true);
+      expect(handler).toHaveBeenCalledOnce();
+      await expect(fs.readFile(payloadPath, "utf8")).resolves.toContain("changed after review");
+      await expect(
+        fs.readFile(path.join(workspaceDir, "skills", "snapshot-skill", "payload.js"), "utf8"),
+      ).resolves.toBe("export const reviewed = true;\n");
     });
   });
 

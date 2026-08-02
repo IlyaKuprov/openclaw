@@ -21,6 +21,7 @@ import {
   setManagedPluginEnabled,
   uninstallManagedPlugin,
 } from "../../plugins/management-service.js";
+import { projectInstallPolicyWarningForExternal } from "../../security/install-policy.js";
 import { buildGatewayReloadPlan } from "../config-reload-plan.js";
 import { resolveGatewayReloadSettings } from "../config-reload-settings.js";
 import type { GatewayRequestHandlers } from "./types.js";
@@ -118,7 +119,18 @@ export const pluginsHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      const result = await installManagedPlugin({ request: params });
+      const { acknowledgeInstallPolicyWarning, ...request } = params;
+      const result = await installManagedPlugin({
+        request: {
+          ...request,
+          ...(acknowledgeInstallPolicyWarning
+            ? {
+                dangerouslyForceUnsafeInstall: true,
+                installPolicyAcknowledgementId: acknowledgeInstallPolicyWarning,
+              }
+            : {}),
+        },
+      });
       respond(
         true,
         {
@@ -135,13 +147,22 @@ export const pluginsHandlers: GatewayRequestHandlers = {
         lifecycleError?.code && isClawHubTrustErrorCode(lifecycleError.code)
           ? lifecycleError.code
           : undefined;
-      const details = lifecycleError
+      const trustDetails = lifecycleError
         ? buildClawHubTrustErrorDetails({
             ...(trustCode ? { code: trustCode } : {}),
             ...(lifecycleError.version ? { version: lifecycleError.version } : {}),
             ...(lifecycleError.warning ? { warning: lifecycleError.warning } : {}),
           })
         : undefined;
+      const policyDetails = lifecycleError?.installPolicyWarning
+        ? {
+            installPolicyWarning: projectInstallPolicyWarningForExternal(
+              lifecycleError.installPolicyWarning,
+            ),
+          }
+        : undefined;
+      const details =
+        trustDetails || policyDetails ? { ...trustDetails, ...policyDetails } : undefined;
       respond(
         false,
         undefined,

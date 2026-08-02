@@ -2,6 +2,7 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ArchiveLogger } from "../../infra/archive.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import type { InstallPolicyWarning } from "../../security/install-policy.js";
 import {
   installSkillArchiveFromPath,
   type SkillArchiveInstallFailureKind,
@@ -40,6 +41,7 @@ type UploadedSkillInstallResult =
       ok: false;
       error: string;
       errorKind: UploadedSkillInstallErrorKind;
+      installPolicyWarning?: InstallPolicyWarning;
     };
 
 // Preserve invalid-request failures for caller feedback; other install failures are unavailable.
@@ -53,6 +55,8 @@ export async function installUploadedSkillArchive(params: {
   uploadId: string;
   slug: string;
   force: boolean;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   sha256?: string;
   timeoutMs?: number;
   workspaceDir: string;
@@ -101,6 +105,8 @@ export async function installUploadedSkillArchive(params: {
         logger: params.log,
         policy: {
           config: params.config,
+          dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+          installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
           installId: "upload",
           origin: {
             type: "upload",
@@ -112,14 +118,19 @@ export async function installUploadedSkillArchive(params: {
         },
       });
       if (!install.ok) {
-        const errorKind = uploadInstallFailureErrorKind(install.failureKind);
-        if (install.failureKind === "invalid-request") {
+        const errorKind = install.installPolicyWarning
+          ? "unavailable"
+          : uploadInstallFailureErrorKind(install.failureKind);
+        if (install.failureKind === "invalid-request" && !install.installPolicyWarning) {
           await upload.remove().catch(() => undefined);
         }
         return {
           ok: false,
           error: install.error,
           errorKind,
+          ...(install.installPolicyWarning
+            ? { installPolicyWarning: install.installPolicyWarning }
+            : {}),
         };
       }
       await upload.remove().catch(() => undefined);

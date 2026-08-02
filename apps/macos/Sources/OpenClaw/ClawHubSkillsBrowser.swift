@@ -4,12 +4,18 @@ import SwiftUI
 
 private enum ClawHubReviewSheet: Identifiable {
     case install(ClawHubSkillInstallReview, route: GatewayConnection.Route)
-    case risk(ClawHubSkillInstallReview, route: GatewayConnection.Route, message: String, warning: String?)
+    case risk(
+        ClawHubSkillInstallReview,
+        route: GatewayConnection.Route,
+        message: String,
+        warning: String?,
+        acknowledgeRisk: Bool,
+        installPolicyAcknowledgementId: String?)
 
     var id: String {
         switch self {
         case let .install(review, _): "install:\(review.id)"
-        case let .risk(review, _, _, _): "risk:\(review.id)"
+        case let .risk(review, _, _, _, _, _): "risk:\(review.id)"
         }
     }
 }
@@ -93,12 +99,12 @@ struct ClawHubSkillsBrowser: View {
                     onCancel: { self.model.sheet = nil },
                     onInstall: {
                         Task {
-                            if let skills = await self.model.install(review, route: route, acknowledgeRisk: false) {
+                            if let skills = await self.model.install(review, route: route) {
                                 self.onInstalled(skills)
                             }
                         }
                     })
-            case let .risk(review, route, message, warning):
+            case let .risk(review, route, message, warning, acknowledgeRisk, installPolicyAcknowledgementId):
                 ClawHubRiskReviewSheet(
                     review: review,
                     message: message,
@@ -107,7 +113,12 @@ struct ClawHubSkillsBrowser: View {
                     onCancel: { self.model.sheet = nil },
                     onInstall: {
                         Task {
-                            if let skills = await self.model.install(review, route: route, acknowledgeRisk: true) {
+                            if let skills = await self.model.install(
+                                review,
+                                route: route,
+                                acknowledgeRisk: acknowledgeRisk,
+                                installPolicyAcknowledgementId: installPolicyAcknowledgementId)
+                            {
                                 self.onInstalled(skills)
                             }
                         }
@@ -312,7 +323,8 @@ private final class ClawHubSkillsBrowserModel {
     func install(
         _ review: ClawHubSkillInstallReview,
         route: GatewayConnection.Route,
-        acknowledgeRisk: Bool) async -> [SkillStatus]?
+        acknowledgeRisk: Bool = false,
+        installPolicyAcknowledgementId: String? = nil) async -> [SkillStatus]?
     {
         guard self.installingSlug == nil else { return nil }
         self.installingSlug = review.slug
@@ -323,6 +335,7 @@ private final class ClawHubSkillsBrowserModel {
                 slug: review.slug,
                 version: review.version,
                 acknowledgeRisk: acknowledgeRisk,
+                installPolicyAcknowledgementId: installPolicyAcknowledgementId,
                 on: route)
             let report = try await GatewayConnection.shared.skillsStatus(on: route)
             guard SkillManagementContract.installed(report.skills, slug: review.slug, version: review.version) else {
@@ -344,13 +357,25 @@ private final class ClawHubSkillsBrowserModel {
                 isError: false)
             return report.skills
         } catch let error as GatewayResponseError {
+            if let warning = SkillManagementContract.installPolicyWarning(from: error) {
+                self.sheet = .risk(
+                    review,
+                    route: route,
+                    message: "Review the install policy warning before continuing.",
+                    warning: warning.message,
+                    acknowledgeRisk: acknowledgeRisk,
+                    installPolicyAcknowledgementId: warning.acknowledgementId)
+                return nil
+            }
             let rejection = SkillManagementContract.rejection(from: error, attemptedVersion: review.version)
             if rejection.requiresAcknowledgement, !acknowledgeRisk {
                 self.sheet = .risk(
                     review,
                     route: route,
                     message: rejection.message,
-                    warning: rejection.warning)
+                    warning: rejection.warning,
+                    acknowledgeRisk: true,
+                    installPolicyAcknowledgementId: installPolicyAcknowledgementId)
             } else {
                 self.sheet = nil
                 self.notice = Notice(

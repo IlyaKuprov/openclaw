@@ -88,6 +88,8 @@ type SkillsProps = {
     acknowledgeSlug?: string;
     acknowledgeVersion?: string;
     acknowledgeLabel?: string;
+    acknowledgeClawHubRisk?: boolean;
+    installPolicyAcknowledgementId?: string;
   } | null;
   onFilterChange: (next: string) => void;
   onAgentChange: (agentId: string) => void;
@@ -96,14 +98,24 @@ type SkillsProps = {
   onToggle: (skillKey: string, enabled: boolean) => void;
   onEdit: (skillKey: string, value: string) => void;
   onSaveKey: (skillKey: string) => void;
-  onInstall: (skillKey: string, name: string, installId: string) => void;
+  onInstall: (
+    skillKey: string,
+    name: string,
+    installId: string,
+    installPolicyAcknowledgementId?: string,
+  ) => void;
   onDetailOpen: (skillKey: string) => void;
   onDetailClose: () => void;
   onDetailTabChange: (tab: SkillDetailTab) => void;
   onClawHubQueryChange: (query: string) => void;
   onClawHubDetailOpen: (slug: string) => void;
   onClawHubDetailClose: () => void;
-  onClawHubInstall: (slug: string, acknowledgeClawHubRisk?: boolean, version?: string) => void;
+  onClawHubInstall: (
+    slug: string,
+    acknowledgeClawHubRisk?: boolean,
+    version?: string,
+    installPolicyAcknowledgementId?: string,
+  ) => void;
 };
 
 type StatusTabDef = { id: SkillsStatusFilter; labelKey: string };
@@ -419,8 +431,10 @@ function renderClawHubSection(props: SkillsProps) {
                   @click=${() =>
                     props.onClawHubInstall(
                       props.clawhubInstallMessage?.acknowledgeSlug ?? "",
-                      true,
+                      props.clawhubInstallMessage?.acknowledgeClawHubRisk ??
+                        !props.clawhubInstallMessage?.installPolicyAcknowledgementId,
                       props.clawhubInstallMessage?.acknowledgeVersion,
+                      props.clawhubInstallMessage?.installPolicyAcknowledgementId,
                     )}
                 >
                   ${props.clawhubInstallMessage.acknowledgeLabel ?? t("skillsPage.acknowledgeRisk")}
@@ -467,7 +481,7 @@ function renderClawHubResults(props: SkillsProps) {
             <button
               class="btn btn--sm"
               ?disabled=${skillControlsLocked(props)}
-              @click=${() => props.onClawHubInstall(r.slug)}
+              @click=${() => props.onClawHubInstall(r.slug, false, r.version)}
             >
               ${activeClawHubMutation(props, r.slug)
                 ? t("skillsPage.installing")
@@ -552,7 +566,11 @@ function renderClawHubDetailDialog(props: SkillsProps) {
                       ?disabled=${skillControlsLocked(props)}
                       @click=${() => {
                         if (props.clawhubDetailSlug) {
-                          props.onClawHubInstall(props.clawhubDetailSlug);
+                          props.onClawHubInstall(
+                            props.clawhubDetailSlug,
+                            false,
+                            detail.latestVersion?.version,
+                          );
                         }
                       }}
                     >
@@ -723,6 +741,23 @@ function renderSkillDetail(skill: SkillStatusEntry, props: SkillsProps) {
           ${message
             ? html`<div class="callout ${message.kind === "error" ? "danger" : "success"}">
                 ${message.message}
+                ${message.acknowledgeInstallPolicyWarning
+                  ? html`<button
+                      type="button"
+                      class="btn btn--sm"
+                      style="display: block; margin-top: 10px;"
+                      ?disabled=${locked}
+                      @click=${() =>
+                        props.onInstall(
+                          skill.skillKey,
+                          message.acknowledgeInstallPolicyWarning!.name,
+                          message.acknowledgeInstallPolicyWarning!.installId,
+                          message.acknowledgeInstallPolicyWarning!.acknowledgementId,
+                        )}
+                    >
+                      ${t("skillsPage.acknowledgeRisk")}
+                    </button>`
+                  : nothing}
               </div>`
             : nothing}
           ${skill.primaryEnv

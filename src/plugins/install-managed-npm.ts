@@ -47,6 +47,10 @@ import {
 import { verifyInstalledNpmResolution } from "./install-npm-resolution.js";
 import { resolveDefaultPluginNpmDir } from "./install-paths.js";
 import {
+  resolveInstallPolicyAcknowledgementSequence,
+  unresolvedInstallPolicyAcknowledgement,
+} from "./install-policy-acknowledgement.js";
+import {
   preflightPluginNpmInstallPolicy,
   type InstallSafetyOverrides,
 } from "./install-security-scan.js";
@@ -124,6 +128,18 @@ export async function installPluginFromManagedNpmRoot(
       : generationUse === "retained-install"
         ? "install"
         : targetMode;
+  const installPolicyAcknowledgementSequence = resolveInstallPolicyAcknowledgementSequence(params);
+  const unresolvedAcknowledgementResult = () => {
+    const deferred = unresolvedInstallPolicyAcknowledgement(installPolicyAcknowledgementSequence);
+    return deferred
+      ? {
+          ok: false as const,
+          code: "security_scan_blocked" as const,
+          error: deferred.reason,
+          installPolicyWarning: deferred.warning,
+        }
+      : undefined;
+  };
   const availability = await ensureInstallTargetAvailableForMode({
     runtime,
     targetPath: installRoot,
@@ -142,6 +158,9 @@ export async function installPluginFromManagedNpmRoot(
       scan: async () =>
         await preflightPluginNpmInstallPolicy({
           config: params.config,
+          dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+          installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
+          installPolicyAcknowledgementSequence,
           logger,
           mode: policyMode,
           packageName: params.packageName,
@@ -158,6 +177,10 @@ export async function installPluginFromManagedNpmRoot(
   }
 
   if (dryRun) {
+    const unresolvedAcknowledgement = unresolvedAcknowledgementResult();
+    if (unresolvedAcknowledgement) {
+      return unresolvedAcknowledgement;
+    }
     return {
       ok: true,
       pluginId: expectedPluginId ?? params.packageName,
@@ -555,6 +578,8 @@ export async function installPluginFromManagedNpmRoot(
     });
     const result = await installPluginFromInstalledPackageDir({
       dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
+      installPolicyAcknowledgementSequence,
       config: params.config,
       additionalDependencyPackageDirs: newRootPackageDirs,
       packageDir: installRoot,
@@ -568,6 +593,10 @@ export async function installPluginFromManagedNpmRoot(
     });
     if (!result.ok) {
       return await rollbackFailedManagedNpmInstall(result);
+    }
+    const unresolvedAcknowledgement = unresolvedAcknowledgementResult();
+    if (unresolvedAcknowledgement) {
+      return await rollbackFailedManagedNpmInstall(unresolvedAcknowledgement);
     }
     return {
       ...result,

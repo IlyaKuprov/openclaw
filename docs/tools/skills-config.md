@@ -95,7 +95,7 @@ Most skills configuration lives under `skills` in
 ## Operator Install Policy (`security.installPolicy`)
 
 Use `security.installPolicy` when operators need a trusted local command to
-approve or block skill and plugin installs with host-specific policy. The
+allow, warn, or block skill and plugin installs with host-specific policy. The
 policy runs after OpenClaw has staged source material and before the install
 or update continues. It applies to ClawHub skills, uploaded skills, Git/local
 skills, skill dependency installers, and plugin install/update sources.
@@ -179,13 +179,12 @@ skills, skill dependency installers, and plugin install/update sources.
   be direct regular files, not symlinks.
 </ParamField>
 
-The policy receives one JSON object on stdin with `protocolVersion: 1`,
-`openclawVersion`, `targetType`, `targetName`, `sourcePath`, `sourcePathKind`,
-optional structured `source`, structured `origin`, and `request`. It must
-write one JSON object on stdout: `{ "protocolVersion": 1, "decision": "allow" }`
-or `{ "protocolVersion": 1, "decision": "block", "reason": "..." }`. Non-zero
-exit, timeout, malformed JSON, missing fields, or unsupported protocol
-versions fail closed.
+The policy receives one JSON object on stdin with `protocolVersion: 1`, `openclawVersion`, `targetType`, `targetName`, `sourcePath`, `sourcePathKind`, and optional structured `source`, `origin`, and `request`.
+It writes one JSON object on stdout with `decision` set to `allow`, `warn`, or `block`; `warn` and `block` require a non-empty `reason`, and every decision may include bounded structured `findings`.
+A warning stops before commit and returns a source-bound `acknowledgementId`. Gateway callers echo that exact ID as `acknowledgeInstallPolicyWarning`; CLI callers append it to the existing `--dangerously-force-unsafe-install <acknowledgement-id>` flag. A bare flag does not acknowledge an install-policy warning.
+For multi-stage installs, the returned value is an opaque ordered sequence of the warning-stage IDs already presented. Echo the complete value unchanged; OpenClaw verifies each stage in order before advancing.
+The ID binds the complete warning semantics to the staged source content and security-relevant permissions. Acknowledged warnings are evaluated twice back-to-back; changed source or policy output returns a new warning and ID. Blocks and failures can never be overridden.
+Non-zero exit, timeout, malformed JSON, missing fields, or unsupported versions fail closed.
 
 OpenClaw does not execute install policy during normal Gateway startup.
 Installs and updates fail closed when policy is enabled but unavailable.

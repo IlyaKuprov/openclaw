@@ -10,6 +10,7 @@ import { withTempDir } from "../../infra/install-source-utils.js";
 import { writeJson } from "../../infra/json-files.js";
 import { isImmutableGitCommitRef, parseGitPluginSpec } from "../../plugins/git-install.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
+import type { InstallPolicyWarning } from "../../security/install-policy.js";
 import { resolveUserPath } from "../../utils.js";
 import { parseFrontmatter } from "../loading/frontmatter.js";
 import { installExtractedSkillRoot, validateRequestedSkillSlug } from "./archive-install.js";
@@ -42,7 +43,7 @@ type SkillSourceInstallResult =
       source: "path" | "git";
       git?: SkillSourceOrigin["git"];
     }
-  | { ok: false; error: string };
+  | { ok: false; error: string; installPolicyWarning?: InstallPolicyWarning };
 
 const SKILL_SOURCE_ORIGIN_RELATIVE_PATH = path.join(".openclaw", "source-origin.json");
 const DEFAULT_GIT_TIMEOUT_MS = 120_000;
@@ -200,6 +201,8 @@ async function installLocalSkillDir(params: {
   fallbackLabel: string;
   slug?: string;
   force?: boolean;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   timeoutMs?: number;
   logger?: Logger;
   config?: OpenClawConfig;
@@ -219,6 +222,8 @@ async function installLocalSkillDir(params: {
     logger: params.logger,
     policy: {
       config: params.config,
+      dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
       installId: params.source,
       origin: {
         type: params.source,
@@ -239,7 +244,13 @@ async function installLocalSkillDir(params: {
     },
   });
   if (!install.ok) {
-    return { ok: false, error: install.error };
+    return {
+      ok: false,
+      error: install.error,
+      ...(install.installPolicyWarning
+        ? { installPolicyWarning: install.installPolicyWarning }
+        : {}),
+    };
   }
 
   await removeClawHubInstallMetadata(install.targetDir);
@@ -267,6 +278,8 @@ async function installGitSkill(params: {
   spec: string;
   slug?: string;
   force?: boolean;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   timeoutMs?: number;
   logger?: Logger;
   config?: OpenClawConfig;
@@ -347,6 +360,8 @@ async function installGitSkill(params: {
       fallbackLabel: path.basename(parsed.label),
       slug: params.slug,
       force: params.force,
+      dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
       timeoutMs: params.timeoutMs,
       logger: params.logger,
       config: params.config,
@@ -360,6 +375,8 @@ async function installPathSkill(params: {
   spec: string;
   slug?: string;
   force?: boolean;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   timeoutMs?: number;
   logger?: Logger;
   config?: OpenClawConfig;
@@ -382,6 +399,8 @@ async function installPathSkill(params: {
     fallbackLabel: resolveFallbackSlugFromPath(sourceDir),
     slug: params.slug,
     force: params.force,
+    dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
     timeoutMs: params.timeoutMs,
     logger: params.logger,
     config: params.config,
@@ -404,6 +423,8 @@ export async function installSkillFromSource(params: {
   spec: string;
   slug?: string;
   force?: boolean;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   timeoutMs?: number;
   logger?: Logger;
   config?: OpenClawConfig;

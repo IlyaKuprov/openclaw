@@ -16,6 +16,7 @@ import { installManagedPluginSource } from "../plugins/management-service.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { shortenHomePath } from "../utils.js";
 import { persistHookPackInstall } from "./hook-install-persistence.js";
+import { appendInstallPolicyAcknowledgementFlag } from "./install-policy-acknowledgement.js";
 import { resolvePinnedNpmInstallRecordForCli } from "./npm-resolution.js";
 import { resolveBundledInstallPlanForNpmFailure } from "./plugin-install-plan.js";
 import {
@@ -34,6 +35,7 @@ export function resolveInstallSafetyOverrides(
   return {
     config: overrides.config,
     dangerouslyForceUnsafeInstall: overrides.dangerouslyForceUnsafeInstall,
+    installPolicyAcknowledgementId: overrides.installPolicyAcknowledgementId,
     trustedSourceLinkedOfficialInstall: overrides.trustedSourceLinkedOfficialInstall,
   };
 }
@@ -159,6 +161,7 @@ async function tryInstallHookPackFromNpmSpec(params: {
   snapshot: ConfigSnapshotForInstallExecution;
   installMode: "install" | "update";
   spec: string;
+  safetyOverrides: InstallSafetyOverrides;
   pin?: boolean;
   expectedIntegrity?: string;
   expectedPackageKind?: "hook-only";
@@ -168,7 +171,8 @@ async function tryInstallHookPackFromNpmSpec(params: {
     return { ok: false, error: params.snapshot.hookMutation.reason };
   }
   const result = await installHooksFromNpmSpec({
-    config: params.snapshot.config,
+    ...resolveInstallSafetyOverrides(params.safetyOverrides),
+    config: params.safetyOverrides.config ?? params.snapshot.config,
     spec: params.spec,
     mode: params.installMode,
     ...(params.expectedIntegrity ? { expectedIntegrity: params.expectedIntegrity } : {}),
@@ -240,6 +244,7 @@ export async function tryInstallPluginOrHookPackFromNpmSpec(params: {
         snapshot: params.snapshot,
         installMode: params.installMode,
         spec: params.spec,
+        safetyOverrides: params.safetyOverrides,
         pin: params.pin,
         expectedIntegrity: hookProbe.npmResolution?.integrity ?? params.expectedIntegrity,
         expectedPackageKind: "hook-only",
@@ -248,7 +253,12 @@ export async function tryInstallPluginOrHookPackFromNpmSpec(params: {
       if (hookFallback.ok) {
         return { ok: true };
       }
-      runtime.error(hookFallback.error);
+      runtime.error(
+        appendInstallPolicyAcknowledgementFlag(
+          hookFallback.error,
+          hookFallback.installPolicyWarning,
+        ),
+      );
       return { ok: false };
     }
     if (params.snapshot.pluginMutation.mode === "blocked") {
@@ -286,7 +296,9 @@ export async function tryInstallPluginOrHookPackFromNpmSpec(params: {
   });
   if (!result.ok) {
     if (isTerminalPluginInstallFailure(result.code)) {
-      runtime.error(result.error);
+      runtime.error(
+        appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
+      );
       return { ok: false };
     }
     if (params.allowBundledFallback) {
@@ -318,6 +330,7 @@ export async function tryInstallPluginOrHookPackFromNpmSpec(params: {
       snapshot: params.snapshot,
       installMode: params.installMode,
       spec: params.spec,
+      safetyOverrides: params.safetyOverrides,
       pin: params.pin,
       expectedIntegrity: params.expectedIntegrity,
       runtime: params.runtime,
@@ -325,7 +338,12 @@ export async function tryInstallPluginOrHookPackFromNpmSpec(params: {
     if (hookFallback.ok) {
       return { ok: true };
     }
-    runtime.error(formatPluginInstallWithHookFallbackError(result.error, hookFallback));
+    runtime.error(
+      appendInstallPolicyAcknowledgementFlag(
+        formatPluginInstallWithHookFallbackError(result.error, hookFallback),
+        hookFallback.installPolicyWarning,
+      ),
+    );
     return { ok: false };
   }
 

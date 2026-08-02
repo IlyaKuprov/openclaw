@@ -591,13 +591,20 @@ describe("skills cli commands", () => {
       source: "git",
     });
 
-    await runCommand(["skills", "install", "git:owner/tools"]);
+    await runCommand([
+      "skills",
+      "install",
+      "git:owner/tools",
+      "--dangerously-force-unsafe-install",
+    ]);
 
     const installArgs = mockFirstObjectArg(installSkillFromSourceMock);
     expectObjectFields(installArgs, {
       workspaceDir: "/tmp/workspace",
       spec: "git:owner/tools",
       force: false,
+      dangerouslyForceUnsafeInstall: true,
+      config: {},
     });
     expect(installArgs.slug).toBeUndefined();
     expectLogger(installArgs.logger);
@@ -739,6 +746,10 @@ describe("skills cli commands", () => {
   it.each([
     { flag: "--force-install", option: "forceInstall" },
     { flag: "--acknowledge-clawhub-risk", option: "acknowledgeClawHubRisk" },
+    {
+      flag: "--dangerously-force-unsafe-install",
+      option: "dangerouslyForceUnsafeInstall",
+    },
   ])("passes $flag through for ClawHub skill installs", async ({ flag, option }) => {
     primeCalendarInstall();
 
@@ -748,7 +759,28 @@ describe("skills cli commands", () => {
       expect.objectContaining({
         workspaceDir: "/tmp/workspace",
         slug: "calendar",
+        config: {},
         [option]: true,
+      }),
+    );
+  });
+
+  it("forwards an install-policy acknowledgement token through the existing force flag", async () => {
+    const acknowledgementId = `sha256:${"a".repeat(64)}`;
+    primeCalendarInstall();
+
+    await runCommand([
+      "skills",
+      "install",
+      "calendar",
+      "--dangerously-force-unsafe-install",
+      acknowledgementId,
+    ]);
+
+    expect(installSkillFromClawHubMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dangerouslyForceUnsafeInstall: true,
+        installPolicyAcknowledgementId: acknowledgementId,
       }),
     );
   });
@@ -819,6 +851,26 @@ describe("skills cli commands", () => {
     expect(runtimeErrors).toStrictEqual([]);
   });
 
+  it("reports a same-version ClawHub skill repair", async () => {
+    readTrackedClawHubSkillSlugsMock.mockResolvedValue(["calendar"]);
+    updateSkillsFromClawHubMock.mockResolvedValue([
+      {
+        ok: true,
+        slug: "calendar",
+        previousVersion: "1.2.3",
+        version: "1.2.3",
+        changed: true,
+        repaired: true,
+        targetDir: "/tmp/workspace/skills/calendar",
+      },
+    ]);
+
+    await runCommand(["skills", "update", "calendar"]);
+
+    expect(runtimeLogs).toContain("Repaired calendar at 1.2.3");
+    expect(runtimeLogs.some((line) => line.includes("already at"))).toBe(false);
+  });
+
   it("does not bootstrap configured skills during update all", async () => {
     loadConfigMock.mockReturnValueOnce({
       agents: {
@@ -840,6 +892,10 @@ describe("skills cli commands", () => {
   it.each([
     { flag: "--force-install", option: "forceInstall" },
     { flag: "--acknowledge-clawhub-risk", option: "acknowledgeClawHubRisk" },
+    {
+      flag: "--dangerously-force-unsafe-install",
+      option: "dangerouslyForceUnsafeInstall",
+    },
   ])("passes $flag through for ClawHub skill updates", async ({ flag, option }) => {
     primeCalendarUpdate();
 
@@ -950,6 +1006,23 @@ describe("skills cli commands", () => {
 
     expect(runtimeErrors).toContain("blocked by install policy: calendar is not approved");
     expect(runtimeLogs).toStrictEqual([]);
+  });
+
+  it("shows the acknowledgement flag for an install-policy skill warning", async () => {
+    readTrackedClawHubSkillSlugsMock.mockResolvedValue(["calendar"]);
+    updateSkillsFromClawHubMock.mockResolvedValue([
+      {
+        ok: false,
+        error: "install policy warning requires acknowledgement",
+        installPolicyWarning: { reason: "Review skill behavior" },
+      },
+    ]);
+
+    await expect(runCommand(["skills", "update", "calendar"])).rejects.toThrow("__exit__:1");
+
+    expect(
+      runtimeErrors.some((message) => message.includes("--dangerously-force-unsafe-install")),
+    ).toBe(true);
   });
 
   it.each([

@@ -234,6 +234,7 @@ describe("buildClawUpdatePlan", () => {
 
   it("plans grouped add, change, and removal actions", async () => {
     const current = await fixture();
+    const packagePreflightModes = new Map<string, "install" | "update">();
     await writeFile(join(current.root, "SOUL-v2.md"), "new soul\n", "utf8");
     await writeFile(join(current.root, "NEW.md"), "new\n", "utf8");
     const raw = {
@@ -302,7 +303,10 @@ describe("buildClawUpdatePlan", () => {
       config: current.config,
       sourceMcpServers: current.config.mcp?.servers ?? {},
       stateOptions: { env: current.env },
-      packagePreflight,
+      packagePreflight: async (pkg, _workspace, mode) => {
+        packagePreflightModes.set(`${pkg.kind}:${pkg.ref}`, mode);
+        return await packagePreflight(pkg);
+      },
     });
 
     expect(plan.summary).toMatchObject({
@@ -317,6 +321,12 @@ describe("buildClawUpdatePlan", () => {
       capabilityEscalations: expect.any(Number),
     });
     expect(plan.summary.capabilityEscalations).toBeGreaterThan(0);
+    expect(packagePreflightModes).toEqual(
+      new Map([
+        ["skill:triage", "update"],
+        ["plugin:new-plugin", "install"],
+      ]),
+    );
     expect(plan.capabilityChanges).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

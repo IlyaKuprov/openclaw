@@ -146,13 +146,10 @@ and fail when incompatible.
 
 Configure `security.installPolicy` to run a trusted local policy command
 before a plugin install or update proceeds. The policy receives metadata plus
-the staged source path and can allow or block the install. It covers both CLI
+the staged source path and can allow, warn, or block the install. It covers both CLI
 and Gateway-backed install/update paths. Plugin `before_install` hooks run
 later, and only in OpenClaw processes where plugin hooks are loaded, so use
-`security.installPolicy` for operator-owned install decisions instead. The
-deprecated `--dangerously-force-unsafe-install` flag is accepted for
-compatibility but is a no-op: it does not bypass install policy or OpenClaw's
-built-in plugin dependency denylist.
+`security.installPolicy` for operator-owned install decisions instead. Pass a warning's exact returned ID as `--dangerously-force-unsafe-install <acknowledgement-id>` to acknowledge it and re-run policy; a bare flag does not acknowledge the warning. The flag does not override blocks, failures, or the plugin dependency denylist.
 
 See [Skills config](/tools/skills-config#operator-install-policy-securityinstallpolicy)
 for the shared `security.installPolicy` exec schema used by both skills and

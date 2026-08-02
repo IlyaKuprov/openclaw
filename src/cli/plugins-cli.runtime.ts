@@ -30,6 +30,7 @@ import type {
 type PluginInstallActionOptions = {
   acknowledgeClawHubRisk?: boolean;
   dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   force?: boolean;
   link?: boolean;
   pin?: boolean;

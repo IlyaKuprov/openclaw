@@ -84,14 +84,55 @@ class SkillManagementTest {
 
   @Test
   fun installParamsKeepRegistryAndTrustPolicyOnGateway() {
-    val params = json.parseToJsonElement(clawHubInstallParams("alpha", "1.2.3", acknowledgeRisk = true)).jsonObject
+    val params =
+      json
+        .parseToJsonElement(
+          clawHubInstallParams(
+            "alpha",
+            "1.2.3",
+            acknowledgeRisk = true,
+            dangerouslyForceUnsafeInstall = true,
+            installPolicyAcknowledgementId = "sha256:${"a".repeat(64)}",
+          ),
+        ).jsonObject
 
-    assertEquals(setOf("source", "slug", "version", "acknowledgeClawHubRisk", "timeoutMs"), params.keys)
+    assertEquals(
+      setOf("source", "slug", "version", "acknowledgeClawHubRisk", "acknowledgeInstallPolicyWarning", "timeoutMs"),
+      params.keys,
+    )
     assertEquals("clawhub", params.getValue("source").jsonPrimitive.content)
     assertEquals("alpha", params.getValue("slug").jsonPrimitive.content)
     assertEquals("1.2.3", params.getValue("version").jsonPrimitive.content)
     assertTrue(params.getValue("acknowledgeClawHubRisk").jsonPrimitive.boolean)
+    assertEquals(
+      "sha256:${"a".repeat(64)}",
+      params.getValue("acknowledgeInstallPolicyWarning").jsonPrimitive.content,
+    )
     assertEquals(120_000, params.getValue("timeoutMs").jsonPrimitive.int)
+  }
+
+  @Test
+  fun installPolicyWarningsIncludeStructuredFindings() {
+    val acknowledgementId = "sha256:${"a".repeat(64)}"
+    val details =
+      json
+        .parseToJsonElement(
+          """{"reason":"Review behavior","acknowledgementId":"$acknowledgementId","findings":[{"ruleId":"shell","severity":"warn","message":"Runs a shell","file":"SKILL.md","line":4,"evidence":"spawn call"}]}""",
+        ).jsonObject
+    val error =
+      GatewaySession.ErrorShape(
+        "UNAVAILABLE",
+        "review required",
+        GatewayErrorDetails(null, false, null, installPolicyWarning = details),
+      )
+
+    assertEquals(
+      InstallPolicyWarningPresentation(
+        message = "Review behavior\n• [WARN · shell · SKILL.md:4] Runs a shell — spawn call",
+        acknowledgementId = acknowledgementId,
+      ),
+      installPolicyWarning(error),
+    )
   }
 
   @Test

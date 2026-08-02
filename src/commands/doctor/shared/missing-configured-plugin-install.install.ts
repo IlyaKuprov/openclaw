@@ -7,6 +7,7 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import { isOpenClawOrgNpmSpec, parseRegistryNpmSpec } from "../../../infra/npm-registry-spec.js";
 import type { UpdateChannel } from "../../../infra/update-channels.js";
+import { redactSensitiveText } from "../../../logging/redact.js";
 import { buildClawHubPluginInstallRecordFields } from "../../../plugins/clawhub-install-records.js";
 import {
   CLAWHUB_INSTALL_ERROR_CODE,
@@ -28,6 +29,7 @@ import {
   resolveNpmInstallRecordSpec,
 } from "../../../plugins/installs.js";
 import { isClawHubTrustSkippedOutcome } from "../../../plugins/update.js";
+import type { InstallPolicyWarning } from "../../../security/install-policy.js";
 import { resolveUserPath } from "../../../utils.js";
 import { resolveCompatibilityHostVersion } from "../../../version.js";
 import type { DownloadableInstallCandidate } from "./missing-configured-plugin-install.candidates.js";
@@ -62,6 +64,49 @@ export function appendClawHubRiskAcknowledgementGuidance(params: {
   const sanitizedSpec = sanitizeTerminalText(params.spec);
   const shellSpec = shellQuotePosixArg(sanitizedSpec);
   return `${params.message} To review and acknowledge this ClawHub package, run \`openclaw plugins install ${shellSpec} --acknowledge-clawhub-risk\` from a trusted shell, then rerun repair.`;
+}
+
+export function appendInstallPolicyAcknowledgementGuidance(params: {
+  message: string;
+  spec: string | undefined;
+  installPolicyWarning?: InstallPolicyWarning;
+  command?: "install" | "update";
+  pluginId?: string;
+  force?: boolean;
+}): string {
+  const warning = formatInstallPolicyWarningForDoctor(params.installPolicyWarning);
+  if (!warning) {
+    return params.message;
+  }
+  const target = params.command === "update" ? (params.pluginId ?? params.spec) : params.spec;
+  if (!target) {
+    return params.message;
+  }
+  const sanitizedSpec = sanitizeTerminalText(target);
+  const shellSpec = shellQuotePosixArg(sanitizedSpec);
+  const command = params.command ?? "install";
+  const forceFlag = params.force ? " --force" : "";
+  const acknowledgementId = params.installPolicyWarning?.acknowledgementId;
+  const acknowledgementArg = acknowledgementId ? ` ${acknowledgementId}` : "";
+  return `${params.message}\n${warning}\nTo acknowledge after reviewing these findings, run \`openclaw plugins ${command} ${shellSpec}${forceFlag} --dangerously-force-unsafe-install${acknowledgementArg}\` from a trusted shell, then rerun doctor.`;
+}
+
+function formatInstallPolicyWarningForDoctor(
+  warning: InstallPolicyWarning | undefined,
+): string | undefined {
+  const reason = warning?.reason.trim() ?? "";
+  if (!reason) {
+    return undefined;
+  }
+  const lines = (warning?.findings ?? []).map((finding) => {
+    const location = finding.file
+      ? ` (${finding.file}${finding.line === undefined ? "" : `:${finding.line}`})`
+      : "";
+    return `- [${finding.severity}] ${finding.ruleId}: ${finding.message}${location}`;
+  });
+  return [`Install policy warning: ${reason}`, ...lines]
+    .map((line) => sanitizeTerminalText(redactSensitiveText(line)))
+    .join("\n");
 }
 
 function shellQuotePosixArg(value: string): string {
@@ -101,6 +146,18 @@ export function recordClawHubInstallSpec(
   return undefined;
 }
 
+export function recordPluginInstallSpec(
+  record: PluginInstallRecord | undefined,
+): string | undefined {
+  if (record?.source === "clawhub") {
+    return recordClawHubInstallSpec(record);
+  }
+  if (record?.source === "npm") {
+    return record.spec ?? record.resolvedSpec ?? record.resolvedName;
+  }
+  return undefined;
+}
+
 type InstallCandidateRepairReason = "stale-version-bound-runtime";
 
 function formatInstalledConfiguredPluginChange(params: {
@@ -122,6 +179,8 @@ export async function installCandidate(params: {
   mode?: "install" | "update";
   preferNpm?: boolean;
   repairReason?: InstallCandidateRepairReason;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   acknowledgeClawHubRisk?: boolean;
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
 }): Promise<{
@@ -189,6 +248,9 @@ export async function installCandidate(params: {
     !(params.preferNpm && npmInstallSpec) &&
     candidate.defaultChoice !== "npm";
   if (shouldTryClawHub) {
+    const clawhubInstallMode =
+      params.mode === "update" || existingClawHubPackagePath ? "update" : "install";
+    const clawhubGuidanceUpdatesRecord = Boolean(params.records[candidate.pluginId]);
     const clawhubInstallSpecLabel = sanitizeTerminalText(clawhubInstallSpec);
     const clawhubResult = await installPluginFromClawHub({
       spec: clawhubInstallSpec,
@@ -196,7 +258,9 @@ export async function installCandidate(params: {
       extensionsDir,
       env: params.env,
       expectedPluginId: candidate.pluginId,
-      mode: params.mode === "update" || existingClawHubPackagePath ? "update" : "install",
+      ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
+      mode: clawhubInstallMode,
       logger: {
         terminalLinks: false,
         warn: (message) => warnings.push(stripAnsi(message)),
@@ -238,9 +302,19 @@ export async function installCandidate(params: {
         notices: [],
         warnings: [
           ...warnings,
-          appendClawHubRiskAcknowledgementGuidance({
-            message: failure,
+          appendInstallPolicyAcknowledgementGuidance({
+            message: appendClawHubRiskAcknowledgementGuidance({
+              message: failure,
+              spec: clawhubInstallSpec,
+            }),
             spec: clawhubInstallSpec,
+            command: clawhubGuidanceUpdatesRecord ? "update" : "install",
+            pluginId: candidate.pluginId,
+            force: clawhubInstallMode === "update" && !clawhubGuidanceUpdatesRecord,
+            installPolicyWarning:
+              "installPolicyWarning" in clawhubResult
+                ? clawhubResult.installPolicyWarning
+                : undefined,
           }),
         ],
         failedPluginId: candidate.pluginId,
@@ -264,6 +338,7 @@ export async function installCandidate(params: {
     };
   }
   const npmInstallMode = params.mode === "update" || existingNpmPackagePath ? "update" : "install";
+  const npmGuidanceUpdatesRecord = Boolean(params.records[candidate.pluginId]);
   let result = await installPluginFromNpmSpec({
     spec: npmInstallSpec,
     config: params.config,
@@ -271,6 +346,8 @@ export async function installCandidate(params: {
     npmDir,
     expectedPluginId: candidate.pluginId,
     expectedIntegrity: candidate.expectedIntegrity,
+    ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
     ...(candidate.trustedSourceLinkedOfficialInstall
       ? { trustedSourceLinkedOfficialInstall: true }
       : {}),
@@ -284,6 +361,8 @@ export async function installCandidate(params: {
       npmDir,
       expectedPluginId: candidate.pluginId,
       expectedIntegrity: candidate.expectedIntegrity,
+      ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
       ...(candidate.trustedSourceLinkedOfficialInstall
         ? { trustedSourceLinkedOfficialInstall: true }
         : {}),
@@ -297,7 +376,14 @@ export async function installCandidate(params: {
       notices: [],
       warnings: [
         ...warnings,
-        `Failed to install missing configured plugin "${candidate.pluginId}" from ${npmInstallSpec}: ${result.error}`,
+        appendInstallPolicyAcknowledgementGuidance({
+          message: `Failed to install missing configured plugin "${candidate.pluginId}" from ${npmInstallSpec}: ${result.error}`,
+          spec: npmInstallSpec,
+          command: npmGuidanceUpdatesRecord ? "update" : "install",
+          pluginId: candidate.pluginId,
+          force: npmInstallMode === "update" && !npmGuidanceUpdatesRecord,
+          installPolicyWarning: result.installPolicyWarning,
+        }),
       ],
       failedPluginId: candidate.pluginId,
     };

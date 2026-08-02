@@ -1,5 +1,4 @@
 // Executes validated plugin, marketplace, ClawHub, and hook-pack install requests.
-import { theme } from "../../packages/terminal-core/src/theme.js";
 import { assertConfigWriteAllowedInCurrentMode } from "../config/config.js";
 import { parseClawHubPluginSpec, reportClawHubPluginInstallTelemetry } from "../infra/clawhub.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -15,6 +14,7 @@ import { markClawPackageIndependentlyOwned } from "../state/claw-package-adoptio
 import { withClawPackageLifecycleLease } from "../state/claw-package-lifecycle-lease.js";
 import { shortenHomePath } from "../utils.js";
 import { resolveClawHubRiskAcknowledgementCliOptions } from "./clawhub-risk-acknowledgement.js";
+import { appendInstallPolicyAcknowledgementFlag } from "./install-policy-acknowledgement.js";
 import {
   confirmNonClawHubInstall,
   type NonClawHubInstallSourceClass,
@@ -39,9 +39,6 @@ import {
   type PluginInstallPreflight,
   type RunPluginInstallCommandParams,
 } from "./plugins-install-preflight.js";
-
-const DEPRECATED_DANGEROUS_FORCE_UNSAFE_INSTALL_WARNING =
-  "--dangerously-force-unsafe-install is deprecated and no longer affects plugin installs because built-in install-time dangerous-code scanning has been removed. Configure security.installPolicy for operator-owned install decisions.";
 
 function isClawHubBlockedCliFailure(result: { code?: string; warning?: string }): boolean {
   return (
@@ -75,10 +72,6 @@ async function runPluginInstallCommandUnlocked(
   const runtime = params.runtime ?? defaultRuntime;
   const invalidateRuntimeCache = params.invalidateRuntimeCache ?? true;
   const { raw, opts, installMode, request } = preflight;
-  if (opts.dangerouslyForceUnsafeInstall) {
-    runtime.log(theme.warn(DEPRECATED_DANGEROUS_FORCE_UNSAFE_INSTALL_WARNING));
-  }
-
   const snapshot = await loadConfigForInstall(request).catch((error: unknown) => {
     runtime.error(formatErrorMessage(error));
     return null;
@@ -114,7 +107,9 @@ async function runPluginInstallCommandUnlocked(
     });
     if (!result.ok) {
       if (!isClawHubBlockedCliFailure(result)) {
-        runtime.error(result.error);
+        runtime.error(
+          appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
+        );
       }
       return runtime.exit(1);
     }
@@ -183,7 +178,12 @@ async function runPluginInstallCommandUnlocked(
           if (hookFallback.ok) {
             return;
           }
-          runtime.error(hookFallback.error);
+          runtime.error(
+            appendInstallPolicyAcknowledgementFlag(
+              hookFallback.error,
+              hookFallback.installPolicyWarning,
+            ),
+          );
           return runtime.exit(1);
         }
         if (snapshot.pluginMutation.mode === "blocked") {
@@ -204,7 +204,9 @@ async function runPluginInstallCommandUnlocked(
         return;
       }
       if (isTerminalPluginInstallFailure(result.code)) {
-        runtime.error(result.error);
+        runtime.error(
+          appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
+        );
         return runtime.exit(1);
       }
       const hookFallback = await tryInstallHookPackFromLocalPath({
@@ -218,7 +220,12 @@ async function runPluginInstallCommandUnlocked(
       if (hookFallback.ok) {
         return;
       }
-      runtime.error(formatPluginInstallWithHookFallbackError(result.error, hookFallback));
+      runtime.error(
+        appendInstallPolicyAcknowledgementFlag(
+          formatPluginInstallWithHookFallbackError(result.error, hookFallback),
+          hookFallback.installPolicyWarning,
+        ),
+      );
       return runtime.exit(1);
     }
 
@@ -233,7 +240,9 @@ async function runPluginInstallCommandUnlocked(
         runtime,
       });
       if (!result.ok) {
-        runtime.error(result.error);
+        runtime.error(
+          appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
+        );
         return runtime.exit(1);
       }
       return;
@@ -256,7 +265,9 @@ async function runPluginInstallCommandUnlocked(
         },
       );
       if (!result.ok) {
-        runtime.error(result.error);
+        runtime.error(
+          appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
+        );
         return runtime.exit(1);
       }
       return;
@@ -309,8 +320,13 @@ async function runPluginInstallCommandUnlocked(
           runtime,
         });
         if (!result.ok) {
+          if (result.installPolicyWarning) {
+            params.onInstallPolicyWarning?.(result.installPolicyWarning);
+          }
           if (!isClawHubBlockedCliFailure(result)) {
-            runtime.error(result.error);
+            runtime.error(
+              appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
+            );
           }
           return runtime.exit(1);
         }

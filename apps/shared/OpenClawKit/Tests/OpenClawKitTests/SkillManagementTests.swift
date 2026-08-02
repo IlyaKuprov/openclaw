@@ -6,7 +6,13 @@ import Testing
 struct SkillManagementTests {
     @Test func `detail review uses exact detail version and publisher`() throws {
         let data = Data(
-            #"{"skill":{"displayName":"Weather","summary":"Forecasts"},"latestVersion":{"version":"2.0.0"},"owner":{"handle":"molly","displayName":"Molly"}}"#
+            #"""
+            {
+              "skill": {"displayName": "Weather", "summary": "Forecasts"},
+              "latestVersion": {"version": "2.0.0"},
+              "owner": {"handle": "molly", "displayName": "Molly"}
+            }
+            """#
                 .utf8)
         let fallbackData = Data(
             #"{"slug":"weather","displayName":"Old Weather","summary":null,"version":"1.0.0"}"#.utf8)
@@ -40,6 +46,31 @@ struct SkillManagementTests {
         #expect(!stale.requiresAcknowledgement)
         #expect(stale.acknowledgeVersion == nil)
         #expect(stale.message.contains("different ClawHub release"))
+    }
+
+    @Test func `install policy warning exposes the resolved release version`() throws {
+        let error = GatewayResponseError(
+            method: "skills.install",
+            code: "UNAVAILABLE",
+            message: "Review warning",
+            details: [
+                "version": AnyCodable("2.0.0"),
+                "installPolicyWarning": AnyCodable([
+                    "reason": "Review package behavior",
+                    "acknowledgementId": "sha256:test",
+                    "findings": [[
+                        "ruleId": "shell",
+                        "severity": "warn",
+                        "message": "Runs a shell",
+                        "evidence": "spawn call",
+                    ]],
+                ]),
+            ])
+
+        let warning = try #require(SkillManagementContract.installPolicyWarning(from: error))
+        #expect(warning.version == "2.0.0")
+        #expect(warning.acknowledgementId == "sha256:test")
+        #expect(warning.message.contains("Runs a shell — spawn call"))
     }
 
     @Test func `missing requirements preserve alternatives and platforms`() throws {

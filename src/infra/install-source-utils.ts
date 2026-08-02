@@ -12,7 +12,7 @@ import {
 import { runCommandWithTimeout } from "../process/exec.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveArchiveKind } from "./archive.js";
-import { pathExists } from "./fs-safe.js";
+import { isPathInside, pathExists, walkDirectory } from "./fs-safe.js";
 import { applyNpmFreshnessBypassEnv, type NpmProjectInstallEnvOptions } from "./npm-install-env.js";
 import { resolveNpmJsonEntries } from "./npm-registry-spec.js";
 import { withTempWorkspace } from "./private-temp-workspace.js";
@@ -198,6 +198,90 @@ export async function withTempDir<T>(
 ): Promise<T> {
   const rootDir = options?.rootDir ?? resolvePreferredOpenClawTmpDir();
   return await withTempWorkspace({ rootDir, prefix }, async (tmp) => fn(tmp.dir));
+}
+
+/** Copies a caller-owned directory once, then keeps every install stage bound to that snapshot. */
+export async function withInstallSourceSnapshot<T>(params: {
+  sourceDir: string;
+  prefix: string;
+  run: (snapshotDir: string) => Promise<T>;
+}): Promise<T> {
+  return await withTempDir(params.prefix, async (tmpDir) => {
+    const logicalSourceDir = path.resolve(params.sourceDir);
+    const canonicalSourceDir = await fs.realpath(logicalSourceDir);
+    const snapshotDir = path.join(tmpDir, path.basename(logicalSourceDir) || "source");
+    await fs.cp(canonicalSourceDir, snapshotDir, { recursive: true, verbatimSymlinks: true });
+    const copied = await walkDirectory(snapshotDir, { symlinks: "include" });
+    if (copied.failedDirs.length > 0) {
+      throw new Error(
+        `failed to inspect install source snapshot: ${String(copied.failedDirs[0]?.error)}`,
+      );
+    }
+    for (const entry of copied.entries) {
+      if (entry.kind !== "symlink") {
+        continue;
+      }
+      const target = await fs.readlink(entry.path);
+      const sourceEntryPath = path.join(canonicalSourceDir, entry.relativePath);
+      const sourceTarget = path.isAbsolute(target)
+        ? target
+        : path.resolve(path.dirname(sourceEntryPath), target);
+      let relativeTarget = relativePathWithinRoot(canonicalSourceDir, sourceTarget);
+      relativeTarget ??= relativePathWithinRoot(logicalSourceDir, sourceTarget);
+      const lexicallyInternal = relativeTarget !== undefined;
+      if (relativeTarget === undefined) {
+        try {
+          relativeTarget = relativePathWithinRoot(
+            canonicalSourceDir,
+            await fs.realpath(sourceTarget),
+          );
+        } catch {
+          // Preserve the original target below; downstream validation owns allow/deny.
+        }
+      }
+      if (relativeTarget === undefined && path.isAbsolute(target)) {
+        continue;
+      }
+      if (lexicallyInternal && !path.isAbsolute(target)) {
+        continue;
+      }
+      const replacementTarget =
+        relativeTarget === undefined
+          ? sourceTarget
+          : path.relative(path.dirname(entry.path), path.join(snapshotDir, relativeTarget)) || ".";
+      const targetType = await fs
+        .stat(sourceEntryPath)
+        .then((stat) => (stat.isDirectory() ? ("dir" as const) : ("file" as const)))
+        .catch(() => undefined);
+      await fs.unlink(entry.path);
+      await fs.symlink(replacementTarget, entry.path, targetType);
+    }
+    const copiedDirectories = copied.entries
+      .filter((entry) => entry.kind === "directory")
+      .toSorted((left, right) => right.depth - left.depth);
+    for (const entry of copiedDirectories) {
+      const sourceMode = (await fs.stat(path.join(canonicalSourceDir, entry.relativePath))).mode;
+      await fs.chmod(entry.path, sourceMode & 0o7777);
+    }
+    const sourceRootMode = (await fs.stat(canonicalSourceDir)).mode;
+    await fs.chmod(snapshotDir, sourceRootMode & 0o7777);
+    try {
+      return await params.run(snapshotDir);
+    } finally {
+      await fs.chmod(snapshotDir, 0o700).catch(() => undefined);
+      for (const entry of copiedDirectories.toReversed()) {
+        await fs.chmod(entry.path, 0o700).catch(() => undefined);
+      }
+    }
+  });
+}
+
+function relativePathWithinRoot(rootDir: string, targetPath: string): string | undefined {
+  const resolvedTarget = path.resolve(targetPath);
+  if (resolvedTarget === rootDir) {
+    return "";
+  }
+  return isPathInside(rootDir, resolvedTarget) ? path.relative(rootDir, resolvedTarget) : undefined;
 }
 
 /** Resolves and validates a user-supplied archive path before extraction. */

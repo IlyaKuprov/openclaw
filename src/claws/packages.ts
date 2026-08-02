@@ -1,5 +1,6 @@
 import { runPluginInstallCommand } from "../cli/plugins-install-command.js";
 import { runPluginUninstallCommand } from "../cli/plugins-uninstall-command.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeClawHubSha256Integrity } from "../infra/clawhub.js";
 import { installPluginFromClawHub } from "../plugins/clawhub.js";
 import type { PluginManifestSetup } from "../plugins/manifest.js";
@@ -10,6 +11,10 @@ import {
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { resolveLocalProviderAuthEvidence } from "../secrets/provider-auth-evidence.js";
+import {
+  isInstallPolicyEnabledForTarget,
+  type InstallPolicyWarning,
+} from "../security/install-policy.js";
 import { installSkillFromClawHub, preflightSkillFromClawHub } from "../skills/lifecycle/clawhub.js";
 import {
   acquireClawPackageLifecycleLease,
@@ -17,7 +22,9 @@ import {
   type MaintainedClawPackageLifecycleLease,
 } from "../state/claw-package-lifecycle-lease.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import { preflightClawPluginPolicyStages } from "./plugin-policy-preflight.js";
 import {
+  ownerInstallIsNewerThanClawPackageRefs,
   persistClawPackageRef,
   readClawPackageRefs,
   updateClawPackageRefStatus,
@@ -36,6 +43,7 @@ export class ClawPackageInstallError extends Error {
     readonly code: string,
     message: string,
     readonly installedPackages: PersistedClawPackageRef[],
+    readonly installPolicyWarning?: InstallPolicyWarning,
   ) {
     super(message);
     this.name = "ClawPackageInstallError";
@@ -60,6 +68,7 @@ type PlannedClawPackage = ResolvedClawPackage & {
   ownerAction: "install" | "reuse";
   installId?: string;
   riskWarning?: string;
+  installPolicyWarning?: InstallPolicyWarning;
 };
 function packageFromAction(action: ClawAddPlanAction): PlannedClawPackage {
   const details = action.details as
@@ -67,6 +76,7 @@ function packageFromAction(action: ClawAddPlanAction): PlannedClawPackage {
         ownerAction?: "install" | "reuse";
         installId?: string;
         riskWarning?: string;
+        installPolicyWarning?: InstallPolicyWarning;
       })
     | undefined;
   if (details?.kind !== "skill" && details?.kind !== "plugin") {
@@ -98,6 +108,7 @@ function packageFromAction(action: ClawAddPlanAction): PlannedClawPackage {
     ownerAction: details.ownerAction,
     ...(details.installId ? { installId: details.installId } : {}),
     ...(details.riskWarning ? { riskWarning: details.riskWarning } : {}),
+    ...(details.installPolicyWarning ? { installPolicyWarning: details.installPolicyWarning } : {}),
   };
 }
 
@@ -111,18 +122,6 @@ function installerRuntime(runtime: RuntimeEnv): RuntimeEnv {
   };
 }
 
-function ownerInstallIsNewerThanRefs(
-  installedAt: string | undefined,
-  refs: PersistedClawPackageRef[],
-): boolean {
-  const timestamp = Date.parse(installedAt ?? "");
-  return (
-    Number.isFinite(timestamp) &&
-    refs.length > 0 &&
-    refs.every((candidate) => timestamp > candidate.updatedAtMs)
-  );
-}
-
 type ClawPackagePreflightResult =
   | {
       ok: true;
@@ -130,6 +129,7 @@ type ClawPackagePreflightResult =
       integrity: string;
       installId?: string;
       warning?: string;
+      installPolicyWarning?: InstallPolicyWarning;
       requirements?: ClawLocalPrerequisite[];
     }
   | {
@@ -183,15 +183,23 @@ export async function preflightClawPackage(
   workspaceDir: string,
   options: {
     env?: NodeJS.ProcessEnv;
-    deps?: Pick<PackageInstallerDeps, "preflightPlugin" | "probePlugin">;
+    config?: OpenClawConfig;
+    mode?: "install" | "update";
+    dangerouslyForceUnsafeInstall?: boolean;
+    installPolicyAcknowledgementId?: string;
+    deps?: Pick<PackageInstallerDeps, "preflightPlugin" | "preflightSkill" | "probePlugin">;
   } = {},
 ): Promise<ClawPackagePreflightResult> {
   if (pkg.kind === "skill") {
-    const result = await preflightSkillFromClawHub({
+    const result = await (options.deps?.preflightSkill ?? preflightSkillFromClawHub)({
       workspaceDir,
       slug: pkg.ref,
       version: pkg.version,
       acknowledgeClawHubRisk: true,
+      config: options.config,
+      dangerouslyForceUnsafeInstall: options.dangerouslyForceUnsafeInstall,
+      installPolicyAcknowledgementId: options.installPolicyAcknowledgementId,
+      mode: options.mode ?? "install",
     });
     return result.ok ? result : { ok: false, code: result.code, message: result.error };
   }
@@ -209,7 +217,9 @@ export async function preflightClawPackage(
   }
   const probe = await (options.deps?.probePlugin ?? installPluginFromClawHub)({
     spec: `clawhub:${pkg.ref}@${pkg.version}`,
+    config: {},
     dryRun: true,
+    mode: options.mode ?? "install",
     acknowledgeClawHubRisk: true,
   });
   if (!probe.ok) {
@@ -225,6 +235,35 @@ export async function preflightClawPackage(
       message: `Plugin ${pkg.ref}@${pkg.version} did not resolve an artifact integrity.`,
     };
   }
+  let installPolicyWarning: InstallPolicyWarning | undefined;
+  const requiresMutation = result.ok ? result.action === "install" : true;
+  if (requiresMutation && isInstallPolicyEnabledForTarget(options.config, "plugin")) {
+    const policyPreflight = await preflightClawPluginPolicyStages({
+      probePlugin: options.deps?.probePlugin ?? installPluginFromClawHub,
+      pkg,
+      config: options.config ?? {},
+      mode: options.mode ?? "install",
+      pluginId: probe.pluginId,
+      integrity,
+      dangerouslyForceUnsafeInstall: options.dangerouslyForceUnsafeInstall,
+      installPolicyAcknowledgementId: options.installPolicyAcknowledgementId,
+    });
+    const policyProbe = policyPreflight.result;
+    if (!policyProbe.ok) {
+      const warning =
+        "installPolicyWarning" in policyProbe ? policyProbe.installPolicyWarning : undefined;
+      if (!warning) {
+        return {
+          ok: false,
+          code: policyProbe.code ?? "plugin_preflight_failed",
+          message: policyProbe.error,
+        };
+      }
+      installPolicyWarning = warning;
+    } else {
+      installPolicyWarning = policyPreflight.acknowledgedInstallPolicyWarning;
+    }
+  }
   if (!result.ok) {
     return {
       ok: false,
@@ -233,6 +272,7 @@ export async function preflightClawPackage(
       integrity,
       installId: probe.pluginId,
       ...(probe.warning ? { warning: probe.warning } : {}),
+      ...(installPolicyWarning ? { installPolicyWarning } : {}),
       message: `Plugin ${pkg.ref}@${pkg.version} conflicts with installed version ${result.installedVersion}.`,
     };
   }
@@ -260,10 +300,15 @@ export async function preflightClawPackage(
     installId: probe.pluginId,
     ...(requirements.length > 0 ? { requirements } : {}),
     ...(probe.warning ? { warning: probe.warning } : {}),
+    ...(installPolicyWarning ? { installPolicyWarning } : {}),
   };
 }
 
 type InstallClawPackagesOptions = OpenClawStateDatabaseOptions & {
+  config?: OpenClawConfig;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
+  installPolicyAcknowledgementIds?: ReadonlyMap<string, string>;
   deps?: PackageInstallerDeps;
   runtime?: RuntimeEnv;
   nowMs?: number;
@@ -314,6 +359,9 @@ async function installClawPackagesUnlocked(
     let packageLease: MaintainedClawPackageLifecycleLease | null = null;
     try {
       const pkg = packageFromAction(action);
+      const installPolicyAcknowledgementId =
+        options.installPolicyAcknowledgementIds?.get(action.id) ??
+        options.installPolicyAcknowledgementId;
       const leaseArtifact =
         pkg.kind === "skill"
           ? {
@@ -386,9 +434,21 @@ async function installClawPackagesUnlocked(
           expectedIntegrity: pkg.integrity,
           acknowledgeClawHubRisk: true,
           clawManaged: true,
+          config: options.config,
+          dangerouslyForceUnsafeInstall: options.dangerouslyForceUnsafeInstall,
+          installPolicyAcknowledgementId,
+          logger: { info: runtime.log, warn: runtime.error },
         });
         packageLease.assertCurrent();
         if (!installed.ok) {
+          if (installed.installPolicyWarning) {
+            throw new ClawPackageInstallError(
+              "install_policy_acknowledgement_required",
+              installed.error,
+              installedPackages,
+              installed.installPolicyWarning,
+            );
+          }
           throw new Error(installed.error);
         }
         packageRef = completePackageRef(packageRef, "complete", options);
@@ -398,6 +458,7 @@ async function installClawPackagesUnlocked(
 
       const probe = await probePlugin({
         spec: `clawhub:${pkg.ref}@${pkg.version}`,
+        config: {},
         dryRun: true,
         acknowledgeClawHubRisk: true,
       });
@@ -470,7 +531,7 @@ async function installClawPackagesUnlocked(
           existingRefs.every(
             (candidate) => candidate.origin === "claw-introduced" && !candidate.independentOwner,
           ) &&
-          !ownerInstallIsNewerThanRefs(preflight.installedAt, existingRefs);
+          !ownerInstallIsNewerThanClawPackageRefs(preflight.installedAt, existingRefs);
         installedPackages.push(
           persistPackageRef(plan, pkg, {
             ...options,
@@ -499,11 +560,22 @@ async function installClawPackagesUnlocked(
         raw: `clawhub:${pkg.ref}@${pkg.version}`,
         opts: {
           acknowledgeClawHubRisk: true,
+          config: options.config,
+          dangerouslyForceUnsafeInstall: options.dangerouslyForceUnsafeInstall,
+          installPolicyAcknowledgementId,
           expectedIntegrity: pkg.integrity,
           expectedPluginId: pkg.installId,
         },
         invalidateRuntimeCache: false,
         clawManaged: true,
+        onInstallPolicyWarning: (warning) => {
+          throw new ClawPackageInstallError(
+            "install_policy_acknowledgement_required",
+            warning.reason,
+            installedPackages,
+            warning,
+          );
+        },
         runtime: installerRuntime(runtime),
       });
       installedPlugins.push({
@@ -591,7 +663,7 @@ async function installClawPackagesUnlocked(
             installed.pluginId !== installedPlugin.installId ||
             installed.installedVersion !== packageRef.version ||
             installedIntegrity !== normalizeClawHubSha256Integrity(packageRef.integrity) ||
-            ownerInstallIsNewerThanRefs(installed.record.installedAt, currentRefs)
+            ownerInstallIsNewerThanClawPackageRefs(installed.record.installedAt, currentRefs)
           ) {
             rollbackErrors.push(
               `kept plugin ${installedPlugin.installId} because its installed identity changed after Claw installation`,
@@ -613,7 +685,6 @@ async function installClawPackagesUnlocked(
           rollbackErrors.push(
             `could not remove plugin ${installedPlugin.installId}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
           );
-          continue;
         } finally {
           try {
             rollbackLease?.release();
@@ -628,10 +699,16 @@ async function installClawPackagesUnlocked(
           "package_rollback_failed",
           `${message} Rollback incomplete: ${rollbackErrors.join("; ")}.`,
           installedPackages,
+          error instanceof ClawPackageInstallError ? error.installPolicyWarning : undefined,
         );
       }
       if (error instanceof ClawPackageInstallError) {
-        throw new ClawPackageInstallError(error.code, error.message, installedPackages);
+        throw new ClawPackageInstallError(
+          error.code,
+          error.message,
+          installedPackages,
+          error.installPolicyWarning,
+        );
       }
       throw new ClawPackageInstallError("package_install_failed", message, installedPackages);
     } finally {

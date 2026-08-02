@@ -2758,6 +2758,95 @@ describe("installPluginFromNpmSpec", () => {
     });
   });
 
+  it("keeps npm warning acknowledgements stable while rejecting stale IDs", async () => {
+    const root = suiteTempRootTracker.makeTempDir();
+    const npmRoot = path.join(root, "npm");
+    const policyPath = path.join(root, "policy.cjs");
+    fs.writeFileSync(policyPath, "process.exit(0);\n", { mode: 0o700 });
+    mockNpmViewAndInstall({
+      spec: "reviewed-plugin@1.0.0",
+      packageName: "reviewed-plugin",
+      version: "1.0.0",
+      pluginId: "reviewed-plugin",
+      npmRoot,
+    });
+    const runNpmCommand = runCommandWithTimeoutMock.getMockImplementation();
+    if (!runNpmCommand) {
+      throw new Error("expected npm command mock");
+    }
+    runCommandWithTimeoutMock.mockImplementation(async (argv: string[], options?: unknown) =>
+      argv[0] === policyPath
+        ? successfulSpawn(
+            JSON.stringify({
+              protocolVersion: 1,
+              decision: "warn",
+              reason: "Review package metadata",
+            }),
+          )
+        : await runNpmCommand(argv, options),
+    );
+    const config = {
+      security: {
+        installPolicy: {
+          enabled: true,
+          exec: { source: "exec" as const, command: policyPath, trustedDirs: [root] },
+        },
+      },
+    };
+
+    const toISOString = vi
+      .spyOn(Date.prototype, "toISOString")
+      .mockReturnValueOnce("2026-08-04T00:00:00.000Z")
+      .mockReturnValueOnce("2026-08-04T00:00:01.000Z")
+      .mockReturnValueOnce("2026-08-04T00:00:02.000Z");
+    let first: Awaited<ReturnType<typeof installPluginFromNpmSpec>>;
+    let staleRetry: Awaited<ReturnType<typeof installPluginFromNpmSpec>>;
+    let acknowledgedRetry: Awaited<ReturnType<typeof installPluginFromNpmSpec>>;
+    try {
+      first = await installPluginFromNpmSpec({
+        spec: "reviewed-plugin@1.0.0",
+        config,
+        dryRun: true,
+        npmDir: npmRoot,
+      });
+      staleRetry = await installPluginFromNpmSpec({
+        spec: "reviewed-plugin@1.0.0",
+        config,
+        dryRun: true,
+        npmDir: npmRoot,
+        dangerouslyForceUnsafeInstall: true,
+        installPolicyAcknowledgementId: `sha256:${"f".repeat(64)}`,
+      });
+      acknowledgedRetry = await installPluginFromNpmSpec({
+        spec: "reviewed-plugin@1.0.0",
+        config,
+        dryRun: true,
+        npmDir: npmRoot,
+        dangerouslyForceUnsafeInstall: true,
+        installPolicyAcknowledgementId: first.ok
+          ? undefined
+          : first.installPolicyWarning?.acknowledgementId,
+      });
+    } finally {
+      toISOString.mockRestore();
+    }
+
+    expect(first).toMatchObject({
+      ok: false,
+      code: "security_scan_blocked",
+      installPolicyWarning: { reason: "Review package metadata" },
+    });
+    expect(staleRetry).toMatchObject({
+      ok: false,
+      code: "security_scan_blocked",
+      installPolicyWarning: { reason: "Review package metadata" },
+    });
+    expect(acknowledgedRetry).toMatchObject({ ok: true });
+    expect(
+      runCommandWithTimeoutMock.mock.calls.some(([argv]) => isManagedNpmInstallCommand(argv)),
+    ).toBe(false);
+  });
+
   it("rolls back the managed npm root when npm install fails", async () => {
     const npmRoot = path.join(suiteTempRootTracker.makeTempDir(), "npm");
     const npmProjectRoot = resolvePluginNpmProjectDir({

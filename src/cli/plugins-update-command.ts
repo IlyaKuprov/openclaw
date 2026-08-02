@@ -26,6 +26,7 @@ import {
   resolveInstallConfigMutationPreflights,
   selectInstallMutationWriteOptions,
 } from "../plugins/install-persistence.js";
+import { resolveInstallPolicyAcknowledgementSequence } from "../plugins/install-policy-acknowledgement.js";
 import {
   commitPluginInstallRecordsOnly,
   commitPluginInstallRecordsWithConfig,
@@ -53,9 +54,6 @@ import {
   resolvePluginUpdateSelection,
 } from "./plugins-update-selection.js";
 import { promptYesNo } from "./prompt.js";
-
-const DEPRECATED_DANGEROUS_FORCE_UNSAFE_UPDATE_WARNING =
-  "--dangerously-force-unsafe-install is deprecated and no longer affects plugin updates because built-in install-time dangerous-code scanning has been removed. Configure security.installPolicy for operator-owned install decisions.";
 
 function mayMutatePluginInstallRecord(
   record: PluginInstallRecord | undefined,
@@ -179,6 +177,7 @@ type RunPluginUpdateCommandParams = {
     acknowledgeClawHubRisk?: boolean;
     dryRun?: boolean;
     dangerouslyForceUnsafeInstall?: boolean;
+    installPolicyAcknowledgementId?: string;
   };
 };
 
@@ -228,9 +227,6 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
     info: (msg: string) => defaultRuntime.log(msg),
     warn: (msg: string) => defaultRuntime.log(msg.includes("╭─") ? msg : theme.warn(msg)),
   };
-  if (params.opts.dangerouslyForceUnsafeInstall) {
-    defaultRuntime.log(theme.warn(DEPRECATED_DANGEROUS_FORCE_UNSAFE_UPDATE_WARNING));
-  }
   const pluginSelection = resolvePluginUpdateSelection({
     installs: pluginInstallRecords,
     rawId: params.id,
@@ -340,6 +336,10 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
     }
   }
 
+  const installPolicyAcknowledgementSequence = resolveInstallPolicyAcknowledgementSequence({
+    dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
+    installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
+  });
   const pluginResult =
     pluginSelection.pluginIds.length > 0
       ? await updateNpmInstalledPlugins({
@@ -357,6 +357,9 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
           syncOfficialPluginInstalls: params.opts.all ? true : undefined,
           coreVersion: VERSION,
           dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
+          installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
+          installPolicyAcknowledgementSequence,
+          deferInstallPolicyAcknowledgementMismatch: true,
           ...resolveClawHubRiskAcknowledgementCliOptions({
             acknowledgeClawHubRisk: params.opts.acknowledgeClawHubRisk,
             action: "updating",
@@ -383,6 +386,10 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
     hookSelection.hookIds.length > 0
       ? await updateNpmInstalledHookPacks({
           config: pluginResult.config,
+          dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
+          installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
+          installPolicyAcknowledgementSequence,
+          deferInstallPolicyAcknowledgementMismatch: true,
           hookIds: hookSelection.hookIds,
           specOverrides: hookSelection.specOverrides,
           dryRun: params.opts.dryRun,
@@ -406,8 +413,30 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
         })
       : { config: pluginResult.config, changed: false, outcomes: [] };
 
+  const outcomes = [...pluginResult.outcomes, ...hookResult.outcomes];
+  if (installPolicyAcknowledgementSequence && !installPolicyAcknowledgementSequence.matched) {
+    const pluginDeferred =
+      "deferredInstallPolicyMismatch" in pluginResult
+        ? pluginResult.deferredInstallPolicyMismatch
+        : undefined;
+    const hookDeferred =
+      "deferredInstallPolicyMismatch" in hookResult
+        ? hookResult.deferredInstallPolicyMismatch
+        : undefined;
+    const deferred = pluginDeferred
+      ? pluginDeferred
+      : hookDeferred
+        ? {
+            index: pluginResult.outcomes.length + hookDeferred.index,
+            outcome: hookDeferred.outcome,
+          }
+        : undefined;
+    if (deferred) {
+      outcomes[deferred.index] = deferred.outcome;
+    }
+  }
   const outcomeSummary = logPluginUpdateOutcomes({
-    outcomes: [...pluginResult.outcomes, ...hookResult.outcomes],
+    outcomes,
     log: (message) => defaultRuntime.log(message),
   });
 

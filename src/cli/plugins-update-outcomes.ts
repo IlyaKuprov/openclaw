@@ -1,6 +1,7 @@
 // User-facing logging for plugin and hook-pack update outcomes.
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { isClawHubTrustSkippedOutcome } from "../plugins/update.js";
+import { appendInstallPolicyAcknowledgementFlag } from "./install-policy-acknowledgement.js";
 
 type PluginUpdateCliOutcome = {
   status: string;
@@ -9,6 +10,7 @@ type PluginUpdateCliOutcome = {
     message: string;
   };
   code?: string;
+  installPolicyWarning?: unknown;
 };
 
 /** Log update outcomes with severity styling and report whether any errors occurred. */
@@ -20,7 +22,11 @@ export function logPluginUpdateOutcomes(params: {
   for (const outcome of params.outcomes) {
     if (outcome.status === "error") {
       hasErrors = true;
-      params.log(theme.error(outcome.message));
+      params.log(
+        theme.error(
+          appendInstallPolicyAcknowledgementFlag(outcome.message, outcome.installPolicyWarning),
+        ),
+      );
       if (outcome.channelFallback) {
         params.log(theme.warn(outcome.channelFallback.message));
       }
@@ -30,7 +36,11 @@ export function logPluginUpdateOutcomes(params: {
       if (isClawHubTrustSkippedOutcome(outcome)) {
         hasErrors = true;
       }
-      params.log(theme.warn(outcome.message));
+      params.log(
+        theme.warn(
+          appendInstallPolicyAcknowledgementFlag(outcome.message, outcome.installPolicyWarning),
+        ),
+      );
       if (outcome.channelFallback) {
         params.log(theme.warn(outcome.channelFallback.message));
       }

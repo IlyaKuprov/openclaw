@@ -180,6 +180,34 @@ describe("skill archive install", () => {
     });
   });
 
+  it("runs policy preflight without creating the skill target", async () => {
+    const root = await tempDirs.make("openclaw-skill-archive-preflight-");
+    const workspaceDir = path.join(root, "workspace");
+    const extractedRoot = path.join(root, "extracted");
+    await fs.mkdir(extractedRoot, { recursive: true });
+    await fs.writeFile(path.join(extractedRoot, "SKILL.md"), skillFileContent("Policy Preview"));
+    const handler = vi.fn().mockReturnValue({});
+    initializeGlobalHookRunner(createMockPluginRegistry([{ hookName: "before_install", handler }]));
+
+    const result = await installExtractedSkillRoot({
+      workspaceDir,
+      slug: "policy-preview",
+      extractedRoot,
+      mode: "install",
+      scanOnly: true,
+      policy: {
+        config: {},
+        installId: "clawhub",
+        origin: { type: "clawhub", slug: "policy-preview", version: "1.0.0" },
+        source: { kind: "clawhub", authority: "openclaw", mutable: false, network: true },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+    await expect(fs.access(path.join(workspaceDir, "skills", "policy-preview"))).rejects.toThrow();
+  });
+
   it("keeps legacy skill-upload origin for before_install hooks", async () => {
     const root = await tempDirs.make("openclaw-skill-archive-install-");
     const workspaceDir = path.join(root, "workspace");

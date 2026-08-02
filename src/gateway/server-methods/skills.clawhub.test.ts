@@ -3,6 +3,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { callGatewayHandler } from "./skills.test-helpers.js";
 
+const INSTALL_POLICY_ACKNOWLEDGEMENT_ID = `sha256:${"a".repeat(64)}`;
+const SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID = `sha256:${"b".repeat(64)}`;
+
 const loadConfigMock = vi.fn(() => ({}));
 const listAgentIdsMock = vi.fn<(_cfg: unknown) => string[]>(() => ["main"]);
 const resolveDefaultAgentIdMock = vi.fn(() => "main");
@@ -294,7 +297,7 @@ describe("skills gateway handlers (clawhub)", () => {
     expect(result?.warning).toBe("Review ClawHub security details before installing.");
   });
 
-  it("deduplicates concurrent exact ClawHub installs across reconnects", async () => {
+  it("deduplicates only ClawHub installs with the same acknowledgements", async () => {
     let finishInstall: ((value: unknown) => void) | undefined;
     installSkillFromClawHubMock.mockReturnValue(
       new Promise((resolve) => {
@@ -309,8 +312,16 @@ describe("skills gateway handlers (clawhub)", () => {
     } as const;
     const first = callSkillsHandler("skills.install", params);
     const reconnectRetry = callSkillsHandler("skills.install", params);
+    const acknowledged = callSkillsHandler("skills.install", {
+      ...params,
+      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+    });
+    const differentlyAcknowledged = callSkillsHandler("skills.install", {
+      ...params,
+      acknowledgeInstallPolicyWarning: SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+    });
 
-    await vi.waitFor(() => expect(installSkillFromClawHubMock).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(installSkillFromClawHubMock).toHaveBeenCalledTimes(3));
     finishInstall?.({
       ok: true,
       slug: "calendar",
@@ -318,9 +329,12 @@ describe("skills gateway handlers (clawhub)", () => {
       targetDir: "/tmp/workspace/skills/calendar",
     });
 
-    const [firstResult, retryResult] = await Promise.all([first, reconnectRetry]);
+    const [firstResult, retryResult, acknowledgedResult, differentlyAcknowledgedResult] =
+      await Promise.all([first, reconnectRetry, acknowledged, differentlyAcknowledged]);
     expect(firstResult.ok).toBe(true);
     expect(retryResult.ok).toBe(true);
+    expect(acknowledgedResult.ok).toBe(true);
+    expect(differentlyAcknowledgedResult.ok).toBe(true);
   });
 
   it("returns ClawHub skill install trust warnings in Gateway error details", async () => {
@@ -356,6 +370,27 @@ describe("skills gateway handlers (clawhub)", () => {
     });
   });
 
+  it("returns the resolved policy-warning version in Gateway error details", async () => {
+    installSkillFromClawHubMock.mockResolvedValue({
+      ok: false,
+      error: "install policy warning requires acknowledgement",
+      version: "1.2.3",
+      installPolicyWarning: { reason: "Review skill behavior" },
+    });
+
+    const { error } = await callSkillsHandler("skills.install", {
+      source: "clawhub",
+      slug: "calendar",
+    });
+
+    expect(error).toMatchObject({
+      details: {
+        version: "1.2.3",
+        installPolicyWarning: { reason: "Review skill behavior" },
+      },
+    });
+  });
+
   it("forwards ClawHub skill install risk acknowledgements", async () => {
     installSkillFromClawHubMock.mockResolvedValue({
       ok: true,
@@ -369,6 +404,7 @@ describe("skills gateway handlers (clawhub)", () => {
       slug: "calendar",
       version: "1.2.3",
       acknowledgeClawHubRisk: true,
+      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
     });
 
     expect(installSkillFromClawHubMock).toHaveBeenCalledWith({
@@ -377,6 +413,8 @@ describe("skills gateway handlers (clawhub)", () => {
       version: "1.2.3",
       force: false,
       acknowledgeClawHubRisk: true,
+      dangerouslyForceUnsafeInstall: true,
+      installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
       logger: expect.objectContaining({ warn: expect.any(Function) }),
       config: {},
     });
@@ -416,7 +454,7 @@ describe("skills gateway handlers (clawhub)", () => {
     expect(error).toBeUndefined();
   });
 
-  it("accepts deprecated unsafe override without forwarding it to skill installs", async () => {
+  it("forwards install policy warning acknowledgement to skill installs", async () => {
     installSkillMock.mockResolvedValue({
       ok: true,
       message: "Installed",
@@ -428,7 +466,7 @@ describe("skills gateway handlers (clawhub)", () => {
     const { ok, response, error } = await callSkillsHandler("skills.install", {
       name: "calendar",
       installId: "deps",
-      dangerouslyForceUnsafeInstall: true,
+      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
       timeoutMs: 120_000,
     });
 
@@ -436,6 +474,8 @@ describe("skills gateway handlers (clawhub)", () => {
       workspaceDir: "/tmp/workspace",
       skillName: "calendar",
       installId: "deps",
+      dangerouslyForceUnsafeInstall: true,
+      installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
       timeoutMs: 120_000,
       config: {},
     });
@@ -444,6 +484,68 @@ describe("skills gateway handlers (clawhub)", () => {
     const result = response as { ok?: boolean; message?: string } | undefined;
     expect(result?.ok).toBe(true);
     expect(result?.message).toBe("Installed");
+  });
+
+  it("omits raw policy logs when projecting a skill install warning", async () => {
+    installSkillMock.mockResolvedValue({
+      ok: false,
+      message: "Install policy warning requires acknowledgement.",
+      stdout: "",
+      stderr: "",
+      code: null,
+      warnings: ["raw finding with /private/operator/path"],
+      installPolicyWarning: {
+        reason: "Review dependency installer",
+        acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+      },
+    });
+
+    const { ok, response, error } = await callSkillsHandler("skills.install", {
+      name: "calendar",
+      installId: "deps",
+    });
+
+    expect(ok).toBe(false);
+    expect(response).not.toHaveProperty("warnings");
+    expect(response).toMatchObject({
+      installPolicyWarning: {
+        reason: "Review dependency installer",
+        acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+      },
+    });
+    expect(error).toMatchObject({
+      details: {
+        installPolicyWarning: {
+          reason: "Review dependency installer",
+          acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+        },
+      },
+    });
+  });
+
+  it("keeps the deprecated unsafe-install compatibility field as a no-op", async () => {
+    installSkillMock.mockResolvedValue({
+      ok: true,
+      message: "Installed",
+      stdout: "",
+      stderr: "",
+      code: 0,
+    });
+
+    const { ok } = await callSkillsHandler("skills.install", {
+      name: "calendar",
+      installId: "deps",
+      dangerouslyForceUnsafeInstall: true,
+    });
+
+    expect(installSkillMock).toHaveBeenCalledWith({
+      workspaceDir: "/tmp/workspace",
+      skillName: "calendar",
+      installId: "deps",
+      timeoutMs: undefined,
+      config: {},
+    });
+    expect(ok).toBe(true);
   });
 
   it("updates ClawHub skills through skills.update", async () => {
@@ -510,17 +612,76 @@ describe("skills gateway handlers (clawhub)", () => {
       source: "clawhub",
       slug: "calendar",
       acknowledgeClawHubRisk: true,
+      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
     });
 
     expect(updateSkillsFromClawHubMock).toHaveBeenCalledWith({
       workspaceDir: "/tmp/workspace",
       slug: "calendar",
       acknowledgeClawHubRisk: true,
+      dangerouslyForceUnsafeInstall: true,
+      installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
       logger: expect.objectContaining({ warn: expect.any(Function) }),
       config: {},
     });
     expect(ok).toBe(true);
     expect(error).toBeUndefined();
+  });
+
+  it("returns skill update policy warnings at the shared Gateway detail path", async () => {
+    updateSkillsFromClawHubMock.mockResolvedValue([
+      {
+        ok: false,
+        error: "Install policy warning requires acknowledgement.",
+        installPolicyWarning: { reason: "Review calendar behavior" },
+      },
+    ]);
+
+    const { ok, error } = await callSkillsHandler("skills.update", {
+      source: "clawhub",
+      slug: "calendar",
+    });
+
+    expect(ok).toBe(false);
+    expect(error).toMatchObject({
+      details: { installPolicyWarning: { reason: "Review calendar behavior" } },
+    });
+  });
+
+  it("preserves the first source-bound warning for bulk skill update retries", async () => {
+    updateSkillsFromClawHubMock.mockResolvedValue([
+      {
+        ok: false,
+        error: "Calendar needs review.",
+        installPolicyWarning: {
+          reason: "Review calendar behavior",
+          acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+        },
+      },
+      {
+        ok: false,
+        error: "Weather needs review.",
+        installPolicyWarning: {
+          reason: "Review weather behavior",
+          acknowledgementId: SECOND_INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+        },
+      },
+    ]);
+
+    const { ok, error } = await callSkillsHandler("skills.update", {
+      source: "clawhub",
+      all: true,
+    });
+
+    expect(ok).toBe(false);
+    expect(error).toMatchObject({
+      details: {
+        installPolicyWarning: {
+          reason: "Review calendar behavior",
+          acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+        },
+      },
+    });
   });
 
   it("returns ClawHub skill update trust warnings in Gateway error details", async () => {

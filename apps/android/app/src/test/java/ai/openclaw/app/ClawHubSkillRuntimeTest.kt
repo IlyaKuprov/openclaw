@@ -1,10 +1,15 @@
 package ai.openclaw.app
 
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayErrorDetails
 import ai.openclaw.app.gateway.GatewayRequestOutcomeUnknown
+import ai.openclaw.app.gateway.GatewayRequestRejected
+import ai.openclaw.app.gateway.GatewaySession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -83,6 +88,42 @@ class ClawHubSkillRuntimeTest {
         .contains("unknown"),
     )
     assertEquals("Installed registry-slug.", runtime.clawHubSkillSearchState.value.messageText)
+  }
+
+  @Test
+  fun installPolicyWarningCarriesItsAcknowledgementKind() {
+    val runtime = createTestRuntime()
+    seedConnectedAdminRuntime(runtime)
+    val warningJson =
+      Json
+        .parseToJsonElement(
+          """{"reason":"Review shell execution","acknowledgementId":"sha256:${"a".repeat(64)}","findings":[{"ruleId":"shell","severity":"warn","message":"Runs a shell"}]}""",
+        )
+    val warning = warningJson.jsonObject
+    runtime.gatewayDataRequestOverrideForTests = { _, method, _ ->
+      when (method) {
+        "skills.install" ->
+          throw GatewayRequestRejected(
+            GatewaySession.ErrorShape(
+              "UNAVAILABLE",
+              "review required",
+              GatewayErrorDetails(null, false, null, installPolicyWarning = warning),
+            ),
+          )
+        "skills.status" -> skillsStatus(false)
+        else -> error("unexpected method $method")
+      }
+    }
+
+    val installJob =
+      runtime.installClawHubSkill("registry-slug", version = "1.2.3")
+        ?: error("install job missing")
+    runBlocking { installJob.join() }
+
+    val state = runtime.clawHubSkillSearchState.value
+    assertEquals(GatewayClawHubAcknowledgementKind.INSTALL_POLICY, state.acknowledgementKind)
+    assertEquals("sha256:${"a".repeat(64)}", state.installPolicyAcknowledgementId)
+    assertEquals("Review shell execution\n• [WARN · shell] Runs a shell", state.errorText)
   }
 
   @Test

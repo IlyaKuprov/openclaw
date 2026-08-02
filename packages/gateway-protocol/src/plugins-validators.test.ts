@@ -43,6 +43,24 @@ describe("plugin lifecycle protocol validators", () => {
     ).toBe(false);
   });
 
+  it("accepts a bounded ordered install-policy acknowledgement sequence", () => {
+    const stage = (character: string) => `sha256:${character.repeat(64)}`;
+    expect(
+      validatePluginsInstallParams({
+        source: "official",
+        pluginId: "workboard",
+        acknowledgeInstallPolicyWarning: `${stage("a")},${stage("b")}`,
+      }),
+    ).toBe(true);
+    expect(
+      validatePluginsInstallParams({
+        source: "official",
+        pluginId: "workboard",
+        acknowledgeInstallPolicyWarning: Array.from({ length: 33 }, () => stage("a")).join(","),
+      }),
+    ).toBe(false);
+  });
+
   it("validates uninstall requests", () => {
     expect(validatePluginsUninstallParams({ pluginId: "memory-plus" })).toBe(true);
     expect(validatePluginsUninstallParams({ pluginId: "" })).toBe(false);

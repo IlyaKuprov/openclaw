@@ -4,9 +4,13 @@ import type {
   InstallPolicyOrigin,
   InstallPolicyRequestKind,
   InstallPolicySource,
+  InstallPolicyWarning,
 } from "../security/install-policy.js";
 export type { InstallSafetyOverrides } from "./install-security-scan.types.js";
-import type { InstallSafetyOverrides } from "./install-security-scan.types.js";
+import type {
+  InstallPolicyAcknowledgementSequence,
+  InstallSafetyOverrides,
+} from "./install-security-scan.types.js";
 
 type InstallScanLogger = {
   warn?: (message: string) => void;
@@ -16,7 +20,9 @@ type InstallScanLogger = {
 export type InstallSecurityScanResult = {
   blocked?: {
     code?: "security_scan_blocked" | "security_scan_failed";
+    installPolicyWarning?: InstallPolicyWarning;
     reason: string;
+    requiresAcknowledgement?: boolean;
   };
 };
 
@@ -99,6 +105,8 @@ export async function scanInstalledPackageDependencyTree(params: {
   allowManagedNpmRootPackagePeerSymlinks?: boolean;
   config?: OpenClawConfig;
   dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
+  installPolicyAcknowledgementSequence?: InstallPolicyAcknowledgementSequence;
   dependencyScanRootDir?: string;
   logger: InstallScanLogger;
   mode?: "install" | "update";
@@ -133,17 +141,20 @@ export async function scanFileInstallSource(
 }
 
 /** Runs npm install policy checks before package install side effects. */
-export async function preflightPluginNpmInstallPolicy(params: {
-  config?: OpenClawConfig;
-  logger: InstallScanLogger;
-  mode?: "install" | "update";
-  packageName: string;
-  pluginId?: string;
-  requestedSpecifier?: string;
-  source?: InstallPolicySource;
-  sourcePath: string;
-  sourcePathKind: "file" | "directory";
-}): Promise<InstallSecurityScanResult | undefined> {
+export async function preflightPluginNpmInstallPolicy(
+  params: InstallSafetyOverrides & {
+    config?: OpenClawConfig;
+    dangerouslyForceUnsafeInstall?: boolean;
+    logger: InstallScanLogger;
+    mode?: "install" | "update";
+    packageName: string;
+    pluginId?: string;
+    requestedSpecifier?: string;
+    source?: InstallPolicySource;
+    sourcePath: string;
+    sourcePathKind: "file" | "directory";
+  },
+): Promise<InstallSecurityScanResult | undefined> {
   const { preflightPluginNpmInstallPolicyRuntime } = await loadInstallSecurityScanRuntime();
   return await preflightPluginNpmInstallPolicyRuntime(params);
 }
@@ -151,6 +162,9 @@ export async function preflightPluginNpmInstallPolicy(params: {
 /** Runs git install policy checks before plugin install side effects. */
 export async function preflightPluginGitInstallPolicy(params: {
   config?: OpenClawConfig;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
+  installPolicyAcknowledgementSequence?: InstallSafetyOverrides["installPolicyAcknowledgementSequence"];
   logger: InstallScanLogger;
   mode?: "install" | "update";
   pluginId: string;
@@ -165,6 +179,9 @@ export async function preflightPluginGitInstallPolicy(params: {
 /** Evaluates shared install policy for skill-managed dependency installs. */
 export async function evaluateSkillInstallPolicy(params: {
   config?: OpenClawConfig;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
+  installPolicyAcknowledgementSequence?: InstallPolicyAcknowledgementSequence;
   installId: string;
   installSpec?: SkillInstallSpecMetadata;
   logger: InstallScanLogger;

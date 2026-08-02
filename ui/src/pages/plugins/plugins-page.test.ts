@@ -2,6 +2,7 @@
 
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GatewayRequestError } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { i18n } from "../../i18n/index.ts";
 import { createRuntimeConfigCapability } from "../../lib/config/index.ts";
@@ -27,6 +28,8 @@ import {
   type RuntimeConfigTestState,
 } from "./plugins-page.test-support.ts";
 import type { PluginsRouteData } from "./plugins-page.ts";
+
+const INSTALL_POLICY_ACKNOWLEDGEMENT_ID = `sha256:${"a".repeat(64)}`;
 
 function clickHubTab(page: HTMLElement, tab: "installed" | "discover" | "skills" | "workshop") {
   page
@@ -433,6 +436,38 @@ describe("PluginsPage", () => {
       runtimeConfig.dispose();
     },
   );
+
+  it("keeps official policy acknowledgement within the official request schema", async () => {
+    const { client } = createClient(async (method) => {
+      if (method === "plugins.install") {
+        throw new GatewayRequestError({
+          code: "INVALID_REQUEST",
+          message: "Install policy warning",
+          details: {
+            version: "2.0.0",
+            installPolicyWarning: {
+              reason: "Review package behavior.",
+              acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected method ${method}`);
+    });
+    const harness = createGateway(client);
+    const { page } = await mountPage(
+      createContext(harness.gateway),
+      createPluginsRouteData(harness.gateway),
+    );
+
+    await page.install("plugin:workboard", { source: "official", pluginId: "workboard" });
+
+    expect(page.messages["plugin:workboard"]?.acknowledge).toEqual({
+      source: "official",
+      pluginId: "workboard",
+      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+    });
+  });
 
   it("keeps the enable action retryable after a failed enable", async () => {
     const { client, request } = createClient(async (method) => {

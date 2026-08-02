@@ -29,6 +29,7 @@ import { sha256Hex } from "../../infra/crypto-digest.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { pathExists } from "../../infra/fs-safe.js";
 import { withExtractedArchiveRoot } from "../../infra/install-flow.js";
+import type { InstallPolicyWarning } from "../../security/install-policy.js";
 import { markClawPackageIndependentlyOwned } from "../../state/claw-package-adoption.js";
 import {
   CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
@@ -61,10 +62,13 @@ export type ClawHubInstallParams = {
   requestedReference?: string;
   trustState?: ClawHubSkillsShTrustState;
   version?: string;
+  skipIfVersion?: string;
   expectedIntegrity?: string;
   baseUrl?: string;
   force?: boolean;
   forceInstall?: boolean;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   acknowledgeClawHubRisk?: boolean;
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
   logger?: Logger;
@@ -81,7 +85,15 @@ export type InstallClawHubSkillResult =
       detail?: ClawHubSkillDetail;
       warning?: string;
     }
-  | { ok: false; error: string; code?: ClawHubTrustErrorCode; version?: string; warning?: string };
+  | {
+      ok: false;
+      error: string;
+      code?: ClawHubTrustErrorCode;
+      version?: string;
+      installKind?: "archive" | "github";
+      warning?: string;
+      installPolicyWarning?: InstallPolicyWarning;
+    };
 
 export function normalizeExpectedArtifactIntegrity(expectedIntegrity: string): string;
 export function normalizeExpectedArtifactIntegrity(expectedIntegrity: undefined): undefined;
@@ -306,6 +318,8 @@ async function installArchiveResolution(params: {
   registry: string;
   authority: "official" | "openclaw" | "third-party";
   force?: boolean;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   logger?: Logger;
   config?: OpenClawConfig;
 }) {
@@ -323,6 +337,8 @@ async function installArchiveResolution(params: {
         logger: params.logger,
         policy: {
           config: params.config,
+          dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+          installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
           installId: "clawhub",
           origin: {
             type: "clawhub",
@@ -352,6 +368,8 @@ async function installGitHubResolution(params: {
   requestedReference?: string;
   trustState?: ClawHubSkillsShTrustState;
   force?: boolean;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   logger?: Logger;
   config?: OpenClawConfig;
 }) {
@@ -370,6 +388,8 @@ async function installGitHubResolution(params: {
         logger: params.logger,
         policy: {
           config: params.config,
+          dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+          installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
           installId: "clawhub",
           origin: {
             type: "clawhub",
@@ -483,6 +503,9 @@ export async function performClawHubSkillInstall(
         return { ...trust, version };
       }
       trustWarning = trust.warning;
+      if (params.skipIfVersion === version) {
+        return { ok: true, slug: params.slug, version, targetDir, ...(detail ? { detail } : {}) };
+      }
       params.logger?.info?.(`Downloading ${params.slug}@${version} from ClawHub…`);
       archive = await downloadClawHubSkillArchive({
         slug: params.slug,
@@ -530,6 +553,9 @@ export async function performClawHubSkillInstall(
       });
       if (resolution.installKind === "github") {
         version = resolution.github.commit;
+        if (params.skipIfVersion === version) {
+          return { ok: true, slug: params.slug, version, targetDir };
+        }
         // GitHub-backed ClawHub skills are commit resolutions, not ClawHub skill
         // release versions; the install resolver owns their scan/force policy.
         params.logger?.info?.(`Downloading ${params.slug}@${version} from GitHub…`);
@@ -548,6 +574,9 @@ export async function performClawHubSkillInstall(
           return { ...trust, version };
         }
         trustWarning = trust.warning;
+        if (params.skipIfVersion === version) {
+          return { ok: true, slug: params.slug, version, targetDir, ...(detail ? { detail } : {}) };
+        }
         params.logger?.info?.(`Downloading ${params.slug}@${version} from ClawHub…`);
         archive = await downloadClawHubSkillArchiveUrl({
           url: resolution.archive.downloadUrl,
@@ -576,6 +605,8 @@ export async function performClawHubSkillInstall(
               requestedReference: params.requestedReference,
               trustState: params.trustState,
               force: params.force,
+              dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+              installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
               logger: params.logger,
               config: params.config,
             })
@@ -592,11 +623,25 @@ export async function performClawHubSkillInstall(
                   ? "openclaw"
                   : "third-party",
               force: params.force,
+              dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+              installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
               logger: params.logger,
               config: params.config,
             });
       if (!install.ok) {
-        return { ok: false, error: install.error };
+        const installPolicyWarning = (install as { installPolicyWarning?: InstallPolicyWarning })
+          .installPolicyWarning;
+        return {
+          ok: false,
+          error: install.error,
+          version,
+          ...(installPolicyWarning
+            ? {
+                installKind: resolution?.installKind ?? "archive",
+                installPolicyWarning,
+              }
+            : {}),
+        };
       }
 
       const installedAt = Date.now();

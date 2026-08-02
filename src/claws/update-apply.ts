@@ -4,6 +4,7 @@ import { listAgentEntries } from "../agents/agent-scope.js";
 import { transformConfigFileWithRetry } from "../config/config.js";
 import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { InstallPolicyWarning } from "../security/install-policy.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import {
   applyClawCronUpdate,
@@ -11,6 +12,10 @@ import {
   type ClawCronUpdateExecution,
 } from "./cron-update.js";
 import type { ClawCronGateway } from "./cron.js";
+import {
+  isInstallPolicyWarning,
+  resolveClawInstallPolicyAcknowledgement,
+} from "./install-policy-acknowledgement.js";
 import { buildClawAddPlan, type ClawAddPlanContext } from "./lifecycle.js";
 import {
   applyClawMcpUpdate,
@@ -22,6 +27,7 @@ import {
   ClawPackageUpdateError,
   type ClawPackageUpdateExecution,
 } from "./package-update.js";
+import { stableStringifyClawPlanIntegrity } from "./plan-integrity.js";
 import {
   readClawInstallRecord,
   updateClawInstallRecord,
@@ -47,13 +53,17 @@ export const CLAW_UPDATE_RESULT_SCHEMA_VERSION = "openclaw.clawUpdateResult.v1" 
 type ConfigCommit = (transform: (config: OpenClawConfig) => OpenClawConfig) => Promise<void>;
 
 function digest(value: unknown): string {
-  return `sha256:${createHash("sha256").update(stableStringify(value)).digest("hex")}`;
+  return `sha256:${createHash("sha256")
+    .update(stableStringifyClawPlanIntegrity(value))
+    .digest("hex")}`;
 }
 
 export class ClawUpdateMutationError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    readonly installPolicyWarning?: InstallPolicyWarning,
+    readonly installPolicyRetryPlanIntegrity?: string,
   ) {
     super(message);
     this.name = "ClawUpdateMutationError";
@@ -95,6 +105,9 @@ export async function applyClawUpdatePlan(
   },
   options: OpenClawStateDatabaseOptions & {
     config: OpenClawConfig;
+    dangerouslyForceUnsafeInstall?: boolean;
+    installPolicyAcknowledgementId?: string;
+    installPolicyAcknowledgementIds?: ReadonlyMap<string, string>;
     sourceMcpServers: Record<string, Record<string, unknown>>;
     consentPlanIntegrity: string | undefined;
     packagePreflight?: ClawAddPlanContext["packagePreflight"];
@@ -137,7 +150,8 @@ export async function applyClawUpdatePlan(
   });
   if (
     fresh.planIntegrity !== plan.planIntegrity ||
-    stableStringify(comparablePlan(fresh)) !== stableStringify(comparablePlan(plan))
+    stableStringifyClawPlanIntegrity(comparablePlan(fresh)) !==
+      stableStringifyClawPlanIntegrity(comparablePlan(plan))
   ) {
     throw new ClawUpdateMutationError(
       "update_changed",
@@ -170,13 +184,16 @@ export async function applyClawUpdatePlan(
   if (!currentInstall) {
     throw new ClawUpdateMutationError("update_changed", "The Claw install record disappeared.");
   }
-  const partialMutation = (message: string): ClawUpdateMutationError => {
+  const partialMutation = (
+    message: string,
+    installPolicyWarning?: InstallPolicyWarning,
+  ): ClawUpdateMutationError => {
     try {
       updateClawInstallRecordStatus(fresh.agentId, "partial", options);
     } catch {
       // Preserve the owner failure; doctor can still reconcile subordinate pending records.
     }
-    return new ClawUpdateMutationError("update_partial", message);
+    return new ClawUpdateMutationError("update_partial", message, installPolicyWarning);
   };
   const targetAddPlan = await buildAddPlan({
     manifest: params.targetManifest,
@@ -186,17 +203,21 @@ export async function applyClawUpdatePlan(
     context: {
       agentId: fresh.agentId,
       workspace: currentInstall.workspace,
-      packagePreflight: async (pkg, workspace) => {
+      packagePreflight: async (pkg, workspace, mode) => {
+        const action = fresh.actions.find(
+          (candidate) => candidate.kind === "package" && candidate.id === `${pkg.kind}:${pkg.ref}`,
+        );
         const preflight = options.packagePreflight
-          ? await options.packagePreflight(pkg, workspace)
+          ? await options.packagePreflight(
+              pkg,
+              workspace,
+              action?.action === "change" ? "update" : mode,
+            )
           : {
               ok: false,
               code: "package_install_unavailable",
               message: "Package preflight is unavailable.",
             };
-        const action = fresh.actions.find(
-          (candidate) => candidate.kind === "package" && candidate.id === `${pkg.kind}:${pkg.ref}`,
-        );
         return !preflight.ok &&
           pkg.kind === "plugin" &&
           preflight.code === "plugin_version_conflict" &&
@@ -207,6 +228,9 @@ export async function applyClawUpdatePlan(
               ...(preflight.integrity ? { integrity: preflight.integrity } : {}),
               ...(preflight.installId ? { installId: preflight.installId } : {}),
               ...(preflight.warning ? { warning: preflight.warning } : {}),
+              ...(preflight.installPolicyWarning
+                ? { installPolicyWarning: preflight.installPolicyWarning }
+                : {}),
             }
           : preflight;
       },
@@ -253,6 +277,55 @@ export async function applyClawUpdatePlan(
     }
   }
 
+  const installPolicyAcknowledgement = resolveClawInstallPolicyAcknowledgement(
+    fresh.actions.flatMap((action) =>
+      action.kind === "package" &&
+      action.action !== "unchanged" &&
+      action.action !== "remove" &&
+      action.action !== "release" &&
+      action.installPolicyWarning
+        ? [{ packageId: action.id, warning: action.installPolicyWarning }]
+        : [],
+    ),
+  );
+  const finalInstallPolicyAcknowledgement = resolveClawInstallPolicyAcknowledgement(
+    targetAddPlan.actions.flatMap((action) => {
+      const warning = action.kind === "package" ? action.details?.installPolicyWarning : undefined;
+      return isInstallPolicyWarning(warning) ? [{ packageId: action.id, warning }] : [];
+    }),
+  );
+  const finalInstallPolicyWarning = finalInstallPolicyAcknowledgement.warnings[0];
+  if (
+    finalInstallPolicyWarning &&
+    finalInstallPolicyAcknowledgement.acknowledgementId !==
+      installPolicyAcknowledgement.acknowledgementId
+  ) {
+    throw new ClawUpdateMutationError(
+      "install_policy_acknowledgement_required",
+      `Install policy warning changed during final validation: ${finalInstallPolicyWarning.reason}. Run update --dry-run again to review the new plan before acknowledging it.`,
+      finalInstallPolicyWarning,
+    );
+  }
+  const installPolicyWarning = installPolicyAcknowledgement.warnings[0];
+  if (
+    installPolicyWarning &&
+    (!options.dangerouslyForceUnsafeInstall ||
+      !installPolicyAcknowledgement.acknowledgementId ||
+      options.installPolicyAcknowledgementId !== installPolicyAcknowledgement.acknowledgementId)
+  ) {
+    throw new ClawUpdateMutationError(
+      "install_policy_acknowledgement_required",
+      `Install policy warning${installPolicyAcknowledgement.warnings.length === 1 ? "" : "s"} require acknowledgement: ${installPolicyWarning.reason}. Re-run with --dangerously-force-unsafe-install ${installPolicyAcknowledgement.acknowledgementId ?? "<acknowledgement-id>"} after reviewing the findings.`,
+      installPolicyWarning,
+      fresh.planIntegrity,
+    );
+  }
+  const installPolicyAcknowledgementIds =
+    installPolicyAcknowledgement.warnings.length > 0
+      ? installPolicyAcknowledgement.packageAcknowledgementIds
+      : (options.installPolicyAcknowledgementIds ??
+        installPolicyAcknowledgement.packageAcknowledgementIds);
+
   const applyWorkspace = options.applyWorkspace ?? applyClawWorkspaceUpdate;
   let workspaceExecution: ClawWorkspaceUpdateExecution;
   try {
@@ -292,8 +365,13 @@ export async function applyClawUpdatePlan(
   const applyPackage = options.applyPackage ?? applyClawPackageUpdate;
   let packageExecution: ClawPackageUpdateExecution;
   try {
-    packageExecution = await applyPackage(fresh, params.targetManifest, targetAddPlan, options);
+    packageExecution = await applyPackage(fresh, params.targetManifest, targetAddPlan, {
+      ...options,
+      installPolicyAcknowledgementIds,
+    });
   } catch (error) {
+    const lateInstallPolicyWarning =
+      error instanceof ClawPackageUpdateError ? error.installPolicyWarning : undefined;
     const rollbackFailures: string[] = [];
     try {
       await mcpExecution.rollback();
@@ -315,6 +393,14 @@ export async function applyClawUpdatePlan(
     if (rollbackFailures.length > 0) {
       throw partialMutation(
         `${error instanceof Error ? error.message : String(error)}; ${rollbackFailures.join("; ")}`,
+        lateInstallPolicyWarning,
+      );
+    }
+    if (lateInstallPolicyWarning) {
+      throw new ClawUpdateMutationError(
+        "install_policy_acknowledgement_required",
+        error instanceof Error ? error.message : String(error),
+        lateInstallPolicyWarning,
       );
     }
     throw new ClawUpdateMutationError(

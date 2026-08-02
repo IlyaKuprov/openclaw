@@ -111,6 +111,173 @@ describe("updateNpmInstalledHookPacks", () => {
     ]);
   });
 
+  it("preserves install-policy warning details in failed hook updates", async () => {
+    installHooksFromNpmSpecMock.mockResolvedValue({
+      ok: false,
+      code: "security_scan_blocked",
+      error: "install policy warning requires acknowledgement",
+      installPolicyWarning: { reason: "Review hook behavior" },
+    });
+    const config = createHookInstallConfig({
+      hookId: "demo-hooks",
+      spec: "@openclaw/demo-hooks@1.0.0",
+    });
+
+    const result = await updateNpmInstalledHookPacks({
+      config,
+      hookIds: ["demo-hooks"],
+    });
+
+    expect(result.outcomes).toEqual([
+      {
+        hookId: "demo-hooks",
+        status: "error",
+        message:
+          'Failed to update hook pack "demo-hooks": install policy warning requires acknowledgement',
+        installPolicyWarning: { reason: "Review hook behavior" },
+      },
+    ]);
+  });
+
+  it("stops a bulk update at the first install-policy warning", async () => {
+    hookInstalls = {
+      first: {
+        source: "npm",
+        spec: "@openclaw/first-hooks@1.0.0",
+        installPath: "/tmp/hooks/first",
+      },
+      second: {
+        source: "npm",
+        spec: "@openclaw/second-hooks@1.0.0",
+        installPath: "/tmp/hooks/second",
+      },
+    };
+    installHooksFromNpmSpecMock.mockResolvedValue({
+      ok: false,
+      code: "security_scan_blocked",
+      error: "install policy warning requires acknowledgement",
+      installPolicyWarning: {
+        reason: "Review first hook pack",
+        acknowledgementId: "ack-first",
+      },
+    });
+
+    const result = await updateNpmInstalledHookPacks({
+      config: {},
+      hookIds: ["first", "second"],
+    });
+
+    expect(installHooksFromNpmSpecMock).toHaveBeenCalledOnce();
+    expect(result.outcomes).toEqual([
+      expect.objectContaining({
+        hookId: "first",
+        status: "error",
+        installPolicyWarning: expect.objectContaining({ acknowledgementId: "ack-first" }),
+      }),
+    ]);
+  });
+
+  it("skips earlier warning packs until the supplied bulk acknowledgement matches", async () => {
+    hookInstalls = {
+      first: {
+        source: "npm",
+        spec: "@openclaw/first-hooks@1.0.0",
+        installPath: "/tmp/hooks/first",
+      },
+      second: {
+        source: "npm",
+        spec: "@openclaw/second-hooks@1.0.0",
+        installPath: "/tmp/hooks/second",
+      },
+    };
+    installHooksFromNpmSpecMock.mockImplementation(
+      async (params: { expectedHookPackId?: string }) => {
+        if (params.expectedHookPackId === "first") {
+          return {
+            ok: false,
+            code: "security_scan_blocked",
+            error: "acknowledge the current warning",
+            installPolicyWarning: {
+              reason: "Review first hook pack",
+              acknowledgementId: "ack-first",
+            },
+          };
+        }
+        return {
+          ok: true,
+          hookPackId: "second",
+          hooks: ["second-hook"],
+          targetDir: "/tmp/hooks/second",
+          version: "1.0.0",
+          installPolicyAcknowledgementMatched: true,
+        };
+      },
+    );
+
+    const result = await updateNpmInstalledHookPacks({
+      config: {},
+      dangerouslyForceUnsafeInstall: true,
+      installPolicyAcknowledgementId: "ack-second",
+      hookIds: ["first", "second"],
+    });
+
+    expect(installHooksFromNpmSpecMock).toHaveBeenCalledTimes(2);
+    expect(result.outcomes).toEqual([
+      {
+        hookId: "first",
+        status: "skipped",
+        message:
+          'Skipped hook pack "first" because the supplied install-policy acknowledgement applies to a different hook pack.',
+      },
+      expect.objectContaining({
+        hookId: "second",
+        status: "updated",
+      }),
+    ]);
+  });
+
+  it("keeps the first warning terminal when no bulk target matches the supplied acknowledgement", async () => {
+    hookInstalls = {
+      first: {
+        source: "npm",
+        spec: "@openclaw/first-hooks@1.0.0",
+        installPath: "/tmp/hooks/first",
+      },
+      second: {
+        source: "npm",
+        spec: "@openclaw/second-hooks@1.0.0",
+        installPath: "/tmp/hooks/second",
+      },
+    };
+    installHooksFromNpmSpecMock.mockImplementation(
+      async (params: { expectedHookPackId?: string }) => ({
+        ok: false,
+        code: "security_scan_blocked",
+        error: "acknowledge the current warning",
+        installPolicyWarning: {
+          reason: `Review ${params.expectedHookPackId} hook pack`,
+          acknowledgementId: `ack-${params.expectedHookPackId}`,
+        },
+      }),
+    );
+
+    const result = await updateNpmInstalledHookPacks({
+      config: {},
+      dangerouslyForceUnsafeInstall: true,
+      installPolicyAcknowledgementId: "ack-unknown",
+      hookIds: ["first", "second"],
+    });
+
+    expect(result.outcomes[0]).toEqual(
+      expect.objectContaining({
+        hookId: "first",
+        status: "error",
+        installPolicyWarning: expect.objectContaining({ acknowledgementId: "ack-first" }),
+      }),
+    );
+    expect(result.outcomes[1]).toEqual(expect.objectContaining({ status: "skipped" }));
+  });
+
   it("preserves hook pack update selector and records npm resolution metadata after update", async () => {
     installHooksFromNpmSpecMock.mockResolvedValue({
       ok: true,
@@ -134,12 +301,14 @@ describe("updateNpmInstalledHookPacks", () => {
     });
     const result = await updateNpmInstalledHookPacks({
       config,
+      dangerouslyForceUnsafeInstall: true,
       hookIds: ["demo-hooks"],
     });
 
     expect(installHooksFromNpmSpecMock).toHaveBeenCalledWith(
       expect.objectContaining({
         config,
+        dangerouslyForceUnsafeInstall: true,
         expectedHookPackId: "demo-hooks",
         mode: "update",
       }),

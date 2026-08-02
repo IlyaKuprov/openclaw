@@ -55,6 +55,12 @@ async function collectInstallPolicyHealthLines(
       logger: {},
       sourcePath: probeDir,
     });
+    if (result?.warning) {
+      lines.push(
+        `- Deep probe reached the policy command and the policy warned on the synthetic request: ${result.warning.reason}`,
+      );
+      return lines;
+    }
     if (!result?.blocked) {
       lines.push("- Deep probe allowed the synthetic install request.");
       return lines;

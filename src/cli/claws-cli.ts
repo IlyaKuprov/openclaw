@@ -1,7 +1,13 @@
 // Commander registration for experimental Claws inspection and add previews.
 import type { Command } from "commander";
 import { isExperimentalClawsEnabled } from "../claws/experimental.js";
+import {
+  preserveBareInstallPolicyAcknowledgementFlag,
+  type InstallPolicyAcknowledgementOption,
+} from "./install-policy-acknowledgement.js";
 import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
+
+const INSTALL_POLICY_ACK_HELP = "Acknowledge reviewed install policy warnings";
 
 export type ClawsInspectOptions = {
   json?: boolean;
@@ -14,6 +20,7 @@ export type ClawsAddOptions = {
   json?: boolean;
   agentId?: string;
   workspace?: string;
+  dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
 };
 
 export type ClawsStatusOptions = { json?: boolean };
@@ -23,6 +30,7 @@ export type ClawsUpdateOptions = {
   yes?: boolean;
   planIntegrity?: string;
   json?: boolean;
+  dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
 };
 export type ClawsRemoveOptions = {
   dryRun?: boolean;
@@ -43,6 +51,7 @@ export function registerClawsCli(program: Command) {
   if (!isExperimentalClawsEnabled()) {
     return;
   }
+  preserveBareInstallPolicyAcknowledgementFlag(program);
   const claws = program.command("claws").description("Manage experimental OpenClaw Claws");
 
   claws
@@ -64,6 +73,7 @@ export function registerClawsCli(program: Command) {
     .option("--plan-integrity <digest>", "Bind consent to an exact dry-run plan")
     .option("--agent-id <id>", "Override the requested id with an unused local agent id")
     .option("--workspace <path>", "Override the derived new workspace path")
+    .option("--dangerously-force-unsafe-install [acknowledgement-id]", INSTALL_POLICY_ACK_HELP)
     .option("--json", "Print JSON", false)
     .action(async (source: string, opts: ClawsAddOptions) => {
       const { runClawsAddCommand } = await import("./claws-cli.runtime.js");
@@ -88,6 +98,7 @@ export function registerClawsCli(program: Command) {
     .option("--dry-run", "Preview update actions without mutating state", false)
     .option("--yes", "Confirm the exact supported update plan", false)
     .option("--plan-integrity <digest>", "Bind consent to an exact update plan")
+    .option("--dangerously-force-unsafe-install [acknowledgement-id]", INSTALL_POLICY_ACK_HELP)
     .option("--json", "Print JSON", false)
     .action(async (target: string, opts: ClawsUpdateOptions) => {
       const { runClawsUpdateCommand } = await import("./claws-cli.runtime.js");

@@ -19,10 +19,12 @@ import {
 } from "./missing-configured-plugin-install.ids.js";
 import {
   appendClawHubRiskAcknowledgementGuidance,
+  appendInstallPolicyAcknowledgementGuidance,
   installCandidate,
   isActionableClawHubSkippedOutcome,
   isClawHubReviewNotice,
   recordClawHubInstallSpec,
+  recordPluginInstallSpec,
 } from "./missing-configured-plugin-install.install.js";
 import {
   forceNpmInstallRecordRepair,
@@ -66,6 +68,8 @@ type RepairMissingPluginInstallsResult = {
 export async function repairMissingConfiguredPluginInstalls(params: {
   cfg: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   acknowledgeClawHubRisk?: boolean;
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
   /**
@@ -83,6 +87,8 @@ export async function repairMissingConfiguredPluginInstalls(params: {
     pluginIds: collectConfiguredPluginIds(params.cfg, params.env),
     channelIds: collectConfiguredChannelIds(params.cfg, params.env),
     blockedPluginIds: collectBlockedPluginIds(params.cfg),
+    ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
     ...(params.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
     ...(params.onClawHubRisk ? { onClawHubRisk: params.onClawHubRisk } : {}),
     ...(params.baselineRecords ? { baselineRecords: params.baselineRecords } : {}),
@@ -96,6 +102,8 @@ export async function repairMissingPluginInstallsForIds(params: {
   channelIds?: Iterable<string>;
   blockedPluginIds?: Iterable<string>;
   env?: NodeJS.ProcessEnv;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   baselineRecords?: Record<string, PluginInstallRecord>;
   acknowledgeClawHubRisk?: boolean;
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
@@ -116,6 +124,8 @@ export async function repairMissingPluginInstallsForIds(params: {
         .map((pluginId) => pluginId.trim())
         .filter((pluginId) => pluginId),
     ),
+    ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
     ...(params.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
     ...(params.onClawHubRisk ? { onClawHubRisk: params.onClawHubRisk } : {}),
     ...(params.baselineRecords ? { baselineRecords: params.baselineRecords } : {}),
@@ -128,6 +138,8 @@ async function repairMissingPluginInstalls(params: {
   channelIds: ReadonlySet<string>;
   blockedPluginIds?: ReadonlySet<string>;
   env?: NodeJS.ProcessEnv;
+  dangerouslyForceUnsafeInstall?: boolean;
+  installPolicyAcknowledgementId?: string;
   baselineRecords?: Record<string, PluginInstallRecord>;
   acknowledgeClawHubRisk?: boolean;
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
@@ -243,6 +255,8 @@ async function repairMissingPluginInstalls(params: {
         },
         error: (message) => warnings.push(message),
       },
+      ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
       ...(params.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
       ...(params.onClawHubRisk ? { onClawHubRisk: params.onClawHubRisk } : {}),
     });
@@ -257,7 +271,15 @@ async function repairMissingPluginInstalls(params: {
               : `Repaired missing configured plugin "${outcome.pluginId}".`,
         );
       } else if (outcome.status === "error") {
-        warnings.push(outcome.message);
+        warnings.push(
+          appendInstallPolicyAcknowledgementGuidance({
+            message: outcome.message,
+            spec: recordPluginInstallSpec(nextRecords[outcome.pluginId]),
+            command: "update",
+            pluginId: outcome.pluginId,
+            installPolicyWarning: outcome.installPolicyWarning,
+          }),
+        );
         failedPluginIds.add(outcome.pluginId);
       } else if (isActionableClawHubSkippedOutcome(outcome)) {
         warnings.push(
@@ -339,6 +361,8 @@ async function repairMissingPluginInstalls(params: {
       updateChannel,
       mode: shouldReplaceBrokenOfficialInstall ? "update" : "install",
       preferNpm: preferNpmInstalls,
+      ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
       ...(installedPluginIdsWithStaleVersionBoundRuntimePackages.has(candidate.pluginId)
         ? { repairReason: "stale-version-bound-runtime" as const }
         : {}),

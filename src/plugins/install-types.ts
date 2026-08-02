@@ -1,6 +1,6 @@
 import type { NpmIntegrityDrift, NpmSpecResolution } from "../infra/install-source-utils.js";
 import type { InstallPolicySource } from "../security/install-policy.js";
-import type { InstallSafetyOverrides } from "./install-security-scan.js";
+import type { InstallSecurityScanResult, InstallSafetyOverrides } from "./install-security-scan.js";
 import type { PackageManifest as PluginPackageManifest, PluginManifestSetup } from "./manifest.js";
 
 export type PluginInstallLogger = {
@@ -48,7 +48,14 @@ export type InstallPluginResult =
       npmResolution?: NpmSpecResolution;
       integrityDrift?: NpmIntegrityDrift;
     }
-  | { ok: false; error: string; code?: PluginInstallErrorCode };
+  | {
+      ok: false;
+      error: string;
+      code?: PluginInstallErrorCode;
+      installPolicyWarning?: NonNullable<
+        InstallSecurityScanResult["blocked"]
+      >["installPolicyWarning"];
+    };
 
 export type PluginInstallFailureResult = Extract<InstallPluginResult, { ok: false }>;
 

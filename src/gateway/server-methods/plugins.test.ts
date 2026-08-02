@@ -3,12 +3,19 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const INSTALL_POLICY_ACKNOWLEDGEMENT_ID = `sha256:${"a".repeat(64)}`;
+
 const managementMocks = vi.hoisted(() => {
   class ManagedPluginLifecycleError extends Error {
     readonly kind: "invalid-request" | "unavailable";
     readonly code?: string;
     readonly version?: string;
     readonly warning?: string;
+    readonly installPolicyWarning?: {
+      reason: string;
+      acknowledgementId?: string;
+      findings?: Array<{ ruleId: string; severity: "warn"; message: string }>;
+    };
 
     constructor(
       message: string,
@@ -17,6 +24,11 @@ const managementMocks = vi.hoisted(() => {
         code?: string;
         version?: string;
         warning?: string;
+        installPolicyWarning?: {
+          reason: string;
+          acknowledgementId?: string;
+          findings?: Array<{ ruleId: string; severity: "warn"; message: string }>;
+        };
       },
     ) {
       super(message);
@@ -24,6 +36,7 @@ const managementMocks = vi.hoisted(() => {
       this.code = details?.code;
       this.version = details?.version;
       this.warning = details?.warning;
+      this.installPolicyWarning = details?.installPolicyWarning;
     }
   }
   return {
@@ -288,6 +301,7 @@ describe("plugin management Gateway handlers", () => {
       packageName: "@openclaw/diffs",
       version: "1.2.3",
       acknowledgeClawHubRisk: true,
+      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
     });
 
     expect(managementMocks.install).toHaveBeenCalledWith({
@@ -296,23 +310,36 @@ describe("plugin management Gateway handlers", () => {
         packageName: "@openclaw/diffs",
         version: "1.2.3",
         acknowledgeClawHubRisk: true,
+        dangerouslyForceUnsafeInstall: true,
+        installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
       },
     });
   });
 
-  it("returns structured ClawHub acknowledgement details", async () => {
+  it("returns structured ClawHub and install-policy acknowledgement details", async () => {
+    const findings = Array.from({ length: 12 }, (_, index) => ({
+      ruleId: `rule-${index}`,
+      severity: "warn" as const,
+      message: `finding-${index}`,
+    }));
     managementMocks.install.mockRejectedValue(
       new managementMocks.ManagedPluginLifecycleError("Review required", {
         kind: "invalid-request",
         code: "clawhub_risk_acknowledgement_required",
         version: "1.2.3",
         warning: "Suspicious release",
+        installPolicyWarning: {
+          reason: "r".repeat(300),
+          acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+          findings,
+        },
       }),
     );
 
     const result = await callHandler("plugins.install", {
       source: "clawhub",
       packageName: "community/plugin",
+      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
     });
 
     expect(result.ok).toBe(false);
@@ -323,6 +350,17 @@ describe("plugin management Gateway handlers", () => {
         clawhubTrustCode: "clawhub_risk_acknowledgement_required",
         version: "1.2.3",
         warning: "Suspicious release",
+        installPolicyWarning: {
+          reason: `${"r".repeat(243)}… [truncated]`,
+          findings: [
+            ...findings.slice(0, 10),
+            {
+              ruleId: "openclaw.policy.findings-truncated",
+              severity: "warn",
+              message: "2 additional findings omitted; review policy logs for complete evidence.",
+            },
+          ],
+        },
       },
     });
   });

@@ -247,19 +247,40 @@ describe("hooks cli formatting", () => {
     expect(output).toContain("Managed by plugin");
   });
 
-  it("forwards --force through the deprecated install alias", async () => {
+  it("forwards safety options through the deprecated install alias", async () => {
     runPluginInstallCommandMock.mockResolvedValueOnce(undefined);
     const program = new Command().exitOverride();
     registerHooksCli(program);
 
-    await program.parseAsync(["hooks", "install", "npm:demo-hooks", "--force"], {
-      from: "user",
-    });
+    await program.parseAsync(
+      ["hooks", "install", "npm:demo-hooks", "--force", "--dangerously-force-unsafe-install"],
+      { from: "user" },
+    );
 
     expect(runPluginInstallCommandMock).toHaveBeenCalledWith({
       raw: "npm:demo-hooks",
-      opts: expect.objectContaining({ force: true }),
+      opts: expect.objectContaining({
+        dangerouslyForceUnsafeInstall: true,
+        force: true,
+      }),
       invalidateRuntimeCache: false,
+    });
+  });
+
+  it("forwards policy acknowledgement through the deprecated update alias", async () => {
+    const program = new Command().exitOverride();
+    registerHooksCli(program);
+
+    await program.parseAsync(
+      ["hooks", "update", "demo-hooks", "--dangerously-force-unsafe-install"],
+      {
+        from: "user",
+      },
+    );
+
+    expect(runPluginUpdateCommandMock).toHaveBeenCalledWith({
+      id: "demo-hooks",
+      opts: expect.objectContaining({ dangerouslyForceUnsafeInstall: true }),
     });
   });
 });

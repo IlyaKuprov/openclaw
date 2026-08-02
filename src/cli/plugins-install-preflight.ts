@@ -3,6 +3,7 @@ import type { InstallSafetyOverrides } from "../plugins/install-security-scan.js
 import { resolveMarketplaceInstallShortcut } from "../plugins/marketplace.js";
 import { tracePluginLifecyclePhaseAsync } from "../plugins/plugin-lifecycle-trace.js";
 import type { RuntimeEnv } from "../runtime.js";
+import type { InstallPolicyWarning } from "../security/install-policy.js";
 import { formatCliCommand } from "./command-format.js";
 import { NON_CLAWHUB_INSTALL_FORCE_FLAG } from "./non-clawhub-install-acknowledgement.js";
 import {
@@ -24,6 +25,7 @@ export type RunPluginInstallCommandParams = {
   };
   invalidateRuntimeCache?: boolean;
   clawManaged?: boolean;
+  onInstallPolicyWarning?: (warning: InstallPolicyWarning) => void;
   runtime?: RuntimeEnv;
 };
 

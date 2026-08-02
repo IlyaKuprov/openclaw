@@ -1,6 +1,11 @@
 import { assertExperimentalClawsEnabled } from "../claws/experimental.js";
+import {
+  createClawPackagePolicyPreflight,
+  isInstallPolicyWarning,
+  replayClawInstallPolicyAcknowledgement,
+} from "../claws/install-policy-acknowledgement.js";
 import { readClawStatus } from "../claws/lifecycle-state.js";
-import { preflightClawPackage } from "../claws/packages.js";
+import { stableStringifyClawPlanReplayIdentity } from "../claws/plan-integrity.js";
 import { readClawManifestFile } from "../claws/reader.js";
 import { CLAW_OUTPUT_STABILITY } from "../claws/types.js";
 import {
@@ -12,9 +17,15 @@ import { buildClawUpdatePlan, CLAW_UPDATE_PLAN_SCHEMA_VERSION } from "../claws/u
 import { listConfiguredMcpServers } from "../config/mcp-config.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import { openExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db.js";
+import {
+  formatClawInstallPolicyRetryCommand,
+  logClawInstallPolicyRetry,
+  logClawInstallPolicyWarning,
+} from "./claws-cli-install-policy-output.js";
 import { logClawUpdatePlanSummary } from "./claws-cli-update-output.js";
 import type { ClawsUpdateOptions } from "./claws-cli.js";
 import { callGatewayFromCli } from "./gateway-rpc.js";
+import { resolveInstallPolicyAcknowledgementOption } from "./install-policy-acknowledgement.js";
 
 type DiagnosticLike = { level: string; code: string; path: string; message: string };
 
@@ -166,17 +177,46 @@ export async function runClawsUpdateCommand(
     return;
   }
 
-  const plan = await buildClawUpdatePlan({
-    agentId: target,
-    targetManifest: loaded.manifest,
-    targetClawMarkdownBody: loaded.clawMarkdownBody,
-    targetOpenClawProfile: loaded.openClawProfile,
-    targetSource: loaded.source,
-    config,
-    sourceMcpServers: listedMcpServers.mcpServers,
-    packagePreflight: preflightClawPackage,
-    diagnostics: loaded.diagnostics,
+  const installPolicyAcknowledgement = resolveInstallPolicyAcknowledgementOption(
+    opts.dangerouslyForceUnsafeInstall,
+  );
+  const createPackagePreflight = (acknowledgementIds?: ReadonlyMap<string, string>) =>
+    createClawPackagePolicyPreflight({ config, acknowledgementIds });
+  const buildPlan = async (packagePreflight: ReturnType<typeof createPackagePreflight>) =>
+    await buildClawUpdatePlan({
+      agentId: target,
+      targetManifest: loaded.manifest,
+      targetClawMarkdownBody: loaded.clawMarkdownBody,
+      targetOpenClawProfile: loaded.openClawProfile,
+      targetSource: loaded.source,
+      config,
+      sourceMcpServers: listedMcpServers.mcpServers,
+      packagePreflight,
+      diagnostics: loaded.diagnostics,
+    });
+  let packagePreflight = createPackagePreflight();
+  let plan = await buildPlan(packagePreflight);
+  const replay = await replayClawInstallPolicyAcknowledgement({
+    initialPlan: plan,
+    presentedAcknowledgementId: installPolicyAcknowledgement.installPolicyAcknowledgementId,
+    presentedPlanIntegrity: opts.planIntegrity,
+    planIntegrity: (candidate) => candidate.planIntegrity,
+    replayIdentity: stableStringifyClawPlanReplayIdentity,
+    warnings: (candidate) =>
+      candidate.actions.flatMap((action) => {
+        const warning = action.kind === "package" ? action.installPolicyWarning : undefined;
+        return action.action !== "unchanged" &&
+          action.action !== "remove" &&
+          action.action !== "release" &&
+          isInstallPolicyWarning(warning)
+          ? [{ packageId: action.id, warning }]
+          : [];
+      }),
+    rebuild: async (acknowledgementIds) =>
+      await buildPlan(createPackagePreflight(acknowledgementIds)),
   });
+  plan = replay.plan;
+  packagePreflight = createPackagePreflight(replay.acknowledgement.packageAcknowledgementIds);
   if (opts.dryRun || plan.blockers.length > 0 || plan.actions.some((action) => action.blocked)) {
     if (opts.json) {
       writeRuntimeJson(runtime, plan);
@@ -205,9 +245,11 @@ export async function runClawsUpdateCommand(
       },
       {
         config,
+        ...installPolicyAcknowledgement,
+        installPolicyAcknowledgementIds: replay.acknowledgement.packageAcknowledgementIds,
         sourceMcpServers: listedMcpServers.mcpServers,
-        consentPlanIntegrity: opts.planIntegrity,
-        packagePreflight: preflightClawPackage,
+        consentPlanIntegrity: replay.matched ? plan.planIntegrity : opts.planIntegrity,
+        packagePreflight,
         cronGateway: {
           add: async (input) => await callGatewayFromCli("cron.add", {}, input),
           get: async (id) => await callGatewayFromCli("cron.get", {}, { id }),
@@ -225,14 +267,38 @@ export async function runClawsUpdateCommand(
   } catch (error) {
     const code = error instanceof ClawUpdateMutationError ? error.code : "update_failed";
     const message = error instanceof Error ? error.message : String(error);
+    const installPolicyWarning =
+      error instanceof ClawUpdateMutationError ? error.installPolicyWarning : undefined;
+    const retryPlanIntegrity =
+      error instanceof ClawUpdateMutationError ? error.installPolicyRetryPlanIntegrity : undefined;
+    const retryCommand =
+      retryPlanIntegrity && installPolicyWarning?.acknowledgementId
+        ? formatClawInstallPolicyRetryCommand({
+            command: "update",
+            target,
+            planIntegrity: retryPlanIntegrity,
+            acknowledgementId: installPolicyWarning.acknowledgementId,
+            ...(opts.from ? { from: opts.from } : {}),
+          })
+        : undefined;
     if (opts.json) {
       writeRuntimeJson(runtime, {
         schemaVersion: CLAW_UPDATE_RESULT_SCHEMA_VERSION,
         stability: CLAW_OUTPUT_STABILITY,
         status: code === "update_partial" ? "partial" : "failed",
-        error: { code, message },
+        error: {
+          code,
+          message,
+          ...(installPolicyWarning ? { installPolicyWarning } : {}),
+          ...(retryPlanIntegrity ? { planIntegrity: retryPlanIntegrity } : {}),
+          ...(retryCommand ? { retryCommand } : {}),
+        },
       });
     } else {
+      logClawInstallPolicyWarning(installPolicyWarning, runtime);
+      if (retryPlanIntegrity && retryCommand) {
+        logClawInstallPolicyRetry(retryPlanIntegrity, retryCommand, runtime);
+      }
       runtime.error(message);
     }
     runtime.exit(1);

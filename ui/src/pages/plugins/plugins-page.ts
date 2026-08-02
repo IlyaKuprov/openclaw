@@ -36,6 +36,7 @@ import {
   installPlugin,
   pluginInstallNeedsRiskAcknowledgement,
   readPluginInstallTrustError,
+  readPluginInstallPolicyWarningDetails,
   runPluginConfigMutation,
   setPluginEnabled,
   uninstallPlugin,
@@ -784,14 +785,38 @@ class PluginsPage extends OpenClawLightDomElement {
       },
       (error) => {
         const trust = readPluginInstallTrustError(error);
-        const packageName = request.source === "clawhub" ? request.packageName : null;
-        if (packageName && pluginInstallNeedsRiskAcknowledgement(error)) {
+        const policyWarning = readPluginInstallPolicyWarningDetails(error);
+        if (policyWarning) {
+          const acknowledge: PluginInstallRequest =
+            request.source === "clawhub"
+              ? {
+                  ...request,
+                  ...(trust?.version ? { version: trust.version } : {}),
+                  ...(policyWarning.acknowledgementId
+                    ? { acknowledgeInstallPolicyWarning: policyWarning.acknowledgementId }
+                    : {}),
+                }
+              : {
+                  ...request,
+                  ...(policyWarning.acknowledgementId
+                    ? { acknowledgeInstallPolicyWarning: policyWarning.acknowledgementId }
+                    : {}),
+                };
+          this.setMessage(rowKey, {
+            kind: "error",
+            text: policyWarning.message,
+            ...(policyWarning.acknowledgementId ? { acknowledge } : {}),
+          });
+          return;
+        }
+        if (request.source === "clawhub" && pluginInstallNeedsRiskAcknowledgement(error)) {
           this.setMessage(rowKey, {
             kind: "error",
             text: trust?.warning ?? t("pluginsPage.defaultRiskWarning"),
             acknowledge: {
-              packageName,
+              ...request,
               ...(trust?.version ? { version: trust.version } : {}),
+              acknowledgeClawHubRisk: true,
             },
           });
           return;

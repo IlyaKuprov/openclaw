@@ -2,7 +2,7 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 import { closedObject } from "./closed-object.js";
-import { NonEmptyString } from "./primitives.js";
+import { InstallPolicyAcknowledgementIdString, NonEmptyString } from "./primitives.js";
 
 /**
  * Agent, model, skill, and tool catalog schemas.
@@ -347,9 +347,10 @@ export const SkillsInstallParamsSchema = Type.Union([
       Type.Boolean({
         deprecated: true,
         description:
-          "Deprecated compatibility field. Current servers ignore it; install policy is controlled by security.installPolicy.",
+          "Deprecated compatibility field. Current servers ignore it; acknowledge install-policy warnings with acknowledgeInstallPolicyWarning.",
       }),
     ),
+    acknowledgeInstallPolicyWarning: Type.Optional(InstallPolicyAcknowledgementIdString),
     timeoutMs: Type.Optional(Type.Integer({ minimum: 1000 })),
   }),
   closedObject({
@@ -359,6 +360,7 @@ export const SkillsInstallParamsSchema = Type.Union([
     version: Type.Optional(NonEmptyString),
     force: Type.Optional(Type.Boolean()),
     acknowledgeClawHubRisk: Type.Optional(Type.Boolean()),
+    acknowledgeInstallPolicyWarning: Type.Optional(InstallPolicyAcknowledgementIdString),
     timeoutMs: Type.Optional(Type.Integer({ minimum: 1000 })),
   }),
   closedObject({
@@ -368,6 +370,7 @@ export const SkillsInstallParamsSchema = Type.Union([
     slug: NonEmptyString,
     force: Type.Optional(Type.Boolean()),
     sha256: Type.Optional(Sha256String),
+    acknowledgeInstallPolicyWarning: Type.Optional(InstallPolicyAcknowledgementIdString),
     timeoutMs: Type.Optional(Type.Integer({ minimum: 1000 })),
   }),
 ]);
@@ -386,6 +389,7 @@ export const SkillsUpdateParamsSchema = Type.Union([
     slug: Type.Optional(NonEmptyString),
     all: Type.Optional(Type.Boolean()),
     acknowledgeClawHubRisk: Type.Optional(Type.Boolean()),
+    acknowledgeInstallPolicyWarning: Type.Optional(InstallPolicyAcknowledgementIdString),
   }),
 ]);
 

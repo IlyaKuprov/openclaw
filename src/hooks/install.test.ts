@@ -3,18 +3,16 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
-import * as tar from "tar";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { expectSingleNpmPackIgnoreScriptsCall } from "../test-utils/exec-assertions.js";
-import {
-  expectInstallUsesIgnoreScripts,
-  expectIntegrityDriftRejected,
-  expectUnsupportedNpmSpec,
-  mockNpmPackMetadataResult,
-} from "../test-utils/npm-spec-install-test-helpers.js";
-import { isAddressInUseError } from "./gmail-watcher-errors.js";
+import { expectInstallUsesIgnoreScripts } from "../test-utils/npm-spec-install-test-helpers.js";
 
 type InstallHooksFromPath = typeof import("./install.js").installHooksFromPath;
+type ScanPackageInstallSourceParams = Parameters<
+  typeof import("../plugins/install-security-scan.js").scanPackageInstallSource
+>[0];
+type ScanInstalledPackageDependencyTreeParams = Parameters<
+  typeof import("../plugins/install-security-scan.js").scanInstalledPackageDependencyTree
+>[0];
 
 const runCommandWithTimeoutMock = vi.fn();
 const scanPackageInstallSourceMock = vi.fn();
@@ -32,8 +30,7 @@ vi.mock("../plugins/install-security-scan.js", () => ({
 
 vi.resetModules();
 
-const { HOOK_INSTALL_ERROR_CODE, installHooksFromNpmSpec, installHooksFromPath } =
-  await import("./install.js");
+const { HOOK_INSTALL_ERROR_CODE, installHooksFromPath } = await import("./install.js");
 const hookInstallRuntime = await import("./install.runtime.js");
 
 const fixtureRoot = path.join(process.cwd(), ".tmp", `openclaw-hook-install-${randomUUID()}`);
@@ -53,12 +50,6 @@ const tarHooksBuffer = fs.readFileSync(path.join(fixturesDir, "tar-hooks.tar"));
 const tarTraversalBuffer = fs.readFileSync(path.join(fixturesDir, "tar-traversal.tar"));
 const tarEvilIdBuffer = fs.readFileSync(path.join(fixturesDir, "tar-evil-id.tar"));
 const tarReservedIdBuffer = fs.readFileSync(path.join(fixturesDir, "tar-reserved-id.tar"));
-const npmPackHooksBuffer = await createTarGzHookPackBuffer({
-  packageName: "@openclaw/test-hooks",
-  hookName: "one-hook",
-  hookDescription: "One hook",
-  heading: "One Hook",
-});
 
 function makeTempDir() {
   const dir = path.join(fixtureRoot, `case-${tempDirIndex++}`);
@@ -210,21 +201,6 @@ async function createZipHookPackBuffer(params: {
       contents: "export default async () => {};\n",
     },
   ]);
-}
-
-async function createTarGzHookPackBuffer(params: {
-  packageName: string;
-  hookName: string;
-  hookDescription: string;
-  heading: string;
-}) {
-  const workDir = path.join(fixtureRoot, "_generated", `pack-${randomUUID()}`);
-  const packageDir = path.join(workDir, "package");
-  fs.mkdirSync(packageDir, { recursive: true });
-  writeHookPackFiles({ pkgDir: packageDir, ...params });
-  const archivePath = path.join(workDir, "pack.tgz");
-  await tar.c({ cwd: workDir, file: archivePath, gzip: true }, ["package"]);
-  return fs.readFileSync(archivePath);
 }
 
 async function installArchiveFixture(params: { fileName: string; contents: Buffer }) {
@@ -464,11 +440,15 @@ describe("installHooksFromPath", () => {
     expect(fs.existsSync(path.join(result.targetDir, "HOOK.md"))).toBe(true);
     expect(scanPackageInstallSourceMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        packageDir: hookDir,
         pluginId: "my-hook",
         extensions: ["handler.ts"],
       }),
     );
+    const sourceScan = scanPackageInstallSourceMock.mock.calls[0]?.[0] as {
+      packageDir?: string;
+    };
+    expect(sourceScan.packageDir).not.toBe(hookDir);
+    expect(path.basename(sourceScan.packageDir ?? "")).toBe(path.basename(hookDir));
   });
 
   it("blocks a staged single hook before publishing the target", async () => {
@@ -618,6 +598,7 @@ describe("installHooksFromPath", () => {
       blocked: {
         code: "security_scan_blocked",
         reason: "blocked by operator install policy",
+        installPolicyWarning: { reason: "Review hook behavior" },
       },
     });
 
@@ -633,10 +614,10 @@ describe("installHooksFromPath", () => {
       ok: false,
       code: "security_scan_blocked",
       error: "blocked by operator install policy",
+      installPolicyWarning: { reason: "Review hook behavior" },
     });
     expect(scanPackageInstallSourceMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        packageDir: pkgDir,
         pluginId: "canonical-hooks",
         packageName: "@acme/canonical-hooks",
         version: "0.0.1",
@@ -652,7 +633,93 @@ describe("installHooksFromPath", () => {
         },
       }),
     );
+    const sourceScan = scanPackageInstallSourceMock.mock.calls[0]?.[0] as {
+      packageDir?: string;
+    };
+    expect(sourceScan.packageDir).not.toBe(pkgDir);
+    expect(path.basename(sourceScan.packageDir ?? "")).toBe(path.basename(pkgDir));
     expect(fs.existsSync(path.join(hooksDir, "canonical-hooks"))).toBe(false);
+  });
+
+  it("installs the reviewed snapshot when a local hook source changes during policy", async () => {
+    const stateDir = makeTempDir();
+    const hookDir = path.join(makeTempDir(), "snapshot-hook");
+    fs.mkdirSync(hookDir, { recursive: true });
+    fs.writeFileSync(path.join(hookDir, "HOOK.md"), "---\nname: snapshot-hook\n---\n", "utf8");
+    const handlerPath = path.join(hookDir, "handler.ts");
+    fs.writeFileSync(handlerPath, "export const reviewed = true;\n", "utf8");
+    scanPackageInstallSourceMock.mockImplementation(async () => {
+      fs.writeFileSync(handlerPath, "throw new Error('changed after review');\n", "utf8");
+      return undefined;
+    });
+
+    const result = await installHooksFromPath({
+      path: hookDir,
+      hooksDir: path.join(stateDir, "hooks"),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(fs.readFileSync(handlerPath, "utf8")).toContain("changed after review");
+    expect(fs.readFileSync(path.join(result.targetDir, "handler.ts"), "utf8")).toBe(
+      "export const reviewed = true;\n",
+    );
+  });
+
+  it("advances one acknowledgement across source and staged hook policy scans", async () => {
+    const stateDir = makeTempDir();
+    const pkgDir = makeTempDir();
+    writeHookPackFiles({
+      pkgDir,
+      packageName: "@acme/canonical-hooks",
+      hookName: "one-hook",
+      hookDescription: "One hook",
+      heading: "One Hook",
+    });
+    let sharedSequence: unknown;
+    scanPackageInstallSourceMock.mockImplementation(
+      async (params: ScanPackageInstallSourceParams) => {
+        const sequence = params.installPolicyAcknowledgementSequence;
+        expect(sequence).toBeDefined();
+        if (!sequence) {
+          throw new Error("expected acknowledgement sequence");
+        }
+        sharedSequence = sequence;
+        sequence.previousAcknowledgementIds.push("source-warning");
+        sequence.deferred = {
+          reason: "acknowledge the current warning",
+          warning: { reason: "review source", acknowledgementId: "source-warning" },
+        };
+        return undefined;
+      },
+    );
+    scanInstalledPackageDependencyTreeMock.mockImplementation(
+      async (params: ScanInstalledPackageDependencyTreeParams) => {
+        expect(params.installPolicyAcknowledgementSequence).toBe(sharedSequence);
+        if (!params.installPolicyAcknowledgementSequence) {
+          throw new Error("expected acknowledgement sequence");
+        }
+        params.installPolicyAcknowledgementSequence.matched = true;
+        return undefined;
+      },
+    );
+
+    const hooksDir = path.join(stateDir, "hooks");
+    const result = await installHooksFromPath({
+      path: pkgDir,
+      hooksDir,
+      dangerouslyForceUnsafeInstall: true,
+      installPolicyAcknowledgementId: "staged-warning",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.installPolicyAcknowledgementMatched).toBe(true);
+    expect(fs.existsSync(path.join(hooksDir, "canonical-hooks"))).toBe(true);
   });
 
   it("reports update policy mode only when the hook target already exists", async () => {
@@ -841,6 +908,10 @@ describe("installHooksFromPath", () => {
       blocked: {
         code: "security_scan_blocked",
         reason: "blocked materialized dependency tree",
+        installPolicyWarning: {
+          reason: "Review materialized hook dependencies",
+          acknowledgementId: "hook-dependency-warning",
+        },
       },
     });
 
@@ -854,6 +925,10 @@ describe("installHooksFromPath", () => {
       ok: false,
       code: "security_scan_blocked",
       error: "blocked materialized dependency tree",
+      installPolicyWarning: {
+        reason: "Review materialized hook dependencies",
+        acknowledgementId: "hook-dependency-warning",
+      },
     });
     expect(scanInstalledPackageDependencyTreeMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -920,171 +995,5 @@ describe("installHooksFromPath", () => {
 
       expectPathInstallFailureContains(result, testCase.expected);
     }
-  });
-});
-
-describe("installHooksFromNpmSpec", () => {
-  it("forwards npm install policy metadata through extracted archive validation", async () => {
-    const installFromValidatedNpmSpecArchiveSpy = vi
-      .spyOn(hookInstallRuntime, "installFromValidatedNpmSpecArchive")
-      .mockImplementation(
-        async (
-          params: Parameters<typeof hookInstallRuntime.installFromValidatedNpmSpecArchive>[0],
-        ) => {
-          expect(
-            (params.archiveInstallParams as Record<string, unknown>).dangerouslyForceUnsafeInstall,
-          ).toBeUndefined();
-          expect(params.archiveInstallParams).toEqual(
-            expect.objectContaining({
-              installPolicyRequest: {
-                kind: "plugin-npm",
-                requestedSpecifier: "@openclaw/test-hooks@0.0.1",
-                source: {
-                  kind: "npm",
-                  authority: "third-party",
-                  mutable: false,
-                  network: true,
-                },
-              },
-            }),
-          );
-          return {
-            ok: true,
-            hookPackId: "test-hooks",
-            hooks: ["one-hook"],
-            targetDir: "/tmp/hooks/test-hooks",
-            version: "0.0.1",
-          };
-        },
-      );
-
-    try {
-      const result = await installHooksFromNpmSpec({
-        spec: "@openclaw/test-hooks@0.0.1",
-      });
-
-      expect(result.ok).toBe(true);
-      if (!result.ok) {
-        return;
-      }
-      expect(result.hookPackId).toBe("test-hooks");
-    } finally {
-      installFromValidatedNpmSpecArchiveSpy.mockRestore();
-    }
-  });
-
-  it("uses --ignore-scripts for npm pack and cleans up temp dir", async () => {
-    const stateDir = makeTempDir();
-
-    const run = runCommandWithTimeoutMock;
-    let packTmpDir = "";
-    const packedName = "test-hooks-0.0.1.tgz";
-    run.mockImplementation(async (argv, opts) => {
-      if (argv[0] === "npm" && argv[1] === "pack") {
-        packTmpDir = typeof opts === "number" ? "" : (opts.cwd ?? "");
-        fs.writeFileSync(path.join(packTmpDir, packedName), npmPackHooksBuffer);
-        return {
-          code: 0,
-          stdout: JSON.stringify([
-            {
-              id: "@openclaw/test-hooks@0.0.1",
-              name: "@openclaw/test-hooks",
-              version: "0.0.1",
-              filename: packedName,
-              integrity: "sha512-hook-test",
-              shasum: "hookshasum",
-            },
-          ]),
-          stderr: "",
-          signal: null,
-          killed: false,
-          termination: "exit",
-        };
-      }
-      throw new Error(`unexpected command: ${argv.join(" ")}`);
-    });
-
-    const hooksDir = path.join(stateDir, "hooks");
-    const result = await installHooksFromNpmSpec({
-      spec: "@openclaw/test-hooks@0.0.1",
-      hooksDir,
-      logger: { info: () => {}, warn: () => {} },
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      return;
-    }
-    expect(result.hookPackId).toBe("test-hooks");
-    expect(result.packageKind).toBe("hook-only");
-    expect(result.npmResolution?.resolvedSpec).toBe("@openclaw/test-hooks@0.0.1");
-    expect(result.npmResolution?.integrity).toBe("sha512-hook-test");
-    expect(fs.existsSync(path.join(result.targetDir, "hooks", "one-hook", "HOOK.md"))).toBe(true);
-
-    expectSingleNpmPackIgnoreScriptsCall({
-      calls: run.mock.calls as Array<[unknown, unknown]>,
-      expectedSpec: "@openclaw/test-hooks@0.0.1",
-    });
-
-    expect(packTmpDir).not.toBe("");
-    expect(fs.existsSync(packTmpDir)).toBe(false);
-  });
-
-  it("aborts when integrity drift callback rejects the fetched artifact", async () => {
-    const run = runCommandWithTimeoutMock;
-    mockNpmPackMetadataResult(run, {
-      id: "@openclaw/test-hooks@0.0.1",
-      name: "@openclaw/test-hooks",
-      version: "0.0.1",
-      filename: "test-hooks-0.0.1.tgz",
-      integrity: "sha512-new",
-      shasum: "newshasum",
-    });
-
-    const onIntegrityDrift = vi.fn(async () => false);
-    const result = await installHooksFromNpmSpec({
-      spec: "@openclaw/test-hooks@0.0.1",
-      expectedIntegrity: "sha512-old",
-      onIntegrityDrift,
-    });
-    expectIntegrityDriftRejected({
-      onIntegrityDrift,
-      result,
-      expectedIntegrity: "sha512-old",
-      actualIntegrity: "sha512-new",
-    });
-  });
-
-  it("rejects invalid npm spec shapes", async () => {
-    await expectUnsupportedNpmSpec((spec) => installHooksFromNpmSpec({ spec }));
-
-    const run = runCommandWithTimeoutMock;
-    mockNpmPackMetadataResult(run, {
-      id: "@openclaw/test-hooks@0.0.2-beta.1",
-      name: "@openclaw/test-hooks",
-      version: "0.0.2-beta.1",
-      filename: "test-hooks-0.0.2-beta.1.tgz",
-      integrity: "sha512-beta",
-      shasum: "betashasum",
-    });
-
-    const result = await installHooksFromNpmSpec({
-      spec: "@openclaw/test-hooks",
-      logger: { info: () => {}, warn: () => {} },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("prerelease version 0.0.2-beta.1");
-      expect(result.error).toContain('"@openclaw/test-hooks@beta"');
-    }
-  });
-});
-
-describe("gmail watcher", () => {
-  it("detects address already in use errors", () => {
-    expect(isAddressInUseError("listen tcp 127.0.0.1:8788: bind: address already in use")).toBe(
-      true,
-    );
-    expect(isAddressInUseError("EADDRINUSE: address already in use")).toBe(true);
-    expect(isAddressInUseError("some other error")).toBe(false);
   });
 });

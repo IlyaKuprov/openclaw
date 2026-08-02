@@ -65,6 +65,12 @@ import type {
 import { CONFIG_DIR } from "../utils.js";
 import { resolveClawHubRiskAcknowledgementCliOptions } from "./clawhub-risk-acknowledgement.js";
 import { resolveOptionFromCommand } from "./cli-utils.js";
+import {
+  appendInstallPolicyAcknowledgementFlag,
+  preserveBareInstallPolicyAcknowledgementFlag,
+  resolveInstallPolicyAcknowledgementOption,
+  type InstallPolicyAcknowledgementOption,
+} from "./install-policy-acknowledgement.js";
 import { parseStrictPositiveIntOption } from "./program/helpers.js";
 import { setCommandJsonMode } from "./program/json-mode.js";
 import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
@@ -552,6 +558,7 @@ async function readSkillProposalInput(options: {
  * Register the skills CLI commands
  */
 export function registerSkillsCli(program: Command) {
+  preserveBareInstallPolicyAcknowledgementFlag(program);
   const skills = program
     .command("skills")
     .description("List and inspect available skills")
@@ -631,6 +638,11 @@ export function registerSkillsCli(program: Command) {
       "Acknowledge ClawHub release trust warnings without prompting",
       false,
     )
+    .option(
+      "--dangerously-force-unsafe-install [acknowledgement-id]",
+      "Acknowledge security.installPolicy warnings; blocks and failures remain terminal",
+      false,
+    )
     .option("--global", "Install into the shared managed skills directory", false)
     .option("--agent <id>", "Target agent workspace (defaults to cwd-inferred, then default agent)")
     .option("--as <slug>", "Install a git/local skill under this slug")
@@ -647,6 +659,7 @@ export function registerSkillsCli(program: Command) {
           forceInstall?: boolean;
           acknowledgeClawhubRisk?: boolean;
           acknowledgeClawHubRisk?: boolean;
+          dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
           global?: boolean;
           agent?: string;
           as?: string;
@@ -654,10 +667,11 @@ export function registerSkillsCli(program: Command) {
         command: Command,
       ) => {
         try {
-          const workspaceDir = resolveClawHubTargetWorkspaceDir(command, opts);
-          if (!workspaceDir) {
+          const target = resolveClawHubTargetWorkspace(command, opts);
+          if (!target) {
             return;
           }
+          const { config, workspaceDir } = target;
           if (slug.trim().startsWith("skills-sh/")) {
             defaultRuntime.error(`Invalid skills.sh skill reference: ${slug}`);
             defaultRuntime.exit(1);
@@ -674,13 +688,17 @@ export function registerSkillsCli(program: Command) {
               spec: slug,
               slug: opts.as,
               force: Boolean(opts.force),
+              ...resolveInstallPolicyAcknowledgementOption(opts.dangerouslyForceUnsafeInstall),
+              config,
               logger: {
                 info: (message) => defaultRuntime.log(message),
                 warn: (message) => defaultRuntime.log(formatSkillWarning(message)),
               },
             });
             if (!result.ok) {
-              defaultRuntime.error(result.error);
+              defaultRuntime.error(
+                appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
+              );
               defaultRuntime.exit(1);
               return;
             }
@@ -707,6 +725,8 @@ export function registerSkillsCli(program: Command) {
             version: opts.version,
             force: Boolean(opts.force),
             ...(opts.forceInstall ? { forceInstall: true } : {}),
+            ...resolveInstallPolicyAcknowledgementOption(opts.dangerouslyForceUnsafeInstall),
+            config,
             ...resolveSkillClawHubRiskOptions(
               opts.acknowledgeClawhubRisk === true || opts.acknowledgeClawHubRisk === true,
               "installing",
@@ -718,7 +738,9 @@ export function registerSkillsCli(program: Command) {
           });
           if (!result.ok) {
             if (!isClawHubSkillBlockedCliFailure(result)) {
-              defaultRuntime.error(result.error);
+              defaultRuntime.error(
+                appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
+              );
             }
             defaultRuntime.exit(1);
             return;
@@ -746,6 +768,11 @@ export function registerSkillsCli(program: Command) {
       "Acknowledge ClawHub release trust warnings without prompting",
       false,
     )
+    .option(
+      "--dangerously-force-unsafe-install [acknowledgement-id]",
+      "Acknowledge security.installPolicy warnings; blocks and failures remain terminal",
+      false,
+    )
     .option("--global", "Update skills in the shared managed skills directory", false)
     .option("--agent <id>", "Target agent workspace (defaults to cwd-inferred, then default agent)")
     .action(
@@ -756,6 +783,7 @@ export function registerSkillsCli(program: Command) {
           forceInstall?: boolean;
           acknowledgeClawhubRisk?: boolean;
           acknowledgeClawHubRisk?: boolean;
+          dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
           global?: boolean;
           agent?: string;
         },
@@ -785,6 +813,7 @@ export function registerSkillsCli(program: Command) {
             workspaceDir: target.workspaceDir,
             slug,
             ...(opts.forceInstall ? { forceInstall: true } : {}),
+            ...resolveInstallPolicyAcknowledgementOption(opts.dangerouslyForceUnsafeInstall),
             ...resolveSkillClawHubRiskOptions(
               opts.acknowledgeClawhubRisk === true || opts.acknowledgeClawHubRisk === true,
               "updating",
@@ -800,8 +829,14 @@ export function registerSkillsCli(program: Command) {
             if (!result.ok) {
               failed = true;
               if (!isClawHubSkillBlockedCliFailure(result)) {
-                defaultRuntime.error(result.error);
+                defaultRuntime.error(
+                  appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
+                );
               }
+              continue;
+            }
+            if (result.repaired) {
+              defaultRuntime.log(`Repaired ${result.slug} at ${result.version}`);
               continue;
             }
             if (result.changed) {

@@ -1,6 +1,9 @@
 import { stripAnsi } from "../../../packages/terminal-core/src/ansi.js";
+import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
 import { resolvePluginInstallSourcePlan } from "../../cli/plugin-install-plan.js";
 import { createPluginInstallLogger } from "../../cli/plugins-command-helpers.js";
+import { quoteCliArg } from "../../cli/quote-cli-arg.js";
+import { redactSensitiveText } from "../../logging/redact.js";
 import { CLAWHUB_INSTALL_ERROR_CODE } from "../../plugins/clawhub.js";
 import type { ConfigSnapshotForInstallPersist } from "../../plugins/install-persistence.js";
 import {
@@ -9,6 +12,25 @@ import {
   type NonClawHubInstallSourceClass,
 } from "../../plugins/install-provenance.js";
 import { installManagedPluginSource } from "../../plugins/management-service.js";
+import {
+  projectInstallPolicyWarningForExternal,
+  type InstallPolicyWarning,
+} from "../../security/install-policy.js";
+
+function formatInstallPolicyWarningForChat(warning: InstallPolicyWarning): string {
+  const externalWarning = projectInstallPolicyWarningForExternal(warning);
+  return [
+    `Install policy warning: ${externalWarning.reason}`,
+    ...(externalWarning.findings ?? []).map((finding) => {
+      const location = finding.file
+        ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})`
+        : "";
+      return `- [${finding.severity}] ${finding.ruleId}: ${finding.message}${location}${finding.evidence ? ` — ${finding.evidence}` : ""}`;
+    }),
+  ]
+    .map((line) => sanitizeTerminalText(redactSensitiveText(line)))
+    .join("\n");
+}
 
 function resolveNonClawHubChatInstallAcknowledgement(params: {
   force: boolean;
@@ -64,6 +86,21 @@ export async function installPluginFromPluginsCommand(params: {
       : logger,
   });
   if (!result.ok) {
+    if (result.installPolicyWarning) {
+      const requestedSpec = quoteCliArg(
+        sanitizeTerminalText(redactSensitiveText(params.raw.trim())),
+      );
+      const sourceAcknowledgement = plan.acknowledgement
+        ? ` ${NON_CLAWHUB_INSTALL_FORCE_FLAG}`
+        : "";
+      return {
+        ok: false,
+        error:
+          `${formatInstallPolicyWarningForChat(result.installPolicyWarning)}\n\n` +
+          "The /plugins chat command cannot acknowledge install-policy warnings. " +
+          `After reviewing the findings, run \`openclaw plugins install ${requestedSpec}${sourceAcknowledgement} --dangerously-force-unsafe-install${result.installPolicyWarning.acknowledgementId ? ` ${result.installPolicyWarning.acknowledgementId}` : ""}\` from a trusted shell.`,
+      };
+    }
     const warning = "warning" in result ? result.warning : warnings.join("\n");
     const warningPrefix = warning ? `${warning} ` : "";
     if (

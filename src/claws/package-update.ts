@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { stableStringify } from "@openclaw/normalization-core";
 import { preflightPluginInstall } from "../plugins/plugin-install-preflight.js";
+import type { InstallPolicyWarning } from "../security/install-policy.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import {
   digestClawPackageRef,
   replaceClawPackageRefExpected,
 } from "./package-update-provenance.js";
-import { installClawPackages } from "./packages.js";
+import { ClawPackageInstallError, installClawPackages } from "./packages.js";
 import {
   CLAW_PACKAGE_REF_SCHEMA_VERSION,
   readClawPackageRefs,
@@ -28,6 +29,7 @@ export class ClawPackageUpdateError extends Error {
   constructor(
     message: string,
     readonly partial: boolean,
+    readonly installPolicyWarning?: InstallPolicyWarning,
   ) {
     super(message);
     this.name = "ClawPackageUpdateError";
@@ -51,6 +53,9 @@ export async function applyClawPackageUpdate(
     readRefs?: typeof readClawPackageRefs;
     replaceExpected?: typeof replaceClawPackageRefExpected;
     packageDeps?: PackageInstallerDeps;
+    dangerouslyForceUnsafeInstall?: boolean;
+    installPolicyAcknowledgementId?: string;
+    installPolicyAcknowledgementIds?: ReadonlyMap<string, string>;
     nowMs?: number;
   },
 ): Promise<ClawPackageUpdateExecution> {
@@ -71,6 +76,7 @@ export async function applyClawPackageUpdate(
   const undo: Array<() => Promise<void>> = [];
   const externalMutations: string[] = [];
   const appliedIds: string[] = [];
+  let currentExternalMutationStart: number | undefined;
 
   const rollback = async () => {
     const failures: string[] = [];
@@ -167,6 +173,7 @@ export async function applyClawPackageUpdate(
       };
       replaceExpected(previous, claimed, options);
       undo.push(async () => replaceExpected(claimed, previous, options));
+      currentExternalMutationStart = externalMutations.length;
       const refs = await installPackages(
         { ...targetAddPlan, actions: [targetAction] },
         {
@@ -220,6 +227,7 @@ export async function applyClawPackageUpdate(
           },
         },
       );
+      currentExternalMutationStart = undefined;
       const installed = refs.find(
         (ref) => packageKey(ref) === action.id && ref.version === target.version,
       );
@@ -236,10 +244,19 @@ export async function applyClawPackageUpdate(
       appliedIds.push(action.id);
     }
   } catch (error) {
-    if (externalMutations.length > 0) {
+    const installPolicyWarning =
+      error instanceof ClawPackageInstallError || error instanceof ClawPackageUpdateError
+        ? error.installPolicyWarning
+        : undefined;
+    if (installPolicyWarning) {
+      if (currentExternalMutationStart !== undefined) {
+        externalMutations.length = currentExternalMutationStart;
+      }
+    } else if (externalMutations.length > 0) {
       throw new ClawPackageUpdateError(
         `${error instanceof Error ? error.message : String(error)}; package artifact outcome requires reconciliation`,
         true,
+        installPolicyWarning,
       );
     }
     try {
@@ -248,11 +265,13 @@ export async function applyClawPackageUpdate(
       throw new ClawPackageUpdateError(
         `${error instanceof Error ? error.message : String(error)}; rollback incomplete: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
         externalMutations.length > 0,
+        installPolicyWarning,
       );
     }
     throw new ClawPackageUpdateError(
       error instanceof Error ? error.message : String(error),
       error instanceof ClawPackageUpdateError ? error.partial : false,
+      installPolicyWarning,
     );
   }
   return { appliedIds, rollback };

@@ -7,7 +7,9 @@ import {
   readInstalledPackageOpenClawLinkDependencies,
 } from "../infra/package-update-utils.js";
 import { resolveUserPath } from "../utils.js";
+import { detectBundleManifestFormat, loadBundleManifest } from "./bundle-manifest.js";
 import { CLAWHUB_INSTALL_ERROR_CODE } from "./clawhub-error-codes.js";
+import { buildClawHubPluginInstallRecordFields } from "./clawhub-install-records.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
 import {
   getExternalizedBundledPluginLegacyPathSuffix,
@@ -15,17 +17,32 @@ import {
   type ExternalizedBundledPluginBridge,
 } from "./externalized-bundled-plugins.js";
 import { resolvePluginInstallDir } from "./install.js";
+import {
+  buildNpmResolutionInstallFields,
+  recordPluginInstall,
+  resolveNpmInstallRecordSpec,
+} from "./installs.js";
 import { resolvePackageExtensionEntries, type PackageManifest } from "./manifest.js";
 import { validatePackageExtensionEntriesForInstall } from "./package-entry-resolution.js";
 import { linkOpenClawPeerDependencies } from "./plugin-peer-link.js";
 import { resetPluginSlotsToDefaults } from "./slots.js";
 import { setPluginEnabledInConfig } from "./toggle-config.js";
+import type {
+  ClawHubPluginUpdateSuccess,
+  GitPluginUpdateSuccess,
+  MarketplacePluginUpdateSuccess,
+  NpmPluginUpdateSuccess,
+} from "./update-attempt.js";
 import type { PluginUpdateLogger } from "./update-source.js";
 
-export async function hasRunnableInstalledNpmPayload(params: {
+export async function hasRunnableInstalledPluginPayload(params: {
   installPath: string;
   manifest: PackageManifest | undefined;
 }): Promise<boolean> {
+  const bundleFormat = detectBundleManifestFormat(params.installPath);
+  if (bundleFormat) {
+    return loadBundleManifest({ rootDir: params.installPath, bundleFormat }).ok;
+  }
   const extensions = resolvePackageExtensionEntries(params.manifest);
   if (extensions.status !== "ok") {
     return false;
@@ -373,6 +390,80 @@ export function withoutPluginInstallRecord(cfg: OpenClawConfig, pluginId: string
       installs: nextInstalls,
     },
   };
+}
+
+export function recordSuccessfulPluginUpdate(params: {
+  config: OpenClawConfig;
+  record: PluginInstallRecord;
+  result:
+    | NpmPluginUpdateSuccess
+    | ClawHubPluginUpdateSuccess
+    | GitPluginUpdateSuccess
+    | MarketplacePluginUpdateSuccess;
+  resultSource: "npm" | "clawhub" | "git" | "marketplace";
+  resolvedPluginId: string;
+  nextVersion?: string;
+  requestedRecordSpec?: string;
+  pinResolvedRegistrySpec: boolean;
+  usedOfficialNpmFallback: boolean;
+}): OpenClawConfig {
+  if (params.resultSource === "npm") {
+    const result = params.result as NpmPluginUpdateSuccess;
+    return recordPluginInstall(
+      params.usedOfficialNpmFallback
+        ? withoutPluginInstallRecord(params.config, params.resolvedPluginId)
+        : params.config,
+      {
+        pluginId: params.resolvedPluginId,
+        source: "npm",
+        spec: resolveNpmInstallRecordSpec({
+          requestedSpec: params.requestedRecordSpec,
+          resolution: result.npmResolution,
+          pinResolvedRegistrySpec: params.pinResolvedRegistrySpec,
+        }),
+        installPath: result.targetDir,
+        version: params.nextVersion,
+        ...buildNpmResolutionInstallFields(result.npmResolution),
+      },
+    );
+  }
+  if (params.resultSource === "clawhub") {
+    const result = params.result as ClawHubPluginUpdateSuccess;
+    return recordPluginInstall(params.config, {
+      pluginId: params.resolvedPluginId,
+      ...buildClawHubPluginInstallRecordFields(result.clawhub),
+      spec:
+        params.requestedRecordSpec ??
+        params.record.spec ??
+        `clawhub:${params.record.clawhubPackage!}`,
+      installPath: result.targetDir,
+      version: params.nextVersion,
+    });
+  }
+  if (params.resultSource === "git") {
+    const result = params.result as GitPluginUpdateSuccess;
+    return recordPluginInstall(params.config, {
+      pluginId: params.resolvedPluginId,
+      source: "git",
+      spec: params.requestedRecordSpec ?? params.record.spec,
+      installPath: result.targetDir,
+      version: params.nextVersion,
+      resolvedAt: result.git.resolvedAt,
+      gitUrl: result.git.url,
+      gitRef: result.git.ref,
+      gitCommit: result.git.commit,
+    });
+  }
+  const result = params.result as MarketplacePluginUpdateSuccess;
+  return recordPluginInstall(params.config, {
+    pluginId: params.resolvedPluginId,
+    source: "marketplace",
+    installPath: result.targetDir,
+    version: params.nextVersion,
+    marketplaceName: result.marketplaceName ?? params.record.marketplaceName,
+    marketplaceSource: params.record.marketplaceSource,
+    marketplacePlugin: params.record.marketplacePlugin,
+  });
 }
 
 export function disablePluginAfterUpdateFailure(
