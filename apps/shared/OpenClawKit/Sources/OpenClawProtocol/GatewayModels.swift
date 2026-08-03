@@ -9850,6 +9850,7 @@ public struct SystemAgentChatParams: Codable, Sendable {
     public let sessionid: String
     public let message: String?
     public let wizardanswer: [String: AnyCodable]?
+    public let wizardcancel: [String: AnyCodable]?
     public let welcomevariant: AnyCodable?
     public let reset: Bool?
     public let context: [String: AnyCodable]?
@@ -9859,6 +9860,7 @@ public struct SystemAgentChatParams: Codable, Sendable {
         sessionid: String,
         message: String? = nil,
         wizardanswer: [String: AnyCodable]? = nil,
+        wizardcancel: [String: AnyCodable]? = nil,
         welcomevariant: AnyCodable? = nil,
         reset: Bool? = nil,
         context: [String: AnyCodable]? = nil,
@@ -9867,6 +9869,7 @@ public struct SystemAgentChatParams: Codable, Sendable {
         self.sessionid = sessionid
         self.message = message
         self.wizardanswer = wizardanswer
+        self.wizardcancel = wizardcancel
         self.welcomevariant = welcomevariant
         self.reset = reset
         self.context = context
@@ -9877,6 +9880,7 @@ public struct SystemAgentChatParams: Codable, Sendable {
         case sessionid = "sessionId"
         case message
         case wizardanswer = "wizardAnswer"
+        case wizardcancel = "wizardCancel"
         case welcomevariant = "welcomeVariant"
         case reset
         case context
