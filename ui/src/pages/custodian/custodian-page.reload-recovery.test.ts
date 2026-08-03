@@ -153,6 +153,7 @@ describe("Custodian wizard reload recovery", () => {
     const mounted = await mountPage(harness.context);
     await Promise.resolve();
     expect(request).not.toHaveBeenCalled();
+    expect(mounted.page.store.chatAvailable).toBe(false);
 
     harness.setRecoveryScopeReady(true);
     const recoveredInput = await waitForFast(() => {

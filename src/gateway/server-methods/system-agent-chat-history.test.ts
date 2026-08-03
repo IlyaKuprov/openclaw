@@ -30,6 +30,7 @@ function makeInvocation(params: {
   const session = {
     ownerKey: "device:device-owner",
     engine: { activeWizardStep },
+    lastUsedAt: 1,
   };
   const context = {
     systemAgentSessions: new Map(params.sessionId ? [[params.sessionId, session]] : []),
@@ -42,7 +43,7 @@ function makeInvocation(params: {
       calls.push({ ok, payload, error });
     },
   } as never;
-  return { activeWizardStep, calls, options };
+  return { activeWizardStep, calls, options, session };
 }
 
 describe("openclaw.chat.history wizard recovery", () => {
@@ -80,6 +81,7 @@ describe("openclaw.chat.history wizard recovery", () => {
       },
     ]);
     expect(activeWizardStep).toHaveBeenCalledOnce();
+    expect(owner.session.lastUsedAt).toBeGreaterThan(1);
 
     const foreign = makeInvocation({
       sessionId: "recover-session",
@@ -100,5 +102,6 @@ describe("openclaw.chat.history wizard recovery", () => {
       },
     ]);
     expect(activeWizardStep).toHaveBeenCalledOnce();
+    expect(foreign.session.lastUsedAt).toBe(1);
   });
 });

@@ -49,8 +49,11 @@ export const systemAgentChatHistoryHandler: GatewayRequestHandler = async ({
   const turns = readTranscriptTail(params.limit ?? DEFAULT_SYSTEM_AGENT_HISTORY_LIMIT);
   const session = params.sessionId ? context.systemAgentSessions.get(params.sessionId) : undefined;
   const ownerKey = resolveSystemAgentSessionOwnerKey({ client });
-  const step =
-    session && ownerKey === session.ownerKey ? await session.engine.activeWizardStep() : undefined;
+  let step;
+  if (session && ownerKey === session.ownerKey) {
+    session.lastUsedAt = Date.now();
+    step = await session.engine.activeWizardStep();
+  }
   respond(
     true,
     {

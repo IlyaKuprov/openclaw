@@ -457,6 +457,8 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     const chatSupported =
       client !== null && canCallGatewayMethod(snapshot, "openclaw.chat", "operator.admin");
     const configuredInferenceState = this.resolveConfiguredInferenceState();
+    const shouldEnableChat =
+      chatSupported && configuredInferenceState !== "unresolved" && recoveryScopeReady;
     const inferenceStateChanged = configuredInferenceState !== this.configuredInferenceState;
     this.configuredInferenceState = configuredInferenceState;
     const variantChanged = this.sessionStarted && this.sessionVariant !== this.variant;
@@ -473,7 +475,7 @@ export class CustodianSessionStore extends CustodianTranscriptState {
       !variantChanged &&
       !clientReplaced &&
       !ownershipChanged &&
-      this.chatAvailable === (chatSupported && configuredInferenceState !== "unresolved") &&
+      this.chatAvailable === shouldEnableChat &&
       !inferenceStateChanged &&
       !recoveryScopeReadinessChanged
     ) {
@@ -525,6 +527,9 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     if (configuredInferenceState === "unresolved") {
       return;
     }
+    if (!recoveryScopeReady) {
+      return;
+    }
     this.chatAvailable = true;
     if (configuredInferenceState === "required") {
       this.clearSessionRecovery();
@@ -535,9 +540,6 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     }
     if (inferenceStateChanged) {
       this.setupIssue = null;
-    }
-    if (!client.recoveryScopeReady) {
-      return;
     }
     if (this.sessionStarted) {
       if (!this.retryParams) {
