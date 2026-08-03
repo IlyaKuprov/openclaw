@@ -44,11 +44,12 @@ export function createContext(
     recoveryScopeReady?: boolean;
   } = {},
 ): ContextHarness {
-  const client = {
+  const clientState = {
     request,
     recoveryScope: options.recoveryScope ?? "",
     recoveryScopeReady: options.recoveryScopeReady ?? true,
-  } as unknown as GatewayBrowserClient;
+  };
+  const client = clientState as unknown as GatewayBrowserClient;
   let snapshot: ApplicationGatewaySnapshot = {
     client,
     phase: "connected",
@@ -151,7 +152,7 @@ export function createContext(
       }
     },
     setRecoveryScopeReady: (ready) => {
-      client.recoveryScopeReady = ready;
+      clientState.recoveryScopeReady = ready;
       snapshot = { ...snapshot };
       for (const listener of listeners) {
         listener(snapshot);
