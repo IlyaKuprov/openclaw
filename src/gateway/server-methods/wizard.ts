@@ -21,6 +21,7 @@ import {
   type WizardStep,
 } from "../../wizard/session.js";
 import { formatForLog } from "../ws-log.js";
+import { assertSystemAgentGatewayExecutionActive } from "./system-agent-execution-lifecycle.js";
 import type { GatewayRequestContext, GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -109,6 +110,9 @@ export const wizardHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateWizardStartParams, "wizard.start", respond)) {
       return;
     }
+    // Shutdown snapshots wizardSessions only once. This tombstone check and
+    // the map insertion below stay synchronous so a started wizard is captured.
+    assertSystemAgentGatewayExecutionActive(context.systemAgentSessions);
     const running = context.findRunningWizard();
     if (running) {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "wizard already running"));
@@ -160,6 +164,7 @@ export const wizardHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateWizardNextParams, "wizard.next", respond)) {
       return;
     }
+    assertSystemAgentGatewayExecutionActive(context.systemAgentSessions);
     const sessionId = params.sessionId;
     const session = findWizardSessionOrRespond({ context, respond, sessionId });
     if (!session) {
@@ -201,6 +206,7 @@ export const wizardHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateWizardCancelParams, "wizard.cancel", respond)) {
       return;
     }
+    assertSystemAgentGatewayExecutionActive(context.systemAgentSessions);
     const sessionId = params.sessionId;
     const session = findWizardSessionOrRespond({ context, respond, sessionId });
     if (!session) {
@@ -219,6 +225,7 @@ export const wizardHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateWizardStatusParams, "wizard.status", respond)) {
       return;
     }
+    assertSystemAgentGatewayExecutionActive(context.systemAgentSessions);
     const sessionId = params.sessionId;
     const session = findWizardSessionOrRespond({ context, respond, sessionId });
     if (!session) {
