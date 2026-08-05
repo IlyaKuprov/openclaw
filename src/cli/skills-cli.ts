@@ -65,6 +65,7 @@ import type {
 import { CONFIG_DIR } from "../utils.js";
 import { resolveClawHubRiskAcknowledgementCliOptions } from "./clawhub-risk-acknowledgement.js";
 import { resolveOptionFromCommand } from "./cli-utils.js";
+import { resolveInstallPolicyWarningAcknowledgementCliOptions } from "./install-policy-warning-acknowledgement.js";
 import { parseStrictPositiveIntOption } from "./program/helpers.js";
 import { setCommandJsonMode } from "./program/json-mode.js";
 import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
@@ -682,9 +683,9 @@ export function registerSkillsCli(program: Command) {
               slug: opts.as,
               force: Boolean(opts.force),
               config,
-              ...(opts.dangerouslyForceUnsafeInstall
-                ? { dangerouslyForceUnsafeInstall: true }
-                : {}),
+              ...resolveInstallPolicyWarningAcknowledgementCliOptions({
+                dangerouslyForceUnsafeInstall: opts.dangerouslyForceUnsafeInstall,
+              }),
               logger: {
                 info: (message) => defaultRuntime.log(message),
                 warn: (message) => defaultRuntime.log(formatSkillWarning(message)),
@@ -718,7 +719,9 @@ export function registerSkillsCli(program: Command) {
             version: opts.version,
             force: Boolean(opts.force),
             config,
-            ...(opts.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+            ...resolveInstallPolicyWarningAcknowledgementCliOptions({
+              dangerouslyForceUnsafeInstall: opts.dangerouslyForceUnsafeInstall,
+            }),
             ...(opts.forceInstall ? { forceInstall: true } : {}),
             ...resolveSkillClawHubRiskOptions(
               opts.acknowledgeClawhubRisk === true || opts.acknowledgeClawHubRisk === true,
@@ -804,7 +807,9 @@ export function registerSkillsCli(program: Command) {
             workspaceDir: target.workspaceDir,
             slug,
             ...(opts.forceInstall ? { forceInstall: true } : {}),
-            ...(opts.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+            ...resolveInstallPolicyWarningAcknowledgementCliOptions({
+              dangerouslyForceUnsafeInstall: opts.dangerouslyForceUnsafeInstall,
+            }),
             ...resolveSkillClawHubRiskOptions(
               opts.acknowledgeClawhubRisk === true || opts.acknowledgeClawHubRisk === true,
               "updating",

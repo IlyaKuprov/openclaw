@@ -99,9 +99,12 @@ installs only.
 Gateway-backed skill dependency installs triggered from onboarding or Skills
 settings use the separate `skills.install` request path instead.
 
-When `security.installPolicy` returns `warn`, review the output and rerun the
-install or update with `--dangerously-force-unsafe-install`. OpenClaw evaluates
-the staged skill again; `block` and policy failures remain terminal.
+When `security.installPolicy` returns `warn` in an interactive terminal,
+OpenClaw prints the reason and findings, then asks `type: '<skill>' to install
+anyway` (or `update anyway`). A matching answer evaluates the staged skill
+again before continuing. Declined and non-interactive commands stop before
+commit; after review, rerun with `--dangerously-force-unsafe-install`. `block`
+and policy failures remain terminal.
 
 Notes:
 

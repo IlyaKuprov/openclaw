@@ -34,6 +34,7 @@ export function resolveInstallSafetyOverrides(
   return {
     config: overrides.config,
     dangerouslyForceUnsafeInstall: overrides.dangerouslyForceUnsafeInstall,
+    onInstallPolicyWarning: overrides.onInstallPolicyWarning,
     trustedSourceLinkedOfficialInstall: overrides.trustedSourceLinkedOfficialInstall,
   };
 }

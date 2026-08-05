@@ -376,6 +376,7 @@ type PluginInstallCall = {
     info?: unknown;
     warn?: unknown;
   };
+  onInstallPolicyWarning?: unknown;
   marketplace?: string;
   mode?: string;
   path?: string;
@@ -2146,6 +2147,16 @@ describe("plugins cli install", () => {
     expect(npmInstallCall().mode).toBe("update");
     expect(npmInstallCall().dangerouslyForceUnsafeInstall).toBe(true);
     expect(installPluginFromClawHub).not.toHaveBeenCalled();
+  });
+
+  it("passes an install-policy warning prompt to interactive plugin installs", async () => {
+    setTty(true);
+    primeSuccessfulPluginPersistence("demo");
+    installPluginFromNpmSpec.mockResolvedValue(createNpmPluginInstallResult("demo"));
+
+    await runAcknowledgedPluginsInstallCommand(["plugins", "install", "npm:demo"]);
+
+    expect(npmInstallCall().onInstallPolicyWarning).toEqual(expect.any(Function));
   });
 
   it("reports npm install failures without trying ClawHub when npm: prefix is used", async () => {

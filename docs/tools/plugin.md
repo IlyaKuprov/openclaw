@@ -148,8 +148,10 @@ Configure `security.installPolicy` to run a trusted local policy command
 before a plugin install or update proceeds. The policy receives metadata plus
 the staged source path and can allow, warn, or block the install. It covers both CLI
 and Gateway-backed install/update paths. CLI plugin and skill commands can
-acknowledge a warning with `--dangerously-force-unsafe-install` after policy
-is re-evaluated. Gateway-backed and automatic installs remain blocked on
+acknowledge a warning interactively by typing the target name with the same
+copy as suspicious ClawHub releases; policy is then re-evaluated. Reviewed
+non-interactive commands can use `--dangerously-force-unsafe-install`.
+Gateway-backed and automatic installs remain blocked on
 warnings because they have no operator-confirmation flow. Plugin
 `before_install` hooks run later, and only in OpenClaw processes where plugin
 hooks are loaded, so use `security.installPolicy` for operator-owned install

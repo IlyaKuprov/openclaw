@@ -1322,6 +1322,23 @@ describe("plugins cli update", () => {
     expect(updateParams.dryRun).toBe(true);
     expect(updateParams.acknowledgeClawHubRisk).not.toBe(true);
     expect(updateParams.onClawHubRisk).toBeUndefined();
+    expect(updateParams.onInstallPolicyWarning).toBeUndefined();
+  });
+
+  it("passes an install-policy warning prompt to interactive plugin updates", async () => {
+    setTty(true);
+    const config = createTrackedPluginConfig({
+      pluginId: "openclaw-codex-app-server",
+      spec: "openclaw-codex-app-server",
+    });
+    loadConfig.mockReturnValue(config);
+    setInstalledPluginIndexInstallRecords(config.plugins?.installs ?? {});
+    updateNpmInstalledPlugins.mockResolvedValue({ config, changed: false, outcomes: [] });
+
+    await runPluginsCommand(["plugins", "update", "openclaw-codex-app-server"]);
+
+    const updateParams = expectSingleCallParams(updateNpmInstalledPlugins);
+    expect(updateParams.onInstallPolicyWarning).toEqual(expect.any(Function));
   });
 
   it("writes updated config when updater reports changes", async () => {

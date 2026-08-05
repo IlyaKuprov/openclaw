@@ -248,6 +248,45 @@ describe("installed dependency tree scan", () => {
 });
 
 describe("legacy file install scan compatibility", () => {
+  it("continues after interactive acknowledgement and policy re-evaluation", async () => {
+    const onInstallPolicyWarning = vi.fn().mockResolvedValue(true);
+    runInstallPolicyMock
+      .mockResolvedValueOnce({ warning: { reason: "review this plugin" } })
+      .mockResolvedValueOnce({ warning: { reason: "review this plugin" } });
+
+    const result = await scanFileInstallSourceRuntime({
+      filePath: "/tmp/payload.js",
+      logger: {},
+      onInstallPolicyWarning,
+      pluginId: "payload",
+    });
+
+    expect(result).toBeUndefined();
+    expect(onInstallPolicyWarning).toHaveBeenCalledWith({
+      targetName: "payload",
+      targetType: "plugin",
+      requestMode: "install",
+    });
+    expect(runInstallPolicyMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a block from policy re-evaluation terminal", async () => {
+    runInstallPolicyMock
+      .mockResolvedValueOnce({ warning: { reason: "review this plugin" } })
+      .mockResolvedValueOnce({
+        blocked: { code: "security_scan_blocked", reason: "now blocked" },
+      });
+
+    const result = await scanFileInstallSourceRuntime({
+      filePath: "/tmp/payload.js",
+      logger: {},
+      onInstallPolicyWarning: vi.fn().mockResolvedValue(true),
+      pluginId: "payload",
+    });
+
+    expect(result?.blocked).toEqual({ code: "security_scan_blocked", reason: "now blocked" });
+  });
+
   it("requires acknowledgement for warn and re-evaluates on the acknowledged attempt", async () => {
     runInstallPolicyMock.mockResolvedValue({
       warning: { reason: "review this plugin" },

@@ -46,6 +46,7 @@ import {
 import { defaultRuntime } from "../runtime.js";
 import { VERSION } from "../version.js";
 import { resolveClawHubRiskAcknowledgementCliOptions } from "./clawhub-risk-acknowledgement.js";
+import { resolveInstallPolicyWarningAcknowledgementCliOptions } from "./install-policy-warning-acknowledgement.js";
 import { notifyGatewayPluginMetadataChanged } from "./plugins-update-gateway-signal.js";
 import { logPluginUpdateOutcomes } from "./plugins-update-outcomes.js";
 import {
@@ -350,7 +351,10 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
             : undefined,
           syncOfficialPluginInstalls: params.opts.all ? true : undefined,
           coreVersion: VERSION,
-          dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
+          ...resolveInstallPolicyWarningAcknowledgementCliOptions({
+            dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
+            allowPrompt: !params.opts.dryRun,
+          }),
           ...resolveClawHubRiskAcknowledgementCliOptions({
             acknowledgeClawHubRisk: params.opts.acknowledgeClawHubRisk,
             action: "updating",
@@ -377,7 +381,10 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
     hookSelection.hookIds.length > 0
       ? await updateNpmInstalledHookPacks({
           config: pluginResult.config,
-          dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
+          ...resolveInstallPolicyWarningAcknowledgementCliOptions({
+            dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
+            allowPrompt: !params.opts.dryRun,
+          }),
           hookIds: hookSelection.hookIds,
           specOverrides: hookSelection.specOverrides,
           dryRun: params.opts.dryRun,

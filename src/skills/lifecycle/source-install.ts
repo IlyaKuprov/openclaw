@@ -9,6 +9,7 @@ import { sanitizeHostExecEnv } from "../../infra/host-env-security.js";
 import { withTempDir } from "../../infra/install-source-utils.js";
 import { writeJson } from "../../infra/json-files.js";
 import { isImmutableGitCommitRef, parseGitPluginSpec } from "../../plugins/git-install.js";
+import type { InstallSafetyOverrides } from "../../plugins/install-security-scan.types.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { resolveUserPath } from "../../utils.js";
 import { parseFrontmatter } from "../loading/frontmatter.js";
@@ -204,6 +205,7 @@ async function installLocalSkillDir(params: {
   logger?: Logger;
   config?: OpenClawConfig;
   dangerouslyForceUnsafeInstall?: boolean;
+  onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];
   git?: SkillSourceOrigin["git"];
 }): Promise<SkillSourceInstallResult> {
   const slug = await resolveSkillInstallSlug({
@@ -221,6 +223,7 @@ async function installLocalSkillDir(params: {
     policy: {
       config: params.config,
       dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+      onInstallPolicyWarning: params.onInstallPolicyWarning,
       installId: params.source,
       origin: {
         type: params.source,
@@ -273,6 +276,7 @@ async function installGitSkill(params: {
   logger?: Logger;
   config?: OpenClawConfig;
   dangerouslyForceUnsafeInstall?: boolean;
+  onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];
 }): Promise<SkillSourceInstallResult> {
   const parsed = parseGitPluginSpec(params.spec);
   if (!parsed) {
@@ -354,6 +358,7 @@ async function installGitSkill(params: {
       logger: params.logger,
       config: params.config,
       dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+      onInstallPolicyWarning: params.onInstallPolicyWarning,
       git,
     });
   });
@@ -368,6 +373,7 @@ async function installPathSkill(params: {
   logger?: Logger;
   config?: OpenClawConfig;
   dangerouslyForceUnsafeInstall?: boolean;
+  onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];
 }): Promise<SkillSourceInstallResult> {
   const sourceDir = resolveUserPath(params.spec);
   let stat;
@@ -391,6 +397,7 @@ async function installPathSkill(params: {
     logger: params.logger,
     config: params.config,
     dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+    onInstallPolicyWarning: params.onInstallPolicyWarning,
   });
 }
 
@@ -414,6 +421,7 @@ export async function installSkillFromSource(params: {
   logger?: Logger;
   config?: OpenClawConfig;
   dangerouslyForceUnsafeInstall?: boolean;
+  onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];
 }): Promise<SkillSourceInstallResult> {
   const spec = params.spec.trim();
   if (spec.toLowerCase().startsWith("git:")) {

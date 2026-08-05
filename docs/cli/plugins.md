@@ -198,7 +198,7 @@ non-npm sources are not rewritten.
     `--pin` applies to npm installs only and records the resolved exact `<name>@<version>`. It is not supported with `git:` installs (pin the ref in the spec instead, e.g. `git:github.com/acme/plugin@v1.2.3`) or with `--marketplace` (marketplace installs persist marketplace source metadata instead of an npm spec).
   </Accordion>
   <Accordion title="--dangerously-force-unsafe-install">
-    When `security.installPolicy` returns `warn`, OpenClaw prints the reason and findings and stops before installing. After review, rerun the same command with `--dangerously-force-unsafe-install`. OpenClaw evaluates the staged source again; the flag accepts `warn`, but never overrides `block` or a policy failure.
+    When `security.installPolicy` returns `warn` in an interactive terminal, OpenClaw prints the reason and findings, then uses the same acknowledgement copy as a suspicious ClawHub release: `type: '<plugin>' to install anyway`. A matching answer re-evaluates the staged source before continuing. A declined or non-interactive install stops before commit; after review, it can be rerun with `--dangerously-force-unsafe-install`. Neither form overrides `block` or a policy failure.
 
     If a plugin you published on ClawHub is hidden or blocked by a registry scan, use the publisher steps in [ClawHub publishing](/clawhub/publishing). `--dangerously-force-unsafe-install` does not ask ClawHub to rescan the plugin or make a blocked release public.
 
@@ -466,7 +466,7 @@ Updates apply to tracked plugin installs in the managed plugin index and tracked
 
   </Accordion>
   <Accordion title="--dangerously-force-unsafe-install on update">
-    `plugins update` uses the same warning acknowledgement as install. The policy is re-evaluated, and `block` or a policy failure remains terminal.
+    `plugins update` uses the same warning acknowledgement as install, with `type: '<plugin>' to update anyway` in an interactive terminal. The policy is re-evaluated, and `block` or a policy failure remains terminal.
   </Accordion>
   <Accordion title="--acknowledge-clawhub-risk on update">
     Community ClawHub-backed plugin updates run the same exact-release trust check as installs before downloading the replacement package. Use `--acknowledge-clawhub-risk` for reviewed automation that should continue when the selected ClawHub release has a risky trust warning. Official ClawHub packages and bundled OpenClaw plugin sources bypass this release-trust prompt.

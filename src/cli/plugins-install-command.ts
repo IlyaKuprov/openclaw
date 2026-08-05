@@ -14,6 +14,7 @@ import { markClawPackageIndependentlyOwned } from "../state/claw-package-adoptio
 import { withClawPackageLifecycleLease } from "../state/claw-package-lifecycle-lease.js";
 import { shortenHomePath } from "../utils.js";
 import { resolveClawHubRiskAcknowledgementCliOptions } from "./clawhub-risk-acknowledgement.js";
+import { resolveInstallPolicyWarningAcknowledgementCliOptions } from "./install-policy-warning-acknowledgement.js";
 import {
   confirmNonClawHubInstall,
   type NonClawHubInstallSourceClass,
@@ -78,7 +79,13 @@ async function runPluginInstallCommandUnlocked(
   if (!snapshot) {
     return runtime.exit(1);
   }
-  const safetyOverrides = resolveInstallSafetyOverrides({ ...opts, config: snapshot.config });
+  const safetyOverrides = resolveInstallSafetyOverrides({
+    ...opts,
+    config: snapshot.config,
+    ...resolveInstallPolicyWarningAcknowledgementCliOptions({
+      dangerouslyForceUnsafeInstall: opts.dangerouslyForceUnsafeInstall,
+    }),
+  });
   const acknowledgeNonClawHubSource = async (
     sourceClass: NonClawHubInstallSourceClass,
     spec: string,

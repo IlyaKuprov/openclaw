@@ -184,10 +184,12 @@ The policy receives one JSON object on stdin with `protocolVersion: 1`,
 optional structured `source`, structured `origin`, and `request`. It must
 write one JSON object on stdout with an `allow`, `warn`, or `block` decision.
 `warn` and `block` require a non-empty `reason`; every decision may include a
-`findings` array. A warning stops the install before commit. For CLI plugin and
-skill installs, the operator may rerun the command with
-`--dangerously-force-unsafe-install`, which runs the policy again and
-acknowledges a new `warn` result. Gateway-backed and automatic installs remain
+`findings` array. A warning stops the install before commit. Interactive CLI
+plugin and skill commands ask the operator to type the target name using the
+same `install anyway` or `update anyway` copy as suspicious ClawHub releases,
+then run policy again before continuing. Declined and non-interactive commands
+may be rerun with `--dangerously-force-unsafe-install` after review.
+Gateway-backed and automatic installs remain
 blocked on warnings because they have no operator-confirmation flow. A `block`, non-zero
 exit, timeout, malformed JSON, missing field, or unsupported protocol version
 always fails closed.
