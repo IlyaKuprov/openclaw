@@ -57,26 +57,6 @@ private enum SkillsStatusLoadError: Error {
 @Suite(.serialized)
 @MainActor
 struct SkillsSettingsSmokeTests {
-    @Test func `skill install params omit unacknowledged policy fields for older gateways`() {
-        for acknowledgement in [nil, false] as [Bool?] {
-            let params = GatewayConnection.skillInstallParams(
-                name: "demo",
-                installId: "node",
-                installPolicyAcknowledgementId: acknowledgement == true ? "sha256:test" : nil,
-                timeoutMs: nil)
-
-            #expect(params["acknowledgeInstallPolicyWarning"] == nil)
-        }
-
-        let acknowledged = GatewayConnection.skillInstallParams(
-            name: "demo",
-            installId: "node",
-            installPolicyAcknowledgementId: "sha256:test",
-            timeoutMs: 1000)
-        #expect(acknowledged["acknowledgeInstallPolicyWarning"]?.value as? String == "sha256:test")
-        #expect(acknowledged["timeoutMs"]?.value as? Int == 1000)
-    }
-
     @Test func `alternative binaries and OS blockers remain visible requirements`() {
         let alternatives = SkillMissing(
             bins: [],

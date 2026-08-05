@@ -459,8 +459,8 @@ class SkillsPage extends OpenClawLightDomElement {
             onToggle: (key, enabled) => void updateSkillEnabled(this, key, enabled),
             onEdit: (key, value) => updateSkillEdit(this, key, value),
             onSaveKey: (key) => void saveSkillApiKey(this, key),
-            onInstall: (skillKey, name, installId, installPolicyAcknowledgementId) =>
-              void installSkill(this, skillKey, name, installId, installPolicyAcknowledgementId),
+            onInstall: (skillKey, name, installId) =>
+              void installSkill(this, skillKey, name, installId),
             onDetailOpen: (key) => {
               this.skillsDetailKey = key;
               this.skillsDetailTab = "overview";
@@ -470,19 +470,8 @@ class SkillsPage extends OpenClawLightDomElement {
             onClawHubQueryChange: (query) => this.changeClawHubQuery(query),
             onClawHubDetailOpen: (slug) => void loadClawHubDetail(this, slug),
             onClawHubDetailClose: () => closeClawHubDetail(this),
-            onClawHubInstall: (
-              slug,
-              acknowledgeClawHubRisk,
-              version,
-              installPolicyAcknowledgementId,
-            ) =>
-              void installFromClawHub(
-                this,
-                slug,
-                acknowledgeClawHubRisk,
-                version,
-                installPolicyAcknowledgementId,
-              ),
+            onClawHubInstall: (slug, acknowledgeClawHubRisk, version) =>
+              void installFromClawHub(this, slug, acknowledgeClawHubRisk, version),
           })}
         </wa-tab-panel>
       `)}

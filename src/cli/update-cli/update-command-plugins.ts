@@ -24,7 +24,6 @@ import {
   type PluginUpdateOutcome,
 } from "../../plugins/update.js";
 import { defaultRuntime } from "../../runtime.js";
-import { appendInstallPolicyAcknowledgementFlag } from "../install-policy-acknowledgement.js";
 import { listPersistedBundledPluginLocationBridges } from "../plugins-location-bridges.js";
 import {
   convergenceWarningsToOutcomes,
@@ -150,14 +149,10 @@ function createGuidedPostUpdatePluginOutcome(
     return { outcome };
   }
   const includeWarningInReason = options.includeWarningInReason ?? true;
-  const reason =
+  const warningReason =
     outcome.warning && includeWarningInReason
       ? `${outcome.warning}\n${outcome.message}`
       : outcome.message;
-  const warningReason = appendInstallPolicyAcknowledgementFlag(
-    reason,
-    outcome.installPolicyWarning,
-  );
   const warning = createPostUpdatePluginWarning({
     ...(outcome.pluginId && outcome.pluginId !== "unknown" ? { pluginId: outcome.pluginId } : {}),
     reason: warningReason,
@@ -287,18 +282,11 @@ export async function updatePluginsAfterCoreUpdate(params: {
     externalizedBundledPluginBridges: await listPersistedBundledPluginLocationBridges({
       workspaceDir: params.root,
     }),
-    ...(params.opts.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
-    installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
     ...clawHubRiskAcknowledgementOptions,
     logger: pluginLogger,
   });
-  const syncInstallPolicyWarnings = new Map(
-    syncResult.summary.installPolicyWarnings.map(({ error, warning }) => [error, warning]),
-  );
-  const formatSyncError = (error: string) =>
-    appendInstallPolicyAcknowledgementFlag(error, syncInstallPolicyWarnings.get(error));
   for (const error of syncResult.summary.errors) {
-    warnings.push(createPostUpdatePluginWarning({ reason: formatSyncError(error) }));
+    warnings.push(createPostUpdatePluginWarning({ reason: error }));
   }
   let pluginConfig = syncResult.config;
   const integrityDrifts: PostCorePluginUpdateResult["integrityDrifts"] = [];
@@ -367,8 +355,6 @@ export async function updatePluginsAfterCoreUpdate(params: {
       skipDisabledPlugins: true,
       syncOfficialPluginInstalls: true,
       disableOnFailure: true,
-      ...(params.opts.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
-      installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
       logger: pluginLogger,
       onIntegrityDrift: onPluginIntegrityDrift,
       ...clawHubRiskAcknowledgementOptions,
@@ -395,8 +381,6 @@ export async function updatePluginsAfterCoreUpdate(params: {
     skipDisabledPlugins: true,
     syncOfficialPluginInstalls: true,
     disableOnFailure: true,
-    ...(params.opts.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
-    installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
     logger: pluginLogger,
     onIntegrityDrift: onPluginIntegrityDrift,
     ...clawHubRiskAcknowledgementOptions,
@@ -453,8 +437,6 @@ export async function updatePluginsAfterCoreUpdate(params: {
     cfg: pluginConfig,
     env: process.env,
     baselineInstallRecords: convergenceBaselineRecords,
-    ...(params.opts.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
-    installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
     ...clawHubRiskAcknowledgementOptions,
   });
   for (const change of convergence.changes) {
@@ -532,7 +514,6 @@ export async function updatePluginsAfterCoreUpdate(params: {
         switchedToNpm: syncResult.summary.switchedToNpm,
         warnings: syncResult.summary.warnings,
         errors: syncResult.summary.errors,
-        installPolicyWarnings: syncResult.summary.installPolicyWarnings,
       },
       npm: {
         changed: npmPluginsChanged,
@@ -567,9 +548,7 @@ export async function updatePluginsAfterCoreUpdate(params: {
     }
   }
   for (const error of syncResult.summary.errors) {
-    defaultRuntime.log(
-      theme.warn(createPostUpdatePluginWarning({ reason: formatSyncError(error) }).message),
-    );
+    defaultRuntime.log(theme.warn(createPostUpdatePluginWarning({ reason: error }).message));
   }
 
   const updated = pluginUpdateOutcomes.filter((entry) => entry.status === "updated").length;
@@ -611,7 +590,6 @@ export async function updatePluginsAfterCoreUpdate(params: {
       switchedToNpm: syncResult.summary.switchedToNpm,
       warnings: syncResult.summary.warnings,
       errors: syncResult.summary.errors,
-      installPolicyWarnings: syncResult.summary.installPolicyWarnings,
     },
     npm: {
       changed: npmPluginsChanged,

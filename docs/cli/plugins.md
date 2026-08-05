@@ -136,7 +136,7 @@ openclaw plugins install <plugin> --marketplace <name>      # marketplace (expli
 openclaw plugins install <package> --force                  # confirm source / overwrite existing
 openclaw plugins install <package> --pin                    # pin resolved npm version
 openclaw plugins install clawhub:<package> --acknowledge-clawhub-risk
-openclaw plugins install <package> --dangerously-force-unsafe-install <acknowledgement-id>
+openclaw plugins install <package> --dangerously-force-unsafe-install
 ```
 
 Maintainers testing setup-time installs can override automatic plugin install
@@ -198,10 +198,7 @@ non-npm sources are not rewritten.
     `--pin` applies to npm installs only and records the resolved exact `<name>@<version>`. It is not supported with `git:` installs (pin the ref in the spec instead, e.g. `git:github.com/acme/plugin@v1.2.3`) or with `--marketplace` (marketplace installs persist marketplace source metadata instead of an npm spec).
   </Accordion>
   <Accordion title="--dangerously-force-unsafe-install">
-    A `security.installPolicy` warning prints an acknowledgement ID. Pass that exact ID as `--dangerously-force-unsafe-install <acknowledgement-id>` to re-run policy; a bare flag does not acknowledge the warning. Blocks and failures remain terminal.
-    Multi-stage installs may return an opaque ordered acknowledgement sequence in the same value. Pass the complete value unchanged so each warning stage is verified before dependency staging continues.
-
-    The flag does not bypass OpenClaw's plugin dependency denylist. Plugin `before_install` hooks are plugin-runtime lifecycle hooks, not the primary policy boundary for CLI installs.
+    When `security.installPolicy` returns `warn`, OpenClaw prints the reason and findings and stops before installing. After review, rerun the same command with `--dangerously-force-unsafe-install`. OpenClaw evaluates the staged source again; the flag accepts `warn`, but never overrides `block` or a policy failure.
 
     If a plugin you published on ClawHub is hidden or blocked by a registry scan, use the publisher steps in [ClawHub publishing](/clawhub/publishing). `--dangerously-force-unsafe-install` does not ask ClawHub to rescan the plugin or make a blocked release public.
 
@@ -438,7 +435,7 @@ openclaw plugins update <id-or-npm-spec> --dry-run
 openclaw plugins update @openclaw/voice-call
 openclaw plugins update @acme/demo
 openclaw plugins update openclaw-codex-app-server --acknowledge-clawhub-risk
-openclaw plugins update openclaw-codex-app-server --dangerously-force-unsafe-install <acknowledgement-id>
+openclaw plugins update openclaw-codex-app-server --dangerously-force-unsafe-install
 ```
 
 Updates apply to tracked plugin installs in the managed plugin index and tracked hook-pack installs in shared SQLite state. They reuse the source that the user already chose when installing the plugin, so they do not require a second source acknowledgement.
@@ -469,7 +466,7 @@ Updates apply to tracked plugin installs in the managed plugin index and tracked
 
   </Accordion>
   <Accordion title="--dangerously-force-unsafe-install on update">
-    On `plugins update`, pass the warning's exact ID as `--dangerously-force-unsafe-install <acknowledgement-id>`. Policy is re-run, and blocks or failures remain terminal.
+    `plugins update` uses the same warning acknowledgement as install. The policy is re-evaluated, and `block` or a policy failure remains terminal.
   </Accordion>
   <Accordion title="--acknowledge-clawhub-risk on update">
     Community ClawHub-backed plugin updates run the same exact-release trust check as installs before downloading the replacement package. Use `--acknowledge-clawhub-risk` for reviewed automation that should continue when the selected ClawHub release has a risky trust warning. Official ClawHub packages and bundled OpenClaw plugin sources bypass this release-trust prompt.

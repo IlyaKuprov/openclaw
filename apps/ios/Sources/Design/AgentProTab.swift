@@ -30,7 +30,6 @@ struct AgentProTab: View {
     @State var clawHubLoading: Bool = false
     @State var clawHubErrorText: String?
     @State var clawHubInstallSlug: String?
-    @State var skillInstallPolicyReview: SkillInstallPolicyReview?
     @State var cronActionBusyIDs: Set<String> = []
     @State var pendingCronRuns = AgentAutomationPendingRunRegistry()
     @State var cronActionStatusText: String?
@@ -155,25 +154,6 @@ struct AgentProTab: View {
         }
     }
 
-    struct SkillInstallPolicyReview: Identifiable {
-        enum Target {
-            case requirements(skillKey: String)
-            case clawHub(ClawHubSearchResultLite)
-        }
-
-        let target: Target
-        let route: GatewayNodeSessionRoute
-        let message: String
-        let acknowledgementId: String?
-
-        var id: String {
-            switch self.target {
-            case let .requirements(skillKey): "requirements:\(skillKey)"
-            case let .clawHub(result): "clawhub:\(result.slug)@\(result.version ?? "latest")"
-            }
-        }
-    }
-
     init(
         directRoute: AgentRoute? = nil,
         headerSidebarAction: OpenClawSidebarHeaderAction? = nil,
@@ -219,20 +199,6 @@ struct AgentProTab: View {
                 onChanged: {
                     Task { await self.refreshOverview(force: true) }
                 })
-        }
-        .alert(item: self.$skillInstallPolicyReview) { review in
-            Alert(
-                title: Text("Review install warning")
-                    .font(OpenClawType.headline),
-                message: Text(review.message)
-                    .font(OpenClawType.subhead),
-                primaryButton: .destructive(
-                    Text("Install anyway")
-                        .font(OpenClawType.subheadSemiBold))
-                {
-                    Task { await self.retrySkillInstallPolicyWarning(review) }
-                },
-                secondaryButton: .cancel())
         }
     }
 

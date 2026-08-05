@@ -239,8 +239,6 @@ export async function updateFinalizeCommand(opts: UpdateFinalizeOptions): Promis
           yes: opts.yes,
           restart: false,
           acknowledgeClawHubRisk: opts.acknowledgeClawHubRisk,
-          dangerouslyForceUnsafeInstall: opts.dangerouslyForceUnsafeInstall,
-          installPolicyAcknowledgementId: opts.installPolicyAcknowledgementId,
         },
         timeoutMs: timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS,
         pluginInstallRecords,
@@ -501,12 +499,6 @@ export async function continuePostCoreUpdateInFreshProcess(params: {
   }
   if (params.opts.acknowledgeClawHubRisk) {
     argv.push("--acknowledge-clawhub-risk");
-  }
-  if (params.opts.dangerouslyForceUnsafeInstall) {
-    argv.push("--dangerously-force-unsafe-install");
-    if (params.opts.installPolicyAcknowledgementId) {
-      argv.push(params.opts.installPolicyAcknowledgementId);
-    }
   }
   if (params.opts.timeout) {
     argv.push("--timeout", params.opts.timeout);

@@ -65,12 +65,6 @@ import type {
 import { CONFIG_DIR } from "../utils.js";
 import { resolveClawHubRiskAcknowledgementCliOptions } from "./clawhub-risk-acknowledgement.js";
 import { resolveOptionFromCommand } from "./cli-utils.js";
-import {
-  appendInstallPolicyAcknowledgementFlag,
-  preserveBareInstallPolicyAcknowledgementFlag,
-  resolveInstallPolicyAcknowledgementOption,
-  type InstallPolicyAcknowledgementOption,
-} from "./install-policy-acknowledgement.js";
 import { parseStrictPositiveIntOption } from "./program/helpers.js";
 import { setCommandJsonMode } from "./program/json-mode.js";
 import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
@@ -558,7 +552,6 @@ async function readSkillProposalInput(options: {
  * Register the skills CLI commands
  */
 export function registerSkillsCli(program: Command) {
-  preserveBareInstallPolicyAcknowledgementFlag(program);
   const skills = program
     .command("skills")
     .description("List and inspect available skills")
@@ -639,7 +632,7 @@ export function registerSkillsCli(program: Command) {
       false,
     )
     .option(
-      "--dangerously-force-unsafe-install [acknowledgement-id]",
+      "--dangerously-force-unsafe-install",
       "Acknowledge security.installPolicy warnings; blocks and failures remain terminal",
       false,
     )
@@ -659,7 +652,7 @@ export function registerSkillsCli(program: Command) {
           forceInstall?: boolean;
           acknowledgeClawhubRisk?: boolean;
           acknowledgeClawHubRisk?: boolean;
-          dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
+          dangerouslyForceUnsafeInstall?: boolean;
           global?: boolean;
           agent?: string;
           as?: string;
@@ -688,17 +681,17 @@ export function registerSkillsCli(program: Command) {
               spec: slug,
               slug: opts.as,
               force: Boolean(opts.force),
-              ...resolveInstallPolicyAcknowledgementOption(opts.dangerouslyForceUnsafeInstall),
               config,
+              ...(opts.dangerouslyForceUnsafeInstall
+                ? { dangerouslyForceUnsafeInstall: true }
+                : {}),
               logger: {
                 info: (message) => defaultRuntime.log(message),
                 warn: (message) => defaultRuntime.log(formatSkillWarning(message)),
               },
             });
             if (!result.ok) {
-              defaultRuntime.error(
-                appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
-              );
+              defaultRuntime.error(result.error);
               defaultRuntime.exit(1);
               return;
             }
@@ -724,9 +717,9 @@ export function registerSkillsCli(program: Command) {
             slug,
             version: opts.version,
             force: Boolean(opts.force),
-            ...(opts.forceInstall ? { forceInstall: true } : {}),
-            ...resolveInstallPolicyAcknowledgementOption(opts.dangerouslyForceUnsafeInstall),
             config,
+            ...(opts.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
+            ...(opts.forceInstall ? { forceInstall: true } : {}),
             ...resolveSkillClawHubRiskOptions(
               opts.acknowledgeClawhubRisk === true || opts.acknowledgeClawHubRisk === true,
               "installing",
@@ -738,9 +731,7 @@ export function registerSkillsCli(program: Command) {
           });
           if (!result.ok) {
             if (!isClawHubSkillBlockedCliFailure(result)) {
-              defaultRuntime.error(
-                appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
-              );
+              defaultRuntime.error(result.error);
             }
             defaultRuntime.exit(1);
             return;
@@ -769,7 +760,7 @@ export function registerSkillsCli(program: Command) {
       false,
     )
     .option(
-      "--dangerously-force-unsafe-install [acknowledgement-id]",
+      "--dangerously-force-unsafe-install",
       "Acknowledge security.installPolicy warnings; blocks and failures remain terminal",
       false,
     )
@@ -783,7 +774,7 @@ export function registerSkillsCli(program: Command) {
           forceInstall?: boolean;
           acknowledgeClawhubRisk?: boolean;
           acknowledgeClawHubRisk?: boolean;
-          dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
+          dangerouslyForceUnsafeInstall?: boolean;
           global?: boolean;
           agent?: string;
         },
@@ -813,7 +804,7 @@ export function registerSkillsCli(program: Command) {
             workspaceDir: target.workspaceDir,
             slug,
             ...(opts.forceInstall ? { forceInstall: true } : {}),
-            ...resolveInstallPolicyAcknowledgementOption(opts.dangerouslyForceUnsafeInstall),
+            ...(opts.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
             ...resolveSkillClawHubRiskOptions(
               opts.acknowledgeClawhubRisk === true || opts.acknowledgeClawHubRisk === true,
               "updating",
@@ -829,14 +820,8 @@ export function registerSkillsCli(program: Command) {
             if (!result.ok) {
               failed = true;
               if (!isClawHubSkillBlockedCliFailure(result)) {
-                defaultRuntime.error(
-                  appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
-                );
+                defaultRuntime.error(result.error);
               }
-              continue;
-            }
-            if (result.repaired) {
-              defaultRuntime.log(`Repaired ${result.slug} at ${result.version}`);
               continue;
             }
             if (result.changed) {

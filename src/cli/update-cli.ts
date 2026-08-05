@@ -5,11 +5,6 @@ import { theme } from "../../packages/terminal-core/src/theme.js";
 import { defaultRuntime } from "../runtime.js";
 import { inheritOptionFromParent } from "./command-options.js";
 import { formatHelpExamples } from "./help-format.js";
-import {
-  preserveBareInstallPolicyAcknowledgementFlag,
-  resolveInstallPolicyAcknowledgementOption,
-  type InstallPolicyAcknowledgementOption,
-} from "./install-policy-acknowledgement.js";
 import type {
   UpdateCommandOptions,
   UpdateFinalizeOptions,
@@ -46,7 +41,6 @@ function inheritedUpdateTimeout(
 type CommanderUpdateOptions = Record<string, unknown> & {
   acknowledgeClawhubRisk?: boolean;
   acknowledgeClawHubRisk?: boolean;
-  dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
   channel?: string;
   dryRun?: boolean;
   json?: boolean;
@@ -92,11 +86,6 @@ function registerUpdateFinalizationCommand(update: Command, name: string, hidden
       "Acknowledge ClawHub release trust warnings during post-update plugin sync",
       false,
     )
-    .option(
-      "--dangerously-force-unsafe-install [acknowledgement-id]",
-      "Acknowledge reviewed install policy warnings during post-update plugin sync",
-      false,
-    )
     .option("--no-restart", "Accepted for update command parity; repair never restarts")
     .addHelpText(
       "after",
@@ -117,11 +106,6 @@ function registerUpdateFinalizationCommand(update: Command, name: string, hidden
           return;
         }
 
-        const inheritedAcknowledgement =
-          inheritOptionFromParent<InstallPolicyAcknowledgementOption>(
-            actionCommand,
-            "dangerouslyForceUnsafeInstall",
-          );
         await updateFinalizeCommand({
           json: Boolean(opts.json) || inheritedUpdateJson(actionCommand),
           channel:
@@ -132,9 +116,6 @@ function registerUpdateFinalizationCommand(update: Command, name: string, hidden
           restart: false,
           acknowledgeClawHubRisk:
             normalizeCommanderClawHubRiskOption(opts) || inheritedUpdateClawHubRisk(actionCommand),
-          ...resolveInstallPolicyAcknowledgementOption(
-            inheritedAcknowledgement ?? opts.dangerouslyForceUnsafeInstall,
-          ),
         });
       } catch (err) {
         defaultRuntime.error(String(err));
@@ -145,7 +126,6 @@ function registerUpdateFinalizationCommand(update: Command, name: string, hidden
 
 /** Attach the update command group to the root CLI. */
 export function registerUpdateCli(program: Command) {
-  preserveBareInstallPolicyAcknowledgementFlag(program);
   program.enablePositionalOptions();
   const update = program
     .command("update")
@@ -165,11 +145,6 @@ export function registerUpdateCli(program: Command) {
       "Acknowledge ClawHub release trust warnings during post-update plugin sync",
       false,
     )
-    .option(
-      "--dangerously-force-unsafe-install [acknowledgement-id]",
-      "Acknowledge reviewed install policy warnings during post-update plugin sync",
-      false,
-    )
     .addHelpText("after", () => {
       const examples = [
         ["openclaw update", "Update a source checkout (git)"],
@@ -187,10 +162,6 @@ export function registerUpdateCli(program: Command) {
         ["openclaw update --yes", "Non-interactive (accept downgrade prompts)"],
         ["openclaw update repair", "Repair stranded post-update plugin state"],
         ["openclaw update --acknowledge-clawhub-risk", "Acknowledge ClawHub plugin trust warnings"],
-        [
-          "openclaw update --dangerously-force-unsafe-install <acknowledgement-id>",
-          "Acknowledge one exact reviewed install policy warning",
-        ],
         ["openclaw update wizard", "Interactive update wizard"],
         ["openclaw --update", "Shorthand for openclaw update"],
       ] as const;
@@ -211,7 +182,6 @@ ${theme.heading("Switch channels:")}
 ${theme.heading("Non-interactive:")}
   - Use --yes to accept downgrade prompts
   - Use --acknowledge-clawhub-risk only after reviewing ClawHub plugin trust warnings
-  - Pass the exact warning ID to --dangerously-force-unsafe-install after review
   - Combine with --channel/--tag/--no-restart/--json/--timeout as needed
   - Use --dry-run to preview actions without writing config/installing/restarting
 
@@ -237,7 +207,6 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/update", "docs.openclaw.ai/cli/up
           timeout: opts.timeout,
           yes: Boolean(opts.yes),
           acknowledgeClawHubRisk: normalizeCommanderClawHubRiskOption(opts),
-          ...resolveInstallPolicyAcknowledgementOption(opts.dangerouslyForceUnsafeInstall),
         });
       } catch (err) {
         defaultRuntime.error(String(err));

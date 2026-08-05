@@ -19,8 +19,6 @@ import {
   updateSkillEnabled,
 } from "./index.ts";
 
-const INSTALL_POLICY_ACKNOWLEDGEMENT_ID = `sha256:${"a".repeat(64)}`;
-
 type SkillsState = Parameters<typeof loadSkills>[0];
 
 type TestRequest = (method: string, payload?: unknown) => Promise<unknown>;
@@ -734,14 +732,13 @@ describe("skill mutations", () => {
     },
     {
       name: "installs skills and uses server success messages",
-      run: (state: SkillsState) =>
-        installSkill(state, "github", "GitHub", "install-123", INSTALL_POLICY_ACKNOWLEDGEMENT_ID),
+      run: (state: SkillsState) => installSkill(state, "github", "GitHub", "install-123", true),
       expectedRequest: [
         "skills.install",
         {
           name: "GitHub",
           installId: "install-123",
-          acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+          dangerouslyForceUnsafeInstall: true,
           timeoutMs: 120000,
         },
       ],
@@ -904,7 +901,7 @@ describe("skill mutations", () => {
     state.skillEdits.github = "submitted-value";
 
     await updateSkillEnabled(state, "github", true);
-    await installFromClawHub(state, "github", false, undefined, INSTALL_POLICY_ACKNOWLEDGEMENT_ID);
+    await installFromClawHub(state, "github");
     updateSkillEdit(state, "github", "late-value");
 
     expect(request).not.toHaveBeenCalled();
@@ -1046,13 +1043,13 @@ describe("skill mutations", () => {
     state.skillsAgentId = "research";
     mockSkillMutationRequests(request, "Installed from registry");
 
-    await installSkill(state, "github", "GitHub", "install-123", INSTALL_POLICY_ACKNOWLEDGEMENT_ID);
+    await installSkill(state, "github", "GitHub", "install-123", true);
 
     expect(request).toHaveBeenCalledWith("skills.install", {
       agentId: "research",
       name: "GitHub",
       installId: "install-123",
-      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+      dangerouslyForceUnsafeInstall: true,
       timeoutMs: 120000,
     });
   });
@@ -1062,51 +1059,16 @@ describe("skill mutations", () => {
     state.skillsAgentId = "research";
     request.mockResolvedValue({});
 
-    await installFromClawHub(state, "github", false, undefined, INSTALL_POLICY_ACKNOWLEDGEMENT_ID);
+    await installFromClawHub(state, "github");
 
     expect(request).toHaveBeenCalledWith("skills.install", {
       agentId: "research",
       source: "clawhub",
       slug: "github",
-      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
     });
     expect(state.clawhubInstallMessage).toEqual({
       kind: "success",
       text: "Installed github",
-    });
-  });
-
-  it("surfaces ClawHub install policy warnings for acknowledgement", async () => {
-    const { state, request } = createState();
-    request.mockRejectedValue(
-      Object.assign(new Error("warning"), {
-        details: {
-          version: "1.2.3",
-          installPolicyWarning: {
-            reason: "Review package behavior.",
-            acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-            findings: [
-              {
-                ruleId: "network.postinstall",
-                severity: "critical",
-                message: "Postinstall opens a network connection.",
-                file: "package.json",
-                line: 12,
-                evidence: "node setup.js",
-              },
-            ],
-          },
-        },
-      }),
-    );
-
-    await installFromClawHub(state, "github", true);
-
-    expect(state.clawhubInstallMessage).toMatchObject({
-      text: "Review package behavior.\n- [critical] network.postinstall: Postinstall opens a network connection. (package.json:12) — node setup.js",
-      acknowledgeVersion: "1.2.3",
-      acknowledgeClawHubRisk: true,
-      installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
     });
   });
 
@@ -1215,6 +1177,7 @@ describe("skill mutations", () => {
         agentId: "alpha",
         name: "GitHub",
         installId: "install-123",
+        dangerouslyForceUnsafeInstall: false,
         timeoutMs: 120000,
       },
     },

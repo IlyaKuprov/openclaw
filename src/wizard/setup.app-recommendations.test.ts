@@ -471,8 +471,6 @@ describe("setupAppRecommendations", () => {
   });
 
   it("preselects recommended matches and installs selected plugin and skill", async () => {
-    const acknowledgementId = `sha256:${"a".repeat(64)}`;
-    const changedAcknowledgementId = `sha256:${"b".repeat(64)}`;
     const config: OpenClawConfig = {};
     const prompter = createPrompter(["recommendation:0", "recommendation:1"]);
     const store = storeDeps();
@@ -482,31 +480,12 @@ describe("setupAppRecommendations", () => {
       pluginId: "chat-plugin",
       status: "installed" as const,
     }));
-    const installSkill = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: false as const,
-        error: "review required",
-        version: "1.0.0",
-        installKind: "github" as const,
-        installPolicyWarning: { reason: "Review skill behavior", acknowledgementId },
-      })
-      .mockResolvedValueOnce({
-        ok: false as const,
-        error: "review changed",
-        version: "1.0.0",
-        installKind: "github" as const,
-        installPolicyWarning: {
-          reason: "Review changed skill behavior",
-          acknowledgementId: changedAcknowledgementId,
-        },
-      })
-      .mockResolvedValueOnce({
-        ok: true as const,
-        slug: "chat-skill",
-        version: "1.0.0",
-        targetDir: "/tmp/workspace/skills/chat-skill",
-      });
+    const installSkill = vi.fn(async () => ({
+      ok: true as const,
+      slug: "chat-skill",
+      version: "1.0.0",
+      targetDir: "/tmp/workspace/skills/chat-skill",
+    }));
 
     const outcome = await setupAppRecommendationsWithOutcome({
       config,
@@ -532,22 +511,9 @@ describe("setupAppRecommendations", () => {
       expect.objectContaining({ initialValues: ["recommendation:0"] }),
     );
     expect(ensurePlugin).toHaveBeenCalledOnce();
-    expect(installSkill).toHaveBeenCalledTimes(3);
-    expect(installSkill).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        version: undefined,
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: acknowledgementId,
-      }),
-    );
-    expect(installSkill).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        slug: "@demo-owner/chat-skill",
-        version: undefined,
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: changedAcknowledgementId,
-      }),
+    expect(installSkill).toHaveBeenCalledOnce();
+    expect(installSkill).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: "@demo-owner/chat-skill" }),
     );
     expect(store.writeOffer).toHaveBeenNthCalledWith(
       1,

@@ -10,7 +10,6 @@ import { withTempDir } from "../../infra/install-source-utils.js";
 import { writeJson } from "../../infra/json-files.js";
 import { isImmutableGitCommitRef, parseGitPluginSpec } from "../../plugins/git-install.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
-import type { InstallPolicyWarning } from "../../security/install-policy.js";
 import { resolveUserPath } from "../../utils.js";
 import { parseFrontmatter } from "../loading/frontmatter.js";
 import { installExtractedSkillRoot, validateRequestedSkillSlug } from "./archive-install.js";
@@ -43,7 +42,7 @@ type SkillSourceInstallResult =
       source: "path" | "git";
       git?: SkillSourceOrigin["git"];
     }
-  | { ok: false; error: string; installPolicyWarning?: InstallPolicyWarning };
+  | { ok: false; error: string };
 
 const SKILL_SOURCE_ORIGIN_RELATIVE_PATH = path.join(".openclaw", "source-origin.json");
 const DEFAULT_GIT_TIMEOUT_MS = 120_000;
@@ -201,11 +200,10 @@ async function installLocalSkillDir(params: {
   fallbackLabel: string;
   slug?: string;
   force?: boolean;
-  dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
   timeoutMs?: number;
   logger?: Logger;
   config?: OpenClawConfig;
+  dangerouslyForceUnsafeInstall?: boolean;
   git?: SkillSourceOrigin["git"];
 }): Promise<SkillSourceInstallResult> {
   const slug = await resolveSkillInstallSlug({
@@ -223,7 +221,6 @@ async function installLocalSkillDir(params: {
     policy: {
       config: params.config,
       dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
       installId: params.source,
       origin: {
         type: params.source,
@@ -244,13 +241,7 @@ async function installLocalSkillDir(params: {
     },
   });
   if (!install.ok) {
-    return {
-      ok: false,
-      error: install.error,
-      ...(install.installPolicyWarning
-        ? { installPolicyWarning: install.installPolicyWarning }
-        : {}),
-    };
+    return { ok: false, error: install.error };
   }
 
   await removeClawHubInstallMetadata(install.targetDir);
@@ -278,11 +269,10 @@ async function installGitSkill(params: {
   spec: string;
   slug?: string;
   force?: boolean;
-  dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
   timeoutMs?: number;
   logger?: Logger;
   config?: OpenClawConfig;
+  dangerouslyForceUnsafeInstall?: boolean;
 }): Promise<SkillSourceInstallResult> {
   const parsed = parseGitPluginSpec(params.spec);
   if (!parsed) {
@@ -360,11 +350,10 @@ async function installGitSkill(params: {
       fallbackLabel: path.basename(parsed.label),
       slug: params.slug,
       force: params.force,
-      dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
       timeoutMs: params.timeoutMs,
       logger: params.logger,
       config: params.config,
+      dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
       git,
     });
   });
@@ -375,11 +364,10 @@ async function installPathSkill(params: {
   spec: string;
   slug?: string;
   force?: boolean;
-  dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
   timeoutMs?: number;
   logger?: Logger;
   config?: OpenClawConfig;
+  dangerouslyForceUnsafeInstall?: boolean;
 }): Promise<SkillSourceInstallResult> {
   const sourceDir = resolveUserPath(params.spec);
   let stat;
@@ -399,11 +387,10 @@ async function installPathSkill(params: {
     fallbackLabel: resolveFallbackSlugFromPath(sourceDir),
     slug: params.slug,
     force: params.force,
-    dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
     timeoutMs: params.timeoutMs,
     logger: params.logger,
     config: params.config,
+    dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
   });
 }
 
@@ -423,11 +410,10 @@ export async function installSkillFromSource(params: {
   spec: string;
   slug?: string;
   force?: boolean;
-  dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
   timeoutMs?: number;
   logger?: Logger;
   config?: OpenClawConfig;
+  dangerouslyForceUnsafeInstall?: boolean;
 }): Promise<SkillSourceInstallResult> {
   const spec = params.spec.trim();
   if (spec.toLowerCase().startsWith("git:")) {

@@ -1,23 +1,9 @@
 package ai.openclaw.app.ui
 
-import ai.openclaw.app.GatewayClawHubAcknowledgementKind
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SkillsSettingsScreenTest {
-  @Test
-  fun installPolicyWarningShowsItsReasonBeforeAcknowledgement() {
-    val notice =
-      clawHubNoticeContent(
-        rawText = "Review shell execution\n• [WARN · shell] Runs a shell",
-        acknowledgementKind = GatewayClawHubAcknowledgementKind.INSTALL_POLICY,
-        clawHubRiskSummary = "ClawHub release verification",
-      )
-
-    assertEquals("Review shell execution", notice.summary)
-    assertEquals("• [WARN · shell] Runs a shell", notice.details)
-  }
-
   @Test
   fun missingItemCopyHandlesZeroOneAndMany() {
     assertEquals("No missing items", skillMissingItemsText(0))

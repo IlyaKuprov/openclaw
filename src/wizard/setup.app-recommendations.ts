@@ -32,7 +32,6 @@ import {
   type SetupAppScanPhase,
 } from "../system-agent/setup-app-recommendations.js";
 import { t } from "./i18n/index.js";
-import { confirmInstallPolicyWarning } from "./install-policy-prompt.js";
 import type { WizardPrompter } from "./prompts.js";
 
 const SKIP_VALUE = "__skip__";
@@ -320,47 +319,19 @@ export async function setupAppRecommendations(params: {
           skillRef: match.candidate.id,
         });
         if (!alreadyInstalled) {
-          const clawHubRisk = { acknowledged: false };
-          const installRecommendedSkill = (
-            dangerouslyForceUnsafeInstall?: boolean,
-            installPolicyAcknowledgementId?: string,
-            acknowledgeClawHubRisk?: boolean,
-            version?: string,
-          ) =>
-            installSkill({
-              workspaceDir: params.workspaceDir,
-              slug: match.candidate.id,
-              version,
-              config: next,
-              dangerouslyForceUnsafeInstall,
-              installPolicyAcknowledgementId,
-              acknowledgeClawHubRisk,
-              onClawHubRisk: async () =>
-                (clawHubRisk.acknowledged = await params.prompter.confirm({
-                  message: t("wizard.appRecommendations.skillTrust", {
-                    name: match.candidate.displayName,
-                  }),
-                  initialValue: false,
-                })),
-              logger: { warn: (message) => params.runtime.error(message) },
-            });
-          let result = await installRecommendedSkill();
-          while (
-            !result.ok &&
-            result.installPolicyWarning &&
-            (await confirmInstallPolicyWarning(
-              params.prompter,
-              match.candidate.displayName,
-              result.installPolicyWarning,
-            ))
-          ) {
-            result = await installRecommendedSkill(
-              true,
-              result.installPolicyWarning.acknowledgementId,
-              clawHubRisk.acknowledged,
-              result.installKind === "github" ? undefined : result.version,
-            );
-          }
+          const result = await installSkill({
+            workspaceDir: params.workspaceDir,
+            slug: match.candidate.id,
+            config: next,
+            onClawHubRisk: async () =>
+              await params.prompter.confirm({
+                message: t("wizard.appRecommendations.skillTrust", {
+                  name: match.candidate.displayName,
+                }),
+                initialValue: false,
+              }),
+            logger: { warn: (message) => params.runtime.error(message) },
+          });
           if (!result.ok) {
             throw new Error(result.error);
           }

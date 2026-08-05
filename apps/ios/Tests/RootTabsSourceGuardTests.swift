@@ -486,28 +486,6 @@ struct RootTabsSourceGuardTests {
         #expect(skillsSource.contains("distinguishPreDispatchRouteChange: true"))
     }
 
-    @Test func `agent skills require acknowledgement before retrying policy warnings`() throws {
-        let source = try String(contentsOf: Self.agentProTabSourceURL(), encoding: .utf8)
-        let skillsSource = try String(contentsOf: Self.agentProTabSkillsSourceURL(), encoding: .utf8)
-
-        #expect(source.contains("Review install warning"))
-        #expect(source.contains("Install anyway"))
-        #expect(skillsSource.contains("SkillManagementContract.installPolicyWarning"))
-        #expect(skillsSource.contains("installPolicyAcknowledgementId: review.acknowledgementId"))
-        #expect(skillsSource.contains("acknowledgeInstallPolicyWarning:"))
-        #expect(skillsSource.contains("version: result.version"))
-        #expect(skillsSource.contains("warning.version ?? result.version"))
-        #expect(skillsSource.contains("version: reviewedVersion"))
-        #expect(source.contains("let route: GatewayNodeSessionRoute"))
-        #expect(skillsSource.contains("route: review.route"))
-        #expect(skillsSource.contains("ifCurrentRoute: route"))
-        #expect(skillsSource.contains("distinguishPreDispatchRouteChange: route != nil"))
-        #expect(skillsSource.contains("SkillMutationError.gatewayChanged.localizedDescription"))
-        #expect(skillsSource.contains("method: \"skills.status\""))
-        #expect(skillsSource.contains("SkillManagementContract.installed"))
-        #expect(skillsSource.contains("Install result unknown. Refresh Skills before retrying."))
-    }
-
     @Test func `routed headers use shared adaptive layout`() throws {
         let componentsSource = try String(contentsOf: Self.proComponentsSourceURL(), encoding: .utf8)
         let featureChromeSource = try String(contentsOf: Self.iPadSidebarScreenChromeSourceURL(), encoding: .utf8)
@@ -1681,13 +1659,6 @@ extension RootTabsSourceGuardTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/Design/AgentProTab.swift")
-    }
-
-    private static func agentProTabSkillsSourceURL() -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/Design/AgentProTab+Skills.swift")
     }
 
     private static func agentProTabOverviewSourceURL() -> URL {

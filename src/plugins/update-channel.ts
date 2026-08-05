@@ -1,7 +1,6 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readInstalledPackageVersion } from "../infra/package-update-utils.js";
 import type { UpdateChannel } from "../infra/update-channels.js";
-import type { InstallPolicyWarning } from "../security/install-policy.js";
 import { resolveBundledPluginSources } from "./bundled-sources.js";
 import { buildClawHubPluginInstallRecordFields } from "./clawhub-install-records.js";
 import { installPluginFromClawHub, type ClawHubRiskAcknowledgementRequest } from "./clawhub.js";
@@ -44,7 +43,6 @@ type PluginChannelSyncSummary = {
   switchedToNpm: string[];
   warnings: string[];
   errors: string[];
-  installPolicyWarnings: Array<{ error: string; warning: InstallPolicyWarning }>;
 };
 
 type PluginChannelSyncResult = {
@@ -61,8 +59,6 @@ export async function syncPluginsForUpdateChannel(params: {
   env?: NodeJS.ProcessEnv;
   logger?: PluginUpdateLogger;
   externalizedBundledPluginBridges?: readonly ExternalizedBundledPluginBridge[];
-  dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
   acknowledgeClawHubRisk?: boolean;
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
 }): Promise<PluginChannelSyncResult> {
@@ -74,7 +70,6 @@ export async function syncPluginsForUpdateChannel(params: {
     switchedToNpm: [],
     warnings: [],
     errors: [],
-    installPolicyWarnings: [],
   };
   const bundled = resolveBundledPluginSources({
     workspaceDir: params.workspaceDir,
@@ -211,8 +206,6 @@ export async function syncPluginsForUpdateChannel(params: {
           config: params.config,
           ...(bridge.clawhubUrl ? { baseUrl: bridge.clawhubUrl } : {}),
           mode: "update",
-          ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
-          installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
           expectedPluginId: targetPluginId,
           ...clawHubRiskAcknowledgementOptions,
           logger,
@@ -227,10 +220,6 @@ export async function syncPluginsForUpdateChannel(params: {
             spec: effectiveNpmSpec,
             config: params.config,
             mode: "update",
-            ...(params.dangerouslyForceUnsafeInstall
-              ? { dangerouslyForceUnsafeInstall: true }
-              : {}),
-            installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
             expectedPluginId: targetPluginId,
             trustedSourceLinkedOfficialInstall,
             logger,
@@ -241,8 +230,6 @@ export async function syncPluginsForUpdateChannel(params: {
           spec: effectiveNpmSpec,
           config: params.config,
           mode: "update",
-          ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
-          installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
           expectedPluginId: targetPluginId,
           trustedSourceLinkedOfficialInstall,
           logger,
@@ -275,12 +262,6 @@ export async function syncPluginsForUpdateChannel(params: {
                 result,
               });
         summary.errors.push(message);
-        if ("installPolicyWarning" in result && result.installPolicyWarning) {
-          summary.installPolicyWarnings.push({
-            error: message,
-            warning: result.installPolicyWarning,
-          });
-        }
         logger.error?.(message);
         continue;
       }

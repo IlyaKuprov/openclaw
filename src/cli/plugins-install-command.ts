@@ -14,7 +14,6 @@ import { markClawPackageIndependentlyOwned } from "../state/claw-package-adoptio
 import { withClawPackageLifecycleLease } from "../state/claw-package-lifecycle-lease.js";
 import { shortenHomePath } from "../utils.js";
 import { resolveClawHubRiskAcknowledgementCliOptions } from "./clawhub-risk-acknowledgement.js";
-import { appendInstallPolicyAcknowledgementFlag } from "./install-policy-acknowledgement.js";
 import {
   confirmNonClawHubInstall,
   type NonClawHubInstallSourceClass,
@@ -107,9 +106,7 @@ async function runPluginInstallCommandUnlocked(
     });
     if (!result.ok) {
       if (!isClawHubBlockedCliFailure(result)) {
-        runtime.error(
-          appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
-        );
+        runtime.error(result.error);
       }
       return runtime.exit(1);
     }
@@ -178,12 +175,7 @@ async function runPluginInstallCommandUnlocked(
           if (hookFallback.ok) {
             return;
           }
-          runtime.error(
-            appendInstallPolicyAcknowledgementFlag(
-              hookFallback.error,
-              hookFallback.installPolicyWarning,
-            ),
-          );
+          runtime.error(hookFallback.error);
           return runtime.exit(1);
         }
         if (snapshot.pluginMutation.mode === "blocked") {
@@ -204,9 +196,7 @@ async function runPluginInstallCommandUnlocked(
         return;
       }
       if (isTerminalPluginInstallFailure(result.code)) {
-        runtime.error(
-          appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
-        );
+        runtime.error(result.error);
         return runtime.exit(1);
       }
       const hookFallback = await tryInstallHookPackFromLocalPath({
@@ -220,12 +210,7 @@ async function runPluginInstallCommandUnlocked(
       if (hookFallback.ok) {
         return;
       }
-      runtime.error(
-        appendInstallPolicyAcknowledgementFlag(
-          formatPluginInstallWithHookFallbackError(result.error, hookFallback),
-          hookFallback.installPolicyWarning,
-        ),
-      );
+      runtime.error(formatPluginInstallWithHookFallbackError(result.error, hookFallback));
       return runtime.exit(1);
     }
 
@@ -240,9 +225,7 @@ async function runPluginInstallCommandUnlocked(
         runtime,
       });
       if (!result.ok) {
-        runtime.error(
-          appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
-        );
+        runtime.error(result.error);
         return runtime.exit(1);
       }
       return;
@@ -265,9 +248,7 @@ async function runPluginInstallCommandUnlocked(
         },
       );
       if (!result.ok) {
-        runtime.error(
-          appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
-        );
+        runtime.error(result.error);
         return runtime.exit(1);
       }
       return;
@@ -320,13 +301,8 @@ async function runPluginInstallCommandUnlocked(
           runtime,
         });
         if (!result.ok) {
-          if (result.installPolicyWarning) {
-            params.onInstallPolicyWarning?.(result.installPolicyWarning);
-          }
           if (!isClawHubBlockedCliFailure(result)) {
-            runtime.error(
-              appendInstallPolicyAcknowledgementFlag(result.error, result.installPolicyWarning),
-            );
+            runtime.error(result.error);
           }
           return runtime.exit(1);
         }

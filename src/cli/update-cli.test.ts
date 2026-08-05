@@ -1012,14 +1012,7 @@ describe("update-cli", () => {
   const pluginSyncResult = (
     config: OpenClawConfig,
     changed = false,
-    overrides: {
-      warnings?: string[];
-      errors?: string[];
-      installPolicyWarnings?: Array<{
-        error: string;
-        warning: { reason: string };
-      }>;
-    } = {},
+    overrides: { warnings?: string[]; errors?: string[] } = {},
   ) => ({
     changed,
     config,
@@ -1029,7 +1022,6 @@ describe("update-cli", () => {
       switchedToNpm: [],
       warnings: [],
       errors: [],
-      installPolicyWarnings: [],
       ...overrides,
     },
   });
@@ -1852,7 +1844,7 @@ describe("update-cli", () => {
     expectNoSideEffects(replaceConfigFile, syncPluginsForUpdateChannel, updateNpmInstalledPlugins);
   });
 
-  it("carries security acknowledgements into post-core resume", async () => {
+  it("carries ClawHub risk acknowledgement into post-core resume", async () => {
     const { entrypoints } = setupUpdatedRootRefresh({
       gatewayUpdateImpl: async (root) =>
         makeOkUpdateResult({
@@ -1868,7 +1860,6 @@ describe("update-cli", () => {
       yes: true,
       restart: false,
       acknowledgeClawHubRisk: true,
-      dangerouslyForceUnsafeInstall: true,
     });
 
     expect(spawnCall()?.[1]).toEqual([
@@ -1877,7 +1868,6 @@ describe("update-cli", () => {
       "--no-restart",
       "--yes",
       "--acknowledge-clawhub-risk",
-      "--dangerously-force-unsafe-install",
     ]);
   });
 
@@ -2547,27 +2537,6 @@ describe("update-cli", () => {
     expect(jsonOutput?.postUpdate?.plugins?.sync.errors).toEqual([clawHubSyncRiskError]);
   });
 
-  it("preserves externalized-plugin policy warnings in post-core json and guidance", async () => {
-    const error = "Failed to update legacy-chat: install policy warning requires acknowledgement";
-    syncPluginsForUpdateChannel.mockResolvedValueOnce(
-      pluginSyncResult(baseConfig, false, {
-        errors: [error],
-        installPolicyWarnings: [{ error, warning: { reason: "Review package behavior" } }],
-      }),
-    );
-    vi.mocked(defaultRuntime.writeJson).mockClear();
-
-    await updateCommand({ json: true, restart: false });
-
-    const jsonOutput = lastWriteJsonCall() as UpdateRunResult | undefined;
-    expect(jsonOutput?.postUpdate?.plugins?.sync.installPolicyWarnings).toEqual([
-      { error, warning: { reason: "Review package behavior" } },
-    ]);
-    expect(jsonOutput?.postUpdate?.plugins?.warnings?.[0]?.reason).toContain(
-      "--dangerously-force-unsafe-install",
-    );
-  });
-
   it("does not print duplicate failed ClawHub sync trust warnings in human post-core output", async () => {
     const trustWarning = clawHubSuspiciousPayloadWarning;
     syncPluginsForUpdateChannel.mockImplementationOnce(
@@ -2719,7 +2688,6 @@ describe("update-cli", () => {
           status: "skipped",
           code: CLAWHUB_INSTALL_ERROR_CODE.CLAWHUB_RISK_ACKNOWLEDGEMENT_REQUIRED,
           warning: trustWarning,
-          installPolicyWarning: { reason: "Review package behavior" },
           message:
             "Skipped demo ClawHub update: Update cancelled; rerun with --acknowledge-clawhub-risk to continue after reviewing the warning. Existing installed plugin left unchanged.",
         },
@@ -2735,7 +2703,6 @@ describe("update-cli", () => {
     expect(pluginWarning(jsonOutput)?.reason).toContain("Security scan:     suspicious");
     expect(pluginWarning(jsonOutput)?.reason).toContain("suspicious payload strings");
     expect(pluginWarning(jsonOutput)?.reason).toContain("--acknowledge-clawhub-risk");
-    expect(pluginWarning(jsonOutput)?.reason).toContain("--dangerously-force-unsafe-install");
     expect(pluginWarning(jsonOutput)?.guidance).toEqual([
       "Run openclaw update repair to retry post-update plugin repair.",
       "Run openclaw plugins inspect demo --runtime --json for details.",
@@ -3281,7 +3248,7 @@ describe("update-cli", () => {
     expect(seenJson).toBe(true);
   });
 
-  it("parses update security acknowledgement options", async () => {
+  it("parses update --acknowledge-clawhub-risk as the update command option", async () => {
     const tempDir = createCaseDir("openclaw-update");
     mockPackageInstallStatus(tempDir);
     const program = new Command();
@@ -3298,36 +3265,10 @@ describe("update-cli", () => {
       "--yes",
       "--no-restart",
       "--acknowledge-clawhub-risk",
-      "--dangerously-force-unsafe-install",
     ]);
 
     expect(syncPluginCall()?.acknowledgeClawHubRisk).toBe(true);
-    expect(syncPluginCall()?.dangerouslyForceUnsafeInstall).toBe(true);
     expect(npmPluginUpdateCall()?.acknowledgeClawHubRisk).toBe(true);
-    expect(npmPluginUpdateCall()?.dangerouslyForceUnsafeInstall).toBe(true);
-  });
-
-  it("inherits an exact install-policy acknowledgement into update repair", async () => {
-    const tempDir = createCaseDir("openclaw-update-repair-ack");
-    mockPackageInstallStatus(tempDir);
-    const acknowledgementId = `sha256:${"a".repeat(64)}`;
-    const program = new Command();
-    program.name("openclaw");
-    program.exitOverride();
-    registerUpdateCli(program);
-
-    await program.parseAsync([
-      "node",
-      "openclaw",
-      "update",
-      "--dangerously-force-unsafe-install",
-      acknowledgementId,
-      "repair",
-      "--json",
-    ]);
-
-    expect(syncPluginCall()?.installPolicyAcknowledgementId).toBe(acknowledgementId);
-    expect(npmPluginUpdateCall()?.installPolicyAcknowledgementId).toBe(acknowledgementId);
   });
 
   it.each([
@@ -6694,7 +6635,6 @@ describe("update-cli", () => {
           timeout: "9",
           restart: false,
           acknowledgeClawHubRisk: true,
-          dangerouslyForceUnsafeInstall: true,
         });
 
         expect(doctorEnv?.OPENCLAW_UPDATE_IN_PROGRESS).toBe("1");
@@ -6712,7 +6652,6 @@ describe("update-cli", () => {
         });
         expect(syncPluginCall()?.channel).toBe("stable");
         expect(syncPluginCall()?.acknowledgeClawHubRisk).toBe(true);
-        expect(syncPluginCall()?.dangerouslyForceUnsafeInstall).toBe(true);
         expect(lastNpmPluginUpdateCall()?.timeoutMs).toBe(9_000);
         expect(
           vi
@@ -6720,10 +6659,6 @@ describe("update-cli", () => {
             .mock.calls.some(([options]) => options?.skipPluginValidation === true),
         ).toBe(true);
         expect(lastNpmPluginUpdateCall()?.acknowledgeClawHubRisk).toBe(true);
-        expect(lastNpmPluginUpdateCall()?.dangerouslyForceUnsafeInstall).toBe(true);
-        expect(runPostCorePluginConvergenceSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ dangerouslyForceUnsafeInstall: true }),
-        );
         const output = lastWriteJsonCall() as
           | {
               status?: string;

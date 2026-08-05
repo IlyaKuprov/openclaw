@@ -184,7 +184,6 @@ data class GatewayErrorDetails(
   val clawhubTrustCode: String? = null,
   val clawhubWarning: String? = null,
   val clawhubVersion: String? = null,
-  val installPolicyWarning: JsonObject? = null,
   val missingScope: String? = null,
   val requiredScopes: List<String> = emptyList(),
 )
@@ -1666,7 +1665,6 @@ class GatewaySession(
                 clawhubTrustCode = it["clawhubTrustCode"].asStringOrNull(),
                 clawhubWarning = it["warning"].asStringOrNull(),
                 clawhubVersion = it["version"].asStringOrNull(),
-                installPolicyWarning = it["installPolicyWarning"].asObjectOrNull(),
                 missingScope = it["missingScope"].asStringOrNull(),
                 requiredScopes =
                   it["requiredScopes"]

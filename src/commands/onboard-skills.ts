@@ -19,7 +19,6 @@ import {
   type SkillInstallSkipReason,
 } from "../skills/lifecycle/install.js";
 import { t } from "../wizard/i18n/index.js";
-import { confirmInstallPolicyWarning } from "../wizard/install-policy-prompt.js";
 import type { WizardPrompter } from "../wizard/prompts.js";
 import { detectBinary } from "./onboard-helpers.js";
 import { isNodeManagerChoice, type NodeManagerChoice } from "./onboard-types.js";
@@ -297,30 +296,13 @@ export async function setupSkills(
       // Onboarding installs the primary recipe only; alternative recipes remain
       // visible through `openclaw skills list --verbose`.
       await options.beforePersistentEffect?.();
-      let spin = prompter.progress(t("wizard.skills.installing", { name: target.name }));
-      const runInstall = (
-        dangerouslyForceUnsafeInstall?: boolean,
-        installPolicyAcknowledgementId?: string,
-      ) =>
-        installSkill({
-          workspaceDir,
-          skillName: target.name,
-          installId,
-          config: next,
-          dangerouslyForceUnsafeInstall,
-          installPolicyAcknowledgementId,
-        });
-      let result = await runInstall();
-      while (result.installPolicyWarning) {
-        spin.stop("Review install policy warning");
-        if (
-          !(await confirmInstallPolicyWarning(prompter, target.name, result.installPolicyWarning))
-        ) {
-          break;
-        }
-        spin = prompter.progress(t("wizard.skills.installing", { name: target.name }));
-        result = await runInstall(true, result.installPolicyWarning.acknowledgementId);
-      }
+      const spin = prompter.progress(t("wizard.skills.installing", { name: target.name }));
+      const result = await installSkill({
+        workspaceDir,
+        skillName: target.name,
+        installId,
+        config: next,
+      });
       const warnings = result.warnings ?? [];
       if (result.ok) {
         spin.stop(

@@ -22,18 +22,9 @@ data class GatewayClawHubSkillSearchState(
   val installingSlugs: Set<String> = emptySet(),
   val acknowledgeSlug: String? = null,
   val acknowledgeVersion: String? = null,
-  val acknowledgementKind: GatewayClawHubAcknowledgementKind? = null,
-  val acknowledgeClawHubRisk: Boolean = false,
-  val dangerouslyForceUnsafeInstall: Boolean = false,
-  val installPolicyAcknowledgementId: String? = null,
   val errorText: String? = null,
   val messageText: String? = null,
 )
-
-enum class GatewayClawHubAcknowledgementKind {
-  CLAWHUB_RISK,
-  INSTALL_POLICY,
-}
 
 data class GatewayClawHubSkillSummary(
   val slug: String,
@@ -150,17 +141,12 @@ internal fun clawHubInstallParams(
   slug: String,
   version: String?,
   acknowledgeRisk: Boolean,
-  dangerouslyForceUnsafeInstall: Boolean = false,
-  installPolicyAcknowledgementId: String? = null,
 ): String =
   buildJsonObject {
     put("source", JsonPrimitive("clawhub"))
     put("slug", JsonPrimitive(slug))
     version?.trim()?.takeIf(String::isNotEmpty)?.let { put("version", JsonPrimitive(it)) }
     if (acknowledgeRisk) put("acknowledgeClawHubRisk", JsonPrimitive(true))
-    installPolicyAcknowledgementId?.let {
-      put("acknowledgeInstallPolicyWarning", JsonPrimitive(it))
-    }
     put("timeoutMs", JsonPrimitive(120_000))
   }.toString()
 
@@ -177,30 +163,6 @@ internal fun formatClawHubInstallMessage(
   message: String,
   warning: String?,
 ): String = if (warning.isNullOrBlank()) message else "$message\n\n$warning"
-
-internal data class InstallPolicyWarningPresentation(
-  val message: String,
-  val acknowledgementId: String?,
-)
-
-internal fun installPolicyWarning(error: GatewaySession.ErrorShape): InstallPolicyWarningPresentation? {
-  val warning = error.details?.installPolicyWarning ?: return null
-  val reason = warning.string("reason") ?: return null
-  val findings =
-    (warning["findings"] as? JsonArray).orEmpty().mapNotNull { item ->
-      val finding = item as? JsonObject ?: return@mapNotNull null
-      val rule = finding.string("ruleId") ?: return@mapNotNull null
-      val severity = finding.string("severity") ?: return@mapNotNull null
-      val message = finding.string("message") ?: return@mapNotNull null
-      val location = finding.string("file")?.let { " · $it${finding.string("line")?.let { line -> ":$line" }.orEmpty()}" }.orEmpty()
-      val evidence = finding.string("evidence")?.let { " — $it" }.orEmpty()
-      "• [${severity.uppercase()} · $rule$location] $message$evidence"
-    }
-  return InstallPolicyWarningPresentation(
-    message = (listOf(reason) + findings).joinToString("\n"),
-    acknowledgementId = warning.string("acknowledgementId"),
-  )
-}
 
 internal fun isClawHubSkillInstalled(
   skills: List<GatewaySkillSummary>,

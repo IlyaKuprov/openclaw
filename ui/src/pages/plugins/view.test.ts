@@ -10,8 +10,6 @@ import { pluginRowKey, renderPlugins } from "./view.ts";
 
 type PluginsViewProps = Parameters<typeof renderPlugins>[0];
 
-const INSTALL_POLICY_ACKNOWLEDGEMENT_ID = `sha256:${"a".repeat(64)}`;
-
 function createPlugin(overrides: Partial<PluginCatalogItem> = {}): PluginCatalogItem {
   return {
     id: "workboard",
@@ -580,7 +578,6 @@ describe("renderPlugins", () => {
     expect(onInstall).toHaveBeenCalledWith(clawHubKey("@openclaw/calendar-plus"), {
       source: "clawhub",
       packageName: "@openclaw/calendar-plus",
-      version: "2.0.0",
     });
   });
 
@@ -618,7 +615,7 @@ describe("renderPlugins", () => {
     expect(onSetEnabled).not.toHaveBeenCalled();
   });
 
-  it("renders row-local policy acknowledgement and busy state", () => {
+  it("renders row-local risk acknowledgement and busy state", () => {
     const packageName = "@openclaw/calendar-plus";
     const key = clawHubKey(packageName);
     const onInstall = vi.fn();
@@ -643,12 +640,7 @@ describe("renderPlugins", () => {
           [key]: {
             kind: "error",
             text: "Review required.",
-            acknowledge: {
-              source: "clawhub",
-              packageName,
-              version: "2.0.0",
-              acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-            },
+            acknowledge: { packageName, version: "2.0.0" },
           },
         },
         onInstall,
@@ -663,7 +655,7 @@ describe("renderPlugins", () => {
       source: "clawhub",
       packageName,
       version: "2.0.0",
-      acknowledgeInstallPolicyWarning: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
+      acknowledgeClawHubRisk: true,
     });
   });
 

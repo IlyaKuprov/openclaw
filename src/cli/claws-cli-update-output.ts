@@ -1,7 +1,6 @@
 import type { ClawUpdatePlan } from "../claws/update-plan.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { logClawInstallPolicyWarnings } from "./claws-cli-install-policy-output.js";
 
 export function logClawUpdatePlanSummary(plan: ClawUpdatePlan, runtime: RuntimeEnv): void {
   runtime.log(`Agent: ${plan.agentId}`);
@@ -13,18 +12,6 @@ export function logClawUpdatePlanSummary(plan: ClawUpdatePlan, runtime: RuntimeE
     `Capability changes: ${plan.summary.capabilityChanges}; escalations requiring explicit review: ${plan.summary.capabilityEscalations}`,
   );
   runtime.log(`Plan integrity: ${plan.planIntegrity}`);
-  logClawInstallPolicyWarnings(
-    plan.actions.flatMap((action) =>
-      action.kind === "package" &&
-      action.action !== "unchanged" &&
-      action.action !== "remove" &&
-      action.action !== "release" &&
-      action.installPolicyWarning
-        ? [{ packageId: action.id, warning: action.installPolicyWarning }]
-        : [],
-    ),
-    runtime,
-  );
   if (plan.summary.capabilityEscalations > 0) {
     runtime.log(
       "Capability consent: the exact plan-integrity token binds every ! change disclosed below.",

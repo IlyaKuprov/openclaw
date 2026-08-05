@@ -2,11 +2,6 @@
 import type { Command } from "commander";
 import { formatDocsLink } from "../../packages/terminal-core/src/links.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
-import {
-  preserveBareInstallPolicyAcknowledgementFlag,
-  resolveInstallPolicyAcknowledgementOption,
-  type InstallPolicyAcknowledgementOption,
-} from "./install-policy-acknowledgement.js";
 import type { PluginInspectOptions } from "./plugins-inspect-command.js";
 import type { PluginsListOptions } from "./plugins-list-command.js";
 import { parseStrictPositiveIntOption } from "./program/helpers.js";
@@ -16,7 +11,7 @@ type PluginUpdateOptions = {
   all?: boolean;
   acknowledgeClawhubRisk?: boolean;
   dryRun?: boolean;
-  dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
+  dangerouslyForceUnsafeInstall?: boolean;
 };
 
 type CommanderClawHubRiskOptions = Record<string, unknown> & {
@@ -98,7 +93,6 @@ const loadPluginsAuthoringCommands = createModuleLoader(
 );
 
 export function registerPluginsCli(program: Command) {
-  preserveBareInstallPolicyAcknowledgementFlag(program);
   const plugins = program
     .command("plugins")
     .description("Manage OpenClaw plugins and extensions")
@@ -191,7 +185,7 @@ export function registerPluginsCli(program: Command) {
     )
     .option("--pin", "Record npm installs as exact resolved <name>@<version>", false)
     .option(
-      "--dangerously-force-unsafe-install [acknowledgement-id]",
+      "--dangerously-force-unsafe-install",
       "Acknowledge security.installPolicy warnings; blocks and failures remain terminal",
       false,
     )
@@ -208,7 +202,7 @@ export function registerPluginsCli(program: Command) {
       async (
         raw: string,
         opts: CommanderClawHubRiskOptions & {
-          dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
+          dangerouslyForceUnsafeInstall?: boolean;
           force?: boolean;
           link?: boolean;
           pin?: boolean;
@@ -216,10 +210,8 @@ export function registerPluginsCli(program: Command) {
         },
       ) => {
         const { runPluginsInstallAction } = await loadPluginsRuntime();
-        const { dangerouslyForceUnsafeInstall, ...installOptions } = opts;
         await runPluginsInstallAction(raw, {
-          ...installOptions,
-          ...resolveInstallPolicyAcknowledgementOption(dangerouslyForceUnsafeInstall),
+          ...opts,
           acknowledgeClawHubRisk: normalizeCommanderClawHubRiskOption(opts),
         });
       },
@@ -232,7 +224,7 @@ export function registerPluginsCli(program: Command) {
     .option("--all", "Update all tracked plugins and hook packs", false)
     .option("--dry-run", "Show what would change without writing", false)
     .option(
-      "--dangerously-force-unsafe-install [acknowledgement-id]",
+      "--dangerously-force-unsafe-install",
       "Acknowledge security.installPolicy warnings; blocks and failures remain terminal",
       false,
     )
@@ -243,12 +235,10 @@ export function registerPluginsCli(program: Command) {
     )
     .action(async (id: string | undefined, opts: PluginUpdateOptions) => {
       const { runPluginUpdateCommand } = await import("./plugins-update-command.js");
-      const { dangerouslyForceUnsafeInstall, ...updateOptions } = opts;
       await runPluginUpdateCommand({
         id,
         opts: {
-          ...updateOptions,
-          ...resolveInstallPolicyAcknowledgementOption(dangerouslyForceUnsafeInstall),
+          ...opts,
           acknowledgeClawHubRisk: normalizeCommanderClawHubRiskOption(opts),
         },
       });

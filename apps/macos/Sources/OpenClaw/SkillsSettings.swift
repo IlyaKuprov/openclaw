@@ -60,30 +60,6 @@ struct SkillsSettings: View {
                 }
             }
         }
-        .alert(
-            "Review install warning",
-            isPresented: Binding(
-                get: { self.model.pendingInstallPolicyWarning != nil },
-                set: { if !$0 { self.model.pendingInstallPolicyWarning = nil } }))
-        {
-            Button("Cancel", role: .cancel) {
-                self.model.pendingInstallPolicyWarning = nil
-            }
-            Button("Acknowledge and install", role: .destructive) {
-                guard let pending = self.model.pendingInstallPolicyWarning else { return }
-                self.model.pendingInstallPolicyWarning = nil
-                Task {
-                    await self.model.install(
-                        skill: pending.skill,
-                        option: pending.option,
-                        target: pending.target,
-                        installPolicyAcknowledgementId: pending.warning.acknowledgementId,
-                        route: pending.route)
-                }
-            }
-        } message: {
-            Text(self.model.pendingInstallPolicyWarning?.warning.message ?? "")
-        }
     }
 
     private var sectionPicker: some View {
@@ -307,14 +283,6 @@ private enum SkillsFilter: String, CaseIterable, Identifiable {
 private enum InstallTarget: String, CaseIterable {
     case gateway
     case local
-}
-
-private struct PendingSkillInstallPolicyWarning {
-    let skill: SkillStatus
-    let option: SkillInstallOption
-    let target: InstallTarget
-    let warning: SkillInstallPolicyWarning
-    let route: GatewayConnection.Route
 }
 
 enum SkillRequirementPresentation {
@@ -780,7 +748,6 @@ final class SkillsSettingsModel {
     var isLoading = false
     var error: String?
     var statusMessage: String?
-    fileprivate var pendingInstallPolicyWarning: PendingSkillInstallPolicyWarning?
     private var hasLoaded = false
     private var hasAttemptedLoad = false
     private var busySkills: Set<String> = []
@@ -874,46 +841,18 @@ final class SkillsSettingsModel {
         self.error = nil
     }
 
-    fileprivate func install(
-        skill: SkillStatus,
-        option: SkillInstallOption,
-        target: InstallTarget,
-        installPolicyAcknowledgementId: String? = nil,
-        route requestedRoute: GatewayConnection.Route? = nil) async
-    {
+    fileprivate func install(skill: SkillStatus, option: SkillInstallOption, target: InstallTarget) async {
         await self.withBusy(skill.skillKey) {
-            var attemptedRoute: GatewayConnection.Route?
             do {
-                if requestedRoute == nil, target == .local, AppStateStore.shared.connectionMode != .local {
+                if target == .local, AppStateStore.shared.connectionMode != .local {
                     AppStateStore.shared.connectionMode = .local
                     self.statusMessage = "Switched to Local mode to install on this Mac"
                 }
-                var route = requestedRoute
-                if route == nil { route = await GatewayConnection.shared.captureRoute() }
-                guard let route else {
-                    self.statusMessage = "Gateway unavailable; install not attempted."
-                    return
-                }
-                attemptedRoute = route
                 let result = try await GatewayConnection.shared.skillsInstall(
                     name: skill.name,
                     installId: option.id,
-                    installPolicyAcknowledgementId: installPolicyAcknowledgementId,
-                    timeoutMs: 300_000,
-                    on: route)
+                    timeoutMs: 300_000)
                 self.statusMessage = result.message
-            } catch let error as GatewayResponseError {
-                if let warning = SkillManagementContract.installPolicyWarning(from: error), let attemptedRoute {
-                    self.pendingInstallPolicyWarning = PendingSkillInstallPolicyWarning(
-                        skill: skill,
-                        option: option,
-                        target: target,
-                        warning: warning,
-                        route: attemptedRoute)
-                    self.statusMessage = "Review the install policy warning before continuing."
-                } else {
-                    self.statusMessage = error.localizedDescription
-                }
             } catch {
                 self.statusMessage = error.localizedDescription
             }

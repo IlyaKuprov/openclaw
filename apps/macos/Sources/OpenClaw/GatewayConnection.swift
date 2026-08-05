@@ -1432,16 +1432,20 @@ extension GatewayConnection {
     func skillsInstall(
         name: String,
         installId: String,
-        installPolicyAcknowledgementId: String? = nil,
-        timeoutMs: Int? = nil,
-        on route: Route) async throws -> SkillInstallResult
+        dangerouslyForceUnsafeInstall: Bool? = nil,
+        timeoutMs: Int? = nil) async throws -> SkillInstallResult
     {
-        let params = Self.skillInstallParams(
-            name: name,
-            installId: installId,
-            installPolicyAcknowledgementId: installPolicyAcknowledgementId,
-            timeoutMs: timeoutMs)
-        return try await self.requestDecoded(method: .skillsInstall, params: params, ifCurrentRoute: route)
+        var params: [String: AnyCodable] = [
+            "name": AnyCodable(name),
+            "installId": AnyCodable(installId),
+        ]
+        if let dangerouslyForceUnsafeInstall {
+            params["dangerouslyForceUnsafeInstall"] = AnyCodable(dangerouslyForceUnsafeInstall)
+        }
+        if let timeoutMs {
+            params["timeoutMs"] = AnyCodable(timeoutMs)
+        }
+        return try await self.requestDecoded(method: .skillsInstall, params: params)
     }
 
     func skillsUpdate(

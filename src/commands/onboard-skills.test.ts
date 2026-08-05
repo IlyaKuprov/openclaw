@@ -291,8 +291,6 @@ describe("setupSkills", () => {
   });
 
   it("installs explicitly selected dependencies when Skip for now is also selected", async () => {
-    const acknowledgementId = `sha256:${"a".repeat(64)}`;
-    const changedAcknowledgementId = `sha256:${"b".repeat(64)}`;
     mockMissingBrewStatus([
       createBundledSkill({
         name: "node-helper",
@@ -302,51 +300,13 @@ describe("setupSkills", () => {
         installKind: "node",
       }),
     ]);
-    mocks.installSkill
-      .mockResolvedValueOnce({
-        ok: false,
-        message: "review required",
-        stdout: "",
-        stderr: "",
-        code: null,
-        installPolicyWarning: {
-          reason: "Review dependency installer",
-          acknowledgementId,
-        },
-      })
-      .mockResolvedValueOnce({
-        ok: false,
-        message: "review changed",
-        stdout: "",
-        stderr: "",
-        code: null,
-        installPolicyWarning: {
-          reason: "Review changed dependency installer",
-          acknowledgementId: changedAcknowledgementId,
-        },
-      })
-      .mockResolvedValueOnce({ ok: true, message: "Installed", stdout: "", stderr: "", code: 0 });
 
     const { prompter } = createPrompter({ multiselect: ["__skip__", "node-helper"] });
-    vi.mocked(prompter.confirm).mockResolvedValue(true);
     await setupSkills({} as OpenClawConfig, "/tmp/ws", runtime, prompter);
 
-    expect(mocks.installSkill).toHaveBeenCalledTimes(3);
+    expect(mocks.installSkill).toHaveBeenCalledOnce();
     expect(mocks.installSkill).toHaveBeenCalledWith(
       expect.objectContaining({ skillName: "node-helper", installId: "node" }),
-    );
-    expect(mocks.installSkill).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: acknowledgementId,
-      }),
-    );
-    expect(mocks.installSkill).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: changedAcknowledgementId,
-      }),
     );
   });
 

@@ -532,7 +532,7 @@ methods. Treat this as feature discovery, not a full enumeration of
   <Accordion title="Plugin management">
     - `plugins.list` (`operator.read`) returns the installed plugin inventory plus locally curated official picks, diagnostics, and whether the current install mode allows mutations.
     - `plugins.search` (`operator.read`) searches installable ClawHub code-plugin and bundle-plugin families. Pass non-empty `query` and optional `limit` from 1 to 100.
-    - `plugins.install` (`operator.admin`) installs either an official catalog entry with `{ source: "official", pluginId, acknowledgeInstallPolicyWarning? }` or a ClawHub package with `{ source: "clawhub", packageName, version?, acknowledgeClawHubRisk?, acknowledgeInstallPolicyWarning? }`. ClawHub installs preserve Gateway trust, integrity, and install-policy checks. A policy warning returns `details.installPolicyWarning`; echoing its exact `acknowledgementId` as `acknowledgeInstallPolicyWarning` re-runs policy, while blocks and failures remain terminal. Multi-stage installs return an opaque ordered acknowledgement sequence in the same string field; clients echo the complete value unchanged. Successful installs require a Gateway restart.
+    - `plugins.install` (`operator.admin`) installs either an official catalog entry with `{ source: "official", pluginId }` or a ClawHub package with `{ source: "clawhub", packageName, version?, acknowledgeClawHubRisk? }`. ClawHub installs preserve Gateway trust, integrity, and install-policy checks. Successful installs require a Gateway restart.
     - `plugins.setEnabled` (`operator.admin`) changes one installed plugin's enabled policy with `{ pluginId, enabled }`. The response includes the updated catalog entry, restart metadata, and any slot-selection warnings.
     - `plugins.uninstall` (`operator.admin`) removes one externally installed plugin with `{ pluginId }`: config references, the install record, and managed files. Bundled plugins cannot be uninstalled, only disabled. The response lists the removal actions and always requires a Gateway restart.
 
@@ -950,19 +950,22 @@ context.
   - Uploaded skill archives are zip archives containing a `SKILL.md` root. The
     archive's internal directory name never selects the install target.
 - `skills.install` (`operator.admin`) has three modes:
-  - ClawHub mode: `{ source: "clawhub", slug, version?, force?, acknowledgeInstallPolicyWarning? }` installs a
+  - ClawHub mode: `{ source: "clawhub", slug, version?, force? }` installs a
     skill folder into the default agent workspace `skills/` directory.
-  - Upload mode: `{ source: "upload", uploadId, slug, force?, sha256?, acknowledgeInstallPolicyWarning?, timeoutMs? }`
+  - Upload mode: `{ source: "upload", uploadId, slug, force?, sha256?, timeoutMs? }`
     installs a committed upload into the default agent workspace
     `skills/<slug>` directory. The slug and force value must match the
     original `skills.upload.begin` request. Rejected unless
     `skills.install.allowUploadedArchives` is enabled; the setting does not
     affect ClawHub installs.
-  - Gateway installer mode: `{ name, installId, acknowledgeInstallPolicyWarning?, timeoutMs? }`
-    runs a declared `metadata.openclaw.install` action on the gateway host.
-  - In all three modes, warning errors expose `reason`, `findings`, and an `acknowledgementId` in `details.installPolicyWarning`. Echo that exact ID as `acknowledgeInstallPolicyWarning` to acknowledge the warning and re-run policy; blocks and failures remain terminal. The deprecated Gateway installer field `dangerouslyForceUnsafeInstall` remains accepted but ignored for compatibility. CLI users append the same ID to the existing `--dangerously-force-unsafe-install` flag.
+  - Gateway installer mode: `{ name, installId, timeoutMs? }` runs a declared
+    `metadata.openclaw.install` action on the gateway host. Older clients may
+    still send `dangerouslyForceUnsafeInstall`; this field is deprecated,
+    accepted only for protocol compatibility, and ignored. Use
+    `security.installPolicy` for operator-owned install decisions.
 - `skills.update` (`operator.admin`) has two modes:
-  - ClawHub mode updates one tracked slug or all tracked ClawHub installs in the default agent workspace; echoing the returned warning's exact `acknowledgementId` as `acknowledgeInstallPolicyWarning` uses the same warning re-evaluation rule. Bulk updates return one source-bound warning at a time so each retry acknowledges exactly one staged source.
+  - ClawHub mode updates one tracked slug or all tracked ClawHub installs in
+    the default agent workspace.
   - Config mode patches `skills.entries.<skillKey>` values such as `enabled`,
     `apiKey`, and `env`.
 

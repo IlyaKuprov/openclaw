@@ -1,13 +1,10 @@
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { RunPluginInstallCommandParams } from "../cli/plugins-install-preflight.js";
 import { installClawPackages, preflightClawPackage } from "./packages.js";
 import type { PersistedClawPackageRef } from "./provenance.js";
 import type { ClawAddPlan, ResolvedClawPackage } from "./types.js";
-
-const INSTALL_POLICY_ACKNOWLEDGEMENT_ID = `sha256:${"a".repeat(64)}`;
 
 function plan(
   packages: ResolvedClawPackage[],
@@ -123,41 +120,7 @@ const probePlugin = vi.fn(async ({ spec }: { spec: string }) => {
   };
 });
 
-describe("preflightClawPackage", () => {
-  it("replays a reviewed warning id when preflighting a skill package", async () => {
-    const skillIntegrity = `sha256-${Buffer.from("a".repeat(64), "hex").toString("base64")}`;
-    const preflightSkill = vi.fn().mockResolvedValue({
-      ok: true,
-      action: "install",
-      integrity: skillIntegrity,
-    });
-
-    await preflightClawPackage(
-      {
-        kind: "skill",
-        source: "clawhub",
-        ref: "@owner/triage",
-        version: "1.2.3",
-      },
-      "/tmp/workspace",
-      {
-        config: { security: { installPolicy: { enabled: true } } },
-        mode: "update",
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-        deps: { preflightSkill },
-      },
-    );
-
-    expect(preflightSkill).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mode: "update",
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-      }),
-    );
-  });
-
+describe("preflightClawPackage plugin setup requirements", () => {
   const setup = {
     providers: [
       {
@@ -283,247 +246,9 @@ describe("preflightClawPackage", () => {
       await rm(credentialsDir, { recursive: true, force: true });
     }
   });
-
-  it("preflights dependency-tree policy in disposable storage and carries its warning", async () => {
-    const warning = {
-      reason: "Review dependency behavior",
-      findings: [
-        {
-          ruleId: "dependency-shell",
-          severity: "warn" as const,
-          message: "Dependency runs a shell command",
-        },
-      ],
-    };
-    let disposableExtensionsDir: string | undefined;
-    const policyProbe = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        pluginId: "audit",
-        setup: undefined,
-        clawhub: { integrity },
-      })
-      .mockImplementationOnce(async (params) => {
-        disposableExtensionsDir = params.extensionsDir;
-        expect(params).toMatchObject({
-          mode: "update",
-          expectedPluginId: "audit",
-          expectedIntegrity: expect.stringMatching(/^sha256-/u),
-          dangerouslyForceUnsafeInstall: true,
-          installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-          emitSuccessSecurityEvent: false,
-        });
-        expect(params).not.toHaveProperty("dryRun");
-        await expect(access(join(params.extensionsDir!, "audit"))).resolves.toBeUndefined();
-        return {
-          ok: false as const,
-          code: "security_scan_blocked" as const,
-          error: "dependency-tree warning requires acknowledgement",
-          installPolicyWarning: warning,
-        };
-      });
-
-    await expect(
-      preflightClawPackage(pluginPackage, "/tmp/workspace", {
-        config: {
-          security: {
-            installPolicy: {
-              enabled: true,
-              exec: { source: "exec", command: "/tmp/policy" },
-            },
-          },
-        },
-        mode: "update",
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-        deps: {
-          preflightPlugin: vi.fn().mockResolvedValue({ ok: true, action: "install" }),
-          probePlugin: policyProbe,
-        },
-      }),
-    ).resolves.toMatchObject({ ok: true, installPolicyWarning: warning });
-    expect(policyProbe).toHaveBeenCalledTimes(2);
-    expect(policyProbe.mock.calls[0]?.[0]).toMatchObject({ config: {} });
-    expect(policyProbe.mock.calls[1]?.[0]).toHaveProperty("config.security.installPolicy");
-    expect(disposableExtensionsDir).toBeDefined();
-    await expect(access(disposableExtensionsDir!)).rejects.toThrow();
-  });
-
-  it.each([
-    { enabled: false, targets: undefined },
-    { enabled: true, targets: ["skill" as const] },
-  ])("skips the policy probe when plugin policy is inactive", async (installPolicy) => {
-    const inactivePolicyProbe = vi.fn().mockResolvedValue({
-      ok: true,
-      pluginId: "audit",
-      setup: undefined,
-      clawhub: { integrity },
-    });
-
-    await preflightClawPackage(pluginPackage, "/tmp/workspace", {
-      config: {
-        security: {
-          installPolicy: {
-            ...installPolicy,
-            exec: { source: "exec", command: "/tmp/policy" },
-          },
-        },
-      },
-      deps: {
-        preflightPlugin: vi.fn().mockResolvedValue({ ok: true, action: "install" }),
-        probePlugin: inactivePolicyProbe,
-      },
-    });
-
-    expect(inactivePolicyProbe).toHaveBeenCalledTimes(1);
-  });
-
-  it("retains an acknowledged warning in the rebuilt consent plan", async () => {
-    const warning = {
-      reason: "Review package behavior",
-      acknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-    };
-    const policyProbe = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        pluginId: "audit",
-        setup: undefined,
-        clawhub: { integrity },
-      })
-      .mockImplementationOnce(async (params) => {
-        expect(params.installPolicyAcknowledgementSequence?.presentedId).toBe(
-          INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-        );
-        params.installPolicyAcknowledgementSequence!.matched = true;
-        params.installPolicyAcknowledgementSequence!.matchedWarning = warning;
-        return {
-          ok: true as const,
-          pluginId: "audit",
-          targetDir: params.extensionsDir!,
-          extensions: [],
-          clawhub: { integrity },
-        };
-      });
-
-    await expect(
-      preflightClawPackage(pluginPackage, "/tmp/workspace", {
-        config: {
-          security: {
-            installPolicy: {
-              enabled: true,
-              exec: { source: "exec", command: "/tmp/policy" },
-            },
-          },
-        },
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-        deps: {
-          preflightPlugin: vi.fn().mockResolvedValue({ ok: true, action: "install" }),
-          probePlugin: policyProbe,
-        },
-      }),
-    ).resolves.toMatchObject({ ok: true, installPolicyWarning: warning });
-  });
 });
 
 describe("installClawPackages", () => {
-  it("uses each package's reviewed warning id after aggregate acknowledgement", async () => {
-    const skillIntegrity = `sha256-${Buffer.from("a".repeat(64), "hex").toString("base64")}`;
-    const installSkill = vi.fn().mockImplementation(async (params: { slug: string }) => ({
-      ok: true,
-      slug: params.slug,
-      version: "1.2.3",
-      targetDir: `/tmp/incident-2/skills/${params.slug}`,
-    }));
-    const packages = [
-      {
-        kind: "skill" as const,
-        source: "clawhub" as const,
-        ref: "@owner/first",
-        version: "1.2.3",
-        integrity: skillIntegrity,
-      },
-      {
-        kind: "skill" as const,
-        source: "clawhub" as const,
-        ref: "@owner/second",
-        version: "1.2.3",
-        integrity: skillIntegrity,
-      },
-    ];
-
-    await installClawPackages(plan(packages), {
-      dangerouslyForceUnsafeInstall: true,
-      installPolicyAcknowledgementIds: new Map([
-        ["skill:@owner/first", INSTALL_POLICY_ACKNOWLEDGEMENT_ID],
-        ["skill:@owner/second", `sha256:${"b".repeat(64)}`],
-      ]),
-      deps: {
-        installSkill,
-        preflightSkill: vi
-          .fn()
-          .mockResolvedValue({ ok: true, action: "install", integrity: skillIntegrity }),
-        persistPackageRef: vi.fn((_plan, pkg) => ({ ...pkg, status: "pending" })),
-        completePackageRef,
-        acquirePackageLease,
-      },
-    });
-
-    expect(installSkill.mock.calls.map((call) => call[0].installPolicyAcknowledgementId)).toEqual([
-      INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-      `sha256:${"b".repeat(64)}`,
-    ]);
-  });
-
-  it("preserves a replacement skill warning returned by the final installer", async () => {
-    const skillIntegrity = `sha256-${Buffer.from("a".repeat(64), "hex").toString("base64")}`;
-    const replacementWarning = {
-      reason: "Review replacement warning",
-      acknowledgementId: `sha256:${"b".repeat(64)}`,
-    };
-    const pending = {
-      kind: "skill",
-      ref: "@owner/triage",
-      status: "pending",
-      integrity: skillIntegrity,
-    } as PersistedClawPackageRef;
-
-    await expect(
-      installClawPackages(
-        plan([
-          {
-            kind: "skill",
-            source: "clawhub",
-            ref: "@owner/triage",
-            version: "1.2.3",
-            integrity: skillIntegrity,
-          },
-        ]),
-        {
-          deps: {
-            preflightSkill: vi
-              .fn()
-              .mockResolvedValue({ ok: true, action: "install", integrity: skillIntegrity }),
-            installSkill: vi.fn().mockResolvedValue({
-              ok: false,
-              error: "replacement acknowledgement required",
-              installPolicyWarning: replacementWarning,
-            }),
-            persistPackageRef: vi.fn().mockReturnValue(pending),
-            completePackageRef,
-            acquirePackageLease,
-          },
-        },
-      ),
-    ).rejects.toMatchObject({
-      code: "install_policy_acknowledgement_required",
-      message: "replacement acknowledgement required",
-      installPolicyWarning: replacementWarning,
-    });
-  });
-
   it("installs skill packages into the planned workspace with the resolved digest", async () => {
     const skillIntegrity = `sha256-${Buffer.from("a".repeat(64), "hex").toString("base64")}`;
     const pending = {
@@ -540,7 +265,6 @@ describe("installClawPackages", () => {
     });
     const persistPackageRef = vi.fn().mockReturnValue(pending);
     const onExternalMutation = vi.fn();
-    const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
 
     await installClawPackages(
       plan([
@@ -553,13 +277,6 @@ describe("installClawPackages", () => {
         },
       ]),
       {
-        config: {
-          security: {
-            installPolicy: { exec: { source: "exec", command: "/tmp/policy" } },
-          },
-        },
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
         deps: {
           installSkill,
           preflightSkill: vi
@@ -570,7 +287,6 @@ describe("installClawPackages", () => {
           acquirePackageLease,
         },
         onExternalMutation,
-        runtime,
       },
     );
 
@@ -581,13 +297,8 @@ describe("installClawPackages", () => {
         version: "1.2.3",
         expectedIntegrity: skillIntegrity,
         clawManaged: true,
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: INSTALL_POLICY_ACKNOWLEDGEMENT_ID,
-        logger: { info: runtime.log, warn: runtime.error },
       }),
     );
-    installSkill.mock.calls[0]?.[0].logger?.warn?.("Install policy: inspect shell execution");
-    expect(runtime.error).toHaveBeenCalledWith("Install policy: inspect shell execution");
     expect(persistPackageRef).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ integrity: skillIntegrity }),
@@ -603,9 +314,7 @@ describe("installClawPackages", () => {
     );
   });
 
-  it("keeps the identity probe policy-free before the shared installer consumes every warning stage", async () => {
-    const secondAcknowledgementId = `sha256:${"b".repeat(64)}`;
-    const cumulativeAcknowledgementId = `${INSTALL_POLICY_ACKNOWLEDGEMENT_ID},${secondAcknowledgementId}`;
+  it("installs plugins through the shared plugin surface", async () => {
     const installPlugin = vi.fn().mockResolvedValue(undefined);
     const persistPackageRef = vi.fn().mockReturnValue({
       kind: "plugin",
@@ -616,10 +325,6 @@ describe("installClawPackages", () => {
     const preflightPlugin = vi.fn().mockResolvedValue({ ok: true, action: "install" });
 
     await installClawPackages(plan([pluginPackage]), {
-      dangerouslyForceUnsafeInstall: true,
-      installPolicyAcknowledgementIds: new Map([
-        [`plugin:${pluginPackage.ref}`, cumulativeAcknowledgementId],
-      ]),
       deps: {
         installPlugin,
         probePlugin,
@@ -630,20 +335,11 @@ describe("installClawPackages", () => {
       },
     });
 
-    expect(probePlugin).toHaveBeenCalledWith(
-      expect.objectContaining({
-        config: {},
-        dryRun: true,
-      }),
-    );
-    expect(probePlugin.mock.calls[0]?.[0]).not.toHaveProperty("installPolicyAcknowledgementId");
     expect(installPlugin).toHaveBeenCalledWith(
       expect.objectContaining({
         raw: "clawhub:@owner/audit@2.0.1",
         opts: {
           acknowledgeClawHubRisk: true,
-          dangerouslyForceUnsafeInstall: true,
-          installPolicyAcknowledgementId: cumulativeAcknowledgementId,
           expectedIntegrity:
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           expectedPluginId: "audit",
@@ -664,38 +360,6 @@ describe("installClawPackages", () => {
         independentOwner: false,
       }),
     );
-  });
-
-  it("preserves a replacement plugin warning returned by the final installer", async () => {
-    const replacementWarning = {
-      reason: "Review replacement plugin warning",
-      acknowledgementId: `sha256:${"b".repeat(64)}`,
-    };
-    const installPlugin = vi.fn(async (params: RunPluginInstallCommandParams) => {
-      params.onInstallPolicyWarning?.(replacementWarning);
-    });
-
-    await expect(
-      installClawPackages(plan([pluginPackage]), {
-        deps: {
-          installPlugin,
-          probePlugin,
-          preflightPlugin: vi.fn().mockResolvedValue({ ok: true, action: "install" }),
-          persistPackageRef: vi.fn().mockReturnValue({
-            kind: "plugin",
-            ref: "@owner/audit",
-            status: "pending",
-            integrity,
-          }),
-          completePackageRef,
-          acquirePackageLease,
-        },
-      }),
-    ).rejects.toMatchObject({
-      code: "install_policy_acknowledgement_required",
-      message: "Review replacement plugin warning",
-      installPolicyWarning: replacementWarning,
-    });
   });
 
   it("records a dependency ref without reinstalling an exact reused plugin", async () => {

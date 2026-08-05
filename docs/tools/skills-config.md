@@ -95,7 +95,7 @@ Most skills configuration lives under `skills` in
 ## Operator Install Policy (`security.installPolicy`)
 
 Use `security.installPolicy` when operators need a trusted local command to
-allow, warn, or block skill and plugin installs with host-specific policy. The
+approve or block skill and plugin installs with host-specific policy. The
 policy runs after OpenClaw has staged source material and before the install
 or update continues. It applies to ClawHub skills, uploaded skills, Git/local
 skills, skill dependency installers, and plugin install/update sources.
@@ -179,12 +179,18 @@ skills, skill dependency installers, and plugin install/update sources.
   be direct regular files, not symlinks.
 </ParamField>
 
-The policy receives one JSON object on stdin with `protocolVersion: 1`, `openclawVersion`, `targetType`, `targetName`, `sourcePath`, `sourcePathKind`, and optional structured `source`, `origin`, and `request`.
-It writes one JSON object on stdout with `decision` set to `allow`, `warn`, or `block`; `warn` and `block` require a non-empty `reason`, and every decision may include bounded structured `findings`.
-A warning stops before commit and returns a source-bound `acknowledgementId`. Gateway callers echo that exact ID as `acknowledgeInstallPolicyWarning`; CLI callers append it to the existing `--dangerously-force-unsafe-install <acknowledgement-id>` flag. A bare flag does not acknowledge an install-policy warning.
-For multi-stage installs, the returned value is an opaque ordered sequence of the warning-stage IDs already presented. Echo the complete value unchanged; OpenClaw verifies each stage in order before advancing.
-The ID binds the complete warning semantics to the staged source content and security-relevant permissions. Acknowledged warnings are evaluated twice back-to-back; changed source or policy output returns a new warning and ID. Blocks and failures can never be overridden.
-Non-zero exit, timeout, malformed JSON, missing fields, or unsupported versions fail closed.
+The policy receives one JSON object on stdin with `protocolVersion: 1`,
+`openclawVersion`, `targetType`, `targetName`, `sourcePath`, `sourcePathKind`,
+optional structured `source`, structured `origin`, and `request`. It must
+write one JSON object on stdout with an `allow`, `warn`, or `block` decision.
+`warn` and `block` require a non-empty `reason`; every decision may include a
+`findings` array. A warning stops the install before commit. For CLI plugin and
+skill installs, the operator may rerun the command with
+`--dangerously-force-unsafe-install`, which runs the policy again and
+acknowledges a new `warn` result. Gateway-backed and automatic installs remain
+blocked on warnings because they have no operator-confirmation flow. A `block`, non-zero
+exit, timeout, malformed JSON, missing field, or unsupported protocol version
+always fails closed.
 
 OpenClaw does not execute install policy during normal Gateway startup.
 Installs and updates fail closed when policy is enabled but unavailable.

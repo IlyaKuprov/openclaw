@@ -772,55 +772,6 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     );
   });
 
-  it("points policy-warning candidate repairs to the supported plugin install command", async () => {
-    const extensionsDir = makeTempDir();
-    mocks.resolveDefaultPluginExtensionsDir.mockReturnValue(extensionsDir);
-    fs.mkdirSync(path.join(extensionsDir, "matrix"));
-    mocks.installPluginFromClawHub.mockResolvedValueOnce({
-      ok: false,
-      code: "security_scan_blocked",
-      error: "Install policy warning requires acknowledgement.",
-      installPolicyWarning: {
-        reason: "Review package behavior",
-        findings: [
-          {
-            ruleId: "dynamic-execution",
-            severity: "warn",
-            message: "Package evaluates downloaded code",
-            file: "index.js",
-            line: 7,
-            evidence: "token=ghp_abcdefghijklmnopqrstuvwxyz1234567890",
-          },
-        ],
-      },
-    });
-    mocks.listChannelPluginCatalogEntries.mockReturnValue([
-      {
-        id: "matrix",
-        pluginId: "matrix",
-        meta: { label: "Matrix" },
-        install: { clawhubSpec: "clawhub:@openclaw/plugin-matrix@stable" },
-      },
-    ]);
-
-    const { repairMissingConfiguredPluginInstalls } =
-      await import("./missing-configured-plugin-install.js");
-    const result = await repairMissingConfiguredPluginInstalls({
-      cfg: { channels: { matrix: { enabled: true, homeserver: "https://matrix.example.org" } } },
-      env: {},
-    });
-
-    expect(result.warnings[0]).toContain(
-      "openclaw plugins install clawhub:@openclaw/plugin-matrix@stable --force --dangerously-force-unsafe-install",
-    );
-    expect(result.warnings[0]).toContain("Install policy warning: Review package behavior");
-    expect(result.warnings[0]).toContain(
-      "[warn] dynamic-execution: Package evaluates downloaded code (index.js:7)",
-    );
-    expect(result.warnings[0]).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
-    expect(result.warnings[0]).toContain("then rerun doctor");
-  });
-
   it("adds repair warnings for blocked ClawHub update outcomes", async () => {
     const records = {
       demo: {
@@ -871,41 +822,6 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     expect(result.warnings).toStrictEqual([
       'Skipped demo ClawHub update: ClawHub release "@openclaw/plugin-demo@1.2.4" cannot be installed because ClawHub flagged it as blocked or malicious. Review the security details above or choose a different version. Existing installed plugin left unchanged.',
     ]);
-  });
-
-  it("points tracked policy-warning repairs to an update command using the plugin ID", async () => {
-    const records = {
-      demo: {
-        source: "git",
-        spec: "git+https://example.test/plugin-demo.git",
-        installPath: "/missing/demo",
-      },
-    };
-    mocks.loadInstalledPluginIndexInstallRecords.mockResolvedValue(records);
-    mocks.updateNpmInstalledPlugins.mockResolvedValueOnce({
-      changed: false,
-      config: { plugins: { installs: records } },
-      outcomes: [
-        {
-          pluginId: "demo",
-          status: "error",
-          message: "Install policy warning requires acknowledgement.",
-          installPolicyWarning: { reason: "Review package behavior" },
-        },
-      ],
-    });
-
-    const { repairMissingConfiguredPluginInstalls } =
-      await import("./missing-configured-plugin-install.js");
-    const result = await repairMissingConfiguredPluginInstalls({
-      cfg: { plugins: { entries: { demo: { enabled: true } } } },
-      env: {},
-    });
-
-    expect(result.warnings[0]).toContain(
-      "openclaw plugins update demo --dangerously-force-unsafe-install",
-    );
-    expect(result.warnings[0]).not.toContain("plugins update git+");
   });
 
   it("sanitizes and shell-quotes ClawHub acknowledgement guidance specs before rendering commands", async () => {

@@ -30,7 +30,6 @@ import { redactConfigObject } from "../../config/redact-snapshot.js";
 import { fetchClawHubSkillDetail } from "../../infra/clawhub.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
-import { projectInstallPolicyWarningForExternal } from "../../security/install-policy.js";
 import { updateSkillConfigEntry } from "../../skills/config/mutations.js";
 import { collectSkillBins } from "../../skills/discovery/bins.js";
 import { buildWorkspaceSkillStatus } from "../../skills/discovery/status.js";
@@ -91,8 +90,6 @@ function installClawHubSkillDeduped(params: ClawHubInstallParams): Promise<ClawH
     params.version ?? null,
     params.force ?? false,
     params.acknowledgeClawHubRisk ?? false,
-    params.dangerouslyForceUnsafeInstall ?? false,
-    params.installPolicyAcknowledgementId ?? null,
   ]);
   const active = clawHubInstallsInFlight.get(key);
   if (active) {
@@ -664,7 +661,6 @@ export const skillsHandlers: GatewayRequestHandlers = {
         version?: string;
         force?: boolean;
         acknowledgeClawHubRisk?: boolean;
-        acknowledgeInstallPolicyWarning?: string;
       };
       const result = await installClawHubSkillDeduped({
         workspaceDir: workspaceDirRaw,
@@ -672,25 +668,10 @@ export const skillsHandlers: GatewayRequestHandlers = {
         version: p.version,
         force: Boolean(p.force),
         ...(p.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
-        ...(p.acknowledgeInstallPolicyWarning
-          ? {
-              dangerouslyForceUnsafeInstall: true,
-              installPolicyAcknowledgementId: p.acknowledgeInstallPolicyWarning,
-            }
-          : {}),
         logger: context.logGateway,
         config: cfg,
       });
-      const installPolicyWarning =
-        !result.ok && result.installPolicyWarning
-          ? projectInstallPolicyWarningForExternal(result.installPolicyWarning)
-          : undefined;
-      const errorDetails = result.ok
-        ? undefined
-        : {
-            ...buildClawHubTrustErrorDetails(result),
-            ...(installPolicyWarning ? { installPolicyWarning } : {}),
-          };
+      const errorDetails = result.ok ? undefined : buildClawHubTrustErrorDetails(result);
       respond(
         result.ok,
         result.ok
@@ -705,10 +686,7 @@ export const skillsHandlers: GatewayRequestHandlers = {
               targetDir: result.targetDir,
               ...(result.warning ? { warning: result.warning } : {}),
             }
-          : {
-              ...result,
-              ...(installPolicyWarning ? { installPolicyWarning } : {}),
-            },
+          : result,
         result.ok
           ? undefined
           : errorShape(
@@ -726,7 +704,6 @@ export const skillsHandlers: GatewayRequestHandlers = {
         slug: string;
         force?: boolean;
         sha256?: string;
-        acknowledgeInstallPolicyWarning?: string;
         timeoutMs?: number;
       };
       const result = await installUploadedSkillArchive({
@@ -734,12 +711,6 @@ export const skillsHandlers: GatewayRequestHandlers = {
         slug: p.slug,
         force: Boolean(p.force),
         sha256: p.sha256,
-        ...(p.acknowledgeInstallPolicyWarning
-          ? {
-              dangerouslyForceUnsafeInstall: true,
-              installPolicyAcknowledgementId: p.acknowledgeInstallPolicyWarning,
-            }
-          : {}),
         timeoutMs: p.timeoutMs,
         workspaceDir: workspaceDirRaw,
         config: cfg,
@@ -759,67 +730,26 @@ export const skillsHandlers: GatewayRequestHandlers = {
       respond(
         result.ok,
         responseResult,
-        result.ok
-          ? undefined
-          : errorShape(errorCode, result.error, {
-              details: result.installPolicyWarning
-                ? {
-                    installPolicyWarning: projectInstallPolicyWarningForExternal(
-                      result.installPolicyWarning,
-                    ),
-                  }
-                : undefined,
-            }),
+        result.ok ? undefined : errorShape(errorCode, result.error),
       );
       return;
     }
     const p = params as {
       name: string;
       installId: string;
-      acknowledgeInstallPolicyWarning?: string;
       timeoutMs?: number;
     };
     const result = await installSkill({
       workspaceDir: workspaceDirRaw,
       skillName: p.name,
       installId: p.installId,
-      ...(p.acknowledgeInstallPolicyWarning
-        ? {
-            dangerouslyForceUnsafeInstall: true,
-            installPolicyAcknowledgementId: p.acknowledgeInstallPolicyWarning,
-          }
-        : {}),
       timeoutMs: p.timeoutMs,
       config: cfg,
     });
-    const externalResult =
-      !result.ok && result.installPolicyWarning
-        ? {
-            ok: result.ok,
-            message: result.message,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            code: result.code,
-            ...(result.skipReason ? { skipReason: result.skipReason } : {}),
-            installPolicyWarning: projectInstallPolicyWarningForExternal(
-              result.installPolicyWarning,
-            ),
-          }
-        : result;
     respond(
       result.ok,
-      externalResult,
-      result.ok
-        ? undefined
-        : errorShape(ErrorCodes.UNAVAILABLE, result.message, {
-            details: result.installPolicyWarning
-              ? {
-                  installPolicyWarning: projectInstallPolicyWarningForExternal(
-                    result.installPolicyWarning,
-                  ),
-                }
-              : undefined,
-          }),
+      result,
+      result.ok ? undefined : errorShape(ErrorCodes.UNAVAILABLE, result.message),
     );
   },
   "skills.update": async ({ params, respond, context }) => {
@@ -832,7 +762,6 @@ export const skillsHandlers: GatewayRequestHandlers = {
         slug?: string;
         all?: boolean;
         acknowledgeClawHubRisk?: boolean;
-        acknowledgeInstallPolicyWarning?: string;
       };
       if (!p.slug && !p.all) {
         respond(
@@ -862,36 +791,11 @@ export const skillsHandlers: GatewayRequestHandlers = {
         workspaceDir: resolved.workspaceDir,
         slug: p.slug,
         ...(p.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
-        ...(p.acknowledgeInstallPolicyWarning
-          ? {
-              dangerouslyForceUnsafeInstall: true,
-              installPolicyAcknowledgementId: p.acknowledgeInstallPolicyWarning,
-            }
-          : {}),
         logger: context.logGateway,
         config: resolved.cfg,
       });
-      const externalResults = results.map((result) =>
-        !result.ok && result.installPolicyWarning
-          ? {
-              ...result,
-              installPolicyWarning: projectInstallPolicyWarningForExternal(
-                result.installPolicyWarning,
-              ),
-            }
-          : result,
-      );
       const errors = results.filter((result) => !result.ok);
       const warnings = collectClawHubTrustWarnings(results);
-      const policyWarnings = errors.flatMap((result) =>
-        result.installPolicyWarning ? [result.installPolicyWarning] : [],
-      );
-      // One request carries one source-bound acknowledgement. Return the first
-      // warning unchanged so bulk updates can be acknowledged sequentially.
-      const installPolicyWarning = policyWarnings[0];
-      const externalInstallPolicyWarning = installPolicyWarning
-        ? projectInstallPolicyWarningForExternal(installPolicyWarning)
-        : undefined;
       respond(
         errors.length === 0,
         {
@@ -899,18 +803,15 @@ export const skillsHandlers: GatewayRequestHandlers = {
           skillKey: p.slug ?? "*",
           config: {
             source: "clawhub",
-            results: externalResults,
+            results,
           },
         },
         errors.length === 0
           ? undefined
           : errorShape(ErrorCodes.UNAVAILABLE, errors.map((result) => result.error).join("; "), {
               details: {
-                results: externalResults,
+                results,
                 ...(warnings.length > 0 ? { warnings } : {}),
-                ...(externalInstallPolicyWarning
-                  ? { installPolicyWarning: externalInstallPolicyWarning }
-                  : {}),
               },
             }),
       );

@@ -7,17 +7,11 @@ import { pathExists } from "../../infra/fs-safe.js";
 import { withExtractedArchiveRoot } from "../../infra/install-flow.js";
 import { installPackageDir } from "../../infra/install-package-dir.js";
 import { resolveSafeInstallDir } from "../../infra/install-safe-path.js";
-import { withInstallSourceSnapshot } from "../../infra/install-source-utils.js";
 import {
   evaluateSkillInstallPolicy,
   type InstallSecurityScanResult,
 } from "../../plugins/install-security-scan.js";
-import type { InstallPolicyAcknowledgementSequence } from "../../plugins/install-security-scan.types.js";
-import type {
-  InstallPolicyOrigin,
-  InstallPolicySource,
-  InstallPolicyWarning,
-} from "../../security/install-policy.js";
+import type { InstallPolicyOrigin, InstallPolicySource } from "../../security/install-policy.js";
 import {
   dispatchCommittedSkillChangeBestEffort,
   hasCommittedSkillChangeHooks,
@@ -47,8 +41,6 @@ function hasNonAscii(value: string): boolean {
 type SkillArchiveInstallPolicy = {
   config?: OpenClawConfig;
   dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
-  installPolicyAcknowledgementSequence?: InstallPolicyAcknowledgementSequence;
   installId?: string;
   origin: InstallPolicyOrigin;
   requestedSpecifier?: string;
@@ -58,12 +50,7 @@ type SkillArchiveInstallPolicy = {
 /** Result shape for installing a skill archive into a workspace skills dir. */
 type SkillArchiveInstallResult =
   | { ok: true; targetDir: string }
-  | {
-      ok: false;
-      error: string;
-      failureKind: SkillArchiveInstallFailureKind;
-      installPolicyWarning?: InstallPolicyWarning;
-    };
+  | { ok: false; error: string; failureKind: SkillArchiveInstallFailureKind };
 
 export type SkillArchiveInstallFailureKind = "invalid-request" | "unavailable";
 
@@ -100,14 +87,8 @@ export function resolveWorkspaceSkillInstallDir(workspaceDir: string, slug: stri
 function installFailure(
   error: string,
   failureKind: SkillArchiveInstallFailureKind,
-  installPolicyWarning?: InstallPolicyWarning,
 ): SkillArchiveInstallResult {
-  return {
-    ok: false,
-    error,
-    failureKind,
-    ...(installPolicyWarning ? { installPolicyWarning } : {}),
-  };
+  return { ok: false, error, failureKind };
 }
 
 async function hasSkillArchiveRoot(
@@ -154,7 +135,7 @@ function archiveFailureKind(error: string): SkillArchiveInstallFailureKind {
   return "invalid-request";
 }
 
-type InstallExtractedSkillRootParams = {
+export async function installExtractedSkillRoot(params: {
   workspaceDir: string;
   slug: string;
   extractedRoot: string;
@@ -162,34 +143,8 @@ type InstallExtractedSkillRootParams = {
   timeoutMs?: number;
   logger?: ArchiveLogger;
   policy?: SkillArchiveInstallPolicy;
-  scanOnly?: boolean;
   rootMarkers?: readonly string[];
-};
-
-export async function installExtractedSkillRoot(
-  params: InstallExtractedSkillRootParams,
-): Promise<SkillArchiveInstallResult> {
-  if (params.policy?.source?.kind === "local-path" && !params.scanOnly) {
-    try {
-      return await withInstallSourceSnapshot({
-        sourceDir: params.extractedRoot,
-        prefix: "openclaw-skill-source-",
-        run: async (snapshotDir) =>
-          await installExtractedSkillRootFromSnapshot({
-            ...params,
-            extractedRoot: snapshotDir,
-          }),
-      });
-    } catch (err) {
-      return installFailure(formatErrorMessage(err), "unavailable");
-    }
-  }
-  return await installExtractedSkillRootFromSnapshot(params);
-}
-
-async function installExtractedSkillRootFromSnapshot(
-  params: InstallExtractedSkillRootParams,
-): Promise<SkillArchiveInstallResult> {
+}): Promise<SkillArchiveInstallResult> {
   try {
     if (
       !(await hasSkillArchiveRoot(
@@ -220,7 +175,7 @@ async function installExtractedSkillRootFromSnapshot(
       typeof sourceVersionValue === "string" || typeof sourceVersionValue === "number"
         ? String(sourceVersionValue)
         : undefined;
-    const shouldDispatchChange = !params.scanOnly && hasCommittedSkillChangeHooks();
+    const shouldDispatchChange = hasCommittedSkillChangeHooks();
     const before =
       shouldDispatchChange && effectiveMode === "update"
         ? await snapshotCommittedSkillArtifactBestEffort({
@@ -235,14 +190,12 @@ async function installExtractedSkillRootFromSnapshot(
       const scanResult = await evaluateSkillInstallPolicy({
         config: params.policy.config,
         dangerouslyForceUnsafeInstall: params.policy.dangerouslyForceUnsafeInstall,
-        installPolicyAcknowledgementId: params.policy.installPolicyAcknowledgementId,
-        installPolicyAcknowledgementSequence: params.policy.installPolicyAcknowledgementSequence,
         installId: params.policy.installId ?? "archive",
         logger: params.logger ?? {},
         origin: params.policy.origin,
         requestedSpecifier: params.policy.requestedSpecifier,
         source: params.policy.source,
-        mode: params.scanOnly ? params.mode : effectiveMode,
+        mode: effectiveMode,
         skillName: params.slug,
         sourceDir: params.extractedRoot,
       });
@@ -250,13 +203,8 @@ async function installExtractedSkillRootFromSnapshot(
         return installFailure(
           scanResult.blocked.reason,
           scanBlockedFailureKind(scanResult.blocked),
-          scanResult.blocked.installPolicyWarning,
         );
       }
-    }
-
-    if (params.scanOnly) {
-      return { ok: true, targetDir };
     }
 
     const install = await installPackageDir({
@@ -330,11 +278,7 @@ export async function installSkillArchiveFromPath(params: {
       (result.failureKind === "invalid-request" || result.failureKind === "unavailable")
         ? result.failureKind
         : archiveFailureKind(error);
-    return installFailure(
-      error,
-      failureKind,
-      "installPolicyWarning" in result ? result.installPolicyWarning : undefined,
-    );
+    return installFailure(error, failureKind);
   }
   return result;
 }

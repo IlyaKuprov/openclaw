@@ -24,7 +24,6 @@ import {
   validateNpmResolutionCompatibility,
 } from "./install-npm-metadata.js";
 import { resolveDefaultPluginNpmDir } from "./install-paths.js";
-import { resolveInstallPolicyAcknowledgementSequence } from "./install-policy-acknowledgement.js";
 import {
   preflightPluginNpmInstallPolicy,
   type InstallSafetyOverrides,
@@ -205,20 +204,17 @@ export async function installPluginFromNpmSpec(
       : generationUse === "retained-install"
         ? "install"
         : targetMode;
-  const installPolicyAcknowledgementSequence = resolveInstallPolicyAcknowledgementSequence(params);
 
   const policyTempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-npm-policy-"));
   try {
     const policyMetadataPath = path.join(policyTempDir, "npm-package-metadata.json");
-    const stableNpmResolution = { ...npmResolution };
-    delete stableNpmResolution.resolvedAt;
     await fs.writeFile(
       policyMetadataPath,
       `${JSON.stringify(
         {
           packageName: parsedSpec.name,
           requestedSpecifier: spec,
-          resolution: stableNpmResolution,
+          resolution: npmResolution,
         },
         null,
         2,
@@ -234,8 +230,6 @@ export async function installPluginFromNpmSpec(
         await preflightPluginNpmInstallPolicy({
           config: params.config,
           dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-          installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-          installPolicyAcknowledgementSequence,
           logger,
           mode: policyMode,
           packageName: parsedSpec.name,
@@ -255,8 +249,6 @@ export async function installPluginFromNpmSpec(
 
   const result = await installPluginFromManagedNpmRoot({
     dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-    installPolicyAcknowledgementSequence,
     trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
     config: params.config,
     packageName: parsedSpec.name,

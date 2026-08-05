@@ -724,128 +724,33 @@ extension AgentProTab {
     }
 
     @MainActor
-    func installSkillRequirements(
-        _ skill: SkillStatusEntryLite,
-        installPolicyAcknowledgementId: String? = nil,
-        route: GatewayNodeSessionRoute? = nil) async
-    {
+    func installSkillRequirements(_ skill: SkillStatusEntryLite) async {
         guard let installId = skill.install?.first?.id?.trimmingCharacters(in: .whitespacesAndNewlines),
               !installId.isEmpty
         else { return }
-        guard let expectedRoute = await self.resolveSkillGatewayRoute(route) else {
-            skillConfigMessages[skill.effectiveSkillKey] = SkillEditorMessage(
-                kind: .error,
-                text: SkillMutationError.gatewayChanged.localizedDescription)
-            return
-        }
-        await self.runSkillConfigMutation(
-            skill,
-            policyRetry: (
-                target: .requirements(skillKey: skill.effectiveSkillKey),
-                route: expectedRoute))
-        {
-            let params = SkillInstallParams(
-                name: skill.name,
-                installId: installId,
-                timeoutMs: 120_000,
-                acknowledgeInstallPolicyWarning: installPolicyAcknowledgementId)
+        await self.runSkillConfigMutation(skill) {
+            let params = SkillInstallParams(name: skill.name, installId: installId, timeoutMs: 120_000)
             let data = try await self.requestGateway(
                 method: "skills.install",
                 params: params,
-                timeoutSeconds: 125,
-                route: expectedRoute)
+                timeoutSeconds: 125)
             return (try? JSONDecoder().decode(SkillInstallResultLite.self, from: data).message) ?? "Installed."
         }
     }
 
     @MainActor
-    func installClawHubSkill(
-        _ result: ClawHubSearchResultLite,
-        installPolicyAcknowledgementId: String? = nil,
-        route: GatewayNodeSessionRoute? = nil) async
-    {
+    func installClawHubSkill(_ result: ClawHubSearchResultLite) async {
         guard liveGatewayConnected else { return }
-        guard let expectedRoute = await self.resolveSkillGatewayRoute(route) else {
-            clawHubErrorText = SkillMutationError.gatewayChanged.localizedDescription
-            return
-        }
         clawHubInstallSlug = result.slug
         clawHubErrorText = nil
         defer { self.clawHubInstallSlug = nil }
         do {
-            let params = ClawHubInstallParams(
-                slug: result.slug,
-                version: result.version,
-                acknowledgeInstallPolicyWarning: installPolicyAcknowledgementId)
-            _ = try await self.requestGateway(
-                method: "skills.install",
-                params: params,
-                timeoutSeconds: 125,
-                route: expectedRoute)
+            let params = ClawHubInstallParams(slug: result.slug)
+            _ = try await self.requestGateway(method: "skills.install", params: params, timeoutSeconds: 125)
             await appModel.refreshGatewayOverviewIfConnected()
             await refreshOverview(force: true)
-        } catch let error as GatewayResponseError {
-            if let warning = SkillManagementContract.installPolicyWarning(from: error) {
-                guard let reviewedVersion = warning.version ?? result.version else {
-                    clawHubErrorText =
-                        "The Gateway did not identify the warned release. " +
-                        "Refresh and review the skill again."
-                    return
-                }
-                let reviewedResult = ClawHubSearchResultLite(
-                    slug: result.slug,
-                    displayName: result.displayName,
-                    summary: result.summary,
-                    version: reviewedVersion)
-                skillInstallPolicyReview = SkillInstallPolicyReview(
-                    target: .clawHub(reviewedResult),
-                    route: expectedRoute,
-                    message: warning.message,
-                    acknowledgementId: warning.acknowledgementId)
-            } else {
-                clawHubErrorText = Self.skillMutationMessage(error)
-            }
         } catch {
-            if await self.clawHubInstallConfirmed(result, route: expectedRoute) {
-                await appModel.refreshGatewayOverviewIfConnected()
-                await refreshOverview(force: true)
-                return
-            }
-            clawHubErrorText =
-                "Install result unknown. Refresh Skills before retrying. \(Self.skillMutationMessage(error))"
-        }
-    }
-
-    @MainActor
-    func clawHubInstallConfirmed(
-        _ result: ClawHubSearchResultLite,
-        route: GatewayNodeSessionRoute) async -> Bool
-    {
-        guard let version = result.version,
-              let data = try? await requestGateway(
-                  method: "skills.status",
-                  params: AgentProEmptySkillsRequest(),
-                  timeoutSeconds: 20,
-                  route: route),
-              let skills = try? JSONDecoder().decode(SkillsStatusReport.self, from: data).skills
-        else { return false }
-        return SkillManagementContract.installed(skills, slug: result.slug, version: version)
-    }
-
-    @MainActor
-    func retrySkillInstallPolicyWarning(_ review: SkillInstallPolicyReview) async {
-        switch review.target {
-        case let .requirements(skillKey):
-            guard let skill = self.skillByKey(skillKey) else { return }
-            await self.installSkillRequirements(
-                skill,
-                installPolicyAcknowledgementId: review.acknowledgementId,
-                route: review.route)
-        case let .clawHub(result):
-            await self.installClawHubSkill(
-                result,
-                installPolicyAcknowledgementId: review.acknowledgementId,
-                route: review.route)
+            clawHubErrorText = Self.skillMutationMessage(error)
         }
     }
 
@@ -868,7 +773,6 @@ extension AgentProTab {
     @MainActor
     func runSkillConfigMutation(
         _ skill: SkillStatusEntryLite,
-        policyRetry: (target: SkillInstallPolicyReview.Target, route: GatewayNodeSessionRoute)? = nil,
         action: () async throws -> String) async
     {
         guard liveGatewayConnected else { return }
@@ -882,19 +786,6 @@ extension AgentProTab {
             skillConfigMessages[key] = SkillEditorMessage(kind: .success, text: message)
             await appModel.refreshGatewayOverviewIfConnected()
             await refreshOverview(force: true)
-        } catch let error as GatewayResponseError {
-            if let policyRetry,
-               let warning = SkillManagementContract.installPolicyWarning(from: error)
-            {
-                skillInstallPolicyReview = SkillInstallPolicyReview(
-                    target: policyRetry.target,
-                    route: policyRetry.route,
-                    message: warning.message,
-                    acknowledgementId: warning.acknowledgementId)
-            }
-            skillConfigMessages[key] = SkillEditorMessage(
-                kind: .error,
-                text: Self.skillMutationMessage(error))
         } catch {
             skillConfigMessages[key] = SkillEditorMessage(
                 kind: .error,
@@ -905,8 +796,7 @@ extension AgentProTab {
     func requestGateway(
         method: String,
         params: some Encodable,
-        timeoutSeconds: Int,
-        route: GatewayNodeSessionRoute? = nil) async throws -> Data
+        timeoutSeconds: Int) async throws -> Data
     {
         guard liveGatewayConnected else {
             throw SkillMutationError.liveGatewayUnavailable
@@ -915,25 +805,10 @@ extension AgentProTab {
         guard let json = String(data: data, encoding: .utf8) else {
             throw SkillMutationError.invalidPatchPayload
         }
-        let response = try await appModel.operatorSession.request(
+        return try await appModel.operatorSession.request(
             method: method,
             paramsJSON: json,
-            timeoutSeconds: timeoutSeconds,
-            ifCurrentRoute: route,
-            distinguishPreDispatchRouteChange: route != nil)
-        if let route, await appModel.operatorSession.currentRoute() != route {
-            throw SkillMutationError.gatewayChanged
-        }
-        return response
-    }
-
-    func resolveSkillGatewayRoute(
-        _ route: GatewayNodeSessionRoute?) async -> GatewayNodeSessionRoute?
-    {
-        if let route {
-            return route
-        }
-        return await appModel.operatorSession.currentRoute(ifGatewayID: appModel.connectedGatewayID)
+            timeoutSeconds: timeoutSeconds)
     }
 
     func requestConfigSnapshot() async throws -> ConfigSnapshotLite {
@@ -1013,5 +888,3 @@ extension AgentProTab {
         }
     }
 }
-
-private struct AgentProEmptySkillsRequest: Encodable {}

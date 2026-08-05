@@ -1,4 +1,3 @@
-import type { InstallPolicyWarning } from "../security/install-policy.js";
 import type { CLAW_OUTPUT_STABILITY, ClawDiagnostic, ClawSourceIdentity } from "./types.js";
 import type { ClawUpdateCapabilityChange } from "./update-capability-changes.js";
 
@@ -14,7 +13,6 @@ export type ClawUpdateAction = {
   currentDigest?: string;
   currentPresent?: boolean;
   desiredDigest?: string;
-  installPolicyWarning?: InstallPolicyWarning;
 };
 
 export type ClawUpdatePlan = {

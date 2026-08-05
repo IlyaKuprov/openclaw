@@ -1,9 +1,6 @@
 // Checks install policy constraints for package and plugin operations.
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { stableStringify } from "@openclaw/normalization-core";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { OpenClawConfig, SecurityConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -20,11 +17,6 @@ const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_REASON_CHARS = 1000;
 const MAX_FINDINGS = 100;
 const MAX_FINDING_TEXT_CHARS = 1000;
-const EXTERNAL_WARNING_FINDING_LIMIT = 10;
-const EXTERNAL_WARNING_TEXT_LIMIT = 256;
-const EXTERNAL_WARNING_TRUNCATION_MARKER = "… [truncated]";
-const INSTALL_POLICY_ACKNOWLEDGEMENT_ID_PATTERN =
-  /^sha256:[a-f0-9]{64}(?:,sha256:[a-f0-9]{64}){0,31}$/u;
 const WINDOWS_ABS_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 const WINDOWS_UNC_PATH_PATTERN = /^\\\\[^\\]+\\[^\\]+/;
 const POLICY_INTERPRETER_NAMES = new Set([
@@ -85,122 +77,6 @@ export type InstallPolicyFinding = {
   evidence?: string;
 };
 
-export type InstallPolicyWarning = {
-  reason: string;
-  findings?: InstallPolicyFinding[];
-  omittedFindings?: number;
-  acknowledgementId?: string;
-};
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function replaceSourcePath(value: string, sourcePath: string): string {
-  if (!sourcePath) {
-    return value;
-  }
-  if (!WINDOWS_ABS_PATH_PATTERN.test(sourcePath)) {
-    return value
-      .replace(new RegExp(escapeRegExp(pathToFileURL(sourcePath).href), "giu"), "<install-source>")
-      .replaceAll(sourcePath, "<install-source>");
-  }
-
-  const slashPath = sourcePath.replaceAll("\\", "/");
-  const flexiblePathPattern = slashPath.split("/").map(escapeRegExp).join("[\\\\/]");
-  const encodedFileUrl = `file:///${encodeURI(slashPath)}`;
-  return value
-    .replace(new RegExp(escapeRegExp(encodedFileUrl), "giu"), "<install-source>")
-    .replace(new RegExp(`file:[\\\\/]{2,3}${flexiblePathPattern}`, "giu"), "<install-source>")
-    .replace(new RegExp(flexiblePathPattern, "giu"), "<install-source>");
-}
-
-function replaceSourcePaths(value: string, sourcePaths: readonly string[]): string {
-  return [...new Set(sourcePaths)]
-    .toSorted((left, right) => right.length - left.length)
-    .reduce((result, sourcePath) => replaceSourcePath(result, sourcePath), value);
-}
-
-function mapInstallPolicyFinding(
-  finding: InstallPolicyFinding,
-  transform: (value: string) => string,
-): InstallPolicyFinding {
-  const mapped: InstallPolicyFinding = {
-    ruleId: transform(finding.ruleId),
-    severity: finding.severity,
-    message: transform(finding.message),
-  };
-  if (finding.file) {
-    mapped.file = transform(finding.file);
-  }
-  if (finding.line) {
-    mapped.line = finding.line;
-  }
-  if (finding.evidence) {
-    mapped.evidence = transform(finding.evidence);
-  }
-  return mapped;
-}
-
-export function createInstallPolicyWarningAcknowledgementId(
-  warning: Omit<InstallPolicyWarning, "acknowledgementId">,
-  params: {
-    request: Omit<InstallPolicyRequest, "sourcePath">;
-    sourceDigest: string;
-    sourcePath: string;
-    sourcePathAliases?: readonly string[];
-    previousAcknowledgementIds?: readonly string[];
-  },
-): string {
-  const normalize = (value: string) =>
-    replaceSourcePaths(value, [params.sourcePath, ...(params.sourcePathAliases ?? [])]);
-  const projection = {
-    request: params.request,
-    sourceDigest: params.sourceDigest,
-    reason: normalize(warning.reason),
-    findings: (warning.findings ?? []).map((finding) =>
-      mapInstallPolicyFinding(finding, normalize),
-    ),
-    ...(warning.omittedFindings ? { omittedFindings: warning.omittedFindings } : {}),
-    ...(params.previousAcknowledgementIds?.length
-      ? { previousAcknowledgementIds: params.previousAcknowledgementIds }
-      : {}),
-  };
-  return `sha256:${createHash("sha256").update(stableStringify(projection)).digest("hex")}`;
-}
-
-export function projectInstallPolicyWarningForExternal(
-  warning: InstallPolicyWarning,
-): InstallPolicyWarning {
-  const truncate = (value: string) =>
-    value.length <= EXTERNAL_WARNING_TEXT_LIMIT
-      ? value
-      : `${truncateUtf16Safe(
-          value,
-          EXTERNAL_WARNING_TEXT_LIMIT - EXTERNAL_WARNING_TRUNCATION_MARKER.length,
-        )}${EXTERNAL_WARNING_TRUNCATION_MARKER}`;
-  const findings = (warning.findings ?? [])
-    .slice(0, EXTERNAL_WARNING_FINDING_LIMIT)
-    .map((finding) => mapInstallPolicyFinding(finding, truncate));
-  const omittedFindings = Math.max(0, warning.omittedFindings ?? 0);
-  const totalFindings = (warning.findings?.length ?? 0) + omittedFindings;
-  if (totalFindings > EXTERNAL_WARNING_FINDING_LIMIT) {
-    findings.push({
-      ruleId: "openclaw.policy.findings-truncated",
-      severity: "warn",
-      message: `${totalFindings - EXTERNAL_WARNING_FINDING_LIMIT} additional findings omitted; review policy logs for complete evidence.`,
-    });
-  }
-  return {
-    reason: truncate(warning.reason),
-    ...(findings.length > 0 ? { findings } : {}),
-    ...(warning.acknowledgementId &&
-    INSTALL_POLICY_ACKNOWLEDGEMENT_ID_PATTERN.test(warning.acknowledgementId)
-      ? { acknowledgementId: warning.acknowledgementId }
-      : {}),
-  };
-}
-
 type InstallPolicyRequest = {
   targetType: InstallPolicyTarget;
   targetName: string;
@@ -245,8 +121,7 @@ type InstallPolicyResult =
   | { blocked?: undefined; warning?: undefined; findings?: InstallPolicyFinding[] }
   | {
       blocked?: undefined;
-      warning: Pick<InstallPolicyWarning, "reason" | "omittedFindings">;
-      warningIdentity?: Omit<InstallPolicyWarning, "acknowledgementId">;
+      warning: { reason: string };
       findings?: InstallPolicyFinding[];
     }
   | {
@@ -546,14 +421,6 @@ function isTargetEnabled(params: {
   return targets.includes(params.targetType);
 }
 
-export function isInstallPolicyEnabledForTarget(
-  config: OpenClawConfig | undefined,
-  targetType: InstallPolicyTarget,
-): boolean {
-  const policy = config?.security?.installPolicy;
-  return policy?.enabled === true && isTargetEnabled({ policy, targetType });
-}
-
 function resolvePolicy(
   config: OpenClawConfig | undefined,
   targetType: InstallPolicyTarget,
@@ -562,7 +429,10 @@ function resolvePolicy(
   | { kind: "configured"; exec: InstallPolicyExecConfig }
   | { kind: "failure"; result: InstallPolicyResult } {
   const policy = config?.security?.installPolicy;
-  if (!policy || !isInstallPolicyEnabledForTarget(config, targetType)) {
+  if (!policy || policy.enabled !== true) {
+    return { kind: "disabled" };
+  }
+  if (!isTargetEnabled({ policy, targetType })) {
     return { kind: "disabled" };
   }
   if (!policy.exec) {
@@ -636,7 +506,7 @@ export async function validateInstallPolicyStatic(
   return { enabled: true, targets, issues };
 }
 
-function normalizeFinding(value: unknown, truncate = true): InstallPolicyFinding | null {
+function normalizeFinding(value: unknown): InstallPolicyFinding | null {
   if (typeof value !== "object" || value === null) {
     return null;
   }
@@ -657,15 +527,13 @@ function normalizeFinding(value: unknown, truncate = true): InstallPolicyFinding
     return null;
   }
   const evidence = typeof record.evidence === "string" ? record.evidence.trim() : "";
-  const normalizeText = (text: string) =>
-    truncate ? truncateText(text, MAX_FINDING_TEXT_CHARS) : text;
   return {
-    ruleId: normalizeText(ruleId),
+    ruleId: truncateText(ruleId, MAX_FINDING_TEXT_CHARS),
     severity,
-    message: normalizeText(message),
-    ...(file ? { file: normalizeText(file) } : {}),
+    message: truncateText(message, MAX_FINDING_TEXT_CHARS),
+    ...(file ? { file: truncateText(file, MAX_FINDING_TEXT_CHARS) } : {}),
     ...(lineNumber ? { line: lineNumber } : {}),
-    ...(evidence ? { evidence: normalizeText(evidence) } : {}),
+    ...(evidence ? { evidence: truncateText(evidence, MAX_FINDING_TEXT_CHARS) } : {}),
   };
 }
 
@@ -678,8 +546,8 @@ function parsePolicyResponse(stdout: string): InstallPolicyResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed) as unknown;
-  } catch {
-    return blockedByFailure("policy command returned invalid JSON");
+  } catch (err) {
+    return blockedByFailure(`policy command returned invalid JSON (${formatErrorMessage(err)})`);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return blockedByFailure("policy response must be a JSON object");
@@ -692,10 +560,10 @@ function parsePolicyResponse(stdout: string): InstallPolicyResult {
   if (decision !== "allow" && decision !== "warn" && decision !== "block") {
     return blockedByFailure('policy response decision must be "allow", "warn", or "block"');
   }
-  const findingValues = Array.isArray(record.findings) ? record.findings : [];
-  const findings = findingValues.map((finding) => normalizeFinding(finding)).filter(Boolean);
-  const normalizedFindings = findings.slice(0, MAX_FINDINGS) as InstallPolicyFinding[];
-  const omittedFindings = Math.max(0, findings.length - normalizedFindings.length);
+  const findings = Array.isArray(record.findings)
+    ? record.findings.slice(0, MAX_FINDINGS).map(normalizeFinding).filter(Boolean)
+    : [];
+  const normalizedFindings = findings as InstallPolicyFinding[];
   if (decision === "allow") {
     return normalizedFindings.length > 0 ? { findings: normalizedFindings } : {};
   }
@@ -704,19 +572,8 @@ function parsePolicyResponse(stdout: string): InstallPolicyResult {
     return blockedByFailure(`policy response decision "${decision}" requires a non-empty reason`);
   }
   if (decision === "warn") {
-    const identityFindings = findingValues
-      .map((finding) => normalizeFinding(finding, false))
-      .filter((finding): finding is InstallPolicyFinding => finding !== null);
     return {
-      warning: {
-        reason: truncateText(reason, MAX_REASON_CHARS),
-        ...(omittedFindings ? { omittedFindings } : {}),
-      },
-      warningIdentity: {
-        reason,
-        ...(identityFindings.length > 0 ? { findings: identityFindings } : {}),
-        ...(omittedFindings ? { omittedFindings } : {}),
-      },
+      warning: { reason: truncateText(reason, MAX_REASON_CHARS) },
       ...(normalizedFindings.length > 0 ? { findings: normalizedFindings } : {}),
     };
   }
@@ -848,6 +705,7 @@ export async function runInstallPolicy(params: {
     return logBlocked(parsed);
   }
   if (parsed.warning) {
+    params.logger?.warn?.(`Install policy ${decisionContext}: warned: ${parsed.warning.reason}`);
     return parsed;
   }
   params.logger?.debug?.(`Install policy ${decisionContext}: allowed`);

@@ -34,13 +34,13 @@ openclaw skills install ./path/to/skill --as custom-name
 openclaw skills install @owner/<slug> --force
 openclaw skills install @owner/<slug> --force-install
 openclaw skills install @owner/<slug> --acknowledge-clawhub-risk
-openclaw skills install @owner/<slug> --dangerously-force-unsafe-install <acknowledgement-id>
+openclaw skills install @owner/<slug> --dangerously-force-unsafe-install
 openclaw skills install @owner/<slug> --agent <id>
 openclaw skills install @owner/<slug> --global
 openclaw skills update @owner/<slug>
 openclaw skills update @owner/<slug> --force-install
 openclaw skills update @owner/<slug> --acknowledge-clawhub-risk
-openclaw skills update @owner/<slug> --dangerously-force-unsafe-install <acknowledgement-id>
+openclaw skills update @owner/<slug> --dangerously-force-unsafe-install
 openclaw skills update @owner/<slug> --global
 openclaw skills update --all
 openclaw skills update --all --agent <id>
@@ -99,7 +99,9 @@ installs only.
 Gateway-backed skill dependency installs triggered from onboarding or Skills
 settings use the separate `skills.install` request path instead.
 
-When `security.installPolicy` warns, pass the returned ID as `--dangerously-force-unsafe-install <acknowledgement-id>` to acknowledge that exact warning and source, then re-run policy. A bare flag does not acknowledge the warning. Blocks and failures remain terminal. Bulk updates return one source-bound warning at a time; acknowledge it and repeat until no warnings remain.
+When `security.installPolicy` returns `warn`, review the output and rerun the
+install or update with `--dangerously-force-unsafe-install`. OpenClaw evaluates
+the staged skill again; `block` and policy failures remain terminal.
 
 Notes:
 

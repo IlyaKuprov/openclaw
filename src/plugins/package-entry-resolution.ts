@@ -104,12 +104,6 @@ async function validatePackageExtensionEntry(params: {
       rootPath: params.packageDir,
       boundaryLabel: "plugin package directory",
     });
-    if (resolved.relativePath.split(/[\\/]+/u).some((segment) => segment === ".git")) {
-      return {
-        ok: false,
-        error: `${params.label} cannot reference Git metadata: ${params.entry}`,
-      };
-    }
     if (!resolved.exists) {
       return params.requireExisting
         ? { ok: false, error: `${params.label} not found: ${params.entry}` }

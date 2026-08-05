@@ -1,7 +1,7 @@
 // Tests root Claw install ownership and the narrow agent/workspace mutation slice.
 import { access, mkdir, rmdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -10,7 +10,6 @@ import {
 } from "../state/openclaw-state-db.js";
 import { applyClawAddPlan, ClawAddMutationError } from "./add.js";
 import { ClawCronInstallError } from "./cron.js";
-import { resolveClawInstallPolicyAcknowledgement } from "./install-policy-acknowledgement.js";
 import { buildClawAddPlan } from "./lifecycle.js";
 import { replaceClawPackageRefExpected } from "./package-update-provenance.js";
 import {
@@ -23,7 +22,7 @@ import {
   updateClawPackageRefStatus,
 } from "./provenance.js";
 import { parseClawManifest } from "./schema.js";
-import type { ClawAddPlan, ClawOpenClawProfile, ClawSourceIdentity } from "./types.js";
+import type { ClawOpenClawProfile, ClawSourceIdentity } from "./types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -350,255 +349,6 @@ describe("Claw root install provenance", () => {
 });
 
 describe("applyClawAddPlan", () => {
-  it("requires policy acknowledgement before reserving provenance or workspace state", async () => {
-    const { plan } = await makePlan();
-    const warningPlan: ClawAddPlan = {
-      ...plan,
-      actions: [
-        ...plan.actions,
-        {
-          kind: "package",
-          id: "plugin:@acme/audit",
-          action: "install",
-          target: "clawhub:@acme/audit@1.0.0",
-          blocked: false,
-          details: {
-            installPolicyWarning: {
-              reason: "Review package behavior",
-              acknowledgementId: `sha256:${"a".repeat(64)}`,
-            },
-          },
-        },
-      ],
-    };
-    const persistRecord = vi.fn();
-
-    await expect(
-      applyClawAddPlan(warningPlan, {
-        consentPlanIntegrity: warningPlan.planIntegrity,
-        persistRecord,
-      }),
-    ).rejects.toMatchObject({
-      code: "install_policy_acknowledgement_required",
-      installPolicyRetryPlanIntegrity: warningPlan.planIntegrity,
-      installPolicyWarning: {
-        reason: "Review package behavior",
-        acknowledgementId: `sha256:${"a".repeat(64)}`,
-      },
-    });
-    expect(persistRecord).not.toHaveBeenCalled();
-    await expect(access(plan.agent.workspace)).rejects.toThrow();
-    await expect(
-      applyClawAddPlan(warningPlan, {
-        consentPlanIntegrity: warningPlan.planIntegrity,
-        dangerouslyForceUnsafeInstall: true,
-        persistRecord,
-      }),
-    ).rejects.toMatchObject({ code: "install_policy_acknowledgement_required" });
-    expect(persistRecord).not.toHaveBeenCalled();
-  });
-
-  it("accepts one aggregate acknowledgement for every warned package before mutation", async () => {
-    const { plan } = await makePlan();
-    const warnings = [
-      { reason: "Review first package", acknowledgementId: `sha256:${"a".repeat(64)}` },
-      { reason: "Review second package", acknowledgementId: `sha256:${"b".repeat(64)}` },
-    ];
-    const warningPlan: ClawAddPlan = {
-      ...plan,
-      actions: [
-        ...plan.actions,
-        ...warnings.map((warning, index) => ({
-          kind: "package" as const,
-          id: `plugin:@acme/package-${index + 1}`,
-          action: "install" as const,
-          target: `clawhub:@acme/package-${index + 1}@1.0.0`,
-          blocked: false,
-          details: { installPolicyWarning: warning },
-        })),
-      ],
-    };
-    const acknowledgement = resolveClawInstallPolicyAcknowledgement(
-      warnings.map((warning, index) => ({
-        packageId: `plugin:@acme/package-${index + 1}`,
-        warning,
-      })),
-    );
-    const persistRecord = vi.fn(() => {
-      throw new Error("stop after acknowledgement validation");
-    });
-
-    await expect(
-      applyClawAddPlan(warningPlan, {
-        consentPlanIntegrity: warningPlan.planIntegrity,
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: warnings[0]!.acknowledgementId,
-        persistRecord,
-      }),
-    ).rejects.toMatchObject({
-      code: "install_policy_acknowledgement_required",
-      installPolicyWarning: {
-        reason: warnings[0]!.reason,
-        acknowledgementId: acknowledgement.acknowledgementId,
-      },
-    });
-    expect(persistRecord).not.toHaveBeenCalled();
-
-    await expect(
-      applyClawAddPlan(warningPlan, {
-        consentPlanIntegrity: warningPlan.planIntegrity,
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: acknowledgement.acknowledgementId,
-        persistRecord,
-      }),
-    ).rejects.toMatchObject({ code: "provenance_failed" });
-    expect(persistRecord).toHaveBeenCalledTimes(1);
-  });
-
-  it("passes replayed per-package acknowledgements into package mutation", async () => {
-    const { root, plan } = await makePlan();
-    const acknowledgementIds = new Map([
-      ["plugin:@acme/first", `sha256:${"a".repeat(64)}`],
-      ["plugin:@acme/second", `sha256:${"b".repeat(64)}`],
-    ]);
-    const installPackages = vi.fn(async () => []);
-
-    await applyClawAddPlan(plan, {
-      consentPlanIntegrity: plan.planIntegrity,
-      env: stateEnv(root),
-      installPolicyAcknowledgementIds: acknowledgementIds,
-      installPackages,
-    });
-
-    expect(installPackages).toHaveBeenCalledWith(
-      plan,
-      expect.objectContaining({ installPolicyAcknowledgementIds: acknowledgementIds }),
-    );
-  });
-
-  it("returns a replacement policy warning before reserving provenance or workspace state", async () => {
-    const { plan } = await makePlan();
-    const plannedWarning = {
-      reason: "Review planned package behavior",
-      acknowledgementId: `sha256:${"a".repeat(64)}`,
-    };
-    const replacementWarning = {
-      reason: "Review newly detected package behavior",
-      acknowledgementId: `sha256:${"b".repeat(64)}`,
-    };
-    const warningPlan: ClawAddPlan = {
-      ...plan,
-      actions: [
-        ...plan.actions,
-        {
-          kind: "package",
-          id: "plugin:@acme/audit",
-          action: "install",
-          target: "clawhub:@acme/audit@1.0.0",
-          blocked: false,
-          digest: "sha256:fixture",
-          details: {
-            kind: "plugin",
-            source: "clawhub",
-            ref: "@acme/audit",
-            version: "1.0.0",
-            integrity: "sha256:fixture",
-            installId: "audit",
-            ownerAction: "install",
-            installPolicyWarning: plannedWarning,
-          },
-        },
-      ],
-    };
-    const persistRecord = vi.fn();
-    const packagePreflight = vi.fn(async () => ({
-      ok: true as const,
-      action: "install" as const,
-      integrity: "sha256:fixture",
-      installId: "audit",
-      installPolicyWarning: replacementWarning,
-    }));
-
-    await expect(
-      applyClawAddPlan(warningPlan, {
-        consentPlanIntegrity: warningPlan.planIntegrity,
-        config: { security: { installPolicy: { enabled: true } } },
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: plannedWarning.acknowledgementId,
-        packagePreflight,
-        persistRecord,
-      }),
-    ).rejects.toMatchObject({
-      code: "install_policy_acknowledgement_required",
-      installPolicyWarning: replacementWarning,
-    });
-    expect(packagePreflight).toHaveBeenCalledOnce();
-    expect(persistRecord).not.toHaveBeenCalled();
-    await expect(access(plan.agent.workspace)).rejects.toThrow();
-  });
-
-  it("accepts a revalidated warning with the same normalized acknowledgement id", async () => {
-    const { plan } = await makePlan();
-    const acknowledgementId = `sha256:${"a".repeat(64)}`;
-    const plannedWarning = {
-      reason: "Review /tmp/openclaw-plugin-first/package/index.js",
-      acknowledgementId,
-    };
-    const freshWarning = {
-      reason: "Review /tmp/openclaw-plugin-second/package/index.js",
-      acknowledgementId,
-    };
-    const warningPlan: ClawAddPlan = {
-      ...plan,
-      actions: [
-        ...plan.actions,
-        {
-          kind: "package",
-          id: "plugin:@acme/audit",
-          action: "install",
-          target: "clawhub:@acme/audit@1.0.0",
-          blocked: false,
-          digest: "sha256:fixture",
-          details: {
-            kind: "plugin",
-            source: "clawhub",
-            ref: "@acme/audit",
-            version: "1.0.0",
-            integrity: "sha256:fixture",
-            installId: "audit",
-            ownerAction: "install",
-            installPolicyWarning: plannedWarning,
-          },
-        },
-      ],
-    };
-    const reachedProvenanceReservation = new Error("reached provenance reservation");
-    const persistRecord = vi.fn(() => {
-      throw reachedProvenanceReservation;
-    });
-
-    await expect(
-      applyClawAddPlan(warningPlan, {
-        consentPlanIntegrity: warningPlan.planIntegrity,
-        config: { security: { installPolicy: { enabled: true } } },
-        dangerouslyForceUnsafeInstall: true,
-        installPolicyAcknowledgementId: acknowledgementId,
-        packagePreflight: vi.fn(async () => ({
-          ok: true as const,
-          action: "install" as const,
-          integrity: "sha256:fixture",
-          installId: "audit",
-          installPolicyWarning: freshWarning,
-        })),
-        persistRecord,
-      }),
-    ).rejects.toMatchObject({
-      code: "provenance_failed",
-      message: reachedProvenanceReservation.message,
-    });
-    expect(persistRecord).toHaveBeenCalledOnce();
-  });
-
   it("appends one agent, preserves defaults and existing agents, and creates a new workspace", async () => {
     const { root, plan } = await makePlan(
       {

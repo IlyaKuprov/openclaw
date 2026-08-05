@@ -3,13 +3,12 @@ import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { stableStringify } from "@openclaw/normalization-core";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { assertNoSymlinkParents } from "../infra/fs-safe-advanced.js";
 import { FsSafeError, root as fsSafeRoot, type Root } from "../infra/fs-safe.js";
-import type { InstallPolicyWarning } from "../security/install-policy.js";
 import { resolveUserPath } from "../utils.js";
 import { digestClawMcpServer } from "./mcp.js";
-import { stableStringifyClawPlanIntegrity } from "./plan-integrity.js";
 import { clawManifestWorkspaceConflictsWithPath } from "./schema.js";
 import { MAX_MANAGED_FILE_BYTES, MAX_MANAGED_WORKSPACE_BYTES } from "./source-limits.js";
 import {
@@ -36,9 +35,7 @@ function capabilityChange(
     ...change,
     classification: "escalation",
     requiresDistinctConsent: true,
-    digest: `sha256:${createHash("sha256")
-      .update(stableStringifyClawPlanIntegrity(change.effect))
-      .digest("hex")}`,
+    digest: `sha256:${createHash("sha256").update(stableStringify(change.effect)).digest("hex")}`,
   };
 }
 
@@ -53,14 +50,12 @@ export type ClawAddPlanContext = {
   packagePreflight?: (
     pkg: ClawPackage,
     workspace: string,
-    mode: "install" | "update",
   ) => Promise<{
     ok: boolean;
     action?: "install" | "reuse";
     integrity?: string;
     installId?: string;
     warning?: string;
-    installPolicyWarning?: InstallPolicyWarning;
     requirements?: ClawLocalPrerequisite[];
     installedVersion?: string;
     code?: string;
@@ -449,7 +444,7 @@ export async function buildClawAddPlan(params: {
 
   for (const pkg of params.manifest.packages) {
     const preflight = context.packagePreflight
-      ? await context.packagePreflight(pkg, workspace, "install")
+      ? await context.packagePreflight(pkg, workspace)
       : {
           ok: false,
           code: "package_install_unavailable",
@@ -479,9 +474,6 @@ export async function buildClawAddPlan(params: {
         ...(preflight.integrity ? { integrity: preflight.integrity } : {}),
         ...(preflight.installId ? { installId: preflight.installId } : {}),
         ...(preflight.warning ? { riskWarning: preflight.warning } : {}),
-        ...(preflight.installPolicyWarning
-          ? { installPolicyWarning: preflight.installPolicyWarning }
-          : {}),
         ...(preflight.requirements ? { prerequisites: preflight.requirements } : {}),
         expectedState: !preflight.ok
           ? "unresolved"
@@ -606,7 +598,7 @@ export async function buildClawAddPlan(params: {
 
   const planIntegrity = `sha256:${createHash("sha256")
     .update(
-      stableStringifyClawPlanIntegrity({
+      stableStringify({
         manifestSchemaVersion: params.manifest.schemaVersion,
         clawIntegrity: source.integrity,
         finalId,

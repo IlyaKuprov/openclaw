@@ -195,9 +195,6 @@ struct OpenClawTypographyTests {
         let agentDestinations = try String(
             contentsOf: Self.sourceURL("Design/AgentProTab+Destinations.swift"),
             encoding: .utf8)
-        let agentProTab = try String(
-            contentsOf: Self.sourceURL("Design/AgentProTab.swift"),
-            encoding: .utf8)
         let dreaming = try String(
             contentsOf: Self.sourceURL("Design/AgentProDreamingDestination.swift"),
             encoding: .utf8)
@@ -370,13 +367,6 @@ struct OpenClawTypographyTests {
         #expect(skillWorkshop.contains("Text(\"Inspect\")"))
         #expect(skillWorkshop.contains("Text(\"Apply\")"))
         #expect(skillWorkshop.contains("Text(\"Reject\")"))
-
-        #expect(agentProTab.contains("Text(\"Review install warning\")"))
-        #expect(agentProTab.contains("Text(review.message)"))
-        #expect(agentProTab.contains("Text(\"Install anyway\")"))
-        #expect(agentProTab.contains(".font(OpenClawType.headline)"))
-        #expect(agentProTab.contains(".font(OpenClawType.subhead)"))
-        #expect(agentProTab.contains(".font(OpenClawType.subheadSemiBold)"))
 
         #expect(skills.contains("Text(\"Gateway warning\").font(OpenClawType.headline)"))
         #expect(skills.contains("Text(\"Acknowledge and install\").font(OpenClawType.subheadSemiBold)"))

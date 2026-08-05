@@ -56,8 +56,9 @@ async function collectInstallPolicyHealthLines(
       sourcePath: probeDir,
     });
     if (result?.warning) {
+      lines.push(`- Deep probe returned a warning: ${result.warning.reason}`);
       lines.push(
-        `- Deep probe reached the policy command and the policy warned on the synthetic request: ${result.warning.reason}`,
+        "- Covered installs require explicit acknowledgement when this warning is returned.",
       );
       return lines;
     }

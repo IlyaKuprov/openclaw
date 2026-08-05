@@ -1209,7 +1209,6 @@ export async function installPluginFromClawHub(
     dryRun?: boolean;
     expectedPluginId?: string;
     expectedIntegrity?: string;
-    emitSuccessSecurityEvent?: boolean;
     env?: RuntimeVersionEnv;
     acknowledgeClawHubRisk?: boolean;
     onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
@@ -1437,8 +1436,6 @@ export async function installPluginFromClawHub(
     const installResult = await installPluginFromArchive({
       archivePath: archive.archivePath,
       dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-      installPolicyAcknowledgementSequence: params.installPolicyAcknowledgementSequence,
       trustedSourceLinkedOfficialInstall:
         officialClawHubPackage || isTrustedSourceLinkedOfficialPackage(detail.package!),
       config: params.config,
@@ -1448,7 +1445,6 @@ export async function installPluginFromClawHub(
       timeoutMs: params.timeoutMs,
       dryRun: params.dryRun,
       expectedPluginId: runtimeIdResolution.expectedPluginId,
-      emitSuccessSecurityEvent: params.emitSuccessSecurityEvent,
       installPolicyRequest: {
         kind: "plugin-archive",
         requestedSpecifier: params.spec,
@@ -1461,7 +1457,7 @@ export async function installPluginFromClawHub(
       },
     });
     if (!installResult.ok) {
-      return { ...installResult, version: versionState.version };
+      return installResult;
     }
 
     const pkg = detail.package!;

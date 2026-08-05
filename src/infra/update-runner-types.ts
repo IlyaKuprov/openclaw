@@ -1,5 +1,4 @@
 import type { CommandOptions } from "../process/exec.js";
-import type { InstallPolicyWarning } from "../security/install-policy.js";
 import type { OpenClawSchemaVersions } from "../state/openclaw-schema-versions.js";
 import type { PackageUpdateStepAdvisory } from "./package-update-steps.js";
 import type { UpdateChannel } from "./update-channels.js";
@@ -58,7 +57,6 @@ export type UpdateRunResult = {
         switchedToNpm: string[];
         warnings: string[];
         errors: string[];
-        installPolicyWarnings?: Array<{ error: string; warning: InstallPolicyWarning }>;
       };
       npm: {
         changed: boolean;

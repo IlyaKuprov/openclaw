@@ -1,7 +1,6 @@
 package ai.openclaw.app.ui
 
 import ai.openclaw.app.CLAWHUB_SKILL_GATEWAY_UNAVAILABLE
-import ai.openclaw.app.GatewayClawHubAcknowledgementKind
 import ai.openclaw.app.GatewayClawHubInstallReview
 import ai.openclaw.app.GatewayClawHubSkillSearchState
 import ai.openclaw.app.GatewayClawHubSkillSummary
@@ -197,13 +196,7 @@ internal fun SkillsSettingsScreen(
           onSearch = { viewModel.searchClawHubSkills(clawHubQuery) },
           onReviewInstall = viewModel::reviewClawHubSkillInstall,
           onAcknowledgeInstall = { slug, version ->
-            viewModel.installClawHubSkill(
-              slug,
-              acknowledgeClawHubRisk = clawHubState.acknowledgeClawHubRisk,
-              dangerouslyForceUnsafeInstall = clawHubState.dangerouslyForceUnsafeInstall,
-              installPolicyAcknowledgementId = clawHubState.installPolicyAcknowledgementId,
-              version = version,
-            )
+            viewModel.installClawHubSkill(slug, acknowledgeClawHubRisk = true, version = version)
           },
           onClearMessage = viewModel::clearClawHubSkillMessage,
         )
@@ -597,7 +590,6 @@ private fun ClawHubSkillSearchPanel(
       messageText = state.messageText,
       acknowledgeSlug = state.acknowledgeSlug,
       acknowledgeVersion = state.acknowledgeVersion,
-      acknowledgementKind = state.acknowledgementKind,
       canAcknowledge = methodsAvailable && canManageSkills,
       installingSlugs = state.installingSlugs,
       onAcknowledgeInstall = onAcknowledgeInstall,
@@ -639,7 +631,6 @@ private fun ClawHubNoticeCard(
   messageText: String?,
   acknowledgeSlug: String?,
   acknowledgeVersion: String?,
-  acknowledgementKind: GatewayClawHubAcknowledgementKind?,
   canAcknowledge: Boolean,
   installingSlugs: Set<String>,
   onAcknowledgeInstall: (String, String?) -> Unit,
@@ -653,15 +644,18 @@ private fun ClawHubNoticeCard(
       else -> ClawStatus.Success
     }
   val rawText = errorText ?: messageText.orEmpty()
-  val notice =
-    clawHubNoticeContent(
-      rawText = rawText,
-      acknowledgementKind = acknowledgementKind,
-      clawHubRiskSummary =
-        nativeString("The Gateway will verify this exact release with ClawHub before download. If the release needs explicit risk acknowledgement, Android will show the Gateway warning before retrying."),
-    )
-  val summary = notice.summary
-  val details = notice.details
+  val summary =
+    if (requiresAcknowledgement) {
+      nativeString("The Gateway will verify this exact release with ClawHub before download. If the release needs explicit risk acknowledgement, Android will show the Gateway warning before retrying.")
+    } else {
+      rawText.substringBefore("\n\n").trim()
+    }
+  val details =
+    when {
+      requiresAcknowledgement -> rawText.takeIf(String::isNotBlank)
+      "\n\n" in rawText -> rawText.substringAfter("\n\n").trim().takeIf(String::isNotBlank)
+      else -> null
+    }
   var detailsExpanded by rememberSaveable(rawText) { mutableStateOf(false) }
   val accent =
     when (status) {
@@ -739,39 +733,6 @@ private fun ClawHubNoticeCard(
     }
   }
 }
-
-internal data class ClawHubNoticeContent(
-  val summary: String,
-  val details: String?,
-)
-
-internal fun clawHubNoticeContent(
-  rawText: String,
-  acknowledgementKind: GatewayClawHubAcknowledgementKind?,
-  clawHubRiskSummary: String,
-): ClawHubNoticeContent =
-  when (acknowledgementKind) {
-    GatewayClawHubAcknowledgementKind.INSTALL_POLICY -> {
-      val lines = rawText.lines()
-      ClawHubNoticeContent(
-        summary = lines.firstOrNull().orEmpty().trim(),
-        details =
-          lines
-            .drop(1)
-            .joinToString("\n")
-            .trim()
-            .takeIf(String::isNotBlank),
-      )
-    }
-    GatewayClawHubAcknowledgementKind.CLAWHUB_RISK ->
-      ClawHubNoticeContent(clawHubRiskSummary, rawText.takeIf(String::isNotBlank))
-    null ->
-      ClawHubNoticeContent(
-        summary = rawText.substringBefore("\n\n").trim(),
-        details =
-          if ("\n\n" in rawText) rawText.substringAfter("\n\n").trim().takeIf(String::isNotBlank) else null,
-      )
-  }
 
 @Composable
 private fun ClawHubInstallReviewDialog(

@@ -11,10 +11,6 @@ import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { normalizeWindowsPathForComparison } from "../infra/path-guards.js";
 import { DEFAULT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
-import {
-  isInstallPolicyEnabledForTarget,
-  type InstallPolicyWarning,
-} from "../security/install-policy.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveUserPath } from "../utils.js";
 import {
@@ -23,11 +19,6 @@ import {
   type ClawCronGateway,
   type PersistedClawCronRef,
 } from "./cron.js";
-import {
-  createClawPackagePolicyPreflight,
-  isInstallPolicyWarning,
-  resolveClawInstallPolicyAcknowledgement,
-} from "./install-policy-acknowledgement.js";
 import {
   ClawMcpInstallError,
   installClawMcpServers,
@@ -42,7 +33,7 @@ import {
   type PersistedClawInstall,
   type PersistedClawPackageRef,
 } from "./provenance.js";
-import { CLAW_OUTPUT_STABILITY, type ClawAddPlan, type ClawPackage } from "./types.js";
+import { CLAW_OUTPUT_STABILITY, type ClawAddPlan } from "./types.js";
 import {
   ClawWorkspaceWriteError,
   createClawWorkspaceFiles,
@@ -53,10 +44,6 @@ export const CLAW_ADD_RESULT_SCHEMA_VERSION = "openclaw.clawAddResult.v1" as con
 
 type ConfigCommit = (transform: (config: OpenClawConfig) => OpenClawConfig) => Promise<void>;
 type ClawAddApplyOptions = OpenClawStateDatabaseOptions & {
-  config?: OpenClawConfig;
-  dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
-  installPolicyAcknowledgementIds?: ReadonlyMap<string, string>;
   consentPlanIntegrity?: string;
   commitConfig?: ConfigCommit;
   persistRecord?: typeof persistClawInstallRecord;
@@ -65,7 +52,6 @@ type ClawAddApplyOptions = OpenClawStateDatabaseOptions & {
   createWorkspaceFiles?: typeof createClawWorkspaceFiles;
   runtime?: RuntimeEnv;
   installPackages?: typeof installClawPackages;
-  packagePreflight?: ReturnType<typeof createClawPackagePolicyPreflight>;
   installMcpServers?: typeof installClawMcpServers;
   installCronJobs?: typeof installClawCronJobs;
   cronGateway?: Pick<ClawCronGateway, "add" | "list" | "waitUntilAgentAvailable">;
@@ -75,8 +61,6 @@ export class ClawAddMutationError extends Error {
   constructor(
     readonly code: string,
     message: string,
-    readonly installPolicyWarning?: InstallPolicyWarning,
-    readonly installPolicyRetryPlanIntegrity?: string,
   ) {
     super(message);
     this.name = "ClawAddMutationError";
@@ -103,7 +87,6 @@ type ClawAddResult = {
     code: string;
     message: string;
     diagnostics?: ClawWorkspaceWriteError["diagnostics"];
-    installPolicyWarning?: InstallPolicyWarning;
   };
 };
 
@@ -114,112 +97,6 @@ function hasUnsupportedMutationActions(plan: ClawAddPlan): boolean {
         action.kind,
       ),
   );
-}
-
-function plannedInstallPolicyAcknowledgement(plan: ClawAddPlan) {
-  return resolveClawInstallPolicyAcknowledgement(
-    plan.actions.flatMap((action) => {
-      const warning = action.kind === "package" ? action.details?.installPolicyWarning : undefined;
-      return isInstallPolicyWarning(warning) ? [{ packageId: action.id, warning }] : [];
-    }),
-  );
-}
-
-function packageFromPlanAction(action: ClawAddPlan["actions"][number]): ClawPackage | undefined {
-  const details = action.kind === "package" ? action.details : undefined;
-  if (
-    (details?.kind !== "skill" && details?.kind !== "plugin") ||
-    details.source !== "clawhub" ||
-    typeof details.ref !== "string" ||
-    typeof details.version !== "string"
-  ) {
-    return undefined;
-  }
-  return {
-    kind: details.kind,
-    source: details.source,
-    ref: details.ref,
-    version: details.version,
-  };
-}
-
-function installPolicyWarningChanged(
-  planned: InstallPolicyWarning | undefined,
-  fresh: InstallPolicyWarning | undefined,
-): boolean {
-  if (!fresh) {
-    return false;
-  }
-  if (planned?.acknowledgementId && fresh.acknowledgementId) {
-    return planned.acknowledgementId !== fresh.acknowledgementId;
-  }
-  return stableStringify(fresh) !== stableStringify(planned);
-}
-
-async function revalidatePackagePolicyBeforeMutation(params: {
-  plan: ClawAddPlan;
-  options: ClawAddApplyOptions;
-  acknowledgementIds: ReadonlyMap<string, string>;
-}): Promise<void> {
-  const packageActions = params.plan.actions.filter((action) => action.kind === "package");
-  if (packageActions.length === 0) {
-    return;
-  }
-  const preflight =
-    params.options.packagePreflight ??
-    (params.options.config
-      ? createClawPackagePolicyPreflight({
-          config: params.options.config,
-          acknowledgementIds: params.acknowledgementIds,
-        })
-      : undefined);
-  if (!preflight) {
-    return;
-  }
-  for (const action of packageActions) {
-    const pkg = packageFromPlanAction(action);
-    if (!pkg) {
-      continue;
-    }
-    if (
-      params.options.config &&
-      !isInstallPolicyEnabledForTarget(params.options.config, pkg.kind)
-    ) {
-      continue;
-    }
-    const fresh = await preflight(pkg, params.plan.agent.workspace, "install");
-    if (!fresh.ok) {
-      throw new ClawAddMutationError(
-        fresh.code ?? "package_preflight_failed",
-        fresh.message ?? `Package ${action.id} failed final policy preflight.`,
-      );
-    }
-    const plannedWarning = isInstallPolicyWarning(action.details?.installPolicyWarning)
-      ? action.details.installPolicyWarning
-      : undefined;
-    const freshWarning = isInstallPolicyWarning(fresh.installPolicyWarning)
-      ? fresh.installPolicyWarning
-      : undefined;
-    if (installPolicyWarningChanged(plannedWarning, freshWarning)) {
-      throw new ClawAddMutationError(
-        "install_policy_acknowledgement_required",
-        `Install policy warning requires acknowledgement: ${freshWarning!.reason}. Re-run with --dangerously-force-unsafe-install ${freshWarning!.acknowledgementId ?? "<acknowledgement-id>"} after reviewing the findings.`,
-        freshWarning,
-      );
-    }
-    const details = action.details;
-    if (
-      fresh.action !== details?.ownerAction ||
-      fresh.integrity !== details?.integrity ||
-      fresh.installId !== details?.installId ||
-      fresh.warning !== details?.riskWarning
-    ) {
-      throw new ClawAddMutationError(
-        "package_owner_state_changed",
-        `Package ${action.id} changed after planning; run add --dry-run again.`,
-      );
-    }
-  }
 }
 
 function statusAtLeast(status: ClawInstallStatus, phase: ClawInstallStatus): boolean {
@@ -330,40 +207,6 @@ export async function applyClawAddPlan(
       "Consent does not match the current Claw add plan; run add --dry-run again.",
     );
   }
-  const installPolicyAcknowledgement = plannedInstallPolicyAcknowledgement(plan);
-  const installPolicyAcknowledgementIds =
-    installPolicyAcknowledgement.warnings.length > 0
-      ? installPolicyAcknowledgement.packageAcknowledgementIds
-      : (options.installPolicyAcknowledgementIds ??
-        installPolicyAcknowledgement.packageAcknowledgementIds);
-  const installPolicyWarning = installPolicyAcknowledgement.warnings[0];
-  if (
-    installPolicyWarning &&
-    (!options.dangerouslyForceUnsafeInstall ||
-      !installPolicyAcknowledgement.acknowledgementId ||
-      options.installPolicyAcknowledgementId !== installPolicyAcknowledgement.acknowledgementId)
-  ) {
-    const { acknowledgementId: _packageAcknowledgementId, ...warningDetails } =
-      installPolicyWarning;
-    const presentedInstallPolicyWarning = {
-      ...warningDetails,
-      ...(installPolicyAcknowledgement.acknowledgementId
-        ? { acknowledgementId: installPolicyAcknowledgement.acknowledgementId }
-        : {}),
-    };
-    throw new ClawAddMutationError(
-      "install_policy_acknowledgement_required",
-      `Install policy warning${installPolicyAcknowledgement.warnings.length === 1 ? "" : "s"} require acknowledgement: ${installPolicyWarning.reason}. Re-run with --dangerously-force-unsafe-install ${installPolicyAcknowledgement.acknowledgementId ?? "<acknowledgement-id>"} after reviewing the findings.`,
-      presentedInstallPolicyWarning,
-      plan.planIntegrity,
-    );
-  }
-
-  await revalidatePackagePolicyBeforeMutation({
-    plan,
-    options,
-    acknowledgementIds: installPolicyAcknowledgementIds,
-  });
 
   const persistRecord = options.persistRecord ?? persistClawInstallRecord;
   let installRecord: PersistedClawInstall;
@@ -600,10 +443,7 @@ export async function applyClawAddPlan(
   try {
     // Skills require their workspace. Recurring work is enabled only after all
     // package mutation succeeds.
-    packages = await installPackages(plan, {
-      ...options,
-      installPolicyAcknowledgementIds,
-    });
+    packages = await installPackages(plan, options);
   } catch (error) {
     const packageError =
       error instanceof ClawPackageInstallError
@@ -621,13 +461,7 @@ export async function applyClawAddPlan(
       workspaceFiles,
       packages: packageError.installedPackages,
       installStatus: "config_committed",
-      error: {
-        code: packageError.code,
-        message: packageError.message,
-        ...(packageError.installPolicyWarning
-          ? { installPolicyWarning: packageError.installPolicyWarning }
-          : {}),
-      },
+      error: { code: packageError.code, message: packageError.message },
       nowMs: options.nowMs,
     });
   }

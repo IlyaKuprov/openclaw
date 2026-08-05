@@ -26,7 +26,6 @@ import {
   resolveInstallConfigMutationPreflights,
   selectInstallMutationWriteOptions,
 } from "../plugins/install-persistence.js";
-import { resolveInstallPolicyAcknowledgementSequence } from "../plugins/install-policy-acknowledgement.js";
 import {
   commitPluginInstallRecordsOnly,
   commitPluginInstallRecordsWithConfig,
@@ -177,7 +176,6 @@ type RunPluginUpdateCommandParams = {
     acknowledgeClawHubRisk?: boolean;
     dryRun?: boolean;
     dangerouslyForceUnsafeInstall?: boolean;
-    installPolicyAcknowledgementId?: string;
   };
 };
 
@@ -336,10 +334,6 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
     }
   }
 
-  const installPolicyAcknowledgementSequence = resolveInstallPolicyAcknowledgementSequence({
-    dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
-    installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
-  });
   const pluginResult =
     pluginSelection.pluginIds.length > 0
       ? await updateNpmInstalledPlugins({
@@ -357,9 +351,6 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
           syncOfficialPluginInstalls: params.opts.all ? true : undefined,
           coreVersion: VERSION,
           dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
-          installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
-          installPolicyAcknowledgementSequence,
-          deferInstallPolicyAcknowledgementMismatch: true,
           ...resolveClawHubRiskAcknowledgementCliOptions({
             acknowledgeClawHubRisk: params.opts.acknowledgeClawHubRisk,
             action: "updating",
@@ -387,9 +378,6 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
       ? await updateNpmInstalledHookPacks({
           config: pluginResult.config,
           dangerouslyForceUnsafeInstall: params.opts.dangerouslyForceUnsafeInstall,
-          installPolicyAcknowledgementId: params.opts.installPolicyAcknowledgementId,
-          installPolicyAcknowledgementSequence,
-          deferInstallPolicyAcknowledgementMismatch: true,
           hookIds: hookSelection.hookIds,
           specOverrides: hookSelection.specOverrides,
           dryRun: params.opts.dryRun,
@@ -413,30 +401,8 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
         })
       : { config: pluginResult.config, changed: false, outcomes: [] };
 
-  const outcomes = [...pluginResult.outcomes, ...hookResult.outcomes];
-  if (installPolicyAcknowledgementSequence && !installPolicyAcknowledgementSequence.matched) {
-    const pluginDeferred =
-      "deferredInstallPolicyMismatch" in pluginResult
-        ? pluginResult.deferredInstallPolicyMismatch
-        : undefined;
-    const hookDeferred =
-      "deferredInstallPolicyMismatch" in hookResult
-        ? hookResult.deferredInstallPolicyMismatch
-        : undefined;
-    const deferred = pluginDeferred
-      ? pluginDeferred
-      : hookDeferred
-        ? {
-            index: pluginResult.outcomes.length + hookDeferred.index,
-            outcome: hookDeferred.outcome,
-          }
-        : undefined;
-    if (deferred) {
-      outcomes[deferred.index] = deferred.outcome;
-    }
-  }
   const outcomeSummary = logPluginUpdateOutcomes({
-    outcomes,
+    outcomes: [...pluginResult.outcomes, ...hookResult.outcomes],
     log: (message) => defaultRuntime.log(message),
   });
 

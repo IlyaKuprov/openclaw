@@ -1,15 +1,10 @@
 import fs from "node:fs/promises";
-import { withInstallSourceSnapshot } from "../infra/install-source-utils.js";
 import { resolveUserPath } from "../utils.js";
 import {
   scanAndLinkInstalledPackage,
   validatePackagePluginInstallSource,
 } from "./install-installed-package.js";
 import { encodePluginInstallDirName, validatePluginId } from "./install-paths.js";
-import {
-  resolveInstallPolicyAcknowledgementSequence,
-  unresolvedInstallPolicyAcknowledgement,
-} from "./install-policy-acknowledgement.js";
 import {
   defaultLogger,
   emitSuccessfulPluginInstallSecurityEvent,
@@ -46,8 +41,6 @@ function pickPackageInstallCommonParams(
   return {
     config: params.config,
     dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-    installPolicyAcknowledgementSequence: params.installPolicyAcknowledgementSequence,
     trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
     extensionsDir: params.extensionsDir,
     npmDir: params.npmDir,
@@ -162,8 +155,6 @@ async function installBundleFromSourceDir(
     scan: async () =>
       await runtime.scanBundleInstallSource({
         dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-        installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-        installPolicyAcknowledgementSequence: params.installPolicyAcknowledgementSequence,
         config: params.config,
         sourceDir: params.sourceDir,
         pluginId,
@@ -243,7 +234,6 @@ async function installPluginFromPackageDir(
     params,
     defaultLogger,
   );
-  const installPolicyAcknowledgementSequence = resolveInstallPolicyAcknowledgementSequence(params);
   let preparedTarget: PreparedInstallTarget | undefined;
   const resolvePreparedTargetForPluginId = async (pluginId: string) => {
     if (!preparedTarget) {
@@ -270,8 +260,6 @@ async function installPluginFromPackageDir(
     requirePluginManifest: params.requirePluginManifest,
     allowSourceTypeScriptEntries: params.allowSourceTypeScriptEntries,
     dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-    installPolicyAcknowledgementSequence,
     trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
     config: params.config,
     installPolicyRequest: params.installPolicyRequest,
@@ -294,18 +282,6 @@ async function installPluginFromPackageDir(
     !hasBundleManifest &&
     params.installPolicyRequest?.kind === "plugin-archive";
 
-  const unresolvedAcknowledgement = unresolvedInstallPolicyAcknowledgement(
-    installPolicyAcknowledgementSequence,
-  );
-  if (dryRun && unresolvedAcknowledgement) {
-    return {
-      ok: false,
-      code: "security_scan_blocked",
-      error: unresolvedAcknowledgement.reason,
-      installPolicyWarning: unresolvedAcknowledgement.warning,
-    };
-  }
-
   return await installPluginDirectoryIntoExtensions({
     sourceDir: params.packageDir,
     pluginId: plugin.pluginId,
@@ -325,14 +301,12 @@ async function installPluginFromPackageDir(
     depsLogMessage: "Installing plugin dependencies…",
     nameEncoder: encodePluginInstallDirName,
     afterInstall: async (installedDir) => {
-      const postInstallError = await scanAndLinkInstalledPackage({
+      return await scanAndLinkInstalledPackage({
         runtime,
         installedDir,
         pluginId: plugin.pluginId,
         peerDependencies: plugin.peerDependencies,
         dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-        installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-        installPolicyAcknowledgementSequence,
         trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
         config: params.config,
         mode: effectiveMode,
@@ -343,18 +317,6 @@ async function installPluginFromPackageDir(
         source: params.installPolicyRequest?.source,
         logger,
       });
-      if (postInstallError) {
-        return postInstallError;
-      }
-      const deferred = unresolvedInstallPolicyAcknowledgement(installPolicyAcknowledgementSequence);
-      return deferred
-        ? {
-            ok: false,
-            code: "security_scan_blocked",
-            error: deferred.reason,
-            installPolicyWarning: deferred.warning,
-          }
-        : null;
     },
   });
 }
@@ -362,7 +324,6 @@ async function installPluginFromPackageDir(
 export async function installPluginFromArchive(
   params: {
     archivePath: string;
-    emitSuccessSecurityEvent?: boolean;
   } & PackageInstallCommonParams,
 ): Promise<InstallPluginResult> {
   const runtime = await loadPluginInstallRuntime();
@@ -392,8 +353,6 @@ export async function installPluginFromArchive(
         sourceDir,
         ...pickPackageInstallCommonParams({
           dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-          installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-          installPolicyAcknowledgementSequence: params.installPolicyAcknowledgementSequence,
           extensionsDir: params.extensionsDir,
           timeoutMs,
           logger,
@@ -410,14 +369,12 @@ export async function installPluginFromArchive(
         }),
       }),
   });
-  if (params.emitSuccessSecurityEvent !== false) {
-    emitSuccessfulPluginInstallSecurityEvent(result, {
-      dryRun: params.dryRun,
-      mode: effectiveMode,
-      sourceFamily: "archive",
-      trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
-    });
-  }
+  emitSuccessfulPluginInstallSecurityEvent(result, {
+    dryRun: params.dryRun,
+    mode: effectiveMode,
+    sourceFamily: "archive",
+    trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
+  });
   return result;
 }
 
@@ -442,42 +399,16 @@ async function installPluginFromDir(
   }
 
   let effectiveMode = params.mode ?? "install";
-  const installFromSnapshot = async (sourceDir: string) =>
-    await installPluginFromSourceDir({
-      sourceDir,
-      ...pickPackageInstallCommonParams({
-        ...params,
-        installPolicyRequest,
-        onEffectiveMode: (resolvedMode) => {
-          effectiveMode = resolvedMode;
-        },
-      }),
-    });
-  let result: InstallPluginResult;
-  if (
-    installPolicyRequest.kind === "plugin-dir" &&
-    installPolicyRequest.source?.kind === "local-path" &&
-    !params.dryRun
-  ) {
-    let snapshotReady = false;
-    try {
-      result = await withInstallSourceSnapshot({
-        sourceDir: dirPath,
-        prefix: "openclaw-plugin-source-",
-        run: async (snapshotDir) => {
-          snapshotReady = true;
-          return await installFromSnapshot(snapshotDir);
-        },
-      });
-    } catch (err) {
-      if (snapshotReady) {
-        throw err;
-      }
-      return { ok: false, error: `failed to snapshot plugin source: ${String(err)}` };
-    }
-  } else {
-    result = await installFromSnapshot(dirPath);
-  }
+  const result = await installPluginFromSourceDir({
+    sourceDir: dirPath,
+    ...pickPackageInstallCommonParams({
+      ...params,
+      installPolicyRequest,
+      onEffectiveMode: (resolvedMode) => {
+        effectiveMode = resolvedMode;
+      },
+    }),
+  });
   emitSuccessfulPluginInstallSecurityEvent(result, {
     dryRun: params.dryRun,
     mode: effectiveMode,

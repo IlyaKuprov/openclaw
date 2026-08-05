@@ -19,7 +19,6 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { buildNpmResolutionFields, type NpmSpecResolution } from "../infra/install-source-utils.js";
 import { parseRegistryNpmSpec } from "../infra/npm-registry-spec.js";
 import type { RuntimeEnv } from "../runtime.js";
-import type { InstallPolicyWarning } from "../security/install-policy.js";
 import { installBundledPluginSource } from "./bundled-install.js";
 import type { BundledPluginSource } from "./bundled-sources.js";
 import { CLAWHUB_INSTALL_ERROR_CODE } from "./clawhub-error-codes.js";
@@ -122,15 +121,8 @@ type ManagedPluginInstallRequest =
       packageName: string;
       version?: string;
       acknowledgeClawHubRisk?: boolean;
-      dangerouslyForceUnsafeInstall?: boolean;
-      installPolicyAcknowledgementId?: string;
     }
-  | {
-      source: "official";
-      pluginId: string;
-      dangerouslyForceUnsafeInstall?: boolean;
-      installPolicyAcknowledgementId?: string;
-    };
+  | { source: "official"; pluginId: string };
 
 export type ManagedPluginSourceInstallRequest =
   | {
@@ -192,24 +184,10 @@ type ManagedPluginSourceInstallResult =
       npmResolution?: NpmSpecResolution;
       clawhub?: ClawHubPluginInstallRecordFields;
     }
-  | {
-      ok: false;
-      error: string;
-      code?: string;
-      version?: string;
-      warning?: string;
-      installPolicyWarning?: InstallPolicyWarning;
-    };
+  | { ok: false; error: string; code?: string; version?: string; warning?: string };
 
 type SourceInstallerResult =
-  | {
-      ok: false;
-      error: string;
-      code?: string;
-      version?: string;
-      warning?: string;
-      installPolicyWarning?: InstallPolicyWarning;
-    }
+  | { ok: false; error: string; code?: string; version?: string; warning?: string }
   | {
       ok: true;
       pluginId: string;
@@ -223,7 +201,6 @@ export class ManagedPluginLifecycleError extends Error {
   readonly code?: string;
   readonly version?: string;
   readonly warning?: string;
-  readonly installPolicyWarning?: InstallPolicyWarning;
 
   constructor(
     message: string,
@@ -232,7 +209,6 @@ export class ManagedPluginLifecycleError extends Error {
       code?: string;
       version?: string;
       warning?: string;
-      installPolicyWarning?: InstallPolicyWarning;
       cause?: unknown;
     },
   ) {
@@ -242,7 +218,6 @@ export class ManagedPluginLifecycleError extends Error {
     this.code = details?.code;
     this.version = details?.version;
     this.warning = details?.warning;
-    this.installPolicyWarning = details?.installPolicyWarning;
   }
 }
 
@@ -996,7 +971,6 @@ function throwInstallFailure(result: {
   code?: string;
   version?: string;
   warning?: string;
-  installPolicyWarning?: InstallPolicyWarning;
 }): never {
   const unavailable =
     !result.code ||
@@ -1008,7 +982,6 @@ function throwInstallFailure(result: {
     code: result.code,
     version: result.version,
     warning: result.warning,
-    installPolicyWarning: result.installPolicyWarning,
     cause: result,
   });
 }
@@ -1439,10 +1412,6 @@ export async function installManagedPlugin(params: {
       snapshot,
       env,
       logger: createInstallLogger(warnings),
-      safetyOverrides: {
-        dangerouslyForceUnsafeInstall: params.request.dangerouslyForceUnsafeInstall,
-        installPolicyAcknowledgementId: params.request.installPolicyAcknowledgementId,
-      },
       cleanupOnPersistenceFailure: true,
     });
     if (!installed.ok) {

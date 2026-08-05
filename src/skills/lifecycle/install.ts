@@ -27,8 +27,6 @@ type SkillInstallRequest = {
   workspaceDir: string;
   skillName: string;
   installId: string;
-  dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
   timeoutMs?: number;
   config?: OpenClawConfig;
 };
@@ -700,8 +698,6 @@ export async function installSkill(params: SkillInstallRequest): Promise<SkillIn
   const normalizedSpec = spec ? normalizeSkillInstallSpec(spec) : undefined;
   const scanResult = await evaluateSkillInstallPolicy({
     config: params.config,
-    dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
     installId: params.installId,
     ...(normalizedSpec ? { installSpec: normalizedSpec } : {}),
     logger: {
@@ -730,9 +726,6 @@ export async function installSkill(params: SkillInstallRequest): Promise<SkillIn
         stdout: "",
         stderr: "",
         code: null,
-        ...(scanResult.blocked.installPolicyWarning
-          ? { installPolicyWarning: scanResult.blocked.installPolicyWarning }
-          : {}),
       },
       warnings,
     );

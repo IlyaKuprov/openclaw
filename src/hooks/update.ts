@@ -6,12 +6,6 @@ import {
   readInstalledPackageVersion,
 } from "../infra/package-update-utils.js";
 import {
-  createInstallPolicyAcknowledgementTracker,
-  type DeferredInstallPolicyMismatch,
-} from "../plugins/install-policy-acknowledgement.js";
-import type { InstallPolicyAcknowledgementSequence } from "../plugins/install-security-scan.types.js";
-import type { InstallPolicyWarning } from "../security/install-policy.js";
-import {
   installHooksFromNpmSpec,
   type HookNpmIntegrityDriftParams,
   resolveHookInstallDir,
@@ -34,7 +28,6 @@ type HookPackUpdateOutcome = {
   message: string;
   currentVersion?: string;
   nextVersion?: string;
-  installPolicyWarning?: InstallPolicyWarning;
 };
 
 /** Aggregate update result with the possibly updated config. */
@@ -42,8 +35,6 @@ type HookPackUpdateSummary = {
   config: OpenClawConfig;
   changed: boolean;
   outcomes: HookPackUpdateOutcome[];
-  installPolicyAcknowledgementMatched?: boolean;
-  deferredInstallPolicyMismatch?: DeferredInstallPolicyMismatch<HookPackUpdateOutcome>;
 };
 
 /** Integrity drift payload enriched with hook pack identity and dry-run state. */
@@ -85,9 +76,6 @@ function createHookPackUpdateIntegrityDriftHandler(params: {
 export async function updateNpmInstalledHookPacks(params: {
   config: OpenClawConfig;
   dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
-  installPolicyAcknowledgementSequence?: InstallPolicyAcknowledgementSequence;
-  deferInstallPolicyAcknowledgementMismatch?: boolean;
   logger?: HookPackUpdateLogger;
   hookIds?: string[];
   dryRun?: boolean;
@@ -100,11 +88,6 @@ export async function updateNpmInstalledHookPacks(params: {
   const outcomes: HookPackUpdateOutcome[] = [];
   let next = params.config;
   let changed = false;
-  const acknowledgementTracker = createInstallPolicyAcknowledgementTracker<HookPackUpdateOutcome>({
-    acknowledgementId: params.installPolicyAcknowledgementId,
-    sequence: params.installPolicyAcknowledgementSequence,
-    deferUnmatched: params.deferInstallPolicyAcknowledgementMismatch,
-  });
 
   for (const hookId of targets) {
     const record = installs[hookId];
@@ -156,8 +139,6 @@ export async function updateNpmInstalledHookPacks(params: {
     const result = await installHooksFromNpmSpec({
       config: params.config,
       dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-      installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-      installPolicyAcknowledgementSequence: params.installPolicyAcknowledgementSequence,
       spec: effectiveSpec,
       mode: "update",
       dryRun: params.dryRun,
@@ -172,35 +153,14 @@ export async function updateNpmInstalledHookPacks(params: {
       logger,
     });
 
-    acknowledgementTracker.sync();
     if (!result.ok) {
-      acknowledgementTracker.sync(result.installPolicyAcknowledgementMatched);
-      const failureOutcome: HookPackUpdateOutcome = {
+      outcomes.push({
         hookId,
         status: "error",
         message: `Failed to ${params.dryRun ? "check" : "update"} hook pack "${hookId}": ${result.error}`,
-        ...(result.installPolicyWarning
-          ? { installPolicyWarning: result.installPolicyWarning }
-          : {}),
-      };
-      const warningAcknowledgementId = result.installPolicyWarning?.acknowledgementId;
-      if (acknowledgementTracker.shouldDefer(warningAcknowledgementId)) {
-        acknowledgementTracker.defer(outcomes.length, failureOutcome);
-        outcomes.push({
-          hookId,
-          status: "skipped",
-          message: `Skipped hook pack "${hookId}" because the supplied install-policy acknowledgement applies to a different hook pack.`,
-        });
-        continue;
-      }
-      outcomes.push(failureOutcome);
-      if (result.installPolicyWarning) {
-        break;
-      }
+      });
       continue;
     }
-
-    acknowledgementTracker.sync(result.installPolicyAcknowledgementMatched);
 
     const nextVersion = result.version ?? (await readInstalledPackageVersion(result.targetDir));
     const currentLabel = currentVersion ?? "unknown";
@@ -245,17 +205,5 @@ export async function updateNpmInstalledHookPacks(params: {
     });
   }
 
-  const acknowledgement = acknowledgementTracker.finish(outcomes);
-
-  return {
-    config: next,
-    changed,
-    outcomes,
-    ...(params.installPolicyAcknowledgementId
-      ? { installPolicyAcknowledgementMatched: acknowledgement.matched }
-      : {}),
-    ...(acknowledgement.deferred
-      ? { deferredInstallPolicyMismatch: acknowledgement.deferred }
-      : {}),
-  };
+  return { config: next, changed, outcomes };
 }

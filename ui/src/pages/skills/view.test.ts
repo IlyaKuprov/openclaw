@@ -701,7 +701,7 @@ describe("renderSkills", () => {
     expect(onClawHubDetailOpen).toHaveBeenCalledTimes(1);
     expect(onClawHubDetailOpen).toHaveBeenCalledWith("github");
     expect(onClawHubInstall).toHaveBeenCalledTimes(1);
-    expect(onClawHubInstall).toHaveBeenCalledWith("github", false, "1.2.3");
+    expect(onClawHubInstall).toHaveBeenCalledWith("github");
 
     onClawHubInstall.mockClear();
     showModal.mockClear();
@@ -760,7 +760,7 @@ describe("renderSkills", () => {
     detailInstallButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
     expect(onClawHubInstall).toHaveBeenCalledTimes(1);
-    expect(onClawHubInstall).toHaveBeenCalledWith("github", false, "1.2.3");
+    expect(onClawHubInstall).toHaveBeenCalledWith("github");
   });
 
   it("renders ClawHub acknowledgement retry actions", async () => {
@@ -792,7 +792,7 @@ describe("renderSkills", () => {
     retryButton!.click();
 
     expect(onClawHubInstall).toHaveBeenCalledTimes(1);
-    expect(onClawHubInstall).toHaveBeenCalledWith("github", true, "1.2.3", undefined);
+    expect(onClawHubInstall).toHaveBeenCalledWith("github", true, "1.2.3");
   });
 
   it("renders installed ClawHub verdicts and the local Skill Card tab", async () => {

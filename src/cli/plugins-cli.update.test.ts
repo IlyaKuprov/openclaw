@@ -236,7 +236,7 @@ describe("plugins cli update", () => {
     }
   });
 
-  it("documents the unsafe install flag as warning acknowledgement", () => {
+  it("documents the install policy warning acknowledgement in update help", () => {
     const program = new Command();
     registerPluginsCli(program);
 
@@ -245,148 +245,9 @@ describe("plugins cli update", () => {
     const helpText = updateCommand?.helpInformation() ?? "";
 
     expect(helpText).toContain("--dangerously-force-unsafe-install");
+    expect(helpText).toContain("Acknowledge");
     expect(helpText).toContain("security.installPolicy");
-    expect(helpText).toContain("warnings; blocks and failures remain");
-  });
-
-  it("shows the acknowledgement flag for an install-policy update warning", async () => {
-    const config = createTrackedPluginConfig({
-      pluginId: "demo",
-      spec: "@acme/demo",
-    });
-    primeUpdateConfigSnapshot({ config });
-    setInstalledPluginIndexInstallRecords(config.plugins?.installs ?? {});
-    updateNpmInstalledPlugins.mockResolvedValue({
-      config,
-      changed: false,
-      outcomes: [
-        {
-          pluginId: "demo",
-          status: "error",
-          message: "install policy warning requires acknowledgement",
-          installPolicyWarning: { reason: "Review package behavior" },
-        },
-      ],
-    });
-    updateNpmInstalledHookPacks.mockResolvedValue({ outcomes: [], changed: false, config });
-
-    await expect(runPluginsCommand(["plugins", "update", "demo"])).rejects.toThrow("__exit__:1");
-
-    expect(runtimeLogs.at(-1)).toContain("--dangerously-force-unsafe-install");
-  });
-
-  it("shows the acknowledgement flag for a hook-pack update warning", async () => {
-    const config = {} as OpenClawConfig;
-    primeUpdateConfigSnapshot({ config });
-    setHookInstallRecords({
-      "demo-hooks": {
-        source: "npm",
-        spec: "@acme/demo-hooks",
-        installPath: "/tmp/hooks/demo-hooks",
-      },
-    });
-    updateNpmInstalledHookPacks.mockResolvedValue({
-      config,
-      changed: false,
-      outcomes: [
-        {
-          hookId: "demo-hooks",
-          status: "error",
-          message: "install policy warning requires acknowledgement",
-          installPolicyWarning: { reason: "Review hook behavior" },
-        },
-      ],
-    });
-
-    await expect(runPluginsCommand(["plugins", "update", "demo-hooks"])).rejects.toThrow(
-      "__exit__:1",
-    );
-
-    expect(runtimeLogs.at(-1)).toContain("--dangerously-force-unsafe-install");
-  });
-
-  it("routes a bulk acknowledgement past an earlier plugin warning to a matching hook", async () => {
-    const acknowledgementId = `sha256:${"b".repeat(64)}`;
-    const config = {} as OpenClawConfig;
-    primeUpdateConfigSnapshot({ config });
-    setInstalledPluginIndexInstallRecords({
-      demo: {
-        source: "npm",
-        spec: "@acme/demo",
-        installPath: "/tmp/demo",
-      },
-    });
-    setHookInstallRecords({
-      "demo-hooks": {
-        source: "npm",
-        spec: "@acme/demo-hooks",
-        installPath: "/tmp/hooks/demo-hooks",
-      },
-    });
-    let pluginAcknowledgementSequence: unknown;
-    updateNpmInstalledPlugins.mockImplementation(async (params) => {
-      pluginAcknowledgementSequence = params.installPolicyAcknowledgementSequence;
-      const warningOutcome = {
-        pluginId: "demo",
-        status: "error" as const,
-        message: "install policy warning requires acknowledgement",
-        installPolicyWarning: {
-          reason: "Review plugin behavior",
-          acknowledgementId: `sha256:${"a".repeat(64)}`,
-        },
-      };
-      return {
-        config: params.config,
-        changed: false,
-        outcomes: [
-          {
-            pluginId: "demo",
-            status: "skipped",
-            message:
-              'Skipped plugin "demo" because the supplied install-policy acknowledgement applies to a different target.',
-          },
-        ],
-        installPolicyAcknowledgementMatched: false,
-        deferredInstallPolicyMismatch: { index: 0, outcome: warningOutcome },
-      };
-    });
-    updateNpmInstalledHookPacks.mockImplementation(async (params) => {
-      expect(params.installPolicyAcknowledgementSequence).toBe(pluginAcknowledgementSequence);
-      if (!params.installPolicyAcknowledgementSequence) {
-        throw new Error("expected shared install-policy acknowledgement sequence");
-      }
-      params.installPolicyAcknowledgementSequence.matched = true;
-      params.installPolicyAcknowledgementSequence.pendingAcknowledgementIds = [];
-      return {
-        config: params.config,
-        changed: false,
-        outcomes: [
-          {
-            hookId: "demo-hooks",
-            status: "unchanged",
-            message: 'Hook pack "demo-hooks" is up to date (1.0.0).',
-          },
-        ],
-        installPolicyAcknowledgementMatched: true,
-      };
-    });
-
-    await runPluginsCommand([
-      "plugins",
-      "update",
-      "--all",
-      "--dangerously-force-unsafe-install",
-      acknowledgementId,
-    ]);
-
-    expect(runtimeErrors).toEqual([]);
-    expect(runtimeLogs).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining('Skipped plugin "demo"'),
-        'Hook pack "demo-hooks" is up to date (1.0.0).',
-      ]),
-    );
-    expect(writeConfigFile).not.toHaveBeenCalled();
+    expect(helpText).toMatch(/blocks and failures remain\s+terminal/u);
   });
 
   it("refuses plugin updates in Nix mode before package-manager work", async () => {

@@ -2,7 +2,7 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 import { closedObject } from "./closed-object.js";
-import { InstallPolicyAcknowledgementIdString, NonEmptyString } from "./primitives.js";
+import { NonEmptyString } from "./primitives.js";
 
 /**
  * Plugin control-surface protocol schemas.
@@ -173,12 +173,10 @@ export const PluginsInstallParamsSchema = Type.Union([
     packageName: NonEmptyString,
     version: Type.Optional(NonEmptyString),
     acknowledgeClawHubRisk: Type.Optional(Type.Boolean()),
-    acknowledgeInstallPolicyWarning: Type.Optional(InstallPolicyAcknowledgementIdString),
   }),
   closedObject({
     source: Type.Literal("official"),
     pluginId: NonEmptyString,
-    acknowledgeInstallPolicyWarning: Type.Optional(InstallPolicyAcknowledgementIdString),
   }),
 ]);
 

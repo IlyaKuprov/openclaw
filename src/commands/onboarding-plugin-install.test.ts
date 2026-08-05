@@ -165,7 +165,6 @@ type NpmPackInstallCall = {
 
 type NpmSpecInstallCall = {
   config?: OpenClawConfig;
-  dangerouslyForceUnsafeInstall?: boolean;
   expectedIntegrity?: string;
   expectedPluginId?: string;
   mode?: string;
@@ -647,60 +646,7 @@ describe("ensureOnboardingPluginInstalled", () => {
     );
   });
 
-  it("pins an unversioned ClawHub retry after an install policy warning", async () => {
-    installPluginFromClawHub
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "review required",
-        version: "2026.5.2",
-        installPolicyWarning: { reason: "Review package behavior" },
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        pluginId: "demo-plugin",
-        targetDir: "/tmp/demo-plugin",
-        version: "2026.5.2",
-        packageName: "demo-plugin",
-        clawhub: {
-          source: "clawhub",
-          clawhubUrl: "https://clawhub.ai",
-          clawhubPackage: "demo-plugin",
-          version: "2026.5.2",
-          integrity: "sha256-clawpack",
-          resolvedAt: "2026-05-02T00:00:00.000Z",
-        },
-      });
-
-    const result = await ensureOnboardingPluginInstalled({
-      cfg: {},
-      entry: {
-        pluginId: "demo-plugin",
-        label: "Demo Provider",
-        install: {
-          clawhubSpec: "clawhub:demo-plugin",
-          defaultChoice: "clawhub",
-        },
-      },
-      prompter: {
-        select: vi.fn(async () => "clawhub"),
-        confirm: vi.fn(async () => true),
-        progress: vi.fn(() => ({ update: vi.fn(), stop: vi.fn() })),
-      } as never,
-      runtime: {} as never,
-    });
-
-    expect(installPluginFromClawHub).toHaveBeenCalledTimes(2);
-    expect(installPluginFromClawHub.mock.calls[0]?.[0].spec).toBe("clawhub:demo-plugin");
-    expect(installPluginFromClawHub.mock.calls[1]?.[0]).toEqual(
-      expect.objectContaining({
-        spec: "clawhub:demo-plugin@2026.5.2",
-        dangerouslyForceUnsafeInstall: true,
-      }),
-    );
-    expect(result.status).toBe("installed");
-  });
-
-  it("acknowledges policy warnings before completing npm installs", async () => {
+  it("passes npm specs and optional expected integrity to npm installs with progress", async () => {
     const cfg: OpenClawConfig = {
       security: {
         installPolicy: {
@@ -730,27 +676,16 @@ describe("ensureOnboardingPluginInstalled", () => {
       resolvedAt: npmResolution.resolvedAt,
     };
     buildNpmResolutionInstallFields.mockReturnValueOnce(installFields);
-    installPluginFromNpmSpec
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "review required",
-        installPolicyWarning: { reason: "Review package behavior" },
-      })
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "review changed",
-        installPolicyWarning: { reason: "Review changed package behavior" },
-      })
-      .mockImplementationOnce(async (params) => {
-        params.logger?.info?.("Downloading demo-plugin…");
-        return {
-          ok: true,
-          pluginId: "demo-plugin",
-          targetDir: "/tmp/demo-plugin",
-          version: "1.2.3",
-          npmResolution,
-        };
-      });
+    installPluginFromNpmSpec.mockImplementation(async (params) => {
+      params.logger?.info?.("Downloading demo-plugin…");
+      return {
+        ok: true,
+        pluginId: "demo-plugin",
+        targetDir: "/tmp/demo-plugin",
+        version: "1.2.3",
+        npmResolution,
+      };
+    });
     const stop = vi.fn();
     const update = vi.fn();
 
@@ -767,7 +702,6 @@ describe("ensureOnboardingPluginInstalled", () => {
       },
       prompter: {
         select: vi.fn(async () => "npm"),
-        confirm: vi.fn(async () => true),
         progress: vi.fn(() => ({ update, stop })),
       } as never,
       runtime: {} as never,
@@ -783,7 +717,6 @@ describe("ensureOnboardingPluginInstalled", () => {
     expect(npmCall.expectedIntegrity).toBe("sha512-wecom");
     expect(npmCall.trustedSourceLinkedOfficialInstall).toBe(true);
     expect(npmCall.timeoutMs).toBe(300_000);
-    expect(installPluginFromNpmSpec.mock.calls[2]?.[0].dangerouslyForceUnsafeInstall).toBe(true);
     expect(update).toHaveBeenCalledWith("Downloading");
     expect(stop).toHaveBeenCalledWith("Installed WeCom plugin");
     expect(buildNpmResolutionInstallFields).toHaveBeenCalledWith(npmResolution);

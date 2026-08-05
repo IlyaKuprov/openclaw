@@ -17,11 +17,6 @@ import {
   exportClawAgent,
 } from "../claws/export.js";
 import {
-  createClawPackagePolicyPreflight,
-  isInstallPolicyWarning,
-  replayClawInstallPolicyAcknowledgement,
-} from "../claws/install-policy-acknowledgement.js";
-import {
   applyClawRemovePlan,
   buildClawRemovePlan,
   CLAW_REMOVE_PLAN_SCHEMA_VERSION,
@@ -30,7 +25,7 @@ import {
   readClawStatus,
 } from "../claws/lifecycle-state.js";
 import { buildClawAddPlan } from "../claws/lifecycle.js";
-import { stableStringifyClawPlanReplayIdentity } from "../claws/plan-integrity.js";
+import { preflightClawPackage } from "../claws/packages.js";
 import { readClawInstallRecord } from "../claws/provenance.js";
 import { readClawManifestFile } from "../claws/reader.js";
 import {
@@ -49,12 +44,6 @@ import {
 } from "../cron/store.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
-import {
-  formatClawInstallPolicyRetryCommand,
-  logClawInstallPolicyRetry,
-  logClawInstallPolicyWarning,
-  logClawInstallPolicyWarnings,
-} from "./claws-cli-install-policy-output.js";
 import { waitUntilGatewayConfigApplied } from "./claws-cli.gateway-readiness.js";
 import type {
   ClawsAddOptions,
@@ -64,7 +53,6 @@ import type {
   ClawsStatusOptions,
 } from "./claws-cli.js";
 import { callGatewayFromCli } from "./gateway-rpc.js";
-import { resolveInstallPolicyAcknowledgementOption } from "./install-policy-acknowledgement.js";
 
 type DiagnosticLike = { level: string; code: string; path: string; message: string };
 
@@ -86,13 +74,6 @@ function logClawAddPlanSummary(plan: ClawAddPlan, runtime: RuntimeEnv): void {
   runtime.log(`Workspace: ${plan.agent.workspace}`);
   runtime.log(`Actions: ${plan.summary.totalActions}`);
   runtime.log(`Packages: ${plan.summary.packageActions}`);
-  logClawInstallPolicyWarnings(
-    plan.actions.flatMap((action) => {
-      const warning = action.kind === "package" ? action.details?.installPolicyWarning : undefined;
-      return isInstallPolicyWarning(warning) ? [{ packageId: action.id, warning }] : [];
-    }),
-    runtime,
-  );
   runtime.log(`MCP servers: ${plan.summary.mcpServerActions}`);
   for (const action of plan.actions.filter((candidate) => candidate.kind === "mcpServer")) {
     const server = action.details as Record<string, unknown> | undefined;
@@ -271,12 +252,7 @@ export async function runClawsAddCommand(
   const existingWorkspacePaths = existingAgentIds.map((agentId) =>
     resolveAgentWorkspaceDir(config, agentId),
   );
-  const installPolicyAcknowledgement = resolveInstallPolicyAcknowledgementOption(
-    opts.dangerouslyForceUnsafeInstall,
-  );
   const cronStore = await loadCronJobsStoreWithConfigJobsReadOnly(resolveCronJobsStorePath());
-  const createPackagePreflight = (acknowledgementIds?: ReadonlyMap<string, string>) =>
-    createClawPackagePolicyPreflight({ config, acknowledgementIds });
   const basePlanContext = {
     ...(opts.agentId ? { agentId: opts.agentId } : {}),
     ...(opts.workspace ? { workspace: opts.workspace } : {}),
@@ -284,9 +260,8 @@ export async function runClawsAddCommand(
     existingWorkspacePaths,
     existingMcpServers: listedMcpServers.mcpServers,
     existingCronJobIds: cronStore.store.jobs.map((job) => job.id),
-    packagePreflight: createPackagePreflight(),
+    packagePreflight: preflightClawPackage,
   };
-  let planContext = basePlanContext;
   let plan = await buildClawAddPlan({
     manifest: result.manifest,
     clawMarkdownBody: result.clawMarkdownBody,
@@ -305,54 +280,26 @@ export async function runClawsAddCommand(
     const canResumeAgent =
       resumeRecord.status === "config_committed" ||
       (resumeRecord.status === "workspace_ready" && committedAgent !== undefined);
-    planContext = {
-      ...basePlanContext,
-      existingAgentIds: canResumeAgent
-        ? existingAgentIds.filter((agentId) => agentId !== resumeRecord.agentId)
-        : existingAgentIds,
-      existingWorkspacePaths: canResumeWorkspace
-        ? existingAgentIds
-            .filter((agentId) => agentId !== resumeRecord.agentId)
-            .map((agentId) => resolveAgentWorkspaceDir(config, agentId))
-        : existingWorkspacePaths,
-      ...(canResumeWorkspace ? { resumableWorkspace: resumeRecord.workspace } : {}),
-    };
     plan = await buildClawAddPlan({
       manifest: result.manifest,
       clawMarkdownBody: result.clawMarkdownBody,
       openClawProfile: result.openClawProfile,
       source: result.source,
       diagnostics: result.diagnostics,
-      context: planContext,
+      context: {
+        ...basePlanContext,
+        existingAgentIds: canResumeAgent
+          ? existingAgentIds.filter((agentId) => agentId !== resumeRecord.agentId)
+          : existingAgentIds,
+        existingWorkspacePaths: canResumeWorkspace
+          ? existingAgentIds
+              .filter((agentId) => agentId !== resumeRecord.agentId)
+              .map((agentId) => resolveAgentWorkspaceDir(config, agentId))
+          : existingWorkspacePaths,
+        ...(canResumeWorkspace ? { resumableWorkspace: resumeRecord.workspace } : {}),
+      },
     });
   }
-
-  const replay = await replayClawInstallPolicyAcknowledgement({
-    initialPlan: plan,
-    presentedAcknowledgementId: installPolicyAcknowledgement.installPolicyAcknowledgementId,
-    presentedPlanIntegrity: opts.planIntegrity,
-    planIntegrity: (candidate) => candidate.planIntegrity,
-    replayIdentity: stableStringifyClawPlanReplayIdentity,
-    warnings: (candidate) =>
-      candidate.actions.flatMap((action) => {
-        const warning =
-          action.kind === "package" ? action.details?.installPolicyWarning : undefined;
-        return isInstallPolicyWarning(warning) ? [{ packageId: action.id, warning }] : [];
-      }),
-    rebuild: async (acknowledgementIds) =>
-      await buildClawAddPlan({
-        manifest: result.manifest,
-        clawMarkdownBody: result.clawMarkdownBody,
-        openClawProfile: result.openClawProfile,
-        source: result.source,
-        diagnostics: result.diagnostics,
-        context: {
-          ...planContext,
-          packagePreflight: createPackagePreflight(acknowledgementIds),
-        },
-      }),
-  });
-  plan = replay.plan;
 
   if (plan.blockers.length > 0) {
     if (opts.json) {
@@ -377,7 +324,7 @@ export async function runClawsAddCommand(
     return;
   }
 
-  if (!replay.matched && opts.planIntegrity !== plan.planIntegrity) {
+  if (opts.planIntegrity !== plan.planIntegrity) {
     const message = "The consented Claw plan no longer matches; run add --dry-run again.";
     if (opts.json) {
       writeRuntimeJson(runtime, {
@@ -397,11 +344,7 @@ export async function runClawsAddCommand(
   let addResult;
   try {
     addResult = await applyClawAddPlan(plan, {
-      consentPlanIntegrity: replay.matched ? plan.planIntegrity : opts.planIntegrity,
-      config,
-      ...installPolicyAcknowledgement,
-      installPolicyAcknowledgementIds: replay.acknowledgement.packageAcknowledgementIds,
-      packagePreflight: createPackagePreflight(replay.acknowledgement.packageAcknowledgementIds),
+      consentPlanIntegrity: opts.planIntegrity,
       runtime: opts.json ? { ...runtime, log: () => undefined } : runtime,
       cronGateway: {
         add: async (input) => await callGatewayFromCli("cron.add", {}, input),
@@ -413,39 +356,14 @@ export async function runClawsAddCommand(
   } catch (error) {
     const code = error instanceof ClawAddMutationError ? error.code : "add_failed";
     const message = (error as Error).message;
-    const installPolicyWarning =
-      error instanceof ClawAddMutationError ? error.installPolicyWarning : undefined;
-    const retryPlanIntegrity =
-      error instanceof ClawAddMutationError ? error.installPolicyRetryPlanIntegrity : undefined;
-    const retryCommand =
-      retryPlanIntegrity && installPolicyWarning?.acknowledgementId
-        ? formatClawInstallPolicyRetryCommand({
-            command: "add",
-            target: sourcePath,
-            planIntegrity: retryPlanIntegrity,
-            acknowledgementId: installPolicyWarning.acknowledgementId,
-            ...(opts.agentId ? { agentId: opts.agentId } : {}),
-            ...(opts.workspace ? { workspace: opts.workspace } : {}),
-          })
-        : undefined;
     if (opts.json) {
       writeRuntimeJson(runtime, {
         schemaVersion: CLAW_ADD_RESULT_SCHEMA_VERSION,
         stability: CLAW_OUTPUT_STABILITY,
         status: "failed",
-        error: {
-          code,
-          message,
-          ...(installPolicyWarning ? { installPolicyWarning } : {}),
-          ...(retryPlanIntegrity ? { planIntegrity: retryPlanIntegrity } : {}),
-          ...(retryCommand ? { retryCommand } : {}),
-        },
+        error: { code, message },
       });
     } else {
-      logClawInstallPolicyWarning(installPolicyWarning, runtime);
-      if (retryPlanIntegrity && retryCommand) {
-        logClawInstallPolicyRetry(retryPlanIntegrity, retryCommand, runtime);
-      }
       runtime.error(message);
     }
     runtime.exit(1);
@@ -459,10 +377,6 @@ export async function runClawsAddCommand(
     runtime.log(`Added agent: ${addResult.agent.finalId}`);
     runtime.log(`Workspace: ${addResult.agent.workspace}`);
     runtime.log(`Status: ${addResult.status}`);
-    if (addResult.error) {
-      logClawInstallPolicyWarning(addResult.error.installPolicyWarning, runtime);
-      runtime.error(addResult.error.message);
-    }
   }
   if (addResult.status !== "complete") {
     runtime.exit(1);

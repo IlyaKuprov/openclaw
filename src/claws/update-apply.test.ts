@@ -1,13 +1,8 @@
-import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { stableStringify } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { createInstallPolicyWarningAcknowledgementId } from "../security/install-policy.js";
 import { ClawCronUpdateError } from "./cron-update.js";
-import { ClawPackageUpdateError } from "./package-update.js";
-import { stableStringifyClawPlanIntegrity } from "./plan-integrity.js";
 import {
   persistClawInstallRecord,
   readClawInstallRecord,
@@ -173,164 +168,6 @@ describe("applyClawUpdatePlan", () => {
     expect(readInstall).not.toHaveBeenCalled();
   });
 
-  it("requires policy acknowledgement before applying workspace changes", async () => {
-    const pkg = {
-      kind: "plugin" as const,
-      source: "clawhub" as const,
-      ref: "@acme/audit",
-      version: "2.0.0",
-    };
-    const integrity = `sha256:${"a".repeat(64)}`;
-    const warningFor = (stage: string, reason = "Review staged package") => {
-      const sourcePath = `/tmp/openclaw-plugin-${stage}/package`;
-      const warning = {
-        reason: `${reason} ${sourcePath}`,
-        findings: [
-          {
-            ruleId: "review-package",
-            severity: "warn" as const,
-            message: `Review package behavior in ${sourcePath}/index.js`,
-            file: `${sourcePath}/index.js`,
-            evidence: `matched ${sourcePath}/index.js`,
-          },
-        ],
-      };
-      return {
-        ...warning,
-        acknowledgementId: createInstallPolicyWarningAcknowledgementId(warning, {
-          request: {
-            targetName: "@acme/audit",
-            targetType: "plugin",
-            sourcePathKind: "directory",
-            origin: { type: "plugin-archive" },
-            request: { kind: "plugin-archive", mode: "update" },
-            plugin: { contentType: "package", pluginId: "@acme/audit" },
-          },
-          sourceDigest: "sha256:stable-package",
-          sourcePath,
-        }),
-      };
-    };
-    const plannedWarning = warningFor("a1b2c3");
-    const freshWarning = warningFor("d4e5f6");
-    const installWarning = warningFor("g7h8i9", "Escalated review for staged package");
-    const packageAddPlan: ClawAddPlan = {
-      ...addPlan,
-      actions: [
-        {
-          kind: "package",
-          id: "plugin:@acme/audit",
-          action: "install",
-          target: "clawhub:@acme/audit@2.0.0",
-          blocked: false,
-          details: {
-            ...pkg,
-            integrity,
-            installId: "audit",
-            ownerAction: "install",
-            installPolicyWarning: installWarning,
-          },
-        },
-      ],
-    };
-    const desiredDigest = `sha256:${createHash("sha256")
-      .update(
-        stableStringifyClawPlanIntegrity({
-          package: pkg,
-          integrity,
-          installId: "audit",
-          riskWarning: undefined,
-        }),
-      )
-      .digest("hex")}`;
-    const updatePlan = plan([
-      {
-        kind: "package",
-        id: "plugin:@acme/audit",
-        action: "add",
-        target: "clawhub:@acme/audit@2.0.0",
-        blocked: false,
-        reason: "target adds a package",
-        desiredDigest,
-        installPolicyWarning: plannedWarning,
-      },
-    ]);
-    const freshPlan = {
-      ...updatePlan,
-      actions: updatePlan.actions.map((action) => ({
-        ...action,
-        installPolicyWarning: freshWarning,
-      })),
-    };
-    const applyWorkspace = vi.fn();
-
-    await expect(
-      applyClawUpdatePlan(
-        updatePlan,
-        { targetManifest: { ...manifest, packages: [pkg] }, targetSource: source },
-        {
-          config: {},
-          ...consent(updatePlan),
-          rebuildPlan: vi.fn(async () => freshPlan),
-          buildAddPlan: vi.fn(async () => packageAddPlan),
-          readInstall: vi.fn(() => install),
-          applyWorkspace,
-        },
-      ),
-    ).rejects.toMatchObject({
-      code: "install_policy_acknowledgement_required",
-      message: expect.stringContaining(installWarning.reason),
-      installPolicyWarning: installWarning,
-      installPolicyRetryPlanIntegrity: undefined,
-    });
-    await expect(
-      applyClawUpdatePlan(
-        updatePlan,
-        { targetManifest: { ...manifest, packages: [pkg] }, targetSource: source },
-        {
-          config: {},
-          ...consent(updatePlan),
-          rebuildPlan: vi.fn(async () => freshPlan),
-          buildAddPlan: vi.fn(async () => packageAddPlan),
-          readInstall: vi.fn(() => install),
-          applyWorkspace,
-        },
-      ),
-    ).rejects.toThrow("Run update --dry-run again");
-    expect(applyWorkspace).not.toHaveBeenCalled();
-
-    const reviewedPackageAddPlan = {
-      ...packageAddPlan,
-      actions: [
-        {
-          ...packageAddPlan.actions[0]!,
-          details: {
-            ...packageAddPlan.actions[0]!.details,
-            installPolicyWarning: plannedWarning,
-          },
-        },
-      ],
-    };
-    await expect(
-      applyClawUpdatePlan(
-        updatePlan,
-        { targetManifest: { ...manifest, packages: [pkg] }, targetSource: source },
-        {
-          config: {},
-          ...consent(updatePlan),
-          rebuildPlan: vi.fn(async () => updatePlan),
-          buildAddPlan: vi.fn(async () => reviewedPackageAddPlan),
-          readInstall: vi.fn(() => install),
-          applyWorkspace,
-        },
-      ),
-    ).rejects.toMatchObject({
-      code: "install_policy_acknowledgement_required",
-      installPolicyRetryPlanIntegrity: updatePlan.planIntegrity,
-      installPolicyWarning: plannedWarning,
-    });
-  });
-
   it("compare-writes the owned agent and advances root provenance", async () => {
     const currentAgent = { id: "worker", name: "Worker" };
     const currentDigest = `sha256:${createHash("sha256").update(stableStringify(currentAgent)).digest("hex")}`;
@@ -391,14 +228,6 @@ describe("applyClawUpdatePlan", () => {
       },
     ]);
     const order: string[] = [];
-    const acknowledgementIds = new Map([
-      ["skill:@acme/first", `sha256:${"a".repeat(64)}`],
-      ["plugin:@acme/second", `sha256:${"b".repeat(64)}`],
-    ]);
-    const applyPackage = vi.fn(async () => {
-      order.push("package");
-      return { appliedIds: [], rollback: vi.fn(async () => undefined) };
-    });
     let config: OpenClawConfig = { agents: { entries: {} } };
 
     await applyClawUpdatePlan(
@@ -407,7 +236,6 @@ describe("applyClawUpdatePlan", () => {
       {
         config,
         ...consent(updatePlan),
-        installPolicyAcknowledgementIds: acknowledgementIds,
         rebuildPlan: vi.fn(async () => updatePlan),
         buildAddPlan: vi.fn(async () => addPlan),
         readInstall: vi.fn(() => install),
@@ -419,7 +247,10 @@ describe("applyClawUpdatePlan", () => {
           order.push("mcp");
           return { appliedNames: [], rollback: vi.fn(async () => undefined) };
         }),
-        applyPackage,
+        applyPackage: vi.fn(async () => {
+          order.push("package");
+          return { appliedIds: [], rollback: vi.fn(async () => undefined) };
+        }),
         commitConfig: async (transform) => {
           order.push("agent");
           config = transform(config);
@@ -436,12 +267,6 @@ describe("applyClawUpdatePlan", () => {
     );
 
     expect(order).toEqual(["workspace", "mcp", "package", "agent", "cron", "provenance"]);
-    expect(applyPackage).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ installPolicyAcknowledgementIds: acknowledgementIds }),
-    );
   });
 
   it("preserves cron prerequisites when the gateway mutation outcome is uncertain", async () => {
@@ -593,33 +418,6 @@ describe("applyClawUpdatePlan", () => {
       ),
     ).rejects.toMatchObject({ code: "package_update_failed" });
     expect(commitConfig).not.toHaveBeenCalled();
-  });
-
-  it("preserves a policy warning returned by the final package installer", async () => {
-    const warning = {
-      reason: "Review the changed package",
-      acknowledgementId: `sha256:${"c".repeat(64)}`,
-    };
-
-    await expect(
-      applyClawUpdatePlan(
-        plan([]),
-        { targetManifest: manifest, targetSource: source },
-        {
-          config: {},
-          ...consent(plan([])),
-          rebuildPlan: vi.fn(async () => plan([])),
-          buildAddPlan: vi.fn(async () => addPlan),
-          readInstall: vi.fn(() => install),
-          applyPackage: vi.fn(async () => {
-            throw new ClawPackageUpdateError("review required", false, warning);
-          }),
-        },
-      ),
-    ).rejects.toMatchObject({
-      code: "install_policy_acknowledgement_required",
-      installPolicyWarning: warning,
-    });
   });
 
   it("preserves resolved plugin metadata when applying an owned version upgrade", async () => {
@@ -855,3 +653,5 @@ describe("applyClawUpdatePlan", () => {
     ).rejects.toMatchObject({ code: "update_blocked" });
   });
 });
+import { createHash } from "node:crypto";
+import { stableStringify } from "@openclaw/normalization-core";

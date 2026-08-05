@@ -107,9 +107,8 @@ describeControlUiE2e("Control UI alternative skill binary requirements", () => {
       expect(request.params).toMatchObject({
         name: "Coding Agent",
         installId: "node-codex",
+        dangerouslyForceUnsafeInstall: false,
       });
-      expect(request.params).not.toHaveProperty("dangerouslyForceUnsafeInstall");
-      expect(request.params).not.toHaveProperty("acknowledgeInstallPolicyWarning");
     } finally {
       await context.close();
     }

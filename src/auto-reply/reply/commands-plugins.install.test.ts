@@ -96,11 +96,15 @@ function buildPluginsParams(
 function expectPersistedInstall(pluginId: string, expectedInstall: Record<string, unknown>): void {
   const persisted = mockFirstObjectArg(persistPluginInstallMock);
   expect(persisted.pluginId).toBe(pluginId);
-  const snapshot = persisted.snapshot as { writeOptions: Record<string, unknown> };
-  const writeOptions = snapshot.writeOptions;
-  expect(writeOptions.assertConfigPathForWrite).toEqual(expect.any(Function));
-  expect(writeOptions.expectedConfigPath).toEqual(expect.stringContaining("openclaw.json"));
-  expect(writeOptions.ownedConfigPathForWrite).toEqual(expect.stringContaining("openclaw.json"));
+  const snapshot = persisted.snapshot as Record<string, unknown>;
+  const writeOptions = snapshot.writeOptions as Record<string, unknown>;
+  expectObjectFields(persisted.snapshot, {
+    writeOptions: expect.objectContaining({
+      assertConfigPathForWrite: expect.any(Function),
+      expectedConfigPath: expect.stringContaining("openclaw.json"),
+      ownedConfigPathForWrite: expect.stringContaining("openclaw.json"),
+    }),
+  });
   expect(writeOptions).not.toHaveProperty("basePluginMetadataSnapshot");
   expectObjectFields(persisted.install, expectedInstall);
 }
@@ -212,22 +216,6 @@ describe("handleCommands /plugins install", () => {
         installPath: "/tmp/policy-plugin",
         version: "1.0.0",
       });
-    });
-  });
-
-  it("directs policy warnings to the supported trusted-shell acknowledgement", async () => {
-    const warning = { ok: false, error: "warning", installPolicyWarning: { reason: "Review" } };
-    installPluginFromGitSpecMock.mockResolvedValue(warning);
-    await withTempHome("openclaw-command-plugins-home-", async () => {
-      const workspaceDir = await workspaceHarness.createWorkspace();
-      const result = await handlePluginsCommand(
-        buildPluginsParams(
-          "/plugins install git:https://u:secret@x.test/p.git --force",
-          workspaceDir,
-        ),
-        true,
-      );
-      expect(result?.reply?.text).toMatch(/\*\*\*.*--force --dangerously-force/u);
     });
   });
 

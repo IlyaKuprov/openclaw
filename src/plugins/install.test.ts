@@ -19,7 +19,6 @@ import {
   resolvePluginNpmProjectDir,
 } from "./install-paths.js";
 import * as installSecurityScan from "./install-security-scan.js";
-import type { InstallPolicyAcknowledgementSequence } from "./install-security-scan.types.js";
 import {
   installPluginFromArchive,
   installPluginFromInstalledPackageDir,
@@ -300,16 +299,12 @@ async function installFromDirWithWarnings(params: {
   extensionsDir: string;
   config?: OpenClawConfig;
   dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
-  installPolicyAcknowledgementSequence?: InstallPluginFromDirParams["installPolicyAcknowledgementSequence"];
   trustedSourceLinkedOfficialInstall?: boolean;
   mode?: "install" | "update";
 }) {
   const warnings: string[] = [];
   const result = await installPluginFromDir({
     dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-    installPolicyAcknowledgementSequence: params.installPolicyAcknowledgementSequence,
     trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
     dirPath: params.pluginDir,
     extensionsDir: params.extensionsDir,
@@ -420,35 +415,6 @@ process.stdin.on("end", () => {
     return;
   }
   process.stdout.write(JSON.stringify({ protocolVersion: 1, decision: "allow" }));
-});
-`,
-    "utf-8",
-  );
-  fs.chmodSync(scriptPath, 0o700);
-  return { scriptPath, logPath };
-}
-
-function writeWarningInstallPolicyScript(dir: string) {
-  fs.chmodSync(dir, 0o700);
-  const scriptPath = path.join(dir, "warn-policy.cjs");
-  const logPath = path.join(dir, "policy-requests.jsonl");
-  fs.writeFileSync(
-    scriptPath,
-    `#!${process.execPath}
-const fs = require("node:fs");
-
-let input = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => {
-  input += chunk;
-});
-process.stdin.on("end", () => {
-  fs.appendFileSync(process.env.OPENCLAW_POLICY_LOG, input + "\\n");
-  process.stdout.write(JSON.stringify({
-    protocolVersion: 1,
-    decision: "warn",
-    reason: "review plugin behavior",
-  }));
 });
 `,
     "utf-8",
@@ -579,10 +545,6 @@ async function installFromArchiveWithWarnings(params: {
   extensionsDir: string;
   config?: OpenClawConfig;
   dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
-  installPolicyAcknowledgementSequence?: Parameters<
-    typeof installPluginFromArchive
-  >[0]["installPolicyAcknowledgementSequence"];
   trustedSourceLinkedOfficialInstall?: boolean;
 }) {
   const warnings: string[] = [];
@@ -590,8 +552,6 @@ async function installFromArchiveWithWarnings(params: {
     archivePath: params.archivePath,
     config: params.config,
     dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-    installPolicyAcknowledgementSequence: params.installPolicyAcknowledgementSequence,
     trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
     extensionsDir: params.extensionsDir,
     logger: {
@@ -1143,49 +1103,6 @@ describe("installPluginFromArchive", () => {
     expect(requests[0]?.request.requestedSpecifier).toBe(archivePath);
   });
 
-  it("advances a shared acknowledgement sequence for archived bundles", async () => {
-    const { pluginDir, extensionsDir } = setupBundleInstallFixture({
-      bundleFormat: "codex",
-      name: "Acknowledged Archive Bundle",
-    });
-    const archiveDir = suiteTempRootTracker.makeTempDir();
-    const archivePath = await packToArchive({
-      pkgDir: pluginDir,
-      outDir: archiveDir,
-      outName: "acknowledged-archive-bundle.tgz",
-    });
-    const policy = writeWarningInstallPolicyScript(suiteTempRootTracker.makeTempDir());
-    const config = configWithInstallPolicy(policy.scriptPath, policy.logPath);
-
-    const first = await installFromArchiveWithWarnings({ archivePath, extensionsDir, config });
-    expect(first.result.ok).toBe(false);
-    if (first.result.ok) {
-      return;
-    }
-    const acknowledgementId = first.result.installPolicyWarning?.acknowledgementId;
-    if (!acknowledgementId) {
-      throw new Error("expected install-policy acknowledgement id");
-    }
-    const sequence: InstallPolicyAcknowledgementSequence = {
-      presentedId: acknowledgementId,
-      previousAcknowledgementIds: [],
-      matched: false,
-    };
-
-    const second = await installFromArchiveWithWarnings({
-      archivePath,
-      extensionsDir,
-      config,
-      dangerouslyForceUnsafeInstall: true,
-      installPolicyAcknowledgementId: acknowledgementId,
-      installPolicyAcknowledgementSequence: sequence,
-    });
-
-    expect(second.result.ok).toBe(true);
-    expect(sequence.matched).toBe(true);
-    expect(sequence.matchedWarning?.acknowledgementId).toBe(acknowledgementId);
-  });
-
   it("allows archive installs with dangerous code patterns without built-in scanner blocking", async () => {
     const stateDir = suiteTempRootTracker.makeTempDir();
     const extensionsDir = path.join(stateDir, "extensions");
@@ -1582,17 +1499,6 @@ describe("installPluginFromArchive", () => {
       errorIncludes: ["openclaw.runtimeExtensions[0]", "non-empty string"],
     },
     {
-      title: "rejects runtime extension entry files inside Git metadata",
-      name: "git-metadata-runtime-entry-plugin",
-      openclaw: { extensions: ["index.js"], runtimeExtensions: [".git/runtime.cjs"] },
-      files: {
-        "index.js": "module.exports = {};\n",
-        ".git/runtime.cjs": "module.exports = {};\n",
-      },
-      ok: false,
-      errorIncludes: ["runtime extension entry cannot reference Git metadata", ".git/runtime.cjs"],
-    },
-    {
       title: "rejects package installs when runtimeSetupEntry is missing",
       name: "missing-runtime-setup-plugin",
       openclaw: {
@@ -1659,7 +1565,7 @@ describe("installPluginFromArchive", () => {
     }
   });
 
-  it("detaches hardlinked extension entries before installing", async () => {
+  it("rejects package installs when an extension entry is a hardlinked alias", async () => {
     if (process.platform === "win32") {
       return;
     }
@@ -1691,12 +1597,10 @@ describe("installPluginFromArchive", () => {
       extensionsDir,
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      fs.writeFileSync(outsideEntry, "export const changed = true;\n");
-      expect(fs.readFileSync(path.join(result.targetDir, "escape.js"), "utf8")).toBe(
-        "export {};\n",
-      );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe(PLUGIN_INSTALL_ERROR_CODE.INVALID_OPENCLAW_EXTENSIONS);
+      expect(result.error).toContain("boundary checks");
     }
   });
 
@@ -1912,43 +1816,6 @@ describe("installPluginFromArchive", () => {
     expect(warnings).toStrictEqual([]);
   });
 
-  it("advances a shared acknowledgement sequence for bundle policy scans", async () => {
-    const { pluginDir, extensionsDir } = setupBundleInstallFixture({
-      bundleFormat: "codex",
-      name: "Acknowledged Bundle",
-    });
-    const policy = writeWarningInstallPolicyScript(suiteTempRootTracker.makeTempDir());
-    const config = configWithInstallPolicy(policy.scriptPath, policy.logPath);
-
-    const first = await installFromDirWithWarnings({ pluginDir, extensionsDir, config });
-    expect(first.result.ok).toBe(false);
-    if (first.result.ok) {
-      return;
-    }
-    const acknowledgementId = first.result.installPolicyWarning?.acknowledgementId;
-    if (!acknowledgementId) {
-      throw new Error("expected install-policy acknowledgement id");
-    }
-    const sequence: InstallPolicyAcknowledgementSequence = {
-      presentedId: acknowledgementId,
-      previousAcknowledgementIds: [],
-      matched: false,
-    };
-
-    const second = await installFromDirWithWarnings({
-      pluginDir,
-      extensionsDir,
-      config,
-      dangerouslyForceUnsafeInstall: true,
-      installPolicyAcknowledgementId: acknowledgementId,
-      installPolicyAcknowledgementSequence: sequence,
-    });
-
-    expect(second.result.ok).toBe(true);
-    expect(sequence.matched).toBe(true);
-    expect(sequence.matchedWarning?.acknowledgementId).toBe(acknowledgementId);
-  });
-
   it("allows bundle installs when dangerous scanner patterns are only in tests", async () => {
     const { pluginDir, extensionsDir } = setupBundleInstallFixture({
       bundleFormat: "codex",
@@ -2043,7 +1910,7 @@ describe("installPluginFromArchive", () => {
     expect(payload.targetName).toBe("hook-findings-plugin");
     expect(payload.targetType).toBe("plugin");
     expect(payload.origin).toBe("plugin-package");
-    expect(payload.sourcePath).not.toBe(pluginDir);
+    expect(payload.sourcePath).toBe(pluginDir);
     expect(payload.sourcePathKind).toBe("directory");
     expectHookRequest(payload, { kind: "plugin-dir", mode: "install" });
     const builtinScan = requireRecord(payload.builtinScan, "builtin scan");
@@ -2066,37 +1933,6 @@ describe("installPluginFromArchive", () => {
         w.includes("Plugin scanner: External scanner requires review (policy.json:2)"),
       ),
     ).toBe(true);
-  });
-
-  it("installs the reviewed snapshot when a local plugin source changes during policy", async () => {
-    const { pluginDir, extensionsDir } = setupPluginInstallDirs();
-    const payloadPath = path.join(pluginDir, "index.js");
-    fs.writeFileSync(
-      path.join(pluginDir, "package.json"),
-      JSON.stringify({
-        name: "snapshot-plugin",
-        version: "1.0.0",
-        openclaw: { extensions: ["index.js"] },
-      }),
-    );
-    fs.writeFileSync(payloadPath, "export const reviewed = true;\n");
-    const handler = vi.fn(() => {
-      fs.writeFileSync(payloadPath, "throw new Error('changed after review');\n");
-      return {};
-    });
-    initializeGlobalHookRunner(createMockPluginRegistry([{ hookName: "before_install", handler }]));
-
-    const { result } = await installFromDirWithWarnings({ pluginDir, extensionsDir });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      return;
-    }
-    expect(handler).toHaveBeenCalledOnce();
-    expect(fs.readFileSync(payloadPath, "utf8")).toContain("changed after review");
-    expect(fs.readFileSync(path.join(result.targetDir, "index.js"), "utf8")).toBe(
-      "export const reviewed = true;\n",
-    );
   });
 
   it("runs operator policy for local package and dependency-tree scans as plugin-dir", async () => {
@@ -3047,48 +2883,6 @@ describe("installPluginFromDir", () => {
 
     expect(res.ok).toBe(true);
     expect(vi.mocked(runCommandWithTimeout)).not.toHaveBeenCalled();
-  });
-
-  it("advances acknowledgement across source and staged plugin policy scans", async () => {
-    const { pluginDir, extensionsDir } = setupInstallPluginFromDirFixture();
-    const policy = writeWarningInstallPolicyScript(suiteTempRootTracker.makeTempDir());
-    const config = configWithInstallPolicy(policy.scriptPath, policy.logPath);
-
-    const first = await installFromDirWithWarnings({ pluginDir, extensionsDir, config });
-    expect(first.result.ok).toBe(false);
-    if (first.result.ok) {
-      return;
-    }
-    const firstId = first.result.installPolicyWarning?.acknowledgementId;
-    expect(firstId).toMatch(/^sha256:/u);
-
-    const second = await installFromDirWithWarnings({
-      pluginDir,
-      extensionsDir,
-      config,
-      dangerouslyForceUnsafeInstall: true,
-      installPolicyAcknowledgementId: firstId,
-    });
-    expect(second.result.ok).toBe(false);
-    if (second.result.ok) {
-      return;
-    }
-    const secondId = second.result.installPolicyWarning?.acknowledgementId;
-    expect(typeof secondId, JSON.stringify(second)).toBe("string");
-    expect(secondId).toMatch(/^sha256:/u);
-    expect(secondId).not.toBe(firstId);
-    expect(fs.existsSync(resolvePluginInstallDir("@openclaw/test-plugin", extensionsDir))).toBe(
-      false,
-    );
-
-    const third = await installFromDirWithWarnings({
-      pluginDir,
-      extensionsDir,
-      config,
-      dangerouslyForceUnsafeInstall: true,
-      installPolicyAcknowledgementId: secondId,
-    });
-    expect(third.result.ok).toBe(true);
   });
 
   it("emits a redacted security event after installing a plugin directory", async () => {

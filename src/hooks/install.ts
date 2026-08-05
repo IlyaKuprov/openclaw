@@ -4,24 +4,16 @@ import path from "node:path";
 import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { MANIFEST_KEY } from "../compat/legacy-names.js";
 import { resolveSafeInstallDir, unscopedPackageName } from "../infra/install-safe-path.js";
-import {
-  type NpmIntegrityDrift,
-  type NpmSpecResolution,
-  withInstallSourceSnapshot,
-} from "../infra/install-source-utils.js";
+import type { NpmIntegrityDrift, NpmSpecResolution } from "../infra/install-source-utils.js";
 import { readRegularFile } from "../infra/regular-file.js";
 import { detectBundleManifestFormat } from "../plugins/bundle-manifest.js";
-import {
-  resolveInstallPolicyAcknowledgementSequence,
-  unresolvedInstallPolicyAcknowledgement,
-} from "../plugins/install-policy-acknowledgement.js";
 import {
   scanPackageInstallSource,
   scanInstalledPackageDependencyTree,
   type InstallSafetyOverrides,
 } from "../plugins/install-security-scan.js";
 import { PLUGIN_MANIFEST_FILENAME } from "../plugins/manifest.js";
-import type { InstallPolicySource, InstallPolicyWarning } from "../security/install-policy.js";
+import type { InstallPolicySource } from "../security/install-policy.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { CONFIG_DIR, resolveUserPath } from "../utils.js";
 import { parseFrontmatter } from "./frontmatter.js";
@@ -54,14 +46,11 @@ export type InstallHooksResult =
       version?: string;
       npmResolution?: NpmSpecResolution;
       integrityDrift?: NpmIntegrityDrift;
-      installPolicyAcknowledgementMatched?: boolean;
     }
   | {
       ok: false;
       error: string;
       code?: string;
-      installPolicyWarning?: InstallPolicyWarning;
-      installPolicyAcknowledgementMatched?: boolean;
     };
 
 export const HOOK_INSTALL_ERROR_CODE = {
@@ -105,8 +94,6 @@ function buildHookInstallForwardParams(params: HookInstallForwardParams): HookIn
   return {
     config: params.config,
     dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
-    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
-    installPolicyAcknowledgementSequence: params.installPolicyAcknowledgementSequence,
     trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
     hooksDir: params.hooksDir,
     timeoutMs: params.timeoutMs,
@@ -118,31 +105,6 @@ function buildHookInstallForwardParams(params: HookInstallForwardParams): HookIn
     inspection: params.inspection,
     installPolicyRequest: params.installPolicyRequest,
   };
-}
-
-function unresolvedHookPolicyWarning(
-  params: HookInstallForwardParams,
-): Extract<InstallHooksResult, { ok: false }> | null {
-  const deferred = unresolvedInstallPolicyAcknowledgement(
-    params.installPolicyAcknowledgementSequence,
-  );
-  return deferred
-    ? {
-        ok: false,
-        code: "security_scan_blocked",
-        error: deferred.reason,
-        installPolicyWarning: deferred.warning,
-      }
-    : null;
-}
-
-function withHookPolicyAcknowledgementState<T extends InstallHooksResult>(
-  result: T,
-  sequence: HookInstallForwardParams["installPolicyAcknowledgementSequence"],
-): T {
-  return sequence?.matched
-    ? ({ ...result, installPolicyAcknowledgementMatched: true } as T)
-    : result;
 }
 
 function localHookInstallPolicySource(kind: "plugin-archive" | "plugin-dir"): InstallPolicySource {
@@ -164,9 +126,6 @@ async function runHookInstallScan(params: {
       ok: false,
       error: result.blocked.reason,
       ...(result.blocked.code ? { code: result.blocked.code } : {}),
-      ...(result.blocked.installPolicyWarning
-        ? { installPolicyWarning: result.blocked.installPolicyWarning }
-        : {}),
     };
   } catch (error) {
     return {
@@ -197,8 +156,6 @@ async function runHookInstallPolicy(params: {
       await scanPackageInstallSource({
         config: params.forward.config,
         dangerouslyForceUnsafeInstall: params.forward.dangerouslyForceUnsafeInstall,
-        installPolicyAcknowledgementId: params.forward.installPolicyAcknowledgementId,
-        installPolicyAcknowledgementSequence: params.forward.installPolicyAcknowledgementSequence,
         trustedSourceLinkedOfficialInstall: params.forward.trustedSourceLinkedOfficialInstall,
         packageDir: params.packageDir,
         pluginId: params.hookPackId,
@@ -231,8 +188,6 @@ async function runHookInstalledDependencyPolicy(params: {
       await scanInstalledPackageDependencyTree({
         config: params.forward.config,
         dangerouslyForceUnsafeInstall: params.forward.dangerouslyForceUnsafeInstall,
-        installPolicyAcknowledgementId: params.forward.installPolicyAcknowledgementId,
-        installPolicyAcknowledgementSequence: params.forward.installPolicyAcknowledgementSequence,
         trustedSourceLinkedOfficialInstall: params.forward.trustedSourceLinkedOfficialInstall,
         packageDir: params.installedDir,
         pluginId: params.hookPackId,
@@ -534,10 +489,6 @@ async function installHookPackageFromDir(
     return preparedTarget;
   }
   const { targetDir, effectiveMode } = preparedTarget.target;
-  const policyForward = {
-    ...params,
-    installPolicyAcknowledgementSequence: resolveInstallPolicyAcknowledgementSequence(params),
-  };
 
   const policyFailure = await runHookInstallPolicy({
     hookPackId,
@@ -545,36 +496,25 @@ async function installHookPackageFromDir(
     ...(pkgName ? { packageName: pkgName } : {}),
     ...(typeof manifest.version === "string" ? { version: manifest.version } : {}),
     packageDir: params.packageDir,
-    forward: policyForward,
+    forward: params,
     logger,
     mode: effectiveMode,
   });
   if (policyFailure) {
-    return withHookPolicyAcknowledgementState(
-      policyFailure,
-      policyForward.installPolicyAcknowledgementSequence,
-    );
+    return policyFailure;
   }
 
   if (dryRun) {
-    const unresolved = unresolvedHookPolicyWarning(policyForward);
-    if (unresolved) {
-      return unresolved;
-    }
-    return withHookPolicyAcknowledgementState(
-      {
-        ok: true,
-        hookPackId,
-        hooks: hookNames,
-        packageKind,
-        targetDir,
-        version: typeof manifest.version === "string" ? manifest.version : undefined,
-      },
-      policyForward.installPolicyAcknowledgementSequence,
-    );
+    return {
+      ok: true,
+      hookPackId,
+      hooks: hookNames,
+      packageKind,
+      targetDir,
+      version: typeof manifest.version === "string" ? manifest.version : undefined,
+    };
   }
 
-  let postInstallPolicyFailure: Extract<InstallHooksResult, { ok: false }> | null = null;
   const installRes = await runtime.installPackageDirWithManifestDeps({
     sourceDir: params.packageDir,
     targetDir,
@@ -588,40 +528,25 @@ async function installHookPackageFromDir(
       const dependencyPolicyFailure = await runHookInstalledDependencyPolicy({
         hookPackId,
         installedDir,
-        forward: policyForward,
+        forward: params,
         logger,
         mode: effectiveMode,
       });
-      postInstallPolicyFailure =
-        dependencyPolicyFailure ?? unresolvedHookPolicyWarning(policyForward);
-      if (!postInstallPolicyFailure) {
-        return { ok: true };
-      }
-      return {
-        ok: false,
-        error: postInstallPolicyFailure.error,
-        ...(postInstallPolicyFailure.code ? { code: postInstallPolicyFailure.code } : {}),
-      };
+      return dependencyPolicyFailure ?? { ok: true };
     },
   });
   if (!installRes.ok) {
-    return withHookPolicyAcknowledgementState(
-      postInstallPolicyFailure ?? installRes,
-      policyForward.installPolicyAcknowledgementSequence,
-    );
+    return installRes;
   }
 
-  return withHookPolicyAcknowledgementState(
-    {
-      ok: true,
-      hookPackId,
-      hooks: hookNames,
-      packageKind,
-      targetDir,
-      version: typeof manifest.version === "string" ? manifest.version : undefined,
-    },
-    policyForward.installPolicyAcknowledgementSequence,
-  );
+  return {
+    ok: true,
+    hookPackId,
+    hooks: hookNames,
+    packageKind,
+    targetDir,
+    version: typeof manifest.version === "string" ? manifest.version : undefined,
+  };
 }
 
 async function installHookFromDir(
@@ -678,44 +603,29 @@ async function installHookFromDir(
     return preparedTarget;
   }
   const { targetDir, effectiveMode } = preparedTarget.target;
-  const policyForward = {
-    ...params,
-    installPolicyAcknowledgementSequence: resolveInstallPolicyAcknowledgementSequence(params),
-  };
 
   const policyFailure = await runHookInstallPolicy({
     hookPackId: hookName,
     hookEntries: [handlerEntry],
     packageDir: params.hookDir,
-    forward: policyForward,
+    forward: params,
     logger,
     mode: effectiveMode,
   });
   if (policyFailure) {
-    return withHookPolicyAcknowledgementState(
-      policyFailure,
-      policyForward.installPolicyAcknowledgementSequence,
-    );
+    return policyFailure;
   }
 
   if (dryRun) {
-    const unresolved = unresolvedHookPolicyWarning(policyForward);
-    if (unresolved) {
-      return unresolved;
-    }
-    return withHookPolicyAcknowledgementState(
-      {
-        ok: true,
-        hookPackId: hookName,
-        hooks: [hookName],
-        packageKind,
-        targetDir,
-      },
-      policyForward.installPolicyAcknowledgementSequence,
-    );
+    return {
+      ok: true,
+      hookPackId: hookName,
+      hooks: [hookName],
+      packageKind,
+      targetDir,
+    };
   }
 
-  let postInstallPolicyFailure: Extract<InstallHooksResult, { ok: false }> | null = null;
   const installRes = await runtime.installPackageDir({
     sourceDir: params.hookDir,
     targetDir,
@@ -726,41 +636,27 @@ async function installHookFromDir(
     hasDeps: false,
     depsLogMessage: "Installing hook dependencies…",
     afterInstall: async (installedDir) => {
-      postInstallPolicyFailure = await runHookInstalledDependencyPolicy({
+      const stagedPolicyFailure = await runHookInstalledDependencyPolicy({
         hookPackId: hookName,
         installedDir,
-        forward: policyForward,
+        forward: params,
         logger,
         mode: effectiveMode,
       });
-      postInstallPolicyFailure ??= unresolvedHookPolicyWarning(policyForward);
-      if (!postInstallPolicyFailure) {
-        return { ok: true };
-      }
-      return {
-        ok: false,
-        error: postInstallPolicyFailure.error,
-        ...(postInstallPolicyFailure.code ? { code: postInstallPolicyFailure.code } : {}),
-      };
+      return stagedPolicyFailure ?? { ok: true };
     },
   });
   if (!installRes.ok) {
-    return withHookPolicyAcknowledgementState(
-      postInstallPolicyFailure ?? installRes,
-      policyForward.installPolicyAcknowledgementSequence,
-    );
+    return installRes;
   }
 
-  return withHookPolicyAcknowledgementState(
-    {
-      ok: true,
-      hookPackId: hookName,
-      hooks: [hookName],
-      packageKind,
-      targetDir,
-    },
-    policyForward.installPolicyAcknowledgementSequence,
-  );
+  return {
+    ok: true,
+    hookPackId: hookName,
+    hooks: [hookName],
+    packageKind,
+    targetDir,
+  };
 }
 
 /** Install hooks from an archive after extracting and validating the archive root. */
@@ -869,25 +765,7 @@ export async function installHooksFromPath(
   });
 
   if (stat.isDirectory()) {
-    if (params.dryRun) {
-      return await installFromResolvedHookDir(resolved, forwardParams);
-    }
-    let snapshotReady = false;
-    try {
-      return await withInstallSourceSnapshot({
-        sourceDir: resolved,
-        prefix: "openclaw-hook-source-",
-        run: async (snapshotDir) => {
-          snapshotReady = true;
-          return await installFromResolvedHookDir(snapshotDir, forwardParams);
-        },
-      });
-    } catch (error) {
-      if (snapshotReady) {
-        throw error;
-      }
-      return { ok: false, error: `failed to snapshot hook source: ${String(error)}` };
-    }
+    return await installFromResolvedHookDir(resolved, forwardParams);
   }
 
   if (!runtime.resolveArchiveKind(resolved)) {

@@ -690,7 +690,6 @@ describe("plugin management service", () => {
           source: "clawhub",
           packageName: "@openclaw/diffs",
           acknowledgeClawHubRisk: true,
-          dangerouslyForceUnsafeInstall: true,
         },
         env: {},
       }),
@@ -701,7 +700,6 @@ describe("plugin management service", () => {
         expectedPluginId: "diffs",
         expectedIntegrity: `sha256-${Buffer.from("a".repeat(64), "hex").toString("base64")}`,
         acknowledgeClawHubRisk: true,
-        dangerouslyForceUnsafeInstall: true,
       }),
     );
     expect(mocks.persistInstall).not.toHaveBeenCalled();

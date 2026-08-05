@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { DiagnosticSecurityEvent } from "../infra/diagnostic-events.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
-import type { InstallPolicyAcknowledgementSequence } from "./install-security-scan.types.js";
 
 const runCommandWithTimeoutMock = vi.fn();
 const installPluginFromInstalledPackageDirMock = vi.fn();
@@ -366,7 +365,6 @@ describe("installPluginFromGitSpec", () => {
       result = await installPluginFromGitSpec({
         spec: "git:github.com/acme/demo",
         expectedPluginId: "demo",
-        dangerouslyForceUnsafeInstall: true,
       });
     } finally {
       captured.stop();
@@ -388,7 +386,6 @@ describe("installPluginFromGitSpec", () => {
     expect(commandArgvAt(1)).toEqual(["git", "rev-parse", "HEAD"]);
     expect(preflightPluginGitInstallPolicyMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        dangerouslyForceUnsafeInstall: true,
         pluginId: "demo",
         requestedSpecifier: "git:github.com/acme/demo",
         source: { kind: "git", authority: "third-party", mutable: true, network: true },
@@ -405,107 +402,6 @@ describe("installPluginFromGitSpec", () => {
         source_family: "git",
         mode: "install",
       },
-    });
-  });
-
-  it("shares acknowledgement state across Git preflight and package scans", async () => {
-    const acknowledgementId = `sha256:${"b".repeat(64)}`;
-    const warning = {
-      reason: "Review Git source behavior",
-      acknowledgementId: `sha256:${"a".repeat(64)}`,
-    };
-    runCommandWithTimeoutMock
-      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ code: 0, stdout: "abc123\n", stderr: "" });
-    preflightPluginGitInstallPolicyMock.mockImplementationOnce(
-      async (params: {
-        installPolicyAcknowledgementSequence: InstallPolicyAcknowledgementSequence;
-      }) => {
-        params.installPolicyAcknowledgementSequence.deferred = {
-          warning,
-          reason: "acknowledge the current warning",
-        };
-        return undefined;
-      },
-    );
-    installPluginFromInstalledPackageDirMock.mockImplementationOnce(
-      async (params: {
-        installPolicyAcknowledgementSequence: InstallPolicyAcknowledgementSequence;
-        packageDir: string;
-      }) => {
-        expect(params.installPolicyAcknowledgementSequence).toBe(
-          preflightPluginGitInstallPolicyMock.mock.calls[0]?.[0]
-            .installPolicyAcknowledgementSequence,
-        );
-        params.installPolicyAcknowledgementSequence.matched = true;
-        return {
-          ok: true,
-          pluginId: "demo",
-          targetDir: params.packageDir,
-          version: "1.2.3",
-          extensions: ["index.js"],
-        };
-      },
-    );
-
-    const result = await installPluginFromGitSpec({
-      spec: "git:github.com/acme/demo",
-      expectedPluginId: "demo",
-      dryRun: true,
-      dangerouslyForceUnsafeInstall: true,
-      installPolicyAcknowledgementId: acknowledgementId,
-    });
-
-    expect(result.ok).toBe(true);
-    expect(preflightPluginGitInstallPolicyMock.mock.calls[0]?.[0]).toMatchObject({
-      installPolicyAcknowledgementSequence: {
-        presentedId: acknowledgementId,
-        matched: true,
-      },
-    });
-  });
-
-  it("surfaces a deferred Git preflight warning when later scans do not match", async () => {
-    const warning = {
-      reason: "Review Git source behavior",
-      acknowledgementId: `sha256:${"a".repeat(64)}`,
-    };
-    runCommandWithTimeoutMock
-      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ code: 0, stdout: "abc123\n", stderr: "" });
-    preflightPluginGitInstallPolicyMock.mockImplementationOnce(
-      async (params: {
-        installPolicyAcknowledgementSequence: InstallPolicyAcknowledgementSequence;
-      }) => {
-        params.installPolicyAcknowledgementSequence.deferred = {
-          warning,
-          reason: "acknowledge the current warning",
-        };
-        return undefined;
-      },
-    );
-    installPluginFromInstalledPackageDirMock.mockImplementationOnce(
-      async (params: { packageDir: string }) => ({
-        ok: true,
-        pluginId: "demo",
-        targetDir: params.packageDir,
-        version: "1.2.3",
-        extensions: ["index.js"],
-      }),
-    );
-
-    const result = await installPluginFromGitSpec({
-      spec: "git:github.com/acme/demo",
-      expectedPluginId: "demo",
-      dryRun: true,
-      dangerouslyForceUnsafeInstall: true,
-      installPolicyAcknowledgementId: `sha256:${"b".repeat(64)}`,
-    });
-
-    expect(result).toMatchObject({
-      ok: false,
-      code: "security_scan_blocked",
-      installPolicyWarning: warning,
     });
   });
 

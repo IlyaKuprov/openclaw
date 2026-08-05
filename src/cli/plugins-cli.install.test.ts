@@ -372,7 +372,6 @@ type PluginInstallCall = {
   expectedPluginId?: string;
   extensionsDir?: string;
   inspection?: "package-kind";
-  installPolicyAcknowledgementId?: string;
   logger?: {
     info?: unknown;
     warn?: unknown;
@@ -756,11 +755,17 @@ describe("plugins cli install", () => {
     });
 
     await expect(
-      runAcknowledgedPluginsInstallCommand(["plugins", "install", "@acme/demo-hooks"]),
+      runAcknowledgedPluginsInstallCommand([
+        "plugins",
+        "install",
+        "@acme/demo-hooks",
+        "--dangerously-force-unsafe-install",
+      ]),
     ).rejects.toThrow("__exit__:1");
 
     expect(installHooksFromNpmSpec).toHaveBeenCalledTimes(1);
     expect(hookNpmInstallCall().inspection).toBe("package-kind");
+    expect(hookNpmInstallCall().dangerouslyForceUnsafeInstall).toBe(true);
     expect(installPluginFromNpmSpec).not.toHaveBeenCalled();
     expect(writeConfigFile).not.toHaveBeenCalled();
     expect(runtimeErrors.at(-1)).toContain(
@@ -813,30 +818,6 @@ describe("plugins cli install", () => {
     expect(runtimeErrors.at(-1)).toContain(
       "Config hooks are stored in an external or unresolved top-level $include",
     );
-  });
-
-  it("shows acknowledgement guidance for a proven local hook pack policy warning", async () => {
-    const localPath = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-hook-pack-"));
-    primeBlockedPluginConfigMutation();
-    installHooksFromPath
-      .mockResolvedValueOnce(createHookPackInstallResult(localPath))
-      .mockResolvedValueOnce({
-        ok: false,
-        code: "security_scan_blocked",
-        error: "install policy warning requires acknowledgement",
-        installPolicyWarning: { reason: "Review hook behavior" },
-      });
-
-    try {
-      await expect(
-        runAcknowledgedPluginsInstallCommand(["plugins", "install", localPath]),
-      ).rejects.toThrow("__exit__:1");
-    } finally {
-      fs.rmSync(localPath, { recursive: true, force: true });
-    }
-
-    expect(installPluginFromPath).not.toHaveBeenCalled();
-    expect(runtimeErrors.at(-1)).toContain("--dangerously-force-unsafe-install");
   });
 
   it.skipIf(process.platform === "win32")(
@@ -2167,44 +2148,6 @@ describe("plugins cli install", () => {
     expect(installPluginFromClawHub).not.toHaveBeenCalled();
   });
 
-  it("preserves the install target when the bare acknowledgement flag comes first", async () => {
-    primeSuccessfulPluginPersistence("demo");
-    installPluginFromNpmSpec.mockResolvedValue(createNpmPluginInstallResult("demo"));
-
-    await runAcknowledgedPluginsInstallCommand([
-      "plugins",
-      "install",
-      "--dangerously-force-unsafe-install",
-      "npm:demo",
-      "--force",
-    ]);
-
-    expect(npmInstallCall()).toMatchObject({
-      spec: "demo",
-      dangerouslyForceUnsafeInstall: true,
-    });
-    expect(npmInstallCall().installPolicyAcknowledgementId).toBeUndefined();
-  });
-
-  it("forwards an install-policy acknowledgement token through the existing force flag", async () => {
-    const acknowledgementId = `sha256:${"a".repeat(64)}`;
-    primeSuccessfulPluginPersistence("demo");
-    installPluginFromNpmSpec.mockResolvedValue(createNpmPluginInstallResult("demo"));
-
-    await runAcknowledgedPluginsInstallCommand([
-      "plugins",
-      "install",
-      "npm:demo",
-      "--dangerously-force-unsafe-install",
-      acknowledgementId,
-    ]);
-
-    expect(npmInstallCall()).toMatchObject({
-      dangerouslyForceUnsafeInstall: true,
-      installPolicyAcknowledgementId: acknowledgementId,
-    });
-  });
-
   it("reports npm install failures without trying ClawHub when npm: prefix is used", async () => {
     loadConfig.mockReturnValue({} as OpenClawConfig);
     installPluginFromNpmSpec.mockResolvedValue({
@@ -2725,24 +2668,6 @@ describe("plugins cli install", () => {
     expect(runtimeErrors.at(-1)).not.toContain("Also not a valid hook pack");
   });
 
-  it("shows the acknowledgement flag for an install-policy warning", async () => {
-    loadConfig.mockReturnValue({} as OpenClawConfig);
-    mockClawHubPackageNotFound("@acme/review-plugin");
-    installPluginFromNpmSpec.mockResolvedValue({
-      ok: false,
-      code: "security_scan_blocked",
-      error: "install policy warning requires acknowledgement",
-      installPolicyWarning: { reason: "Review package behavior" },
-    });
-
-    await expect(
-      runAcknowledgedPluginsInstallCommand(["plugins", "install", "@acme/review-plugin"]),
-    ).rejects.toThrow("__exit__:1");
-
-    expect(runtimeErrors.at(-1)).toContain("--dangerously-force-unsafe-install");
-    expect(installHooksFromNpmSpec).not.toHaveBeenCalled();
-  });
-
   it("still falls back to local hook pack when dangerous force unsafe install is set for non-security errors", async () => {
     const localHookDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-local-hook-pack-"));
     loadConfig.mockReturnValue({} as OpenClawConfig);
@@ -2775,32 +2700,6 @@ describe("plugins cli install", () => {
     expect(runtimeLogsContain("Installed hook pack: demo-hooks")).toBe(true);
   });
 
-  it("shows acknowledgement guidance when local hook-pack fallback returns a policy warning", async () => {
-    const localHookDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-local-hook-pack-"));
-    loadConfig.mockReturnValue({} as OpenClawConfig);
-    installPluginFromPath.mockResolvedValue({
-      ok: false,
-      error: "package.json missing openclaw.plugin.json",
-      code: "missing_openclaw_extensions",
-    });
-    installHooksFromPath.mockResolvedValue({
-      ok: false,
-      code: "security_scan_blocked",
-      error: "install policy warning requires acknowledgement",
-      installPolicyWarning: { reason: "Review hook behavior" },
-    });
-
-    try {
-      await expect(
-        runAcknowledgedPluginsInstallCommand(["plugins", "install", localHookDir]),
-      ).rejects.toThrow("__exit__:1");
-    } finally {
-      fs.rmSync(localHookDir, { recursive: true, force: true });
-    }
-
-    expect(runtimeErrors.at(-1)).toContain("--dangerously-force-unsafe-install");
-  });
-
   it("still falls back to npm hook pack when dangerous force unsafe install is set for non-security errors", async () => {
     primeHookPackNpmFallback();
 
@@ -2814,27 +2713,6 @@ describe("plugins cli install", () => {
     expect(hookNpmInstallCall().spec).toBe("@acme/demo-hooks");
     expect(hookNpmInstallCall().dangerouslyForceUnsafeInstall).toBe(true);
     expect(runtimeLogsContain("Installed hook pack: demo-hooks")).toBe(true);
-  });
-
-  it("shows the acknowledgement flag when npm hook-pack fallback returns a policy warning", async () => {
-    loadConfig.mockReturnValue({} as OpenClawConfig);
-    mockClawHubPackageNotFound("@acme/demo-hooks");
-    installPluginFromNpmSpec.mockResolvedValue({
-      ok: false,
-      error: "package.json missing openclaw.plugin.json",
-    });
-    installHooksFromNpmSpec.mockResolvedValue({
-      ok: false,
-      code: "security_scan_blocked",
-      error: "install policy warning requires acknowledgement",
-      installPolicyWarning: { reason: "Review hook behavior" },
-    });
-
-    await expect(
-      runAcknowledgedPluginsInstallCommand(["plugins", "install", "@acme/demo-hooks"]),
-    ).rejects.toThrow("__exit__:1");
-
-    expect(runtimeErrors.at(-1)).toContain("--dangerously-force-unsafe-install");
   });
 
   it("does not fall back to npm when explicit ClawHub rejects a real package", async () => {

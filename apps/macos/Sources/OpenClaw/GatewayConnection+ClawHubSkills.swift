@@ -3,25 +3,6 @@ import OpenClawKit
 import OpenClawProtocol
 
 extension GatewayConnection {
-    static func skillInstallParams(
-        name: String,
-        installId: String,
-        installPolicyAcknowledgementId: String?,
-        timeoutMs: Int?) -> [String: AnyCodable]
-    {
-        var params: [String: AnyCodable] = [
-            "name": AnyCodable(name),
-            "installId": AnyCodable(installId),
-        ]
-        if let installPolicyAcknowledgementId {
-            params["acknowledgeInstallPolicyWarning"] = AnyCodable(installPolicyAcknowledgementId)
-        }
-        if let timeoutMs {
-            params["timeoutMs"] = AnyCodable(timeoutMs)
-        }
-        return params
-    }
-
     func skillsStatus(on route: Route) async throws -> SkillsStatusReport {
         try await self.requestDecoded(method: .skillsStatus, ifCurrentRoute: route)
     }
@@ -50,7 +31,6 @@ extension GatewayConnection {
         slug: String,
         version: String,
         acknowledgeRisk: Bool = false,
-        installPolicyAcknowledgementId: String? = nil,
         on route: Route) async throws -> SkillInstallResult
     {
         var params: [String: AnyCodable] = [
@@ -61,9 +41,6 @@ extension GatewayConnection {
         ]
         if acknowledgeRisk {
             params["acknowledgeClawHubRisk"] = AnyCodable(true)
-        }
-        if let installPolicyAcknowledgementId {
-            params["acknowledgeInstallPolicyWarning"] = AnyCodable(installPolicyAcknowledgementId)
         }
         return try await self.requestDecoded(
             method: .skillsInstall,

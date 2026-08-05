@@ -135,8 +135,6 @@ export async function runPostCorePluginConvergence(params: {
    * map is what gets persisted and returned via `installRecords`.
    */
   baselineInstallRecords?: Record<string, PluginInstallRecord>;
-  dangerouslyForceUnsafeInstall?: boolean;
-  installPolicyAcknowledgementId?: string;
   acknowledgeClawHubRisk?: boolean;
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
 }): Promise<PostCoreConvergenceResult> {
@@ -156,8 +154,6 @@ export async function runPostCorePluginConvergence(params: {
     cfg: params.cfg,
     env,
     ...(prunedBaseline ? { baselineRecords: prunedBaseline.records } : {}),
-    ...(params.dangerouslyForceUnsafeInstall ? { dangerouslyForceUnsafeInstall: true } : {}),
-    installPolicyAcknowledgementId: params.installPolicyAcknowledgementId,
     ...(params.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
     ...(params.onClawHubRisk ? { onClawHubRisk: params.onClawHubRisk } : {}),
   });

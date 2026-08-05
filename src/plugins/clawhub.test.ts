@@ -1769,7 +1769,6 @@ describe("installPluginFromClawHub", () => {
     });
 
     expect(expectInstallFailure(result).error).toBe("bad archive");
-    expect(expectInstallFailure(result).version).toBe("2026.3.22");
     expect(archiveCleanupMock).toHaveBeenCalledTimes(1);
   });
 

@@ -23,11 +23,6 @@ import { buildPluginDiagnosticsReport } from "../plugins/status.js";
 import { defaultRuntime } from "../runtime.js";
 import { shortenHomePath } from "../utils.js";
 import { formatCliCommand } from "./command-format.js";
-import {
-  preserveBareInstallPolicyAcknowledgementFlag,
-  resolveInstallPolicyAcknowledgementOption,
-  type InstallPolicyAcknowledgementOption,
-} from "./install-policy-acknowledgement.js";
 import { runNativeHookRelayCli, type NativeHookRelayCliOptions } from "./native-hook-relay-cli.js";
 import { requestExitAfterOneShotOutput } from "./one-shot-exit.js";
 import { runPluginInstallCommand } from "./plugins-install-command.js";
@@ -49,7 +44,6 @@ export type HooksCheckOptions = {
 
 type HooksUpdateOptions = {
   all?: boolean;
-  dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
   dryRun?: boolean;
 };
 
@@ -518,7 +512,6 @@ async function disableHook(hookName: string): Promise<void> {
 }
 
 export function registerHooksCli(program: Command): void {
-  preserveBareInstallPolicyAcknowledgementFlag(program);
   const hooks = program
     .command("hooks")
     .description("Manage internal agent hooks")
@@ -615,35 +608,12 @@ export function registerHooksCli(program: Command): void {
     .option("-l, --link", "Link a local path instead of copying", false)
     .option("--pin", "Record npm installs as exact resolved <name>@<version>", false)
     .option("--force", "Confirm non-ClawHub sources and overwrite an existing hook pack", false)
-    .option(
-      "--dangerously-force-unsafe-install [acknowledgement-id]",
-      "Acknowledge reviewed install policy warnings",
-      false,
-    )
-    .action(
-      async (
-        raw: string,
-        opts: {
-          dangerouslyForceUnsafeInstall?: InstallPolicyAcknowledgementOption;
-          force?: boolean;
-          link?: boolean;
-          pin?: boolean;
-        },
-      ) => {
-        defaultRuntime.log(
-          theme.warn("`openclaw hooks install` is deprecated; use `openclaw plugins install`."),
-        );
-        const { dangerouslyForceUnsafeInstall, ...installOptions } = opts;
-        await runPluginInstallCommand({
-          raw,
-          opts: {
-            ...installOptions,
-            ...resolveInstallPolicyAcknowledgementOption(dangerouslyForceUnsafeInstall),
-          },
-          invalidateRuntimeCache: false,
-        });
-      },
-    );
+    .action(async (raw: string, opts: { force?: boolean; link?: boolean; pin?: boolean }) => {
+      defaultRuntime.log(
+        theme.warn("`openclaw hooks install` is deprecated; use `openclaw plugins install`."),
+      );
+      await runPluginInstallCommand({ raw, opts, invalidateRuntimeCache: false });
+    });
 
   hooks
     .command("update")
@@ -651,23 +621,11 @@ export function registerHooksCli(program: Command): void {
     .argument("[id]", "Hook pack id (omit with --all)")
     .option("--all", "Update all tracked hooks", false)
     .option("--dry-run", "Show what would change without writing", false)
-    .option(
-      "--dangerously-force-unsafe-install [acknowledgement-id]",
-      "Acknowledge reviewed install policy warnings",
-      false,
-    )
     .action(async (id: string | undefined, opts: HooksUpdateOptions) => {
       defaultRuntime.log(
         theme.warn("`openclaw hooks update` is deprecated; use `openclaw plugins update`."),
       );
-      const { dangerouslyForceUnsafeInstall, ...updateOptions } = opts;
-      await runPluginUpdateCommand({
-        id,
-        opts: {
-          ...updateOptions,
-          ...resolveInstallPolicyAcknowledgementOption(dangerouslyForceUnsafeInstall),
-        },
-      });
+      await runPluginUpdateCommand({ id, opts });
     });
 
   hooks.action(async (opts: HooksListOptions) =>
