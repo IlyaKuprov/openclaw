@@ -295,7 +295,6 @@ class MacosAppBootstrapCi {
 
     const migrationLease = acquireStartupMigrationLease({ owner: "macos-app-bootstrap-ci" });
     let migrationLeaseReleased = false;
-    const startedAt = Date.now();
     try {
       this.runLogged(
         "/usr/bin/open",
@@ -313,11 +312,13 @@ class MacosAppBootstrapCi {
         );
       });
 
-      const remainingOldWindowMs =
-        oldOnboardingReadinessTimeoutMs - (Date.now() - startedAt) + 1_000;
-      if (remainingOldWindowMs > 0) {
-        await delay(remainingOldWindowMs);
-      }
+      await this.waitFor("onboarding Gateway activation start", 60_000, () =>
+        this.onboardingLogs().includes(
+          "Gateway activation started executableReady=true gatewayReady=false",
+        ),
+      );
+      const activationStartedAt = Date.now();
+      await delay(oldOnboardingReadinessTimeoutMs + 1_000);
       migrationLease.release();
       migrationLeaseReleased = true;
 
@@ -333,10 +334,10 @@ class MacosAppBootstrapCi {
         throw new Error("onboarding entered a failed terminal state before the Gateway recovered");
       }
 
-      const elapsedMs = Date.now() - startedAt;
+      const elapsedMs = Date.now() - activationStartedAt;
       if (elapsedMs <= oldOnboardingReadinessTimeoutMs) {
         throw new Error(
-          `delayed readiness completed in ${elapsedMs}ms; expected to exceed the old ${oldOnboardingReadinessTimeoutMs}ms window`,
+          `delayed readiness completed ${elapsedMs}ms after onboarding activation; expected to exceed the old ${oldOnboardingReadinessTimeoutMs}ms window`,
         );
       }
       await this.captureDiagnostics(lane);

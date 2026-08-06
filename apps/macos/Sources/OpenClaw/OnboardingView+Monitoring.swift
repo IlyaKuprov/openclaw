@@ -110,6 +110,7 @@ extension OnboardingView {
             OnboardingController.shared.busyReason = nil
         }
 
+        self.recordCLIActivationStarted()
         let result = await CLIInstaller.activateLocalGateway()
         guard state.connectionMode == .local else {
             cliInstalled = true
@@ -176,6 +177,7 @@ extension OnboardingView {
         // The step checklist shows one spinner at a time: install first,
         // then the service start.
         self.cliInstallPhase = .startingService
+        self.recordCLIActivationStarted()
         let activation = await CLIInstaller.activateLocalGateway()
         switch activation {
         case .ready:
@@ -191,6 +193,11 @@ extension OnboardingView {
             return
         }
         self.recordCLIActivation(activation)
+    }
+
+    private func recordCLIActivationStarted() {
+        Self.cliSetupLogger.info(
+            "Gateway activation started executableReady=\(self.cliExecutableReady, privacy: .public) gatewayReady=\(self.cliInstalled, privacy: .public)")
     }
 
     private func recordCLIActivation(_ activation: CLIInstaller.LocalGatewayActivation) {

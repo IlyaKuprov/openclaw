@@ -683,6 +683,9 @@ describe("Parallels smoke model selection", () => {
     expect(script).toContain("acquireStartupMigrationLease");
     expect(script).toContain("OpenClaw startup migrations are already running");
     expect(script).toContain("oldOnboardingReadinessTimeoutMs = 12_000");
+    expect(script).toContain("onboarding Gateway activation start");
+    expect(script).toContain("Gateway activation started executableReady=true gatewayReady=false");
+    expect(script).toContain("const activationStartedAt = Date.now()");
     expect(script).toContain(
       "Gateway activation completed result=ready executableReady=true gatewayReady=true",
     );
