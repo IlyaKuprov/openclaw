@@ -159,25 +159,8 @@ class MacosAppBootstrapCi {
     }
     this.candidateVersion = packageJson.version.trim();
 
-    const matchingApp = path.resolve("dist/macos-app-bootstrap-ci/OpenClaw.app");
-    say(`Build packaged debug app ${this.candidateVersion}`);
-    const packageStatus = await runStreaming("bash", ["scripts/package-mac-app.sh"], {
-      env: {
-        ...process.env,
-        ALLOW_ADHOC_SIGNING: "1",
-        APP_VERSION: this.candidateVersion,
-        BUILD_CONFIG: "debug",
-        OPENCLAW_PACKAGE_APP_ROOT: matchingApp,
-        SIGN_IDENTITY: "-",
-        SKIP_PNPM_INSTALL: "1",
-      },
-      logPath: path.join(this.artifactDir, "package-mac-app.log"),
-      timeoutMs: 30 * 60_000,
-    });
-    if (packageStatus !== 0) {
-      throw new Error(`package-mac-app failed with exit ${packageStatus}`);
-    }
-
+    // Pack before the .app exists under dist: Sparkle contains framework symlinks that are
+    // valid in an app bundle but intentionally rejected by the npm package inventory.
     say("Pack exact-head OpenClaw npm artifact");
     const packageDir = path.join(this.tempRoot, "package");
     const artifact = await packOpenClaw({
@@ -200,6 +183,27 @@ class MacosAppBootstrapCi {
         },
       ],
     });
+
+    const matchingApp = path.resolve("dist/macos-app-bootstrap-ci/OpenClaw.app");
+    say(`Build packaged debug app ${this.candidateVersion}`);
+    const packageStatus = await runStreaming("bash", ["scripts/package-mac-app.sh"], {
+      env: {
+        ...process.env,
+        ALLOW_ADHOC_SIGNING: "1",
+        APP_VERSION: this.candidateVersion,
+        BUILD_CONFIG: "debug",
+        OPENCLAW_PACKAGE_APP_ROOT: matchingApp,
+        SIGN_IDENTITY: "-",
+        SKIP_PNPM_INSTALL: "1",
+        SKIP_TSC: "1",
+        SKIP_UI_BUILD: "1",
+      },
+      logPath: path.join(this.artifactDir, "package-mac-app.log"),
+      timeoutMs: 30 * 60_000,
+    });
+    if (packageStatus !== 0) {
+      throw new Error(`package-mac-app failed with exit ${packageStatus}`);
+    }
 
     const mismatchApp = path.join(this.tempRoot, "mismatch", "OpenClaw.app");
     await mkdir(path.dirname(mismatchApp), { recursive: true });

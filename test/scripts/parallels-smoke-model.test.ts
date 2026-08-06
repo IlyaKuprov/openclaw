@@ -85,6 +85,7 @@ const TS_PATHS = {
   hostServer: "scripts/e2e/parallels/host-server.ts",
   laneRunner: "scripts/e2e/parallels/lane-runner.ts",
   linux: "scripts/e2e/parallels/linux-smoke.ts",
+  macosAppBootstrapCi: "scripts/e2e/macos-app-bootstrap-ci.ts",
   macosDiscord: "scripts/e2e/parallels/macos-discord.ts",
   macos: "scripts/e2e/parallels/macos-smoke.ts",
   npmUpdateScripts: "scripts/e2e/parallels/npm-update-scripts.ts",
@@ -664,6 +665,16 @@ describe("Parallels smoke model selection", () => {
         platform: "darwin",
       }),
     ).toThrow("outside explicit CI");
+  });
+
+  it("packs the exact-head CLI before the macOS app adds framework symlinks under dist", () => {
+    const script = TS_SOURCE.macosAppBootstrapCi;
+
+    expect(script.indexOf("await packOpenClaw")).toBeLessThan(
+      script.indexOf('runStreaming("bash", ["scripts/package-mac-app.sh"]'),
+    );
+    expect(script).toContain('SKIP_TSC: "1"');
+    expect(script).toContain('SKIP_UI_BUILD: "1"');
   });
 
   it("rejects short flags as Parallels smoke option values", () => {
