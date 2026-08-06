@@ -87,6 +87,7 @@ function captureAuditWriter(inputs: AuditEventInput[]): AuditEventWriter {
       return true;
     },
     recordExecutionIdentity: () => true,
+    recordExecutionDecision: () => true,
     stop: async () => {},
   };
 }
@@ -637,6 +638,7 @@ describe("agent activity audit projection", () => {
         return true;
       },
       recordExecutionIdentity: () => true,
+      recordExecutionDecision: () => true,
       stop: async () => {},
     };
     const recorder = createAgentEventAuditRecorder({ writer });
@@ -668,6 +670,7 @@ describe("agent activity audit projection", () => {
         return true;
       },
       recordExecutionIdentity: () => true,
+      recordExecutionDecision: () => true,
       stop: async () => {},
     };
     const recorder = createAgentEventAuditRecorder({ writer, terminalSettleMs: 60_000 });
@@ -698,6 +701,7 @@ describe("agent activity audit projection", () => {
         return true;
       },
       recordExecutionIdentity: () => true,
+      recordExecutionDecision: () => true,
       stop: async () => {},
     };
     const recorder = createAgentEventAuditRecorder({ writer, terminalSettleMs: 60_000 });
@@ -729,6 +733,7 @@ describe("agent activity audit projection", () => {
         return true;
       },
       recordExecutionIdentity: () => true,
+      recordExecutionDecision: () => true,
       stop: async () => {},
     };
     const recorder = createAgentEventAuditRecorder({ writer });
