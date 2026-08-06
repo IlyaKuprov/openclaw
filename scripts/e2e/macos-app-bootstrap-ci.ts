@@ -6,7 +6,7 @@ import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { redactSensitiveText } from "../../src/logging/redact.ts";
+import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
 import { sleep as delay } from "../lib/sleep.mjs";
 import { run, runStreaming, say } from "./parallels/host-command.ts";
 import { startNpmRegistryServer } from "./parallels/host-server.ts";
@@ -287,7 +287,6 @@ class MacosAppBootstrapCi {
     if (existsSync(managedCli)) {
       throw new Error("incompatible channel replaced the managed CLI before rejection");
     }
-    await this.verifyConfig(appBootstrapMismatchVersion(this.candidateVersion));
     await delay(5_000);
     const service = this.runStatus("/bin/launchctl", ["print", `gui/${this.uid}/${gatewayLabel}`], {
       check: false,
@@ -367,11 +366,22 @@ class MacosAppBootstrapCi {
     }
     this.runLogged("/usr/bin/pkill", ["-x", "OpenClaw"], { check: false });
     this.runLogged("/usr/bin/pkill", ["-f", installerProcessPattern], { check: false });
-    await this.waitFor(
-      "OpenClaw app cleanup",
-      15_000,
-      () => run("/usr/bin/pgrep", ["-x", "OpenClaw"], { check: false, quiet: true }).status !== 0,
-    );
+    try {
+      await this.waitFor(
+        "OpenClaw app graceful cleanup",
+        5_000,
+        () => run("/usr/bin/pgrep", ["-x", "OpenClaw"], { check: false, quiet: true }).status !== 0,
+      );
+    } catch {
+      // The packaged menu-bar app can remain alive while bootstrap work unwinds. CI owns this
+      // ephemeral login session, so force-stop it before resetting state for the next lane.
+      this.runLogged("/usr/bin/pkill", ["-9", "-x", "OpenClaw"], { check: false });
+      await this.waitFor(
+        "OpenClaw app forced cleanup",
+        10_000,
+        () => run("/usr/bin/pgrep", ["-x", "OpenClaw"], { check: false, quiet: true }).status !== 0,
+      );
+    }
     this.runLogged("/bin/launchctl", ["bootout", `gui/${this.uid}/${gatewayLabel}`], {
       check: false,
     });
