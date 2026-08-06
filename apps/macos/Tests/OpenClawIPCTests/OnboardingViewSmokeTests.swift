@@ -246,6 +246,12 @@ struct OnboardingViewSmokeTests {
         #expect(states.service == .failed)
     }
 
+    @Test func `packaged E2E can open onboarding on the CLI page`() {
+        #expect(OnboardingView.debugE2EShouldOpenCLIPage(
+            arguments: ["OpenClaw", "--e2e-onboarding-cli"]))
+        #expect(!OnboardingView.debugE2EShouldOpenCLIPage(arguments: ["OpenClaw"]))
+    }
+
     @Test func `connection mode change restarts full page monitoring`() {
         let state = AppState(preview: true)
         let view = OnboardingView(state: state)

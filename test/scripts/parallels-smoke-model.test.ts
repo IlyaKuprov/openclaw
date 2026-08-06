@@ -677,6 +677,18 @@ describe("Parallels smoke model selection", () => {
     expect(script).toContain('SKIP_UI_BUILD: "1"');
   });
 
+  it("holds a real migration lease past the old onboarding readiness window", () => {
+    const script = TS_SOURCE.macosAppBootstrapCi;
+
+    expect(script).toContain("acquireStartupMigrationLease");
+    expect(script).toContain("OpenClaw startup migrations are already running");
+    expect(script).toContain("oldOnboardingReadinessTimeoutMs = 12_000");
+    expect(script).toContain(
+      "Gateway activation completed result=ready executableReady=true gatewayReady=true",
+    );
+    expect(script).toContain("onboarding entered a failed terminal state");
+  });
+
   it("rejects short flags as Parallels smoke option values", () => {
     const cases = [
       [parseLinuxSmokeArgs, "--mode", "-h"],

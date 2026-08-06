@@ -5,8 +5,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
+import { acquireStartupMigrationLease } from "../../src/infra/startup-migration-checkpoint.js";
 import { sleep as delay } from "../lib/sleep.mjs";
 import { run, runStreaming, say } from "./parallels/host-command.ts";
 import { startNpmRegistryServer } from "./parallels/host-server.ts";
@@ -18,7 +20,9 @@ const gatewayPort = 18789;
 const bundleId = "ai.openclaw.mac.debug";
 const installerProcessPattern = "Contents/Resources/[i]nstall-cli.sh";
 
-type Lane = "matching" | "mismatch";
+type Lane = "delayed-readiness" | "matching" | "mismatch";
+
+const oldOnboardingReadinessTimeoutMs = 12_000;
 
 type CommandOptions = {
   check?: boolean;
@@ -110,12 +114,17 @@ class MacosAppBootstrapCi {
 
       await this.runLane("mismatch", apps.mismatch);
       await this.runLane("matching", apps.matching);
+      const delayedReadinessMs = await this.runDelayedReadinessLane(apps.matching);
 
       await writeFile(
         path.join(this.artifactDir, "summary.json"),
         `${JSON.stringify(
           {
             candidateVersion: this.candidateVersion,
+            delayedReadiness: {
+              elapsedMs: delayedReadinessMs,
+              status: "pass",
+            },
             matching: "pass",
             mismatch: "pass",
           },
@@ -123,7 +132,9 @@ class MacosAppBootstrapCi {
           2,
         )}\n`,
       );
-      say("Packaged macOS app bootstrap passed: mismatch rejected, matching Gateway ready");
+      say(
+        "Packaged macOS app bootstrap passed: mismatch rejected, matching Gateway ready, delayed onboarding recovered",
+      );
     } catch (error) {
       await writeFile(
         path.join(this.artifactDir, "failure.log"),
@@ -246,6 +257,97 @@ class MacosAppBootstrapCi {
     await this.captureDiagnostics(lane);
   }
 
+  private async runDelayedReadinessLane(appPath: string): Promise<number> {
+    const lane: Lane = "delayed-readiness";
+    say("Run packaged app bootstrap lane: delayed onboarding readiness");
+    await this.stopRuntimePreservingState();
+    await rm(this.launchAgentPath, { force: true });
+    await this.configureApp(appPath, lane);
+    this.runLogged("/usr/bin/defaults", [
+      "write",
+      bundleId,
+      "openclaw.onboardingSeen",
+      "-bool",
+      "false",
+    ]);
+    this.runLogged("/usr/bin/defaults", [
+      "write",
+      bundleId,
+      "openclaw.onboardingVersion",
+      "-int",
+      "0",
+    ]);
+
+    const stateDatabasePath = path.join(this.stateDir, "state/openclaw.sqlite");
+    if (!existsSync(stateDatabasePath)) {
+      throw new Error(`matching bootstrap did not create ${stateDatabasePath}`);
+    }
+    const database = new DatabaseSync(stateDatabasePath);
+    try {
+      database
+        .prepare(
+          "DELETE FROM schema_meta WHERE meta_key IN ('startup-migrations', 'state-migrations')",
+        )
+        .run();
+    } finally {
+      database.close();
+    }
+
+    const migrationLease = acquireStartupMigrationLease({ owner: "macos-app-bootstrap-ci" });
+    let migrationLeaseReleased = false;
+    const startedAt = Date.now();
+    try {
+      this.runLogged(
+        "/usr/bin/open",
+        ["-n", appPath, "--args", "--e2e-cli-channel", "stable", "--e2e-onboarding-cli"],
+        { timeoutMs: 30_000 },
+      );
+
+      const gatewayLog = path.join(this.artifactDir, lane, "openclaw-gateway.log");
+      await this.waitFor("startup migration lease conflict", 30_000, async () => {
+        if (!existsSync(gatewayLog)) {
+          return false;
+        }
+        return (await readFile(gatewayLog, "utf8")).includes(
+          "OpenClaw startup migrations are already running",
+        );
+      });
+
+      const remainingOldWindowMs =
+        oldOnboardingReadinessTimeoutMs - (Date.now() - startedAt) + 1_000;
+      if (remainingOldWindowMs > 0) {
+        await delay(remainingOldWindowMs);
+      }
+      migrationLease.release();
+      migrationLeaseReleased = true;
+
+      await this.verifyMatching();
+      await this.waitFor("onboarding readiness recovery", 60_000, () => {
+        const logs = this.onboardingLogs();
+        return logs.includes(
+          "Gateway activation completed result=ready executableReady=true gatewayReady=true",
+        );
+      });
+      const onboardingLogs = this.onboardingLogs();
+      if (onboardingLogs.includes("Gateway activation completed result=failed")) {
+        throw new Error("onboarding entered a failed terminal state before the Gateway recovered");
+      }
+
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs <= oldOnboardingReadinessTimeoutMs) {
+        throw new Error(
+          `delayed readiness completed in ${elapsedMs}ms; expected to exceed the old ${oldOnboardingReadinessTimeoutMs}ms window`,
+        );
+      }
+      await this.captureDiagnostics(lane);
+      return elapsedMs;
+    } finally {
+      if (!migrationLeaseReleased) {
+        migrationLease.release();
+      }
+    }
+  }
+
   private async configureApp(appPath: string, lane: Lane): Promise<void> {
     const actualBundleId = this.runLogged("/usr/libexec/PlistBuddy", [
       "-c",
@@ -364,6 +466,19 @@ class MacosAppBootstrapCi {
     if (this.uid == null) {
       return;
     }
+    await this.stopRuntimePreservingState();
+    for (const key of ["NPM_CONFIG_REGISTRY", "npm_config_registry", "OPENCLAW_LOG_DIR"]) {
+      this.runLogged("/bin/launchctl", ["unsetenv", key], { check: false });
+    }
+    await rm(this.launchAgentPath, { force: true });
+    await rm(this.stateDir, { force: true, recursive: true });
+    this.runLogged("/usr/bin/defaults", ["delete", bundleId], { check: false });
+  }
+
+  private async stopRuntimePreservingState(): Promise<void> {
+    if (this.uid == null) {
+      return;
+    }
     this.runLogged("/usr/bin/pkill", ["-x", "OpenClaw"], { check: false });
     this.runLogged("/usr/bin/pkill", ["-f", installerProcessPattern], { check: false });
     try {
@@ -385,17 +500,28 @@ class MacosAppBootstrapCi {
     this.runLogged("/bin/launchctl", ["bootout", `gui/${this.uid}/${gatewayLabel}`], {
       check: false,
     });
-    for (const key of ["NPM_CONFIG_REGISTRY", "npm_config_registry", "OPENCLAW_LOG_DIR"]) {
-      this.runLogged("/bin/launchctl", ["unsetenv", key], { check: false });
-    }
-    await rm(this.launchAgentPath, { force: true });
-    await rm(this.stateDir, { force: true, recursive: true });
-    this.runLogged("/usr/bin/defaults", ["delete", bundleId], { check: false });
     await this.waitFor(
       "Gateway port cleanup",
       30_000,
       async () => !(await portIsOpen(gatewayPort)),
     );
+  }
+
+  private onboardingLogs(): string {
+    const result = run(
+      "/usr/bin/log",
+      [
+        "show",
+        "--last",
+        "10m",
+        "--style",
+        "compact",
+        "--predicate",
+        'subsystem == "ai.openclaw" AND category == "onboarding.cli"',
+      ],
+      { check: false, quiet: true, timeoutMs: 30_000 },
+    );
+    return `${result.stdout}${result.stderr}`;
   }
 
   private async captureDiagnostics(label: string): Promise<void> {
