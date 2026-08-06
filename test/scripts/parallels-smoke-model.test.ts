@@ -21,6 +21,7 @@ import {
   MAX_TIMER_TIMEOUT_SECONDS,
 } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { testing as macosAppBootstrapCiTesting } from "../../scripts/e2e/macos-app-bootstrap-ci.ts";
 import {
   extractLastOpenClawVersionFromLog,
   isLikelyMacosDesktopHome,
@@ -620,6 +621,49 @@ describe("Parallels smoke model selection", () => {
       parseWindowsSmokeArgs(["--mode", "fresh", "--", "--upgrade-from-packed-main"])
         .upgradeFromPackedMain,
     ).toBe(false);
+  });
+
+  it("derives an app version newer than the candidate for bootstrap rejection proof", () => {
+    expect(macosAppBootstrapCiTesting.appBootstrapMismatchVersion("2026.7.2")).toBe("2026.7.3");
+    expect(macosAppBootstrapCiTesting.appBootstrapMismatchVersion("2026.7.2-beta.7")).toBe(
+      "2026.7.3",
+    );
+    expect(() => macosAppBootstrapCiTesting.appBootstrapMismatchVersion("main")).toThrow(
+      "cannot derive app bootstrap mismatch version from main",
+    );
+  });
+
+  it("allows packaged app bootstrap state resets only in an explicit ephemeral macOS CI home", () => {
+    expect(() =>
+      macosAppBootstrapCiTesting.requireEphemeralCiHome({
+        allowReset: "1",
+        ci: "true",
+        home: "/Users/runner",
+        platform: "darwin",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      macosAppBootstrapCiTesting.requireEphemeralCiHome({
+        allowReset: "1",
+        ci: "true",
+        home: "/Users/patrick/work",
+        platform: "darwin",
+      }),
+    ).toThrow("refusing unsafe CI home");
+    expect(() =>
+      macosAppBootstrapCiTesting.requireEphemeralCiHome({
+        allowReset: "1",
+        ci: "true",
+        home: "/Users/runner",
+        platform: "linux",
+      }),
+    ).toThrow("requires a Darwin runner");
+    expect(() =>
+      macosAppBootstrapCiTesting.requireEphemeralCiHome({
+        home: "/Users/runner",
+        platform: "darwin",
+      }),
+    ).toThrow("outside explicit CI");
   });
 
   it("rejects short flags as Parallels smoke option values", () => {
