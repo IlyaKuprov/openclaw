@@ -950,13 +950,9 @@ jobs:
       contents: read
     outputs:
       stable_tag: ${{ steps.resolve.outputs.stable_tag }}
-      stable_asset_name: ${{ steps.resolve.outputs.stable_asset_name }}
-      stable_asset_url: ${{ steps.resolve.outputs.stable_asset_url }}
-      stable_asset_sha256: ${{ steps.resolve.outputs.stable_asset_sha256 }}
+      stable_release_sha: ${{ steps.resolve.outputs.stable_release_sha }}
       prerelease_tag: ${{ steps.resolve.outputs.prerelease_tag }}
-      prerelease_asset_name: ${{ steps.resolve.outputs.prerelease_asset_name }}
-      prerelease_asset_url: ${{ steps.resolve.outputs.prerelease_asset_url }}
-      prerelease_asset_sha256: ${{ steps.resolve.outputs.prerelease_asset_sha256 }}
+      prerelease_release_sha: ${{ steps.resolve.outputs.prerelease_release_sha }}
     steps:
       - name: Select immutable stable and prerelease assets
         id: resolve
@@ -984,9 +980,7 @@ jobs:
                 | {
                     published_at: $release.published_at,
                     tag: $release.tag_name,
-                    asset_name: $asset.name,
-                    asset_url: $asset.browser_download_url,
-                    asset_sha256: ($asset.digest | ltrimstr("sha256:"))
+                    asset_name: $asset.name
                   }
               ]
               | sort_by(.published_at)
@@ -1004,16 +998,32 @@ jobs:
             exit 1
           }
 
+          resolve_tag_sha() {
+            local tag="$1"
+            local ref object_type object_sha
+            ref="$(gh api "repos/openclaw/openclaw-windows-node/git/ref/tags/$tag")"
+            object_type="$(jq -r '.object.type' <<< "$ref")"
+            object_sha="$(jq -r '.object.sha' <<< "$ref")"
+            if [[ "$object_type" == "tag" ]]; then
+              object_sha="$(gh api "repos/openclaw/openclaw-windows-node/git/tags/$object_sha" --jq '.object.sha')"
+              object_type="$(gh api "repos/openclaw/openclaw-windows-node/git/tags/$(jq -r '.object.sha' <<< "$ref")" --jq '.object.type')"
+            fi
+            [[ "$object_type" == "commit" && "$object_sha" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "Windows-node release tag $tag does not resolve to an immutable commit." >&2
+              exit 1
+            }
+            printf '%s\n' "$object_sha"
+          }
+
           for channel in stable prerelease; do
             selection="${!channel}"
-            for field in tag asset_name asset_url asset_sha256; do
-              value="$(jq -r --arg field "$field" '.[$field]' <<< "$selection")"
-              [[ -n "${value// }" && "$value" != "null" ]] || {
-                echo "Windows-node $channel release is missing $field." >&2
-                exit 1
-              }
-              echo "${channel}_${field}=${value}" >> "$GITHUB_OUTPUT"
-            done
+            tag="$(jq -r '.tag' <<< "$selection")"
+            [[ -n "${tag// }" && "$tag" != "null" ]] || {
+              echo "Windows-node $channel release is missing its tag." >&2
+              exit 1
+            }
+            echo "${channel}_tag=${tag}" >> "$GITHUB_OUTPUT"
+            echo "${channel}_release_sha=$(resolve_tag_sha "$tag")" >> "$GITHUB_OUTPUT"
           done
 
           {
@@ -1076,17 +1086,15 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@986f28541dcea771c4eb4948ab4571571ac33b5d
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@4a48e045810cfc34188f8521c88ac69b09d6cfd6
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
       candidate_version: ${{ needs.prepare_release_package.outputs.package_version }}
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_tag }}
-      windows_node_asset_name: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_name }}
-      windows_node_asset_url: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_url }}
-      windows_node_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_sha256 }}
+      windows_node_release_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_release_sha }}
       allow_protocol_mismatch: false
-      windows_node_sha: 986f28541dcea771c4eb4948ab4571571ac33b5d
+      windows_node_sha: 4a48e045810cfc34188f8521c88ac69b09d6cfd6
 
   windows_node_stable_e2e:
     name: Run Windows-node stable E2E
@@ -1095,17 +1103,15 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@986f28541dcea771c4eb4948ab4571571ac33b5d
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@4a48e045810cfc34188f8521c88ac69b09d6cfd6
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
       candidate_version: ${{ needs.prepare_release_package.outputs.package_version }}
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_tag }}
-      windows_node_asset_name: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_name }}
-      windows_node_asset_url: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_url }}
-      windows_node_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}
+      windows_node_release_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_release_sha }}
       allow_protocol_mismatch: true
-      windows_node_sha: 986f28541dcea771c4eb4948ab4571571ac33b5d
+      windows_node_sha: 4a48e045810cfc34188f8521c88ac69b09d6cfd6
 
   live_repo_e2e_release_checks:
     name: Run repo/live E2E validation
