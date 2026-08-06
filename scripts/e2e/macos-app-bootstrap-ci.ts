@@ -125,6 +125,10 @@ class MacosAppBootstrapCi {
       );
       say("Packaged macOS app bootstrap passed: mismatch rejected, matching Gateway ready");
     } catch (error) {
+      await writeFile(
+        path.join(this.artifactDir, "failure.log"),
+        `${safeArtifactText(error instanceof Error ? (error.stack ?? error.message) : String(error))}\n`,
+      ).catch(() => undefined);
       await this.captureDiagnostics("failure").catch(() => undefined);
       throw error;
     } finally {
@@ -143,7 +147,7 @@ class MacosAppBootstrapCi {
   private async preflight(): Promise<void> {
     say("Verify logged-in macOS launchd and LaunchServices session");
     this.runStatus("/bin/launchctl", ["print", `gui/${this.uid}`], { timeoutMs: 30_000 });
-    this.runLogged("/usr/bin/test", ["-x", "/usr/bin/open"]);
+    this.runLogged("/bin/test", ["-x", "/usr/bin/open"]);
     this.runLogged("/usr/bin/stat", ["-f", "console-user=%Su", "/dev/console"]);
     await this.resetState();
   }
