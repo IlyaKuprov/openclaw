@@ -44,5 +44,5 @@ export async function runTelegramHelpCommandScenario(
   if (!config.expectedAny.every((needle) => reply.text.includes(needle))) {
     throw new Error(`Telegram help reply missing expected text: ${reply.text}`);
   }
-  return reply.text;
+  return { details: reply.text };
 }

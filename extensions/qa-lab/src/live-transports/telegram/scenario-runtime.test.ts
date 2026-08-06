@@ -55,7 +55,7 @@ describe("Telegram module scenarios", () => {
         command: "help",
         expectedAny: ["/new", "/commands for full list"],
       }),
-    ).resolves.toContain("/commands for full list");
+    ).resolves.toEqual({ details: "Use /new to start fresh; use /commands for full list." });
     expect(reset).toHaveBeenCalledOnce();
     expect(sendNativeCommand).toHaveBeenCalledWith({
       command: "help",
