@@ -258,6 +258,20 @@ describe("detectChangedScope", () => {
     }
   });
 
+  it("runs macOS CI when the packaged app bootstrap harness changes", () => {
+    expect(detectChangedScope(["scripts/e2e/macos-app-bootstrap-ci.ts"])).toEqual({
+      runNode: true,
+      runMacos: true,
+      runIosBuild: false,
+      runAndroid: false,
+      runWindows: false,
+      runSkillsPython: false,
+      runChangedSmoke: false,
+      runControlUiI18n: false,
+      runUiTests: false,
+    });
+  });
+
   it("enables the iOS build lane for iOS build helper changes", () => {
     for (const helperPath of [
       "scripts/ios-team-id.sh",
