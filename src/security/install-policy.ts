@@ -410,6 +410,13 @@ function blockedByPolicy(reason: string, findings?: InstallPolicyFinding[]): Ins
   };
 }
 
+function warnedByPolicy(reason: string, findings?: InstallPolicyFinding[]): InstallPolicyResult {
+  return {
+    warning: { reason: truncateText(reason, MAX_REASON_CHARS) },
+    ...(findings?.length ? { findings } : {}),
+  };
+}
+
 function isTargetEnabled(params: {
   policy: NonNullable<SecurityConfig["installPolicy"]>;
   targetType: InstallPolicyTarget;
@@ -572,10 +579,7 @@ function parsePolicyResponse(stdout: string): InstallPolicyResult {
     return blockedByFailure(`policy response decision "${decision}" requires a non-empty reason`);
   }
   if (decision === "warn") {
-    return {
-      warning: { reason: truncateText(reason, MAX_REASON_CHARS) },
-      ...(normalizedFindings.length > 0 ? { findings: normalizedFindings } : {}),
-    };
+    return warnedByPolicy(reason, normalizedFindings);
   }
   return blockedByPolicy(reason, normalizedFindings);
 }
