@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { GATEWAY_SERVER_CAPS } from "@openclaw/gateway-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
@@ -12,6 +13,7 @@ import {
 const gatewayUrl = "ws://gateway.test/control";
 const recoveryScope = "principal-a";
 const recoveryClient = { recoveryScope, recoveryScopeReady: true } as never;
+const recoveryCapabilities = [GATEWAY_SERVER_CAPS.SYSTEM_AGENT_CHAT_HISTORY_SESSION_RECOVERY];
 
 describe("Custodian wizard reload recovery", () => {
   afterEach(() => {
@@ -73,6 +75,7 @@ describe("Custodian wizard reload recovery", () => {
         : { sessionId: "fresh-session", reply: "Fresh session ready.", action: "none" };
     });
     const { context } = createContext(request, ["openclaw.chat", "openclaw.chat.history"], {
+      featureCapabilities: recoveryCapabilities,
       recoveryScope,
     });
     const first = await mountPage(context);
@@ -147,6 +150,7 @@ describe("Custodian wizard reload recovery", () => {
       throw new Error(`unexpected method ${method}`);
     });
     const harness = createContext(request, ["openclaw.chat", "openclaw.chat.history"], {
+      featureCapabilities: recoveryCapabilities,
       recoveryScope,
       recoveryScopeReady: false,
     });
@@ -201,6 +205,7 @@ describe("Custodian wizard reload recovery", () => {
         },
       });
     const { context } = createContext(request, ["openclaw.chat", "openclaw.chat.history"], {
+      featureCapabilities: recoveryCapabilities,
       recoveryScope,
     });
     const { page } = await mountPage(context);
@@ -253,6 +258,7 @@ describe("Custodian wizard reload recovery", () => {
       recoveryScopeReady: false,
     };
     const harness = createContext(request, ["openclaw.chat", "openclaw.chat.history"], {
+      featureCapabilities: recoveryCapabilities,
       recoveryScope,
     });
     const { page } = await mountPage(harness.context);
@@ -297,6 +303,7 @@ describe("Custodian wizard reload recovery", () => {
         : { sessionId: "new-gateway-session", reply: "New gateway ready.", action: "none" },
     );
     const harness = createContext(request, ["openclaw.chat", "openclaw.chat.history"], {
+      featureCapabilities: recoveryCapabilities,
       recoveryScope,
     });
     await mountPage(harness.context);
@@ -316,6 +323,49 @@ describe("Custodian wizard reload recovery", () => {
     });
     await waitForFast(() => expect(replacementRequest).toHaveBeenCalledTimes(2));
 
+    expect(readCustodianRecoveryForClient(recoveryClient, gatewayUrl)).toBeNull();
+  });
+
+  it("starts fresh without sending sessionId to a legacy history method", async () => {
+    reconcileCustodianRecoveryForClient(
+      recoveryClient,
+      gatewayUrl,
+      {
+        sessionId: "legacy-wizard",
+        reply: "Enter the secret.",
+        action: "none",
+        wizardInputPending: true,
+        step: {
+          id: "secret",
+          type: "text",
+          message: "Twitch client secret",
+          sensitive: true,
+        },
+      },
+      "legacy-wizard",
+    );
+    const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === "openclaw.chat.history") {
+        expect(params).not.toHaveProperty("sessionId");
+        return { turns: [] };
+      }
+      if (method === "openclaw.chat") {
+        return { sessionId: "legacy-fresh", reply: "Fresh session ready.", action: "none" };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const { context } = createContext(request, ["openclaw.chat", "openclaw.chat.history"], {
+      featureCapabilities: [],
+      recoveryScope,
+    });
+    const { page } = await mountPage(context);
+
+    await waitForFast(() => expect(page.textContent).toContain("Fresh session ready."));
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "openclaw.chat.history",
+      "openclaw.chat",
+    ]);
+    expect(request.mock.calls[1]?.[1].sessionId).not.toBe("legacy-wizard");
     expect(readCustodianRecoveryForClient(recoveryClient, gatewayUrl)).toBeNull();
   });
 });

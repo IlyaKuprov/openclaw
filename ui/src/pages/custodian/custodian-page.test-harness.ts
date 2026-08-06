@@ -40,6 +40,7 @@ export function createContext(
   options: {
     agentsList?: ApplicationContext["agents"]["state"]["agentsList"];
     channelsSnapshot?: ChannelsStatusSnapshot | null;
+    featureCapabilities?: string[];
     recoveryScope?: string;
     recoveryScopeReady?: boolean;
   } = {},
@@ -59,7 +60,10 @@ export function createContext(
       type: "hello-ok" as const,
       protocol: 1,
       auth: { role: "operator", scopes: ["operator.admin"] },
-      features: { methods },
+      features: {
+        methods,
+        ...(options.featureCapabilities ? { capabilities: options.featureCapabilities } : {}),
+      },
     },
     assistantAgentId: "main",
     sessionKey: "main",

@@ -1,4 +1,5 @@
 import {
+  GATEWAY_SERVER_CAPS,
   readSystemAgentInferenceUnavailableErrorDetails,
   type SystemAgentChatParams,
   type SystemAgentChatResult,
@@ -7,7 +8,11 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { selectApplicationSession } from "../../app/agent-selection.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { t } from "../../i18n/index.ts";
-import { canCallGatewayMethod, isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
+import {
+  canCallGatewayMethod,
+  isGatewayCapabilityAdvertised,
+  isGatewayMethodAdvertised,
+} from "../../lib/gateway-methods.ts";
 import { buildAgentMainSessionKey, normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import { pathForCustodianAgentHandoff } from "./custodian-navigation.ts";
 import { readCustodianRecoveryForClient } from "./custodian-recovery.ts";
@@ -538,13 +543,20 @@ export class CustodianSessionStore extends CustodianTranscriptState {
     this.emit();
     let historyOutcome: CustodianTranscriptHistoryOutcome = "inactive";
     if (loadTranscript) {
+      const gatewaySnapshot = this.context?.gateway.snapshot;
       historyOutcome = await this.refreshTranscriptHistory(
         client,
         epoch,
-        this.context !== null &&
-          isGatewayMethodAdvertised(this.context.gateway.snapshot, "openclaw.chat.history") ===
-            true,
-        recoveryPending ? params.sessionId : undefined,
+        gatewaySnapshot !== undefined &&
+          isGatewayMethodAdvertised(gatewaySnapshot, "openclaw.chat.history") === true,
+        recoveryPending &&
+          gatewaySnapshot !== undefined &&
+          isGatewayCapabilityAdvertised(
+            gatewaySnapshot,
+            GATEWAY_SERVER_CAPS.SYSTEM_AGENT_CHAT_HISTORY_SESSION_RECOVERY,
+          ) === true
+          ? params.sessionId
+          : undefined,
       );
     }
     if (epoch !== this.requestEpoch || client !== this.activeClient) {

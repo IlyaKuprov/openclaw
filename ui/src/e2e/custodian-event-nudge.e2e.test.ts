@@ -1,6 +1,7 @@
 // Control UI tests cover event-reactive custodian presence against a mocked Gateway.
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { GATEWAY_SERVER_CAPS } from "@openclaw/gateway-protocol";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
@@ -547,6 +548,7 @@ suite.define(() => {
     });
     const page = await context.newPage();
     const gateway = await installMockGateway(page, {
+      featureCapabilities: [GATEWAY_SERVER_CAPS.SYSTEM_AGENT_CHAT_HISTORY_SESSION_RECOVERY],
       featureMethods: ["chat.metadata", "chat.startup", "openclaw.chat", "openclaw.chat.history"],
       methodResponses: {
         "openclaw.chat.history": { turns: [] },
