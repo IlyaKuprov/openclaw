@@ -363,6 +363,25 @@ struct CLIInstallerTests {
         #expect(activation == .ready)
     }
 
+    @Test func `local gateway activation waits for the owned startup attempt before readiness`() async {
+        var events: [String] = []
+
+        let activation = await CLIInstaller.activateLocalGateway(
+            mode: .local,
+            paused: false,
+            start: { events.append("start") },
+            waitForStartupAttempt: {
+                events.append("startup-settled")
+            },
+            waitUntilReady: {
+                events.append("ready")
+                return true
+            })
+
+        #expect(events == ["start", "startup-settled", "ready"])
+        #expect(activation == .ready)
+    }
+
     @Test func `paused CLI setup defers gateway activation`() async {
         var didStart = false
         var didWait = false
