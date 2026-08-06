@@ -424,7 +424,9 @@ describe("runInstallPolicy", () => {
         },
       ],
     });
-    expect(warnings.join("\n")).toContain("warned: review this source");
+    expect(
+      warnings.filter((message) => message.includes("warned: review this source")),
+    ).toHaveLength(1);
   });
 
   it("fails closed when a warning has no reason", async () => {

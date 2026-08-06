@@ -915,10 +915,7 @@ async function runOperatorInstallPolicy(params: {
       logger: params.logger,
       request,
     });
-  const logPolicyResult = (result: Awaited<ReturnType<typeof evaluatePolicy>>) => {
-    if (result?.warning) {
-      params.logger.warn?.(`Install policy warning: ${result.warning.reason}`);
-    }
+  const logPolicyFindings = (result: Awaited<ReturnType<typeof evaluatePolicy>>) => {
     for (const finding of result?.findings ?? []) {
       if (result?.warning || finding.severity === "critical" || finding.severity === "warn") {
         params.logger.warn?.(formatInstallPolicyWarning(finding));
@@ -930,7 +927,7 @@ async function runOperatorInstallPolicy(params: {
   if (result?.blocked) {
     return { blocked: result.blocked };
   }
-  logPolicyResult(result);
+  logPolicyFindings(result);
   if (!result?.warning || params.dangerouslyForceUnsafeInstall) {
     return undefined;
   }
@@ -944,7 +941,7 @@ async function runOperatorInstallPolicy(params: {
     if (reevaluated?.blocked) {
       return { blocked: reevaluated.blocked };
     }
-    logPolicyResult(reevaluated);
+    logPolicyFindings(reevaluated);
     return undefined;
   }
   return {
