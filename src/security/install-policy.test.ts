@@ -382,7 +382,40 @@ describe("runInstallPolicy", () => {
       request: baseRequest(sourceDir),
     });
 
-    expect(result).toEqual({
+    expect(result).toStrictEqual({
+      findings: [
+        {
+          ruleId: "registry-review",
+          severity: "warn",
+          message: "Registry requires review.",
+        },
+      ],
+    });
+  });
+
+  it("keeps valid findings while dropping malformed fields through schema parsing", async () => {
+    const result = await runInstallPolicy({
+      config: configWithPolicy(scriptPath, {
+        POLICY_RESPONSE: JSON.stringify({
+          protocolVersion: 1,
+          decision: "allow",
+          findings: [
+            {
+              ruleId: "  registry-review  ",
+              severity: "warn",
+              message: "  Registry requires review.  ",
+              file: 42,
+              line: "7",
+              evidence: false,
+            },
+            { ruleId: 42, severity: "warn", message: "invalid required field" },
+          ],
+        }),
+      }),
+      request: baseRequest(sourceDir),
+    });
+
+    expect(result).toStrictEqual({
       findings: [
         {
           ruleId: "registry-review",
@@ -427,10 +460,14 @@ describe("runInstallPolicy", () => {
     expect(debugLogs.filter((message) => message.endsWith(": warned"))).toHaveLength(1);
   });
 
-  it("fails closed when a warning has no reason", async () => {
+  it.each([
+    { label: "missing", reason: undefined },
+    { label: "empty", reason: "  " },
+    { label: "non-string", reason: 42 },
+  ])("fails closed when a warning has a $label reason", async ({ reason }) => {
     const result = await runInstallPolicy({
       config: configWithPolicy(scriptPath, {
-        POLICY_RESPONSE: JSON.stringify({ protocolVersion: 1, decision: "warn" }),
+        POLICY_RESPONSE: JSON.stringify({ protocolVersion: 1, decision: "warn", reason }),
       }),
       request: baseRequest(sourceDir),
     });
@@ -471,6 +508,30 @@ describe("runInstallPolicy", () => {
         },
       ],
     });
+  });
+
+  it.each([
+    { label: "non-object", response: [], expected: "must be a JSON object" },
+    {
+      label: "unsupported protocol version",
+      response: { protocolVersion: 2, decision: "allow" },
+      expected: "protocolVersion must be 1",
+    },
+    {
+      label: "unknown decision",
+      response: { protocolVersion: 1, decision: "review" },
+      expected: 'decision must be "allow", "warn", or "block"',
+    },
+  ])("fails closed for a $label response", async ({ response, expected }) => {
+    const result = await runInstallPolicy({
+      config: configWithPolicy(scriptPath, {
+        POLICY_RESPONSE: JSON.stringify(response),
+      }),
+      request: baseRequest(sourceDir),
+    });
+
+    expect(result?.blocked?.code).toBe("security_scan_failed");
+    expect(result?.blocked?.reason).toContain(expected);
   });
 
   it("fails closed on malformed policy output", async () => {
