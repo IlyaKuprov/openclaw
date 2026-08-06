@@ -262,10 +262,11 @@ describe("execution identity context storage", () => {
       executionId: "execution-second",
       runtimeInstanceId: "runtime-1",
     });
+    recordDeniedApprovalForRun("session-run", database, "shared-run-approval");
 
     const discovery = inspectExecutionIdentityRun(
       { runId: "session-run" },
-      { ...database, now: 101 },
+      { ...database, now: 300 },
     );
     expect(discovery).toMatchObject({
       run: { runId: "session-run", status: "known" },
@@ -282,7 +283,7 @@ describe("execution identity context storage", () => {
     expect(
       inspectExecutionIdentityRun(
         { runId: "session-run", executionLimit: 1 },
-        { ...database, now: 101 },
+        { ...database, now: 300 },
       ),
     ).toMatchObject({
       identity: {
@@ -294,7 +295,7 @@ describe("execution identity context storage", () => {
     expect(
       inspectExecutionIdentityRun(
         { runId: "session-run", executionOffset: 1, executionLimit: 1 },
-        { ...database, now: 101 },
+        { ...database, now: 300 },
       ),
     ).toMatchObject({
       identity: {
@@ -302,14 +303,39 @@ describe("execution identity context storage", () => {
         candidates: [{ executionId: "execution-second" }],
       },
     });
-    expect(
-      inspectExecutionIdentityRun({ executionId: "execution-first" }, { ...database, now: 101 })
-        .identity,
-    ).toEqual({ state: "present", context: first });
-    expect(
-      inspectExecutionIdentityRun({ executionId: "execution-second" }, { ...database, now: 101 })
-        .identity,
-    ).toEqual({ state: "present", context: second });
+    const firstInspection = inspectExecutionIdentityRun(
+      { executionId: "execution-first" },
+      { ...database, now: 300 },
+    );
+    const secondInspection = inspectExecutionIdentityRun(
+      { executionId: "execution-second" },
+      { ...database, now: 300 },
+    );
+    expect(firstInspection.identity).toEqual({ state: "present", context: first });
+    expect(secondInspection.identity).toEqual({ state: "present", context: second });
+    for (const inspection of [firstInspection, secondInspection]) {
+      expect(inspection).toMatchObject({
+        coverage: {
+          state: "unknown",
+          missingEvidence: expect.arrayContaining(["decision.execution_link"]),
+        },
+        decisions: [
+          { decision: { outcome: "not-applicable" } },
+          {
+            decision: {
+              outcome: "unknown",
+              reasonCode: "operator_approval_execution_link_ambiguous",
+            },
+            enforcement: { coverageState: "unknown", contextFieldsUsed: ["runId"] },
+            missingEvidence: ["decision.execution_link"],
+            remediation: [{ code: "treat_as_run_correlated" }],
+          },
+        ],
+      });
+    }
+    expect(firstInspection.decisions[1]?.receiptId).not.toBe(
+      secondInspection.decisions[1]?.receiptId,
+    );
   });
 
   it("confirms durable retries without manufacturing lost evidence", () => {
