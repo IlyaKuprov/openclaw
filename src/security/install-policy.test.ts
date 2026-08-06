@@ -394,7 +394,7 @@ describe("runInstallPolicy", () => {
   });
 
   it("returns warnings with their reason and findings", async () => {
-    const warnings: string[] = [];
+    const debugLogs: string[] = [];
     const result = await runInstallPolicy({
       config: configWithPolicy(scriptPath, {
         POLICY_RESPONSE: JSON.stringify({
@@ -410,7 +410,7 @@ describe("runInstallPolicy", () => {
           ],
         }),
       }),
-      logger: { warn: (message) => warnings.push(message) },
+      logger: { debug: (message) => debugLogs.push(message) },
       request: baseRequest(sourceDir),
     });
 
@@ -424,9 +424,7 @@ describe("runInstallPolicy", () => {
         },
       ],
     });
-    expect(
-      warnings.filter((message) => message.includes("warned: review this source")),
-    ).toHaveLength(1);
+    expect(debugLogs.filter((message) => message.endsWith(": warned"))).toHaveLength(1);
   });
 
   it("fails closed when a warning has no reason", async () => {

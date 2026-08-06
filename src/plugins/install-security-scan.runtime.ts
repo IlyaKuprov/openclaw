@@ -1,6 +1,7 @@
 // Runtime bridge for plugin install security scanning.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { tryReadJson } from "../infra/json-files.js";
@@ -35,11 +36,33 @@ const FULL_GIT_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
 
 type PluginInstallRequestKind = Exclude<InstallPolicyRequestKind, "skill-install">;
 
-function formatInstallPolicyWarning(finding: InstallPolicyFinding): string {
+function formatInstallPolicyFinding(finding: InstallPolicyFinding): string {
   const location = finding.file
-    ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})`
+    ? ` (${sanitizeTerminalText(finding.file)}${finding.line ? `:${finding.line}` : ""})`
     : "";
-  return `Install policy: ${finding.message}${location}`;
+  return `${sanitizeTerminalText(finding.message)}${location}`;
+}
+
+function formatInstallPolicyWarning(params: {
+  findings?: InstallPolicyFinding[];
+  reason: string;
+  targetName: string;
+  targetType: "skill" | "plugin";
+}): string {
+  const targetLabel = params.targetType === "skill" ? "Skill" : "Plugin";
+  const lines = [
+    "WARNING - Install policy requires review",
+    "",
+    `  ${targetLabel}: ${sanitizeTerminalText(params.targetName)}`,
+    `  Reason: ${sanitizeTerminalText(params.reason)}`,
+  ];
+  if (params.findings?.length) {
+    lines.push("  Findings:");
+    for (const finding of params.findings) {
+      lines.push(`    • ${formatInstallPolicyFinding(finding)}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 type InstallScanFinding = {
@@ -915,10 +938,21 @@ async function runOperatorInstallPolicy(params: {
       logger: params.logger,
       request,
     });
-  const logPolicyFindings = (result: Awaited<ReturnType<typeof evaluatePolicy>>) => {
+  const logPolicyResult = (result: Awaited<ReturnType<typeof evaluatePolicy>>) => {
+    if (result?.warning) {
+      params.logger.warn?.(
+        formatInstallPolicyWarning({
+          findings: result.findings,
+          reason: result.warning.reason,
+          targetName: params.targetName,
+          targetType: params.targetType,
+        }),
+      );
+      return;
+    }
     for (const finding of result?.findings ?? []) {
-      if (result?.warning || finding.severity === "critical" || finding.severity === "warn") {
-        params.logger.warn?.(formatInstallPolicyWarning(finding));
+      if (finding.severity === "critical" || finding.severity === "warn") {
+        params.logger.warn?.(`Install policy: ${formatInstallPolicyFinding(finding)}`);
       }
     }
   };
@@ -927,7 +961,7 @@ async function runOperatorInstallPolicy(params: {
   if (result?.blocked) {
     return { blocked: result.blocked };
   }
-  logPolicyFindings(result);
+  logPolicyResult(result);
   if (!result?.warning || params.dangerouslyForceUnsafeInstall) {
     return undefined;
   }
@@ -941,7 +975,7 @@ async function runOperatorInstallPolicy(params: {
     if (reevaluated?.blocked) {
       return { blocked: reevaluated.blocked };
     }
-    logPolicyFindings(reevaluated);
+    logPolicyResult(reevaluated);
     return undefined;
   }
   return {

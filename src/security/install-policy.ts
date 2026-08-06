@@ -705,7 +705,7 @@ export async function runInstallPolicy(params: {
     return logBlocked(parsed);
   }
   if (parsed.warning) {
-    params.logger?.warn?.(`Install policy ${decisionContext}: warned: ${parsed.warning.reason}`);
+    params.logger?.debug?.(`Install policy ${decisionContext}: warned`);
     return parsed;
   }
   params.logger?.debug?.(`Install policy ${decisionContext}: allowed`);

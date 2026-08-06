@@ -313,7 +313,7 @@ describe("legacy file install scan compatibility", () => {
     expect(runInstallPolicyMock).toHaveBeenCalledTimes(2);
   });
 
-  it("leaves warning reason logging to the policy runner and logs every finding", async () => {
+  it("renders warning details as one readable review notice", async () => {
     const warnings: string[] = [];
     runInstallPolicyMock.mockResolvedValue({
       warning: { reason: "review this plugin" },
@@ -326,7 +326,17 @@ describe("legacy file install scan compatibility", () => {
       pluginId: "payload",
     });
 
-    expect(warnings).toEqual(["Install policy: Informational context."]);
+    expect(warnings).toEqual([
+      [
+        "WARNING - Install policy requires review",
+        "",
+        "  Plugin: payload",
+        "  Reason: review this plugin",
+        "  Findings:",
+        "    • Informational context.",
+        "",
+      ].join("\n"),
+    ]);
   });
 
   it.each(["security_scan_blocked", "security_scan_failed"] as const)(
