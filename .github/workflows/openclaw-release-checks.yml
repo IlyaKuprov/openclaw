@@ -1076,7 +1076,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@2eb28121e29e86aff16b9e1229f422b3294a3209
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@986f28541dcea771c4eb4948ab4571571ac33b5d
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
@@ -1086,7 +1086,7 @@ jobs:
       windows_node_asset_url: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_url }}
       windows_node_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_sha256 }}
       allow_protocol_mismatch: false
-      windows_node_sha: 2eb28121e29e86aff16b9e1229f422b3294a3209
+      windows_node_sha: 986f28541dcea771c4eb4948ab4571571ac33b5d
 
   windows_node_stable_e2e:
     name: Run Windows-node stable E2E
@@ -1095,7 +1095,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@2eb28121e29e86aff16b9e1229f422b3294a3209
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@986f28541dcea771c4eb4948ab4571571ac33b5d
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
@@ -1105,7 +1105,7 @@ jobs:
       windows_node_asset_url: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_url }}
       windows_node_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}
       allow_protocol_mismatch: true
-      windows_node_sha: 2eb28121e29e86aff16b9e1229f422b3294a3209
+      windows_node_sha: 986f28541dcea771c4eb4948ab4571571ac33b5d
 
   live_repo_e2e_release_checks:
     name: Run repo/live E2E validation
