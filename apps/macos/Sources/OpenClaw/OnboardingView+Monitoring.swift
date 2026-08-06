@@ -197,7 +197,10 @@ extension OnboardingView {
 
     private func recordCLIActivationStarted() {
         Self.cliSetupLogger.info(
-            "Gateway activation started executableReady=\(self.cliExecutableReady, privacy: .public) gatewayReady=\(self.cliInstalled, privacy: .public)")
+            """
+            Gateway activation started executableReady=\(self.cliExecutableReady, privacy: .public) \
+            gatewayReady=\(self.cliInstalled, privacy: .public)
+            """)
     }
 
     private func recordCLIActivation(_ activation: CLIInstaller.LocalGatewayActivation) {
@@ -207,7 +210,11 @@ extension OnboardingView {
         case .failed: "failed"
         }
         Self.cliSetupLogger.info(
-            "Gateway activation completed result=\(result, privacy: .public) executableReady=\(self.cliExecutableReady, privacy: .public) gatewayReady=\(self.cliInstalled, privacy: .public)")
+            """
+            Gateway activation completed result=\(result, privacy: .public) \
+            executableReady=\(self.cliExecutableReady, privacy: .public) \
+            gatewayReady=\(self.cliInstalled, privacy: .public)
+            """)
     }
 
     func refreshCLIStatus() async {
