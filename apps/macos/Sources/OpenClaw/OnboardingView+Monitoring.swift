@@ -1,7 +1,10 @@
 import Foundation
 import OpenClawIPC
+import OSLog
 
 extension OnboardingView {
+    private static let cliSetupLogger = Logger(subsystem: "ai.openclaw", category: "onboarding.cli")
+
     @MainActor
     func refreshPerms() async {
         await permissionMonitor.refreshNow()
@@ -124,6 +127,7 @@ extension OnboardingView {
             cliInstalled = false
             cliStatus = "OpenClaw is installed, but the Gateway did not start. Retry setup."
         }
+        self.recordCLIActivation(result)
     }
 
     func startCLIInstall() {
@@ -172,16 +176,31 @@ extension OnboardingView {
         // The step checklist shows one spinner at a time: install first,
         // then the service start.
         self.cliInstallPhase = .startingService
-        switch await CLIInstaller.activateLocalGateway() {
+        let activation = await CLIInstaller.activateLocalGateway()
+        switch activation {
         case .ready:
             cliStatus = "OpenClaw Gateway is ready."
+            cliInstalled = true
         case .deferred:
             cliStatus = "OpenClaw is installed. The Gateway will start when This Mac is active and resumed."
+            cliInstalled = true
         case .failed:
             cliStatus = "OpenClaw was installed, but the Gateway did not start. Retry setup."
+            cliInstalled = false
+            self.recordCLIActivation(activation)
             return
         }
-        cliInstalled = true
+        self.recordCLIActivation(activation)
+    }
+
+    private func recordCLIActivation(_ activation: CLIInstaller.LocalGatewayActivation) {
+        let result = switch activation {
+        case .ready: "ready"
+        case .deferred: "deferred"
+        case .failed: "failed"
+        }
+        Self.cliSetupLogger.info(
+            "Gateway activation completed result=\(result, privacy: .public) executableReady=\(self.cliExecutableReady, privacy: .public) gatewayReady=\(self.cliInstalled, privacy: .public)")
     }
 
     func refreshCLIStatus() async {

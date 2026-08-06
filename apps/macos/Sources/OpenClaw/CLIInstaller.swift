@@ -569,12 +569,18 @@ enum CLIInstaller {
         mode: AppState.ConnectionMode = AppStateStore.shared.connectionMode,
         paused: Bool = AppStateStore.shared.isPaused,
         start: @MainActor () -> Void = { GatewayProcessManager.shared.setActive(true) },
+        waitForStartupAttempt: @MainActor () async -> Void = {
+            await GatewayProcessManager.shared.waitForStartupAttempt()
+        },
         waitUntilReady: @MainActor () async -> Bool = {
-            await GatewayProcessManager.shared.waitForGatewayReady(timeout: 12)
+            await GatewayProcessManager.shared.waitForGatewayReady(timeout: 30)
         }) async -> LocalGatewayActivation
     {
         guard mode == .local, !paused else { return .deferred }
         start()
+        // The process manager owns launchd installation and its first readiness cycle. Wait for
+        // that lifecycle before taking the onboarding verdict so the two probes cannot race.
+        await waitForStartupAttempt()
         return await waitUntilReady() ? .ready : .failed
     }
 

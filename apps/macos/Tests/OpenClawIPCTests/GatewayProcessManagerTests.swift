@@ -1124,6 +1124,43 @@ struct GatewayProcessManagerTests {
         await connection.shutdown()
     }
 
+    @Test func `same candidate readiness retries after a sibling audit changes the revision`() async throws {
+        let url = try #require(URL(string: "ws://example.invalid"))
+        let (session, connection, manager) = self.makeGatewayReadinessFixture(url: url) {
+            GatewayTestWebSocketTask(
+                sendHook: { task, message, sendIndex in
+                    guard sendIndex > 0 else { return }
+                    guard let id = GatewayWebSocketTestSupport.requestID(from: message) else { return }
+                    task.emitReceiveSuccess(.data(GatewayWebSocketTestSupport.okResponseData(id: id)))
+                },
+                receiveHook: { _, receiveIndex in
+                    if receiveIndex == 0 {
+                        try await Task.sleep(nanoseconds: 100_000_000)
+                    }
+                    return .data(GatewayWebSocketTestSupport.connectChallengeData())
+                })
+        }
+        manager.setTestingDesiredActive(true)
+        manager._testClearLaunchAgentReadinessFailure()
+        defer {
+            manager.setTestingConnection(nil)
+            manager.setTestingDesiredActive(false)
+            manager._testClearLaunchAgentReadinessFailure()
+        }
+
+        let readiness = Task { @MainActor in
+            await manager.waitForGatewayReady(timeout: 0.5)
+        }
+        await self.waitForCondition {
+            session.snapshotMakeCount() > 0
+        }
+        manager._testSetLaunchAgentReadinessFailure(port: 19114, pid: 4242)
+
+        #expect(await readiness.value)
+        #expect(!manager._testHasLaunchAgentReadinessFailure())
+        await connection.shutdown()
+    }
+
     @Test func `same generation stale timeout preserves a newer readiness failure`() async throws {
         let url = try #require(URL(string: "ws://example.invalid"))
         let (session, connection, manager) = self.makeGatewayReadinessFixture(url: url) {

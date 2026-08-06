@@ -900,9 +900,9 @@ extension GatewayProcessManager {
         launchAgentInstalled: Bool = false) async -> Bool
     {
         let startGeneration = self.gatewayStartGeneration
-        let readinessCandidate = self.launchAgentReadinessCandidate
-        let readinessFailure = self.launchAgentReadinessFailure
-        let readinessRevision = self.launchAgentReadinessRevision
+        var readinessCandidate = self.launchAgentReadinessCandidate
+        var readinessFailure = self.launchAgentReadinessFailure
+        var readinessRevision = self.launchAgentReadinessRevision
         let readinessPort = readinessCandidate?.failure.port
             ?? GatewayEnvironment.gatewayPort()
         let deadline = Date().addingTimeInterval(timeout)
@@ -916,13 +916,23 @@ extension GatewayProcessManager {
                 _ = try await self.probeGatewayHealth(timeoutMs: min(1500, remainingMs))
                 guard !Task.isCancelled else { return false }
                 let instance = await PortGuardian.shared.describe(port: readinessPort)
-                return self.publishGatewayReadinessSuccess(
+                if self.publishGatewayReadinessSuccess(
                     instance: instance,
                     startGeneration: startGeneration,
                     readinessCandidate: readinessCandidate,
                     readinessRevision: readinessRevision,
                     launchAgentInstalled: launchAgentInstalled,
                     endpointPIDBeforeProbe: endpointPIDBeforeProbe)
+                {
+                    return true
+                }
+                guard self.isCurrentGatewayStart(startGeneration) else { return false }
+                guard self.launchAgentReadinessCandidate == readinessCandidate else { return false }
+                // A sibling audit can finish while this health request is in flight. The same
+                // candidate is safe to re-probe; a replacement candidate must reject this result.
+                readinessCandidate = self.launchAgentReadinessCandidate
+                readinessFailure = self.launchAgentReadinessFailure
+                readinessRevision = self.launchAgentReadinessRevision
             } catch {
                 if Task.isCancelled || !self.isCurrentGatewayStart(startGeneration) {
                     return false
