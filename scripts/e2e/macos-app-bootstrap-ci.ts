@@ -363,15 +363,9 @@ class MacosAppBootstrapCi {
         { timeoutMs: 30_000 },
       );
 
-      const gatewayLog = path.join(this.artifactDir, lane, "openclaw-gateway.log");
-      await this.waitFor("startup migration lease conflict", 30_000, async () => {
-        if (!existsSync(gatewayLog)) {
-          return false;
-        }
-        return (await readFile(gatewayLog, "utf8")).includes(
-          "OpenClaw startup migrations are already running",
-        );
-      });
+      await this.waitFor("startup migration lease conflict", 30_000, () =>
+        this.appLogs().includes("OpenClaw startup migrations are already running"),
+      );
 
       await this.waitFor("onboarding Gateway activation start", 60_000, () =>
         this.onboardingLogs().includes(
@@ -594,17 +588,16 @@ class MacosAppBootstrapCi {
   }
 
   private onboardingLogs(): string {
+    return this.appLogs('category == "onboarding.cli"');
+  }
+
+  private appLogs(additionalPredicate?: string): string {
+    const predicate = ['subsystem == "ai.openclaw"', additionalPredicate]
+      .filter(Boolean)
+      .join(" AND ");
     const result = run(
       "/usr/bin/log",
-      [
-        "show",
-        "--last",
-        "10m",
-        "--style",
-        "compact",
-        "--predicate",
-        'subsystem == "ai.openclaw" AND category == "onboarding.cli"',
-      ],
+      ["show", "--last", "10m", "--style", "compact", "--predicate", predicate],
       { check: false, quiet: true, timeoutMs: 30_000 },
     );
     return `${result.stdout}${result.stderr}`;
