@@ -394,6 +394,35 @@ final class GatewayProcessManager {
         }
     }
 
+    func waitForCurrentStartupReadiness() async -> Bool {
+        // The Mac node may reach this before local startup has created a task. In that case,
+        // return false instead of waiting for future work that might never be scheduled.
+        guard !Task.isCancelled else { return false }
+        guard let task = self.gatewayStartTask else {
+            return self.currentStatusIsReady
+        }
+        guard let generation = self.gatewayStartTaskGeneration,
+              generation == self.gatewayStartGeneration
+        else { return false }
+        await task.value
+        // A stop or replacement start invalidates the captured lifecycle even when it later
+        // reaches a usable status. Callers must retry against that newer attempt explicitly.
+        guard !Task.isCancelled,
+              self.gatewayStartGeneration == generation,
+              self.gatewayStartTask == nil
+        else { return false }
+        return self.currentStatusIsReady
+    }
+
+    private var currentStatusIsReady: Bool {
+        switch self.status {
+        case .running, .attachedExisting:
+            return true
+        case .stopped, .starting, .failed:
+            return false
+        }
+    }
+
     func stop() {
         self.gatewayStartGeneration &+= 1
         let stopGeneration = self.gatewayStartGeneration
@@ -1223,6 +1252,27 @@ extension GatewayProcessManager {
     func _testBeginGatewayStartGeneration() {
         self.desiredActive = true
         self.gatewayStartGeneration &+= 1
+    }
+
+    func _testSetGatewayStartTask(
+        operation: @escaping @MainActor @Sendable () async -> Void)
+    {
+        self.gatewayStartGeneration &+= 1
+        let generation = self.gatewayStartGeneration
+        let task = Task { @MainActor in
+            await operation()
+            guard self.gatewayStartTaskGeneration == generation else { return }
+            self.gatewayStartTask = nil
+            self.gatewayStartTaskGeneration = nil
+        }
+        self.gatewayStartTaskGeneration = generation
+        self.gatewayStartTask = task
+    }
+
+    func _testClearGatewayStartTask() {
+        self.gatewayStartTask?.cancel()
+        self.gatewayStartTask = nil
+        self.gatewayStartTaskGeneration = nil
     }
 
     func _testPendingLaunchAgentPort() -> Int? {

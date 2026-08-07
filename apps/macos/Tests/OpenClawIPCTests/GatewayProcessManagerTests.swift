@@ -5,6 +5,29 @@ import Testing
 @testable import OpenClaw
 @testable import OpenClawKit
 
+private actor GatewayStartupReadinessGate {
+    private var entered = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        self.entered = true
+        guard !self.released else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func hasEntered() -> Bool { self.entered }
+
+    func release() {
+        self.released = true
+        let continuation = self.continuation
+        self.continuation = nil
+        continuation?.resume()
+    }
+}
+
 @Suite(.serialized)
 @MainActor
 struct GatewayProcessManagerTests {
@@ -136,6 +159,17 @@ struct GatewayProcessManagerTests {
         }
     }
 
+    private func waitForAsyncCondition(
+        attempts: Int = 100,
+        _ condition: () async -> Bool) async
+    {
+        for _ in 0..<attempts {
+            if await condition() { return }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        Issue.record("timed out waiting for async condition")
+    }
+
     @Test func `coalesces concurrent launch agent enable requests`() async throws {
         let port = 19081
         try await self.withLaunchAgentEnvironment(
@@ -154,6 +188,97 @@ struct GatewayProcessManagerTests {
             #expect(calls.filter { $0.first == "status" }.count == 1)
             #expect(calls.filter { $0.first == "install" }.count == 1)
         }
+    }
+
+    @Test func `startup readiness reflects only a settled usable Gateway`() async {
+        let manager = GatewayProcessManager.shared
+        defer { manager.setTestingStatus(.stopped) }
+
+        manager.setTestingStatus(.stopped)
+        #expect(await !manager.waitForCurrentStartupReadiness())
+        manager.setTestingStatus(.starting)
+        #expect(await !manager.waitForCurrentStartupReadiness())
+        manager.setTestingStatus(.failed("test"))
+        #expect(await !manager.waitForCurrentStartupReadiness())
+        manager.setTestingStatus(.running(details: "test"))
+        #expect(await manager.waitForCurrentStartupReadiness())
+        manager.setTestingStatus(.attachedExisting(details: "test"))
+        #expect(await manager.waitForCurrentStartupReadiness())
+    }
+
+    @Test func `startup readiness joins the current Gateway start attempt`() async throws {
+        let manager = GatewayProcessManager.shared
+        let readiness = GatewayStartupReadinessGate()
+        manager.setTestingStatus(.starting)
+        manager._testSetGatewayStartTask {
+            await readiness.wait()
+        }
+        defer {
+            manager._testClearGatewayStartTask()
+            manager.setTestingStatus(.stopped)
+        }
+
+        let result = Task { @MainActor in
+            await manager.waitForCurrentStartupReadiness()
+        }
+        await self.waitForAsyncCondition {
+            await readiness.hasEntered()
+        }
+        #expect(manager.status == .starting)
+
+        manager.setTestingStatus(.running(details: "test"))
+        await readiness.release()
+        #expect(await result.value)
+    }
+
+    @Test func `startup readiness rejects a superseded Gateway start attempt`() async {
+        let manager = GatewayProcessManager.shared
+        let readiness = GatewayStartupReadinessGate()
+        manager.setTestingStatus(.starting)
+        manager._testSetGatewayStartTask {
+            await readiness.wait()
+        }
+        defer {
+            manager._testClearGatewayStartTask()
+            manager.setTestingStatus(.stopped)
+        }
+
+        let result = Task { @MainActor in
+            await manager.waitForCurrentStartupReadiness()
+        }
+        await self.waitForAsyncCondition {
+            await readiness.hasEntered()
+        }
+        manager._testBeginGatewayStartGeneration()
+        manager.setTestingStatus(.running(details: "replacement"))
+        await readiness.release()
+
+        #expect(await !result.value)
+    }
+
+    @Test func `cancelled startup readiness wait cannot publish success`() async {
+        let manager = GatewayProcessManager.shared
+        let readiness = GatewayStartupReadinessGate()
+        manager.setTestingStatus(.starting)
+        manager._testSetGatewayStartTask {
+            await readiness.wait()
+        }
+        defer {
+            manager._testClearGatewayStartTask()
+            manager.setTestingStatus(.stopped)
+        }
+
+        let result = Task { @MainActor in
+            await manager.waitForCurrentStartupReadiness()
+        }
+        await self.waitForAsyncCondition {
+            await readiness.hasEntered()
+        }
+        result.cancel()
+        manager.setTestingStatus(.running(details: "test"))
+        await readiness.release()
+
+        #expect(await !result.value)
     }
 
     @Test func `queues a changed launch agent request behind an in-flight request`() async throws {
