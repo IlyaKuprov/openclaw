@@ -651,6 +651,24 @@ describe("Parallels smoke model selection", () => {
     ).toMatchObject({ expected: "0", value: "false" });
   });
 
+  it("recognizes only the structured incompatible-version bootstrap outcome", () => {
+    expect(
+      macosAppBootstrapCiTesting.hasExpectedMismatchOutcome(
+        "CLI install completed result=failed code=incompatible-version",
+      ),
+    ).toBe(true);
+    expect(
+      macosAppBootstrapCiTesting.hasExpectedMismatchOutcome(
+        "CLI install completed result=failed code=installer-error",
+      ),
+    ).toBe(false);
+    expect(
+      macosAppBootstrapCiTesting.hasExpectedMismatchOutcome(
+        "OpenClaw 2026.7.1 is older than config writer 2026.7.2",
+      ),
+    ).toBe(false);
+  });
+
   it("allows packaged app bootstrap state resets only in an explicit ephemeral macOS CI home", () => {
     expect(() =>
       macosAppBootstrapCiTesting.requireEphemeralCiHome({
@@ -697,7 +715,10 @@ describe("Parallels smoke model selection", () => {
   it("holds a real migration lease past the old onboarding readiness window", () => {
     const script = TS_SOURCE.macosAppBootstrapCi;
 
-    expect(script).toContain("acquireStartupMigrationLease");
+    expect(script).toContain("INSERT INTO state_leases");
+    expect(script).toContain(
+      "DELETE FROM state_leases WHERE scope = ? AND lease_key = ? AND owner = ?",
+    );
     expect(script).toContain("OpenClaw startup migrations are already running");
     expect(script).toContain("this.appLogs().includes");
     expect(script).toContain("oldOnboardingReadinessTimeoutMs = 12_000");

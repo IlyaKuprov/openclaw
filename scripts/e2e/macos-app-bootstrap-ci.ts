@@ -3,12 +3,11 @@
 import { appendFileSync, existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
-import { acquireStartupMigrationLease } from "../../src/infra/startup-migration-checkpoint.js";
 import { sleep as delay } from "../lib/sleep.mjs";
 import { run, runStreaming, say } from "./parallels/host-command.ts";
 import { startNpmRegistryServer } from "./parallels/host-server.ts";
@@ -28,6 +27,8 @@ const laneBundleIds: Record<Lane, string> = {
 };
 
 const oldOnboardingReadinessTimeoutMs = 12_000;
+const startupMigrationLeaseTtlMs = 5 * 60_000;
+const expectedMismatchOutcome = "CLI install completed result=failed code=incompatible-version";
 
 type StartupPreference = {
   expected: string;
@@ -41,6 +42,48 @@ type CommandOptions = {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
 };
+
+function holdStartupMigrationLease(databasePath: string): { release: () => void } {
+  const owner = `macos-app-bootstrap-ci-${process.pid}-${Date.now()}`;
+  const nowMs = Date.now();
+  const database = new DatabaseSync(databasePath);
+  try {
+    database
+      .prepare(
+        `INSERT INTO state_leases (
+          scope, lease_key, owner, expires_at, heartbeat_at, payload_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "startup-migrations",
+        "global",
+        owner,
+        nowMs + startupMigrationLeaseTtlMs,
+        nowMs,
+        JSON.stringify({
+          version: "macos-app-bootstrap-ci",
+          owner: { pid: process.pid, host: hostname(), startedAt: null },
+        }),
+        nowMs,
+        nowMs,
+      );
+  } finally {
+    database.close();
+  }
+
+  return {
+    release: () => {
+      const releaseDatabase = new DatabaseSync(databasePath);
+      try {
+        releaseDatabase
+          .prepare("DELETE FROM state_leases WHERE scope = ? AND lease_key = ? AND owner = ?")
+          .run("startup-migrations", "global", owner);
+      } finally {
+        releaseDatabase.close();
+      }
+    },
+  };
+}
 
 function requireEphemeralCiHome(input: {
   allowReset?: string;
@@ -79,6 +122,10 @@ async function portIsOpen(port: number): Promise<boolean> {
 
 function safeArtifactText(text: string): string {
   return redactSensitiveText(text);
+}
+
+function hasExpectedMismatchOutcome(logs: string): boolean {
+  return logs.includes(expectedMismatchOutcome);
 }
 
 function appBootstrapMismatchVersion(version: string): string {
@@ -314,12 +361,11 @@ class MacosAppBootstrapCi {
     });
 
     if (lane === "mismatch") {
-      await this.waitFor(
-        "incompatible installer rejection",
-        15 * 60_000,
-        () =>
-          existsSync(path.join(this.stateDir, "tools/node/bin/node")) && !this.installerIsRunning(),
-      );
+      await this.waitFor("incompatible installer rejection", 15 * 60_000, () => {
+        const installerFinished =
+          existsSync(path.join(this.stateDir, "tools/node/bin/node")) && !this.installerIsRunning();
+        return installerFinished && hasExpectedMismatchOutcome(this.appLogs());
+      });
       await this.verifyMismatch();
     } else {
       await this.waitFor("managed CLI install", 15 * 60_000, () =>
@@ -353,7 +399,7 @@ class MacosAppBootstrapCi {
       database.close();
     }
 
-    const migrationLease = acquireStartupMigrationLease({ owner: "macos-app-bootstrap-ci" });
+    const migrationLease = holdStartupMigrationLease(stateDatabasePath);
     let migrationLeaseReleased = false;
     try {
       this.verifyStartupPreferences(lane);
@@ -597,7 +643,7 @@ class MacosAppBootstrapCi {
       .join(" AND ");
     const result = run(
       "/usr/bin/log",
-      ["show", "--last", "10m", "--style", "compact", "--predicate", predicate],
+      ["show", "--info", "--last", "10m", "--style", "compact", "--predicate", predicate],
       { check: false, quiet: true, timeoutMs: 30_000 },
     );
     return `${result.stdout}${result.stderr}`;
@@ -632,6 +678,7 @@ class MacosAppBootstrapCi {
     }
     capture("app unified log", "/usr/bin/log", [
       "show",
+      "--info",
       "--last",
       "30m",
       "--style",
@@ -720,6 +767,7 @@ class MacosAppBootstrapCi {
 export const testing = {
   appBundleIdForLane,
   appBootstrapMismatchVersion,
+  hasExpectedMismatchOutcome,
   requireEphemeralCiHome,
   startupPreferencesForLane,
 };

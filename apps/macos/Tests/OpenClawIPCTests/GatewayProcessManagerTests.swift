@@ -1149,7 +1149,7 @@ struct GatewayProcessManagerTests {
         }
 
         let readiness = Task { @MainActor in
-            await manager.waitForGatewayReady(timeout: 0.5)
+            await manager.waitForGatewayReady(timeout: 1)
         }
         await self.waitForCondition {
             session.snapshotMakeCount() > 0

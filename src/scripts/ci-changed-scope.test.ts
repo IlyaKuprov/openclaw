@@ -393,6 +393,7 @@ describe("detectChangedScope", () => {
       "scripts/notarize-mac-artifact.sh",
       "scripts/package-mac-app.sh",
       "scripts/package-mac-dist.sh",
+      "test/scripts/parallels-smoke-model.test.ts",
     ]) {
       expect(detectChangedScope([changedPath])).toEqual({
         runNode: true,
@@ -595,7 +596,7 @@ describe("detectChangedScope", () => {
     });
     expect(detectChangedScope(["scripts/install-cli.sh"])).toEqual({
       runNode: true,
-      runMacos: false,
+      runMacos: true,
       runIosBuild: false,
       runAndroid: false,
       runWindows: false,
