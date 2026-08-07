@@ -106,7 +106,7 @@ private actor CoordinatorNodeHostWorkerProbe: MacNodeHostWorking {
 
     func start(command: [String]) async throws -> MacNodeHostManifest {
         self.startCommands.append(command)
-        MacNodeHostManifest(version: "test", caps: [], commands: [], pathEnv: "/usr/bin:/bin")
+        return MacNodeHostManifest(version: "test", caps: [], commands: [], pathEnv: "/usr/bin:/bin")
     }
 
     func supports(_: String) async -> Bool { false }
