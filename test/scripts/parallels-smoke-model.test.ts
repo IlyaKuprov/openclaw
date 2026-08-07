@@ -712,24 +712,109 @@ describe("Parallels smoke model selection", () => {
     expect(script).toContain('SKIP_UI_BUILD: "1"');
   });
 
-  it("holds a real migration lease past the old onboarding readiness window", () => {
+  it("holds the real launchd Gateway past the old onboarding readiness window", () => {
     const script = TS_SOURCE.macosAppBootstrapCi;
 
-    expect(script).toContain("INSERT INTO state_leases");
-    expect(script).toContain(
-      "DELETE FROM state_leases WHERE scope = ? AND lease_key = ? AND owner = ?",
-    );
-    expect(script).toContain("OpenClaw startup migrations are already running");
-    expect(script).toContain("this.appLogs().includes");
     expect(script).toContain("oldOnboardingReadinessTimeoutMs = 12_000");
+    expect(script).toContain("installDelayedGatewayWrapper");
+    expect(script).toContain('"OPENCLAW_WRAPPER"');
     expect(script).toContain("onboarding Gateway activation start");
+    expect(script).toContain("delayed Gateway wrapper entry");
     expect(script).toContain("Gateway activation started executableReady=true gatewayReady=false");
     expect(script).toContain("const activationStartedAt = Date.now()");
+    expect(script).toContain(
+      "onboarding completed Gateway activation before the harness released it",
+    );
+    expect(script).toContain("opened before the harness released it");
+    expect(script).toContain('await writeFile(gatewayReleasePath, "release\\n")');
     expect(script).toContain("this.verifyStartupPreferences(lane)");
     expect(script).toContain(
       "Gateway activation completed result=ready executableReady=true gatewayReady=true",
     );
     expect(script).toContain("onboarding entered a failed terminal state");
+    expect(script).toContain("[macos-app-bootstrap-ci] FAILED (exit 1)");
+  });
+
+  it("resolves direct and generated-environment managed Gateway commands", () => {
+    const stateDir = "/Users/runner/.openclaw";
+    const runtimePath = `${stateDir}/tools/node/bin/node`;
+    const entryPath = `${stateDir}/tools/node-v24/lib/node_modules/openclaw/dist/entry.js`;
+    const gatewayCommand = [runtimePath, entryPath, "gateway", "--port", "18789"];
+    const wrapperPath = `${stateDir}/service-env/ai.openclaw.gateway-env-wrapper.sh`;
+    const envPath = `${stateDir}/service-env/ai.openclaw.gateway.env`;
+    const expected = { entryPath, runtimePath };
+
+    expect(
+      macosAppBootstrapCiTesting.resolveManagedGatewayCommand(gatewayCommand, stateDir),
+    ).toEqual(expected);
+    expect(
+      macosAppBootstrapCiTesting.resolveManagedGatewayCommand(
+        ["/bin/sh", wrapperPath, envPath, ...gatewayCommand],
+        stateDir,
+      ),
+    ).toEqual(expected);
+    expect(
+      macosAppBootstrapCiTesting.resolveManagedGatewayCommand(
+        [wrapperPath, envPath, ...gatewayCommand],
+        stateDir,
+      ),
+    ).toEqual(expected);
+    expect(
+      macosAppBootstrapCiTesting.resolveManagedGatewayCommand(
+        [runtimePath, entryPath, "gateway", "--port", "19001"],
+        stateDir,
+      ),
+    ).toBeNull();
+    expect(
+      macosAppBootstrapCiTesting.resolveManagedGatewayCommand(
+        ["/usr/bin/node", "/tmp/foreign/dist/entry.js", "gateway", "--port", "18789"],
+        stateDir,
+      ),
+    ).toBeNull();
+  });
+
+  it("execs the managed Gateway entry as the main module after release", async () => {
+    const tempDir = makeTempDir(tempDirs, "openclaw-macos-delayed-gateway-");
+    const originalEntryPath = join(tempDir, "original.mjs");
+    const wrapperPath = join(tempDir, "wrapper.sh");
+    const enteredPath = join(tempDir, "entered");
+    const releasePath = join(tempDir, "release");
+    const outputPath = join(tempDir, "started");
+    writeFileSync(
+      originalEntryPath,
+      `import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+if (import.meta.url !== pathToFileURL(process.argv[1]).href) process.exit(42);
+writeFileSync(${JSON.stringify(outputPath)}, process.argv.slice(2).join(" "));`,
+    );
+    writeFileSync(
+      wrapperPath,
+      macosAppBootstrapCiTesting.delayedGatewayWrapper(
+        { entryPath: originalEntryPath, runtimePath: process.execPath },
+        enteredPath,
+        releasePath,
+      ),
+    );
+    chmodSync(wrapperPath, 0o700);
+
+    const delayed = spawn(wrapperPath, ["gateway", "--port", "18789"]);
+    for (let attempt = 0; attempt < 100 && !existsSync(enteredPath); attempt += 1) {
+      await delay(10);
+    }
+    expect(existsSync(enteredPath)).toBe(true);
+    expect(existsSync(outputPath)).toBe(false);
+
+    writeFileSync(releasePath, "release\n");
+    await new Promise<void>((resolve, reject) => {
+      delayed.once("error", reject);
+      delayed.once("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+    });
+    expect(readFileSync(outputPath, "utf8")).toBe("gateway --port 18789");
+  });
+
+  it("formats macOS unified-log start timestamps in the accepted local format", () => {
+    const value = new Date(2026, 7, 6, 11, 22, 33);
+    expect(macosAppBootstrapCiTesting.macosLogStartTimestamp(value)).toBe("2026-08-06 11:22:33");
   });
 
   it("rejects short flags as Parallels smoke option values", () => {

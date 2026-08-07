@@ -1131,7 +1131,15 @@ struct GatewayProcessManagerTests {
                 sendHook: { task, message, sendIndex in
                     guard sendIndex > 0 else { return }
                     guard let id = GatewayWebSocketTestSupport.requestID(from: message) else { return }
-                    task.emitReceiveSuccess(.data(GatewayWebSocketTestSupport.okResponseData(id: id)))
+                    for _ in 0..<1000 {
+                        if task.hasPendingReceiveHandler() {
+                            task.emitReceiveSuccessOnce(
+                                .data(GatewayWebSocketTestSupport.okResponseData(id: id)))
+                            return
+                        }
+                        try await Task.sleep(nanoseconds: 1_000_000)
+                    }
+                    throw URLError(.timedOut)
                 },
                 receiveHook: { _, receiveIndex in
                     if receiveIndex == 0 {
@@ -1149,7 +1157,7 @@ struct GatewayProcessManagerTests {
         }
 
         let readiness = Task { @MainActor in
-            await manager.waitForGatewayReady(timeout: 1)
+            await manager.waitForGatewayReady(timeout: 2)
         }
         await self.waitForCondition {
             session.snapshotMakeCount() > 0

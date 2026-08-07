@@ -1,15 +1,14 @@
 #!/usr/bin/env -S pnpm tsx
 // Native macOS CI proof for the packaged app's first-launch CLI bootstrap.
 import { appendFileSync, existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { homedir, hostname, tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
 import { sleep as delay } from "../lib/sleep.mjs";
-import { run, runStreaming, say } from "./parallels/host-command.ts";
+import { run, runStreaming, say, shellQuote } from "./parallels/host-command.ts";
 import { startNpmRegistryServer } from "./parallels/host-server.ts";
 import { packOpenClaw, packageVersionFromTgz } from "./parallels/package-artifact.ts";
 import type { NpmRegistryServer } from "./parallels/types.ts";
@@ -27,7 +26,6 @@ const laneBundleIds: Record<Lane, string> = {
 };
 
 const oldOnboardingReadinessTimeoutMs = 12_000;
-const startupMigrationLeaseTtlMs = 5 * 60_000;
 const expectedMismatchOutcome = "CLI install completed result=failed code=incompatible-version";
 
 type StartupPreference = {
@@ -43,47 +41,10 @@ type CommandOptions = {
   timeoutMs?: number;
 };
 
-function holdStartupMigrationLease(databasePath: string): { release: () => void } {
-  const owner = `macos-app-bootstrap-ci-${process.pid}-${Date.now()}`;
-  const nowMs = Date.now();
-  const database = new DatabaseSync(databasePath);
-  try {
-    database
-      .prepare(
-        `INSERT INTO state_leases (
-          scope, lease_key, owner, expires_at, heartbeat_at, payload_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        "startup-migrations",
-        "global",
-        owner,
-        nowMs + startupMigrationLeaseTtlMs,
-        nowMs,
-        JSON.stringify({
-          version: "macos-app-bootstrap-ci",
-          owner: { pid: process.pid, host: hostname(), startedAt: null },
-        }),
-        nowMs,
-        nowMs,
-      );
-  } finally {
-    database.close();
-  }
-
-  return {
-    release: () => {
-      const releaseDatabase = new DatabaseSync(databasePath);
-      try {
-        releaseDatabase
-          .prepare("DELETE FROM state_leases WHERE scope = ? AND lease_key = ? AND owner = ?")
-          .run("startup-migrations", "global", owner);
-      } finally {
-        releaseDatabase.close();
-      }
-    },
-  };
-}
+type ManagedGatewayCommand = {
+  entryPath: string;
+  runtimePath: string;
+};
 
 function requireEphemeralCiHome(input: {
   allowReset?: string;
@@ -140,6 +101,88 @@ function appBundleIdForLane(lane: Lane): string {
   return laneBundleIds[lane];
 }
 
+function pathIsWithin(root: string, candidate: string): boolean {
+  const resolvedRoot = `${path.resolve(root)}${path.sep}`;
+  return path.resolve(candidate).startsWith(resolvedRoot);
+}
+
+function resolveManagedGatewayCommand(
+  programArguments: unknown,
+  stateDir: string,
+): ManagedGatewayCommand | null {
+  if (
+    !Array.isArray(programArguments) ||
+    !programArguments.every((value) => typeof value === "string")
+  ) {
+    return null;
+  }
+
+  let command = programArguments as string[];
+  const serviceEnvDir = path.resolve(stateDir, "service-env");
+  const isGeneratedEnvironmentPair = (wrapperPath: string, envPath: string): boolean =>
+    path.dirname(path.resolve(wrapperPath)) === serviceEnvDir &&
+    path.dirname(path.resolve(envPath)) === serviceEnvDir &&
+    path.basename(wrapperPath) === `${gatewayLabel}-env-wrapper.sh` &&
+    path.basename(envPath) === `${gatewayLabel}.env`;
+
+  if (
+    command.length >= 3 &&
+    command[0] === "/bin/sh" &&
+    isGeneratedEnvironmentPair(command[1]!, command[2]!)
+  ) {
+    command = command.slice(3);
+  } else if (command.length >= 2 && isGeneratedEnvironmentPair(command[0]!, command[1]!)) {
+    command = command.slice(2);
+  }
+
+  const runtimePath = command[0];
+  const entryPath = command[1];
+  if (
+    !runtimePath ||
+    !entryPath ||
+    path.basename(runtimePath) !== "node" ||
+    command[2] !== "gateway"
+  ) {
+    return null;
+  }
+  const portIndex = command.indexOf("--port", 3);
+  if (portIndex < 0 || command[portIndex + 1] !== String(gatewayPort)) {
+    return null;
+  }
+
+  const toolsRoot = path.join(stateDir, "tools");
+  const managedDistMarker = ["lib", "node_modules", "openclaw", "dist"].join(path.sep);
+  if (
+    !pathIsWithin(toolsRoot, runtimePath) ||
+    !pathIsWithin(toolsRoot, entryPath) ||
+    !path.dirname(path.resolve(entryPath)).endsWith(managedDistMarker) ||
+    !["entry.js", "index.js"].includes(path.basename(entryPath))
+  ) {
+    return null;
+  }
+  return { entryPath: path.resolve(entryPath), runtimePath: path.resolve(runtimePath) };
+}
+
+function delayedGatewayWrapper(
+  command: ManagedGatewayCommand,
+  enteredPath: string,
+  releasePath: string,
+): string {
+  return `#!/bin/sh
+set -eu
+: > ${shellQuote(enteredPath)}
+while [ ! -e ${shellQuote(releasePath)} ]; do
+  sleep 0.1
+done
+exec ${shellQuote(command.runtimePath)} ${shellQuote(command.entryPath)} "$@"
+`;
+}
+
+function macosLogStartTimestamp(date: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function startupPreferencesForLane(lane: Lane): StartupPreference[] {
   const showsOnboarding = lane === "delayed-readiness";
   return [
@@ -185,6 +228,7 @@ class MacosAppBootstrapCi {
   private tempRoot = "";
   private candidateVersion = "";
   private activeBundleId: string | null = null;
+  private activeLogStart: string | null = null;
 
   async run(): Promise<void> {
     requireEphemeralCiHome({
@@ -356,6 +400,7 @@ class MacosAppBootstrapCi {
     await this.resetState();
     await this.configureApp(appPath, lane);
     this.verifyStartupPreferences(lane);
+    this.activeLogStart = macosLogStartTimestamp(new Date());
     this.runLogged("/usr/bin/open", ["-n", appPath, "--args", "--e2e-cli-channel", "stable"], {
       timeoutMs: 30_000,
     });
@@ -381,73 +426,98 @@ class MacosAppBootstrapCi {
     const lane: Lane = "delayed-readiness";
     say("Run packaged app bootstrap lane: delayed onboarding readiness");
     await this.stopRuntimePreservingState();
+    const { gatewayEnteredPath, gatewayReleasePath, wrapperPath } =
+      await this.installDelayedGatewayWrapper();
     await rm(this.launchAgentPath, { force: true });
+    this.runLogged("/bin/launchctl", ["setenv", "OPENCLAW_WRAPPER", wrapperPath]);
     await this.configureApp(appPath, lane);
 
-    const stateDatabasePath = path.join(this.stateDir, "state/openclaw.sqlite");
-    if (!existsSync(stateDatabasePath)) {
-      throw new Error(`matching bootstrap did not create ${stateDatabasePath}`);
+    this.verifyStartupPreferences(lane);
+    this.activeLogStart = macosLogStartTimestamp(new Date());
+    this.runLogged(
+      "/usr/bin/open",
+      ["-n", appPath, "--args", "--e2e-cli-channel", "stable", "--e2e-onboarding-cli"],
+      { timeoutMs: 30_000 },
+    );
+
+    await this.waitFor("onboarding Gateway activation start", 60_000, () =>
+      this.onboardingLogs().includes(
+        "Gateway activation started executableReady=true gatewayReady=false",
+      ),
+    );
+    await this.waitFor("delayed Gateway wrapper entry", 60_000, () =>
+      existsSync(gatewayEnteredPath),
+    );
+    const activationStartedAt = Date.now();
+    await delay(oldOnboardingReadinessTimeoutMs + 1_000);
+    const preReleaseLogs = this.onboardingLogs();
+    if (preReleaseLogs.includes("Gateway activation completed result=")) {
+      throw new Error("onboarding completed Gateway activation before the harness released it");
     }
-    const database = new DatabaseSync(stateDatabasePath);
+    if (await portIsOpen(gatewayPort)) {
+      throw new Error(`Gateway port ${gatewayPort} opened before the harness released it`);
+    }
+    await writeFile(gatewayReleasePath, "release\n");
+
+    await this.verifyMatching();
+    await this.waitFor("onboarding readiness recovery", 60_000, () => {
+      const logs = this.onboardingLogs();
+      return logs.includes(
+        "Gateway activation completed result=ready executableReady=true gatewayReady=true",
+      );
+    });
+    const onboardingLogs = this.onboardingLogs();
+    if (onboardingLogs.includes("Gateway activation completed result=failed")) {
+      throw new Error("onboarding entered a failed terminal state before the Gateway recovered");
+    }
+
+    const elapsedMs = Date.now() - activationStartedAt;
+    if (elapsedMs <= oldOnboardingReadinessTimeoutMs) {
+      throw new Error(
+        `delayed readiness completed ${elapsedMs}ms after onboarding activation; expected to exceed the old ${oldOnboardingReadinessTimeoutMs}ms window`,
+      );
+    }
+    await this.captureDiagnostics(lane);
+    return elapsedMs;
+  }
+
+  private async installDelayedGatewayWrapper(): Promise<{
+    gatewayEnteredPath: string;
+    gatewayReleasePath: string;
+    wrapperPath: string;
+  }> {
+    const rawArguments = this.runLogged("/usr/bin/plutil", [
+      "-extract",
+      "ProgramArguments",
+      "json",
+      "-o",
+      "-",
+      this.launchAgentPath,
+    ]).stdout;
+    let programArguments: unknown;
     try {
-      database
-        .prepare(
-          "DELETE FROM schema_meta WHERE meta_key IN ('startup-migrations', 'state-migrations')",
-        )
-        .run();
-    } finally {
-      database.close();
+      programArguments = JSON.parse(rawArguments);
+    } catch {
+      throw new Error("installed Gateway LaunchAgent has invalid ProgramArguments JSON");
+    }
+    const command = resolveManagedGatewayCommand(programArguments, this.stateDir);
+    if (!command) {
+      throw new Error(
+        "installed Gateway LaunchAgent does not contain the expected managed command",
+      );
     }
 
-    const migrationLease = holdStartupMigrationLease(stateDatabasePath);
-    let migrationLeaseReleased = false;
-    try {
-      this.verifyStartupPreferences(lane);
-      this.runLogged(
-        "/usr/bin/open",
-        ["-n", appPath, "--args", "--e2e-cli-channel", "stable", "--e2e-onboarding-cli"],
-        { timeoutMs: 30_000 },
-      );
-
-      await this.waitFor("startup migration lease conflict", 30_000, () =>
-        this.appLogs().includes("OpenClaw startup migrations are already running"),
-      );
-
-      await this.waitFor("onboarding Gateway activation start", 60_000, () =>
-        this.onboardingLogs().includes(
-          "Gateway activation started executableReady=true gatewayReady=false",
-        ),
-      );
-      const activationStartedAt = Date.now();
-      await delay(oldOnboardingReadinessTimeoutMs + 1_000);
-      migrationLease.release();
-      migrationLeaseReleased = true;
-
-      await this.verifyMatching();
-      await this.waitFor("onboarding readiness recovery", 60_000, () => {
-        const logs = this.onboardingLogs();
-        return logs.includes(
-          "Gateway activation completed result=ready executableReady=true gatewayReady=true",
-        );
-      });
-      const onboardingLogs = this.onboardingLogs();
-      if (onboardingLogs.includes("Gateway activation completed result=failed")) {
-        throw new Error("onboarding entered a failed terminal state before the Gateway recovered");
-      }
-
-      const elapsedMs = Date.now() - activationStartedAt;
-      if (elapsedMs <= oldOnboardingReadinessTimeoutMs) {
-        throw new Error(
-          `delayed readiness completed ${elapsedMs}ms after onboarding activation; expected to exceed the old ${oldOnboardingReadinessTimeoutMs}ms window`,
-        );
-      }
-      await this.captureDiagnostics(lane);
-      return elapsedMs;
-    } finally {
-      if (!migrationLeaseReleased) {
-        migrationLease.release();
-      }
-    }
+    const gatewayEnteredPath = path.join(this.tempRoot, "delayed-gateway.entered");
+    const gatewayReleasePath = path.join(this.tempRoot, "delayed-gateway.release");
+    const wrapperPath = path.join(this.tempRoot, "delayed-gateway-wrapper.sh");
+    await rm(gatewayEnteredPath, { force: true });
+    await rm(gatewayReleasePath, { force: true });
+    await writeFile(
+      wrapperPath,
+      delayedGatewayWrapper(command, gatewayEnteredPath, gatewayReleasePath),
+    );
+    await chmod(wrapperPath, 0o700);
+    return { gatewayEnteredPath, gatewayReleasePath, wrapperPath };
   }
 
   private async configureApp(appPath: string, lane: Lane): Promise<void> {
@@ -590,7 +660,12 @@ class MacosAppBootstrapCi {
       return;
     }
     await this.stopRuntimePreservingState();
-    for (const key of ["NPM_CONFIG_REGISTRY", "npm_config_registry", "OPENCLAW_LOG_DIR"]) {
+    for (const key of [
+      "NPM_CONFIG_REGISTRY",
+      "npm_config_registry",
+      "OPENCLAW_LOG_DIR",
+      "OPENCLAW_WRAPPER",
+    ]) {
       this.runLogged("/bin/launchctl", ["unsetenv", key], { check: false });
     }
     await rm(this.launchAgentPath, { force: true });
@@ -599,6 +674,7 @@ class MacosAppBootstrapCi {
       this.runLogged("/usr/bin/defaults", ["delete", bundleId], { check: false });
     }
     this.activeBundleId = null;
+    this.activeLogStart = null;
   }
 
   private async stopRuntimePreservingState(): Promise<void> {
@@ -641,9 +717,10 @@ class MacosAppBootstrapCi {
     const predicate = ['subsystem == "ai.openclaw"', additionalPredicate]
       .filter(Boolean)
       .join(" AND ");
+    const timeRange = this.activeLogStart ? ["--start", this.activeLogStart] : ["--last", "10m"];
     const result = run(
       "/usr/bin/log",
-      ["show", "--info", "--last", "10m", "--style", "compact", "--predicate", predicate],
+      ["show", "--info", ...timeRange, "--style", "compact", "--predicate", predicate],
       { check: false, quiet: true, timeoutMs: 30_000 },
     );
     return `${result.stdout}${result.stderr}`;
@@ -767,14 +844,18 @@ class MacosAppBootstrapCi {
 export const testing = {
   appBundleIdForLane,
   appBootstrapMismatchVersion,
+  delayedGatewayWrapper,
   hasExpectedMismatchOutcome,
+  macosLogStartTimestamp,
   requireEphemeralCiHome,
+  resolveManagedGatewayCommand,
   startupPreferencesForLane,
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   await new MacosAppBootstrapCi().run().catch((error: unknown) => {
     process.stderr.write(`macOS app bootstrap CI failed: ${safeArtifactText(String(error))}\n`);
+    process.stderr.write("[macos-app-bootstrap-ci] FAILED (exit 1)\n");
     process.exitCode = 1;
   });
 }
