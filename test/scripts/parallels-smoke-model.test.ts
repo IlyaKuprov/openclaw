@@ -735,6 +735,29 @@ describe("Parallels smoke model selection", () => {
     expect(script).toContain("[macos-app-bootstrap-ci] FAILED (exit 1)");
   });
 
+  it("does not start CLI readiness probes before the Gateway listener is ready", () => {
+    expect(macosAppBootstrapCiTesting.gatewayServiceIsListening(0, true)).toBe(true);
+    expect(macosAppBootstrapCiTesting.gatewayServiceIsListening(0, false)).toBe(false);
+    expect(macosAppBootstrapCiTesting.gatewayServiceIsListening(113, true)).toBe(false);
+
+    const script = TS_SOURCE.macosAppBootstrapCi;
+    const verifyStart = script.indexOf("private async verifyMatching");
+    const verifyEnd = script.indexOf("private async verifyConfig", verifyStart);
+    const verifyMatching = script.slice(verifyStart, verifyEnd);
+    const listenerWait = verifyMatching.indexOf('this.waitFor("Gateway service listener"');
+    const rpcProbe = verifyMatching.indexOf('["gateway", "status", "--deep"');
+    const rpcCall = verifyMatching.lastIndexOf("this.runLogged(", rpcProbe);
+    const listenerProbe = verifyMatching.slice(listenerWait, rpcCall);
+    expect(listenerWait).toBeGreaterThanOrEqual(0);
+    expect(rpcCall).toBeGreaterThan(listenerWait);
+    expect(rpcProbe).toBeGreaterThan(listenerWait);
+    expect(listenerProbe).toContain('this.runStatus(\n        "/bin/launchctl"');
+    expect(listenerProbe).toContain("await portIsOpen(gatewayPort)");
+    expect(listenerProbe).not.toContain("managedCli");
+    expect(verifyMatching.match(/\["gateway", "status", "--deep"/gu)).toHaveLength(1);
+    expect(verifyMatching.slice(rpcProbe)).toContain('"--require-rpc"');
+  });
+
   it("resolves direct and generated-environment managed Gateway commands", () => {
     const stateDir = "/Users/runner/.openclaw";
     const runtimePath = `${stateDir}/tools/node/bin/node`;

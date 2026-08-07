@@ -106,6 +106,10 @@ function pathIsWithin(root: string, candidate: string): boolean {
   return path.resolve(candidate).startsWith(resolvedRoot);
 }
 
+function gatewayServiceIsListening(launchAgentStatus: number, portOpen: boolean): boolean {
+  return launchAgentStatus === 0 && portOpen;
+}
+
 function resolveManagedGatewayCommand(
   programArguments: unknown,
   stateDir: string,
@@ -596,15 +600,22 @@ class MacosAppBootstrapCi {
 
   private async verifyMatching(): Promise<void> {
     const managedCli = path.join(this.stateDir, "bin/openclaw");
-    await this.waitFor("Gateway RPC readiness", 5 * 60_000, async () => {
-      const status = this.runLogged(
-        managedCli,
-        ["gateway", "status", "--deep", "--require-rpc", "--timeout", "15000"],
+    await this.waitFor("Gateway service listener", 5 * 60_000, async () => {
+      const service = this.runStatus(
+        "/bin/launchctl",
+        ["print", `gui/${this.uid}/${gatewayLabel}`],
         { check: false, timeoutMs: 30_000 },
       );
-      return status.status === 0 && (await portIsOpen(gatewayPort));
+      return gatewayServiceIsListening(service.status, await portIsOpen(gatewayPort));
     });
 
+    // Do not start another CLI while the app may still own startup migrations. Once launchd is
+    // loaded and listening, one deep status call proves the real RPC contract without racing setup.
+    this.runLogged(
+      managedCli,
+      ["gateway", "status", "--deep", "--require-rpc", "--timeout", "15000"],
+      { timeoutMs: 30_000 },
+    );
     this.runLogged(managedCli, ["config", "validate"], { timeoutMs: 60_000 });
     this.runStatus("/bin/launchctl", ["print", `gui/${this.uid}/${gatewayLabel}`], {
       timeoutMs: 30_000,
@@ -612,11 +623,6 @@ class MacosAppBootstrapCi {
     if (!(await portIsOpen(gatewayPort))) {
       throw new Error(`Gateway port ${gatewayPort} is closed`);
     }
-    this.runLogged(
-      managedCli,
-      ["gateway", "status", "--deep", "--require-rpc", "--timeout", "15000"],
-      { timeoutMs: 30_000 },
-    );
     await this.verifyConfig(this.candidateVersion);
   }
 
@@ -845,6 +851,7 @@ export const testing = {
   appBundleIdForLane,
   appBootstrapMismatchVersion,
   delayedGatewayWrapper,
+  gatewayServiceIsListening,
   hasExpectedMismatchOutcome,
   macosLogStartTimestamp,
   requireEphemeralCiHome,
