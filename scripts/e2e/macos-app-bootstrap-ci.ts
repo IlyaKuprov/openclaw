@@ -17,12 +17,24 @@ import type { NpmRegistryServer } from "./parallels/types.ts";
 
 const gatewayLabel = "ai.openclaw.gateway";
 const gatewayPort = 18789;
-const bundleId = "ai.openclaw.mac.debug";
 const installerProcessPattern = "Contents/Resources/[i]nstall-cli.sh";
 
 type Lane = "delayed-readiness" | "matching" | "mismatch";
 
+const laneBundleIds: Record<Lane, string> = {
+  "delayed-readiness": "ai.openclaw.mac.debug.delayed",
+  matching: "ai.openclaw.mac.debug",
+  mismatch: "ai.openclaw.mac.debug.mismatch",
+};
+
 const oldOnboardingReadinessTimeoutMs = 12_000;
+
+type StartupPreference = {
+  expected: string;
+  key: string;
+  type: "-bool" | "-int" | "-string";
+  value: string;
+};
 
 type CommandOptions = {
   check?: boolean;
@@ -77,6 +89,38 @@ function appBootstrapMismatchVersion(version: string): string {
   return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
 }
 
+function appBundleIdForLane(lane: Lane): string {
+  return laneBundleIds[lane];
+}
+
+function startupPreferencesForLane(lane: Lane): StartupPreference[] {
+  const showsOnboarding = lane === "delayed-readiness";
+  return [
+    {
+      expected: showsOnboarding ? "0" : "1",
+      key: "openclaw.onboardingSeen",
+      type: "-bool",
+      value: showsOnboarding ? "false" : "true",
+    },
+    {
+      expected: showsOnboarding ? "0" : "8",
+      key: "openclaw.onboardingVersion",
+      type: "-int",
+      value: showsOnboarding ? "0" : "8",
+    },
+    { expected: "local", key: "openclaw.connectionMode", type: "-string", value: "local" },
+    { expected: "0", key: "openclaw.pauseEnabled", type: "-bool", value: "false" },
+    { expected: "1", key: "openclaw.showDockIcon", type: "-bool", value: "true" },
+    { expected: "1", key: "openclaw.debug.fileLogEnabled", type: "-bool", value: "true" },
+    {
+      expected: "debug",
+      key: "openclaw.debug.appLogLevel",
+      type: "-string",
+      value: "debug",
+    },
+  ];
+}
+
 class MacosAppBootstrapCi {
   private readonly artifactDir = path.resolve(
     process.env.OPENCLAW_MACOS_APP_BOOTSTRAP_ARTIFACT_DIR ?? ".artifacts/macos-app-bootstrap",
@@ -93,6 +137,7 @@ class MacosAppBootstrapCi {
   private registryServer: NpmRegistryServer | null = null;
   private tempRoot = "";
   private candidateVersion = "";
+  private activeBundleId: string | null = null;
 
   async run(): Promise<void> {
     requireEphemeralCiHome({
@@ -114,7 +159,7 @@ class MacosAppBootstrapCi {
 
       await this.runLane("mismatch", apps.mismatch);
       await this.runLane("matching", apps.matching);
-      const delayedReadinessMs = await this.runDelayedReadinessLane(apps.matching);
+      const delayedReadinessMs = await this.runDelayedReadinessLane(apps.delayedReadiness);
 
       await writeFile(
         path.join(this.artifactDir, "summary.json"),
@@ -163,7 +208,11 @@ class MacosAppBootstrapCi {
     await this.resetState();
   }
 
-  private async prepareArtifacts(): Promise<{ matching: string; mismatch: string }> {
+  private async prepareArtifacts(): Promise<{
+    delayedReadiness: string;
+    matching: string;
+    mismatch: string;
+  }> {
     const packageJson = JSON.parse(await readFile("package.json", "utf8")) as { version?: unknown };
     if (typeof packageJson.version !== "string" || !packageJson.version.trim()) {
       throw new Error("package.json does not contain a package version");
@@ -216,25 +265,50 @@ class MacosAppBootstrapCi {
       throw new Error(`package-mac-app failed with exit ${packageStatus}`);
     }
 
-    const mismatchApp = path.join(this.tempRoot, "mismatch", "OpenClaw.app");
-    await mkdir(path.dirname(mismatchApp), { recursive: true });
-    this.runLogged("/usr/bin/ditto", [matchingApp, mismatchApp], { timeoutMs: 120_000 });
+    const mismatchApp = await this.createAppVariant(matchingApp, "mismatch", {
+      shortVersion: appBootstrapMismatchVersion(this.candidateVersion),
+    });
+    const delayedReadinessApp = await this.createAppVariant(matchingApp, "delayed-readiness");
+
+    return {
+      delayedReadiness: delayedReadinessApp,
+      matching: matchingApp,
+      mismatch: mismatchApp,
+    };
+  }
+
+  private async createAppVariant(
+    sourceApp: string,
+    lane: Exclude<Lane, "matching">,
+    options: { shortVersion?: string } = {},
+  ): Promise<string> {
+    const appPath = path.join(this.tempRoot, lane, "OpenClaw.app");
+    await mkdir(path.dirname(appPath), { recursive: true });
+    this.runLogged("/usr/bin/ditto", [sourceApp, appPath], { timeoutMs: 120_000 });
+    const infoPlist = path.join(appPath, "Contents/Info.plist");
     this.runLogged("/usr/libexec/PlistBuddy", [
       "-c",
-      `Set :CFBundleShortVersionString ${appBootstrapMismatchVersion(this.candidateVersion)}`,
-      path.join(mismatchApp, "Contents/Info.plist"),
+      `Set :CFBundleIdentifier ${appBundleIdForLane(lane)}`,
+      infoPlist,
     ]);
-    this.runLogged("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", mismatchApp], {
+    if (options.shortVersion) {
+      this.runLogged("/usr/libexec/PlistBuddy", [
+        "-c",
+        `Set :CFBundleShortVersionString ${options.shortVersion}`,
+        infoPlist,
+      ]);
+    }
+    this.runLogged("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appPath], {
       timeoutMs: 120_000,
     });
-
-    return { matching: matchingApp, mismatch: mismatchApp };
+    return appPath;
   }
 
   private async runLane(lane: Lane, appPath: string): Promise<void> {
     say(`Run packaged app bootstrap lane: ${lane}`);
     await this.resetState();
     await this.configureApp(appPath, lane);
+    this.verifyStartupPreferences(lane);
     this.runLogged("/usr/bin/open", ["-n", appPath, "--args", "--e2e-cli-channel", "stable"], {
       timeoutMs: 30_000,
     });
@@ -263,20 +337,6 @@ class MacosAppBootstrapCi {
     await this.stopRuntimePreservingState();
     await rm(this.launchAgentPath, { force: true });
     await this.configureApp(appPath, lane);
-    this.runLogged("/usr/bin/defaults", [
-      "write",
-      bundleId,
-      "openclaw.onboardingSeen",
-      "-bool",
-      "false",
-    ]);
-    this.runLogged("/usr/bin/defaults", [
-      "write",
-      bundleId,
-      "openclaw.onboardingVersion",
-      "-int",
-      "0",
-    ]);
 
     const stateDatabasePath = path.join(this.stateDir, "state/openclaw.sqlite");
     if (!existsSync(stateDatabasePath)) {
@@ -296,6 +356,7 @@ class MacosAppBootstrapCi {
     const migrationLease = acquireStartupMigrationLease({ owner: "macos-app-bootstrap-ci" });
     let migrationLeaseReleased = false;
     try {
+      this.verifyStartupPreferences(lane);
       this.runLogged(
         "/usr/bin/open",
         ["-n", appPath, "--args", "--e2e-cli-channel", "stable", "--e2e-onboarding-cli"],
@@ -355,20 +416,22 @@ class MacosAppBootstrapCi {
       "Print :CFBundleIdentifier",
       path.join(appPath, "Contents/Info.plist"),
     ]).stdout.trim();
-    if (actualBundleId !== bundleId) {
-      throw new Error(`unexpected debug bundle id: ${actualBundleId}`);
+    const expectedBundleId = appBundleIdForLane(lane);
+    if (actualBundleId !== expectedBundleId) {
+      throw new Error(
+        `unexpected ${lane} debug bundle id: ${actualBundleId}; expected ${expectedBundleId}`,
+      );
     }
+    this.activeBundleId = actualBundleId;
 
-    for (const [key, type, value] of [
-      ["openclaw.onboardingSeen", "-bool", "true"],
-      ["openclaw.onboardingVersion", "-int", "8"],
-      ["openclaw.connectionMode", "-string", "local"],
-      ["openclaw.pauseEnabled", "-bool", "false"],
-      ["openclaw.showDockIcon", "-bool", "true"],
-      ["openclaw.debug.fileLogEnabled", "-bool", "true"],
-      ["openclaw.debug.appLogLevel", "-string", "debug"],
-    ] as const) {
-      this.runLogged("/usr/bin/defaults", ["write", actualBundleId, key, type, value]);
+    for (const preference of startupPreferencesForLane(lane)) {
+      this.runLogged("/usr/bin/defaults", [
+        "write",
+        actualBundleId,
+        preference.key,
+        preference.type,
+        preference.value,
+      ]);
     }
 
     if (!this.registryServer) {
@@ -382,6 +445,25 @@ class MacosAppBootstrapCi {
       ["OPENCLAW_LOG_DIR", laneLogDir],
     ] as const) {
       this.runLogged("/bin/launchctl", ["setenv", key, value]);
+    }
+  }
+
+  private verifyStartupPreferences(lane: Lane): void {
+    const bundleId = appBundleIdForLane(lane);
+    if (this.activeBundleId !== bundleId) {
+      throw new Error(`cannot verify ${lane} preferences before configuring ${bundleId}`);
+    }
+    for (const preference of startupPreferencesForLane(lane)) {
+      const actual = this.runLogged("/usr/bin/defaults", [
+        "read",
+        bundleId,
+        preference.key,
+      ]).stdout.trim();
+      if (actual !== preference.expected) {
+        throw new Error(
+          `${lane} preference ${preference.key} read back ${JSON.stringify(actual)}; expected ${JSON.stringify(preference.expected)}`,
+        );
+      }
     }
   }
 
@@ -473,7 +555,10 @@ class MacosAppBootstrapCi {
     }
     await rm(this.launchAgentPath, { force: true });
     await rm(this.stateDir, { force: true, recursive: true });
-    this.runLogged("/usr/bin/defaults", ["delete", bundleId], { check: false });
+    for (const bundleId of Object.values(laneBundleIds)) {
+      this.runLogged("/usr/bin/defaults", ["delete", bundleId], { check: false });
+    }
+    this.activeBundleId = null;
   }
 
   private async stopRuntimePreservingState(): Promise<void> {
@@ -546,7 +631,12 @@ class MacosAppBootstrapCi {
       .filter((line) => /\b(?:state|pid|last exit code)\s*=/u.test(line))
       .join("\n");
     diagnostics.push(`## Gateway LaunchAgent\nexit=${launchd.status}\n${launchdSummary}`);
-    capture("debug defaults", "/usr/bin/defaults", ["read", bundleId]);
+    if (this.activeBundleId) {
+      capture(`debug defaults (${this.activeBundleId})`, "/usr/bin/defaults", [
+        "read",
+        this.activeBundleId,
+      ]);
+    }
     capture("app unified log", "/usr/bin/log", [
       "show",
       "--last",
@@ -635,8 +725,10 @@ class MacosAppBootstrapCi {
 }
 
 export const testing = {
+  appBundleIdForLane,
   appBootstrapMismatchVersion,
   requireEphemeralCiHome,
+  startupPreferencesForLane,
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

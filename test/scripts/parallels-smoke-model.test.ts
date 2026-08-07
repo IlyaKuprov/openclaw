@@ -634,6 +634,23 @@ describe("Parallels smoke model selection", () => {
     );
   });
 
+  it("isolates packaged app startup preferences by lane", () => {
+    const lanes = ["mismatch", "matching", "delayed-readiness"] as const;
+    const bundleIds = lanes.map((lane) => macosAppBootstrapCiTesting.appBundleIdForLane(lane));
+
+    expect(new Set(bundleIds).size).toBe(3);
+    expect(
+      macosAppBootstrapCiTesting
+        .startupPreferencesForLane("matching")
+        .find((preference) => preference.key === "openclaw.onboardingSeen"),
+    ).toMatchObject({ expected: "1", value: "true" });
+    expect(
+      macosAppBootstrapCiTesting
+        .startupPreferencesForLane("delayed-readiness")
+        .find((preference) => preference.key === "openclaw.onboardingSeen"),
+    ).toMatchObject({ expected: "0", value: "false" });
+  });
+
   it("allows packaged app bootstrap state resets only in an explicit ephemeral macOS CI home", () => {
     expect(() =>
       macosAppBootstrapCiTesting.requireEphemeralCiHome({
@@ -686,6 +703,7 @@ describe("Parallels smoke model selection", () => {
     expect(script).toContain("onboarding Gateway activation start");
     expect(script).toContain("Gateway activation started executableReady=true gatewayReady=false");
     expect(script).toContain("const activationStartedAt = Date.now()");
+    expect(script).toContain("this.verifyStartupPreferences(lane)");
     expect(script).toContain(
       "Gateway activation completed result=ready executableReady=true gatewayReady=true",
     );
