@@ -908,8 +908,8 @@ final class MacNodeModeCoordinator: NSObject {
     }
 }
 
-private extension MacNodeModeCoordinator {
-    func prepareNodeHostWorkerIfReady(
+extension MacNodeModeCoordinator {
+    private func prepareNodeHostWorkerIfReady(
         endpointGeneration: UInt64,
         routeAuthorityGeneration: UInt64) async throws -> MacNodeHostManifest?
     {
@@ -930,7 +930,7 @@ private extension MacNodeModeCoordinator {
             routeAuthorityGeneration: routeAuthorityGeneration)
     }
 
-    static func resolveNodeHostCommand() async throws -> [String] {
+    fileprivate static func resolveNodeHostCommand() async throws -> [String] {
         let executable: String
         if let projectExecutable = CommandResolver.projectOpenClawExecutable() {
             executable = projectExecutable
@@ -944,7 +944,7 @@ private extension MacNodeModeCoordinator {
         return [executable, "node", "worker"]
     }
 
-    func startNodeHostWorkerIfConfigured(
+    private func startNodeHostWorkerIfConfigured(
         endpointGeneration: UInt64,
         routeAuthorityGeneration: UInt64) async throws -> MacNodeHostManifest?
     {
@@ -970,7 +970,7 @@ private extension MacNodeModeCoordinator {
         return try await nodeHostWorker.start(command: command)
     }
 
-    func nodeHostAttemptIsCurrent(
+    private func nodeHostAttemptIsCurrent(
         endpointGeneration: UInt64,
         routeAuthorityGeneration: UInt64) -> Bool
     {

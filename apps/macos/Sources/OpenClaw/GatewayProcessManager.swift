@@ -417,9 +417,9 @@ final class GatewayProcessManager {
     private var currentStatusIsReady: Bool {
         switch self.status {
         case .running, .attachedExisting:
-            return true
+            true
         case .stopped, .starting, .failed:
-            return false
+            false
         }
     }
 
