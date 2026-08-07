@@ -188,10 +188,6 @@ export function promoteDockerChannel({ version, images }, options = {}) {
   const execFileSyncImpl = options.execFileSyncImpl ?? execFileSync;
   const log = options.log ?? console.log;
   const verifyAttestationsImpl = options.verifyAttestationsImpl ?? verifyDockerAttestations;
-  const attestationPolicy = options.attestationPolicy ?? "required";
-  if (attestationPolicy !== "required" && attestationPolicy !== "omitted") {
-    throw new Error(`Unsupported attestation policy "${attestationPolicy}".`);
-  }
   const plan = createDockerChannelPromotionPlan({ version, images });
 
   // Resolve every version-specific source before the first alias write. A missing
@@ -207,14 +203,12 @@ export function promoteDockerChannel({ version, images }, options = {}) {
 
   // Attestation checks and writes share these digest refs so a concurrent tag
   // rewrite cannot swap the content between verification and promotion.
-  if (attestationPolicy === "required") {
-    verifyAttestationsImpl({
-      imageRefs: resolved.map((promotion) => promotion.sourceDigestRef),
-      requiredPlatforms: REQUIRED_PLATFORMS,
-      execFileSyncImpl,
-      log,
-    });
-  }
+  verifyAttestationsImpl({
+    imageRefs: resolved.map((promotion) => promotion.sourceDigestRef),
+    requiredPlatforms: REQUIRED_PLATFORMS,
+    execFileSyncImpl,
+    log,
+  });
   verifySourceVersions(resolved, plan.version, execFileSyncImpl);
   if (!options.allowRollback) {
     preventChannelRollback(resolved, plan.version, execFileSyncImpl);
@@ -248,7 +242,7 @@ export function promoteDockerChannel({ version, images }, options = {}) {
 
 function printHelp() {
   console.log(
-    "Usage: node scripts/docker-channel-promote.mjs --version YYYY.M.P --image REGISTRY/IMAGE [--image REGISTRY/IMAGE] [--allow-rollback] [--attestation-policy required|omitted]",
+    "Usage: node scripts/docker-channel-promote.mjs --version YYYY.M.P --image REGISTRY/IMAGE [--image REGISTRY/IMAGE] [--allow-rollback]",
   );
 }
 
@@ -257,7 +251,6 @@ function main() {
     args: process.argv.slice(2),
     options: {
       "allow-rollback": { type: "boolean" },
-      "attestation-policy": { type: "string" },
       help: { type: "boolean", short: "h" },
       image: { type: "string", multiple: true },
       version: { type: "string" },
@@ -278,10 +271,7 @@ function main() {
   }
   const plan = promoteDockerChannel(
     { version, images },
-    {
-      allowRollback: values["allow-rollback"],
-      attestationPolicy: values["attestation-policy"],
-    },
+    { allowRollback: values["allow-rollback"] },
   );
   console.log(`Promoted Docker ${plan.channel} aliases for ${plan.version}.`);
 }
