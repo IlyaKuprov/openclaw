@@ -952,8 +952,12 @@ jobs:
     outputs:
       stable_tag: ${{ steps.resolve.outputs.stable_tag }}
       stable_release_sha: ${{ steps.resolve.outputs.stable_release_sha }}
+      stable_asset_name: ${{ steps.resolve.outputs.stable_asset_name }}
+      stable_asset_sha256: ${{ steps.resolve.outputs.stable_asset_sha256 }}
       prerelease_tag: ${{ steps.resolve.outputs.prerelease_tag }}
       prerelease_release_sha: ${{ steps.resolve.outputs.prerelease_release_sha }}
+      prerelease_asset_name: ${{ steps.resolve.outputs.prerelease_asset_name }}
+      prerelease_asset_sha256: ${{ steps.resolve.outputs.prerelease_asset_sha256 }}
     steps:
       - name: Select immutable stable and prerelease assets
         id: resolve
@@ -978,10 +982,11 @@ jobs:
                    | sort_by(if (.name | endswith(".zip")) then 0 else 1 end)
                    | first) as $asset
                 | select($asset != null)
-                | {
+                  | {
                     published_at: $release.published_at,
                     tag: $release.tag_name,
-                    asset_name: $asset.name
+                    asset_name: $asset.name,
+                    asset_sha256: ($asset.digest | sub("^sha256:"; ""))
                   }
               ]
               | sort_by(.published_at)
@@ -1025,6 +1030,8 @@ jobs:
             }
             echo "${channel}_tag=${tag}" >> "$GITHUB_OUTPUT"
             echo "${channel}_release_sha=$(resolve_tag_sha "$tag")" >> "$GITHUB_OUTPUT"
+            echo "${channel}_asset_name=$(jq -r '.asset_name' <<< "$selection")" >> "$GITHUB_OUTPUT"
+            echo "${channel}_asset_sha256=$(jq -r '.asset_sha256' <<< "$selection")" >> "$GITHUB_OUTPUT"
           done
 
           {
@@ -1088,15 +1095,17 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@a58903956a3eca6cee5d18816048c008bc7a4ddc
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@61afe0424758a224d18849b46393179667480614
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
       candidate_version: ${{ needs.prepare_release_package.outputs.package_version }}
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_tag }}
       windows_node_release_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_release_sha }}
+      windows_node_release_asset_name: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_name }}
+      windows_node_release_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_sha256 }}
       allow_protocol_mismatch: false
-      windows_node_sha: a58903956a3eca6cee5d18816048c008bc7a4ddc
+      windows_node_sha: 61afe0424758a224d18849b46393179667480614
 
   windows_node_stable_e2e:
     name: Run Windows-node stable E2E
@@ -1106,15 +1115,17 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@a58903956a3eca6cee5d18816048c008bc7a4ddc
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@61afe0424758a224d18849b46393179667480614
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
       candidate_version: ${{ needs.prepare_release_package.outputs.package_version }}
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_tag }}
       windows_node_release_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_release_sha }}
+      windows_node_release_asset_name: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_name }}
+      windows_node_release_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}
       allow_protocol_mismatch: true
-      windows_node_sha: a58903956a3eca6cee5d18816048c008bc7a4ddc
+      windows_node_sha: 61afe0424758a224d18849b46393179667480614
 
   live_repo_e2e_release_checks:
     name: Run repo/live E2E validation

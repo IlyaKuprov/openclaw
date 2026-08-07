@@ -3565,7 +3565,7 @@ describe("package artifact reuse", () => {
       "live_suite_filter: ${{ needs.resolve_target.outputs.repo_live_suite_filter }}",
     );
     expect(workflow).toContain(
-      "if: needs.resolve_target.outputs.cross_os_scheduled == 'true' || needs.resolve_target.outputs.docker_release_scheduled == 'true' || needs.resolve_target.outputs.rerun_group == 'package'",
+      "if: needs.resolve_target.outputs.cross_os_scheduled == 'true' || needs.resolve_target.outputs.docker_release_scheduled == 'true' || contains(fromJSON('[\"package\",\"windows-node\"]'), needs.resolve_target.outputs.rerun_group)",
     );
     expect(workflow).toContain(
       "if: needs.resolve_target.outputs.docker_release_scheduled == 'true'",
@@ -3603,6 +3603,37 @@ describe("package artifact reuse", () => {
         "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
       );
     }
+  });
+
+  it("binds both Windows-node release E2E calls to the resolved asset tuple", () => {
+    const resolver = workflowJob(RELEASE_CHECKS_WORKFLOW, "resolve_windows_node_release_artifacts");
+    const prerelease = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_prerelease_e2e");
+    const stable = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_stable_e2e");
+    const reusableWorkflow =
+      "openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@61afe0424758a224d18849b46393179667480614";
+
+    expect(resolver.outputs).toMatchObject({
+      stable_asset_name: "${{ steps.resolve.outputs.stable_asset_name }}",
+      stable_asset_sha256: "${{ steps.resolve.outputs.stable_asset_sha256 }}",
+      prerelease_asset_name: "${{ steps.resolve.outputs.prerelease_asset_name }}",
+      prerelease_asset_sha256: "${{ steps.resolve.outputs.prerelease_asset_sha256 }}",
+    });
+    expect(prerelease.uses).toBe(reusableWorkflow);
+    expect(prerelease.with).toMatchObject({
+      windows_node_release_asset_name:
+        "${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_name }}",
+      windows_node_release_asset_sha256:
+        "${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_sha256 }}",
+      windows_node_sha: "61afe0424758a224d18849b46393179667480614",
+    });
+    expect(stable.uses).toBe(reusableWorkflow);
+    expect(stable.with).toMatchObject({
+      windows_node_release_asset_name:
+        "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_name }}",
+      windows_node_release_asset_sha256:
+        "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}",
+      windows_node_sha: "61afe0424758a224d18849b46393179667480614",
+    });
   });
 
   it("routes release Matrix through the QA Lab selector", () => {
@@ -4276,7 +4307,7 @@ describe("package artifact reuse", () => {
       'args+=(-f live_suite_filter="$LIVE_SUITE_FILTER")',
       'args+=(-f cross_os_suite_filter="$CROSS_OS_SUITE_FILTER")',
       'case "$RERUN_GROUP" in',
-      "release-checks|install-smoke|cross-os|live-e2e|package|qa|qa-parity|qa-live)",
+      "release-checks|install-smoke|cross-os|windows-node|live-e2e|package|qa|qa-parity|qa-live)",
       "cancel-in-progress: ${{ (inputs.ref == 'main' && inputs.rerun_group == 'all') || startsWith(inputs.ref, 'tideclaw/alpha/') || startsWith(inputs.ref, 'release/') }}",
       "Verify release checks accepted Tideclaw alpha advisory lanes",
       "release_checks_advisory_only",
