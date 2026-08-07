@@ -599,9 +599,11 @@ enum CLIInstaller {
     {
         guard mode == .local, !paused else { return .deferred }
         start()
+        self.installLogger.info("[DEBUG-120050] local Gateway start callback completed")
         // The process manager owns launchd installation and its first readiness cycle. Wait for
         // that lifecycle before taking the onboarding verdict so the two probes cannot race.
         await waitForStartupAttempt()
+        self.installLogger.info("[DEBUG-120050] local Gateway startup attempt completed")
         return await waitUntilReady() ? .ready : .failed
     }
 
