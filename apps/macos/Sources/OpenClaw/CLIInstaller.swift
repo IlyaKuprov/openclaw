@@ -372,8 +372,12 @@ enum CLIInstaller {
             let summary = installedVersion.map { "Installed openclaw \($0)." } ?? "Installed openclaw."
             self.rememberInstallPolicy(target)
             self.recordInstallResult(code: "ready", failed: false)
+            self.installLogger.info("[DEBUG-120050] CLI install success callback starting")
             await statusHandler(summary)
+            self.installLogger.info("[DEBUG-120050] CLI install success callback completed")
+            self.installLogger.info("[DEBUG-120050] CLI installed notification starting")
             NotificationCenter.default.post(name: .openclawCLIInstalled, object: nil)
+            self.installLogger.info("[DEBUG-120050] CLI installed notification completed")
             return true
         }
 
