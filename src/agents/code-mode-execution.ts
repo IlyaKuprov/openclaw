@@ -27,6 +27,7 @@ import {
   activeRuns,
   cancelPendingBridgeStates,
   codeModeWaitingReason,
+  CodeModeBridgeDispatchQueue,
   createPendingBridgeStates,
   disposeCodeModeRun,
   pendingBridgeRequestsReplaySafe,
@@ -245,6 +246,7 @@ async function settleCodeModeResult(params: {
   deadlineMs: number;
   deliveredOutputCount?: number;
   pending?: PendingBridgeState[];
+  bridgeDispatchQueue?: CodeModeBridgeDispatchQueue;
   activeRunId?: string;
   reservedActiveRunSlot?: boolean;
   bridgeDispatch: { started: boolean };
@@ -253,6 +255,9 @@ async function settleCodeModeResult(params: {
 }) {
   let result = params.result;
   let pending = params.pending ?? [];
+  const bridgeDispatchQueue =
+    params.bridgeDispatchQueue ??
+    new CodeModeBridgeDispatchQueue(params.config.maxPendingToolCalls);
   const activeRunId = params.activeRunId ?? `cm_${randomUUID()}`;
   const output = params.output;
   const deliveredOutputCount = params.deliveredOutputCount ?? 0;
@@ -260,8 +265,7 @@ async function settleCodeModeResult(params: {
   // worker run and this inline settle phase, so auto-draining bridge calls
   // cannot stack a second full `timeoutMs` budget on top of the run that
   // produced them. The deadline is also the only bound on sequential drain
-  // rounds; maxPendingToolCalls stays a per-batch concurrency cap enforced in
-  // the worker.
+  // rounds; maxPendingToolCalls bounds host bridge execution across the run.
   const settleDeadline = params.deadlineMs;
   const abortedResult = () => ({
     status: "failed" as const,
@@ -343,8 +347,8 @@ async function settleCodeModeResult(params: {
         (request) => !pendingIds.has(request.id),
       );
       if (newPendingRequests.length > 0) {
-        // createPendingBridgeStates starts host calls synchronously. Flip the
-        // evidence first so every later failure is permanently non-retryable.
+        // Queueing bridge work transfers execution ownership to the host. Flip
+        // the evidence first so every later failure is permanently non-retryable.
         params.bridgeDispatch.started = true;
       }
       pending.push(
@@ -358,6 +362,7 @@ async function settleCodeModeResult(params: {
           ctx: params.ctx,
           signal: params.signal,
           onUpdate: params.onUpdate,
+          bridgeDispatchQueue,
         }),
       );
       const ready = await waitForPending(
@@ -390,6 +395,7 @@ async function settleCodeModeResult(params: {
           parentToolCallId: params.parentToolCallId,
           ctx: params.ctx,
           config: params.config,
+          bridgeDispatchQueue,
           runtime: params.runtime,
           namespaceRuntime: params.namespaceRuntime,
           output,
@@ -414,7 +420,12 @@ async function settleCodeModeResult(params: {
               timeoutMs: resumeBudgetMs,
             },
             settledRequests,
-            pendingRequests: pending.map(({ id, method, args }) => ({ id, method, args })),
+            pendingRequests: pending.map(({ id, method, args, argumentBytes }) => ({
+              id,
+              method,
+              args,
+              argumentBytes,
+            })),
           },
           resumeBudgetMs + CODE_MODE_WORKER_WATCHDOG_GRACE_MS,
           undefined,
@@ -488,6 +499,7 @@ async function settleCodeModeResult(params: {
             ctx: params.ctx,
             signal: params.signal,
             onUpdate: params.onUpdate,
+            bridgeDispatchQueue,
           }),
         );
         return storeSnapshotState({
@@ -501,6 +513,7 @@ async function settleCodeModeResult(params: {
           parentToolCallId: params.parentToolCallId,
           ctx: params.ctx,
           config: params.config,
+          bridgeDispatchQueue,
           runtime: params.runtime,
           namespaceRuntime: params.namespaceRuntime,
           output,
@@ -533,6 +546,7 @@ async function settleCodeModeResult(params: {
       settlementMode: result.settlementMode,
       signal: params.signal,
       onUpdate: params.onUpdate,
+      bridgeDispatchQueue,
     });
   }
   // Defensive cleanup covers aborts or terminal failures; successful runs have
@@ -648,7 +662,12 @@ export async function runWait(params: {
             timeoutMs: resumeBudgetMs,
           },
           settledRequests,
-          pendingRequests: pending.map(({ id, method, args }) => ({ id, method, args })),
+          pendingRequests: pending.map(({ id, method, args, argumentBytes }) => ({
+            id,
+            method,
+            args,
+            argumentBytes,
+          })),
         },
         resumeBudgetMs + CODE_MODE_WORKER_WATCHDOG_GRACE_MS,
         undefined,
@@ -669,6 +688,7 @@ export async function runWait(params: {
       config: state.config,
       runtime: state.runtime,
       namespaceRuntime: state.namespaceRuntime,
+      bridgeDispatchQueue: state.bridgeDispatchQueue,
       bridgeDispatch: { started: true },
       deliveredOutputCount: state.deliveredOutputCount,
       pending,
