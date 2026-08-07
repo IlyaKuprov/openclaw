@@ -857,6 +857,7 @@ describe("qa suite runtime launcher", () => {
 
   it("partitions mixed Crabline flow channels into one aggregate suite", async () => {
     const repoRoot = await makeTempRepo("qa-suite-crabline-channels-");
+    const maxActive = trackMaxActiveFlowRuns();
     const defaultFlowImplementation = runQaFlowSuite.getMockImplementation();
     if (!defaultFlowImplementation) {
       throw new Error("expected default QA flow suite mock implementation");
@@ -920,6 +921,7 @@ describe("qa suite runtime launcher", () => {
       outputDir: ".artifacts/qa-e2e/crabline-channels",
       providerMode: "mock-openai",
       channelDriver: "crabline",
+      concurrency: 2,
       scenarioIds: ["telegram-help-command", "matrix-restart-resume"],
     });
 
@@ -932,6 +934,7 @@ describe("qa suite runtime launcher", () => {
       },
     });
     expect(runQaFlowSuite).toHaveBeenCalledTimes(2);
+    expect(maxActive()).toBe(1);
     expect(runQaFlowSuite).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({

@@ -90,9 +90,8 @@ export async function runQaFlowSuiteFromRuntime(params?: QaSuiteRunParams): Prom
         params?.concurrency,
         selectedScenarios.length,
         params?.channelDriverSelection ? 1 : defaultQaSuiteConcurrencyForTransport(transportId),
-        // Crabline 0.1.13 claims every private output ancestor while publishing
-        // readiness evidence. Parallel workers under one suite root would contend
-        // for that security boundary even when their leaf output dirs differ.
+        // Crabline 0.1.13's Windows publication claims span sibling output ancestors.
+        // Serial workers prevent contention when their leaf dirs share a suite root.
         channelDriver === "crabline" ? 1 : undefined,
       );
   const progressEnabled = shouldLogQaSuiteProgress();
