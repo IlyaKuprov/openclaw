@@ -21,6 +21,7 @@ export function promoteDockerChannel(
   params: { version: string; images: string[] },
   options?: {
     allowRollback?: boolean;
+    attestationPolicy?: "required" | "omitted";
     execFileSyncImpl?: (command: string, args: string[], options: object) => string;
     log?: (message: string) => void;
     verifyAttestationsImpl?: (params: {
