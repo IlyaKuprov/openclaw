@@ -1088,7 +1088,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@b39ee23576e28b72906f31d420ad823091f11000
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@b39ee2351df306bf946fd0b90e7313811a6f87d3
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
@@ -1096,7 +1096,7 @@ jobs:
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_tag }}
       windows_node_release_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_release_sha }}
       allow_protocol_mismatch: false
-      windows_node_sha: b39ee23576e28b72906f31d420ad823091f11000
+      windows_node_sha: b39ee2351df306bf946fd0b90e7313811a6f87d3
 
   windows_node_stable_e2e:
     name: Run Windows-node stable E2E
@@ -1106,7 +1106,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@b39ee23576e28b72906f31d420ad823091f11000
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@b39ee2351df306bf946fd0b90e7313811a6f87d3
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
@@ -1114,7 +1114,7 @@ jobs:
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_tag }}
       windows_node_release_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_release_sha }}
       allow_protocol_mismatch: true
-      windows_node_sha: b39ee23576e28b72906f31d420ad823091f11000
+      windows_node_sha: b39ee2351df306bf946fd0b90e7313811a6f87d3
 
   live_repo_e2e_release_checks:
     name: Run repo/live E2E validation
