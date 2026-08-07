@@ -323,7 +323,7 @@ describe("runInstallPolicy", () => {
   });
 
   it("prefixes operator blocks", async () => {
-    const warnings: string[] = [];
+    const debugLogs: string[] = [];
     const result = await runInstallPolicy({
       config: configWithPolicy(scriptPath, {
         POLICY_RESPONSE: JSON.stringify({
@@ -332,7 +332,7 @@ describe("runInstallPolicy", () => {
           reason: "unapproved registry",
         }),
       }),
-      logger: { warn: (message) => warnings.push(message) },
+      logger: { debug: (message) => debugLogs.push(message) },
       request: baseRequest(sourceDir),
     });
 
@@ -340,9 +340,9 @@ describe("runInstallPolicy", () => {
       code: "security_scan_blocked",
       reason: "blocked by install policy: unapproved registry",
     });
-    expect(warnings.join("\n")).toContain("target=skill:weather");
-    expect(warnings.join("\n")).toContain("source=clawhub/openclaw");
-    expect(warnings.join("\n")).toContain("blocked by install policy");
+    expect(debugLogs.join("\n")).toContain("target=skill:weather");
+    expect(debugLogs.join("\n")).toContain("source=clawhub/openclaw");
+    expect(debugLogs.join("\n")).toContain("blocked by install policy");
   });
 
   it("keeps truncated operator block reasons UTF-16 safe", async () => {
@@ -535,36 +535,36 @@ describe("runInstallPolicy", () => {
   });
 
   it("fails closed on malformed policy output", async () => {
-    const warnings: string[] = [];
+    const debugLogs: string[] = [];
     const result = await runInstallPolicy({
       config: configWithPolicy(scriptPath, {
         POLICY_RESPONSE: "not json",
       }),
-      logger: { warn: (message) => warnings.push(message) },
+      logger: { debug: (message) => debugLogs.push(message) },
       request: baseRequest(sourceDir),
     });
 
     expect(result?.blocked?.code).toBe("security_scan_failed");
     expect(result?.blocked?.reason).toContain("install policy failed closed");
     expect(result?.blocked?.reason).toContain("invalid JSON");
-    expect(warnings.join("\n")).toContain("install policy failed closed");
+    expect(debugLogs.join("\n")).toContain("install policy failed closed");
   });
 
   it("does not expose policy command stderr in fail-closed reasons", async () => {
-    const warnings: string[] = [];
+    const debugLogs: string[] = [];
     const result = await runInstallPolicy({
       config: configWithPolicy(scriptPath, {
         EXIT_CODE: "7",
         STDERR_TEXT: "policy-secret-token",
       }),
-      logger: { warn: (message) => warnings.push(message) },
+      logger: { debug: (message) => debugLogs.push(message) },
       request: baseRequest(sourceDir),
     });
 
     expect(result?.blocked?.code).toBe("security_scan_failed");
     expect(result?.blocked?.reason).toContain("policy command exited with code 7");
     expect(result?.blocked?.reason).not.toContain("policy-secret-token");
-    expect(warnings.join("\n")).not.toContain("policy-secret-token");
+    expect(debugLogs.join("\n")).not.toContain("policy-secret-token");
   });
 
   it("rejects relative policy command paths before resolving cwd", async () => {

@@ -615,7 +615,7 @@ export async function runInstallPolicy(params: {
   const decisionContext = formatDecisionContext(params.request);
   const logBlocked = (result: InstallPolicyResult): InstallPolicyResult => {
     if (result.blocked) {
-      params.logger?.warn?.(`Install policy ${decisionContext}: ${result.blocked.reason}`);
+      params.logger?.debug?.(`Install policy ${decisionContext}: ${result.blocked.reason}`);
     }
     return result;
   };

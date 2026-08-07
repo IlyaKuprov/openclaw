@@ -33,6 +33,8 @@ type InstallScanLogger = {
 };
 
 const FULL_GIT_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
+const INSTALL_POLICY_BLOCK_REASON_PREFIX = "blocked by install policy: ";
+const INSTALL_POLICY_FORCE_FLAG = "--dangerously-force-unsafe-install";
 
 type PluginInstallRequestKind = Exclude<InstallPolicyRequestKind, "skill-install">;
 
@@ -43,15 +45,17 @@ function formatInstallPolicyFinding(finding: InstallPolicyFinding): string {
   return `${sanitizeTerminalText(finding.message)}${location}`;
 }
 
-function formatInstallPolicyWarning(params: {
+function formatInstallPolicyNotice(params: {
+  decision: "warn" | "block";
   findings?: InstallPolicyFinding[];
+  guidance?: string[];
   reason: string;
   targetName: string;
   targetType: "skill" | "plugin";
 }): string {
   const targetLabel = params.targetType === "skill" ? "Skill" : "Plugin";
   const lines = [
-    "WARNING - Install policy requires review",
+    params.decision === "warn" ? "Install requires approval" : "Install blocked by policy",
     "",
     `  ${targetLabel}: ${sanitizeTerminalText(params.targetName)}`,
     `  Reason: ${sanitizeTerminalText(params.reason)}`,
@@ -62,7 +66,10 @@ function formatInstallPolicyWarning(params: {
       lines.push(`    • ${formatInstallPolicyFinding(finding)}`);
     }
   }
-  return `${lines.join("\n")}\n`;
+  if (params.guidance?.length) {
+    lines.push("", ...params.guidance);
+  }
+  return lines.join("\n");
 }
 
 type InstallScanFinding = {
@@ -137,6 +144,33 @@ export type InstallSecurityScanResult = {
     reason: string;
   };
 };
+
+function formatBlockedInstallPolicyResult(params: {
+  blocked: NonNullable<InstallSecurityScanResult["blocked"]>;
+  findings?: InstallPolicyFinding[];
+  targetName: string;
+  targetType: "skill" | "plugin";
+}): InstallSecurityScanResult {
+  if (
+    params.blocked.code !== "security_scan_blocked" ||
+    !params.blocked.reason.startsWith(INSTALL_POLICY_BLOCK_REASON_PREFIX)
+  ) {
+    return { blocked: params.blocked };
+  }
+  const reason = params.blocked.reason.slice(INSTALL_POLICY_BLOCK_REASON_PREFIX.length);
+  return {
+    blocked: {
+      ...params.blocked,
+      reason: formatInstallPolicyNotice({
+        decision: "block",
+        findings: params.findings,
+        reason,
+        targetName: params.targetName,
+        targetType: params.targetType,
+      }),
+    },
+  };
+}
 
 const DEFAULT_PACKAGE_MANIFEST_TRAVERSAL_LIMITS: PackageManifestTraversalLimits = {
   maxDepth: 64,
@@ -941,12 +975,13 @@ async function runOperatorInstallPolicy(params: {
   const logPolicyResult = (result: Awaited<ReturnType<typeof evaluatePolicy>>) => {
     if (result?.warning) {
       params.logger.warn?.(
-        formatInstallPolicyWarning({
+        `${formatInstallPolicyNotice({
+          decision: "warn",
           findings: result.findings,
           reason: result.warning.reason,
           targetName: params.targetName,
           targetType: params.targetType,
-        }),
+        })}\n`,
       );
       return;
     }
@@ -959,13 +994,42 @@ async function runOperatorInstallPolicy(params: {
 
   const result = await evaluatePolicy();
   if (result?.blocked) {
-    return { blocked: result.blocked };
+    return formatBlockedInstallPolicyResult({
+      blocked: result.blocked,
+      findings: result.findings,
+      targetName: params.targetName,
+      targetType: params.targetType,
+    });
   }
-  logPolicyResult(result);
-  if (!result?.warning || params.dangerouslyForceUnsafeInstall) {
+  if (!result?.warning) {
+    logPolicyResult(result);
     return undefined;
   }
-  const acknowledged = await params.onInstallPolicyWarning?.({
+  if (params.dangerouslyForceUnsafeInstall) {
+    logPolicyResult(result);
+    return undefined;
+  }
+  if (!params.onInstallPolicyWarning) {
+    return {
+      blocked: {
+        code: "security_scan_blocked",
+        reason: formatInstallPolicyNotice({
+          decision: "warn",
+          findings: result.findings,
+          guidance: [
+            "To continue:",
+            "  • Rerun interactively and approve the warning.",
+            `  • For reviewed automation, add ${INSTALL_POLICY_FORCE_FLAG}.`,
+          ],
+          reason: result.warning.reason,
+          targetName: params.targetName,
+          targetType: params.targetType,
+        }),
+      },
+    };
+  }
+  logPolicyResult(result);
+  const acknowledged = await params.onInstallPolicyWarning({
     targetName: params.targetName,
     targetType: params.targetType,
     requestMode: params.requestMode,
@@ -973,15 +1037,22 @@ async function runOperatorInstallPolicy(params: {
   if (acknowledged) {
     const reevaluated = await evaluatePolicy();
     if (reevaluated?.blocked) {
-      return { blocked: reevaluated.blocked };
+      return formatBlockedInstallPolicyResult({
+        blocked: reevaluated.blocked,
+        findings: reevaluated.findings,
+        targetName: params.targetName,
+        targetType: params.targetType,
+      });
     }
-    logPolicyResult(reevaluated);
+    if (!reevaluated?.warning) {
+      logPolicyResult(reevaluated);
+    }
     return undefined;
   }
   return {
     blocked: {
       code: "security_scan_blocked",
-      reason: `install policy warning: ${result.warning.reason} CLI plugin and skill installs can acknowledge this warning with --dangerously-force-unsafe-install after review.`,
+      reason: "Install cancelled: the install policy warning was not approved.",
     },
   };
 }

@@ -64,6 +64,29 @@ function expectOnlyOperatorPolicyRan() {
   expect(getGlobalHookRunnerMock).not.toHaveBeenCalled();
 }
 
+function expectedInstallPolicyNotice(params: {
+  decision: "warn" | "block";
+  findings?: string[];
+  guidance?: string[];
+  reason: string;
+  targetName: string;
+  targetType: "skill" | "plugin";
+}): string {
+  const lines = [
+    params.decision === "warn" ? "Install requires approval" : "Install blocked by policy",
+    "",
+    `  ${params.targetType === "skill" ? "Skill" : "Plugin"}: ${params.targetName}`,
+    `  Reason: ${params.reason}`,
+  ];
+  if (params.findings?.length) {
+    lines.push("  Findings:", ...params.findings.map((finding) => `    • ${finding}`));
+  }
+  if (params.guidance?.length) {
+    lines.push("", ...params.guidance);
+  }
+  return lines.join("\n");
+}
+
 beforeEach(() => {
   runInstallPolicyMock.mockReset();
   findBlockedManifestDependenciesMock.mockReset();
@@ -306,8 +329,17 @@ describe("legacy file install scan compatibility", () => {
 
     expect(firstAttempt?.blocked).toEqual({
       code: "security_scan_blocked",
-      reason:
-        "install policy warning: review this plugin CLI plugin and skill installs can acknowledge this warning with --dangerously-force-unsafe-install after review.",
+      reason: expectedInstallPolicyNotice({
+        decision: "warn",
+        guidance: [
+          "To continue:",
+          "  • Rerun interactively and approve the warning.",
+          "  • For reviewed automation, add --dangerously-force-unsafe-install.",
+        ],
+        reason: "review this plugin",
+        targetName: "payload",
+        targetType: "plugin",
+      }),
     });
     expect(acknowledgedAttempt).toBeUndefined();
     expect(runInstallPolicyMock).toHaveBeenCalledTimes(2);
@@ -323,20 +355,45 @@ describe("legacy file install scan compatibility", () => {
     await scanFileInstallSourceRuntime({
       filePath: "/tmp/payload.js",
       logger: { warn: (message) => warnings.push(message) },
+      onInstallPolicyWarning: vi.fn().mockResolvedValue(false),
       pluginId: "payload",
     });
 
     expect(warnings).toEqual([
-      [
-        "WARNING - Install policy requires review",
-        "",
-        "  Plugin: payload",
-        "  Reason: review this plugin",
-        "  Findings:",
-        "    • Informational context.",
-        "",
-      ].join("\n"),
+      `${expectedInstallPolicyNotice({
+        decision: "warn",
+        findings: ["Informational context."],
+        reason: "review this plugin",
+        targetName: "payload",
+        targetType: "plugin",
+      })}\n`,
     ]);
+  });
+
+  it("renders install policy blocks as one readable denial", async () => {
+    runInstallPolicyMock.mockResolvedValue({
+      blocked: {
+        code: "security_scan_blocked",
+        reason: "blocked by install policy: unapproved source",
+      },
+      findings: [{ ruleId: "blocked", severity: "critical", message: "Unsafe package." }],
+    });
+
+    const result = await scanFileInstallSourceRuntime({
+      filePath: "/tmp/payload.js",
+      logger: {},
+      pluginId: "payload",
+    });
+
+    expect(result?.blocked?.reason).toBe(
+      expectedInstallPolicyNotice({
+        decision: "block",
+        findings: ["Unsafe package."],
+        reason: "unapproved source",
+        targetName: "payload",
+        targetType: "plugin",
+      }),
+    );
   });
 
   it.each(["security_scan_blocked", "security_scan_failed"] as const)(
