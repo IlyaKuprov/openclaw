@@ -1,3 +1,4 @@
+import ConcurrencyExtras
 import Darwin
 import Foundation
 import Testing
@@ -927,12 +928,17 @@ struct GatewayProcessManagerTests {
         try await DeviceIdentityStore.withStateDirectory(stateDir) {
             let port = GatewayEnvironment.gatewayPort()
             let url = try #require(URL(string: "ws://example.invalid"))
+            let healthRequestCount = LockIsolated(0)
             let (_, connection, manager) = self.makeGatewayReadinessFixture(url: url) {
                 GatewayTestWebSocketTask(
                     sendHook: { task, message, sendIndex in
                         guard sendIndex > 0 else { return }
                         guard let id = GatewayWebSocketTestSupport.requestID(from: message) else { return }
-                        if sendIndex == 1 {
+                        let requestIndex = healthRequestCount.withValue { value in
+                            defer { value += 1 }
+                            return value
+                        }
+                        if requestIndex == 0 {
                             let response = Data(
                                 """
                                 {"type":"res","id":"\(id)","ok":false,
@@ -1141,11 +1147,13 @@ struct GatewayProcessManagerTests {
                     }
                     throw URLError(.timedOut)
                 },
-                receiveHook: { _, receiveIndex in
+                receiveHook: { task, receiveIndex in
                     if receiveIndex == 0 {
                         try await Task.sleep(nanoseconds: 100_000_000)
+                        return .data(GatewayWebSocketTestSupport.connectChallengeData())
                     }
-                    return .data(GatewayWebSocketTestSupport.connectChallengeData())
+                    let id = task.snapshotConnectRequestID() ?? "connect"
+                    return .data(GatewayWebSocketTestSupport.connectOkData(id: id))
                 })
         }
         manager.setTestingDesiredActive(true)
@@ -1166,6 +1174,53 @@ struct GatewayProcessManagerTests {
 
         #expect(await readiness.value)
         #expect(!manager._testHasLaunchAgentReadinessFailure())
+        await connection.shutdown()
+    }
+
+    @Test func `readiness retries with a fresh connection after a probe timeout`() async throws {
+        let url = try #require(URL(string: "ws://example.invalid"))
+        let socketIndex = LockIsolated(0)
+        let (session, connection, manager) = self.makeGatewayReadinessFixture(url: url) {
+            let index = socketIndex.withValue { value in
+                defer { value += 1 }
+                return value
+            }
+            return GatewayTestWebSocketTask(
+                sendHook: { task, message, sendIndex in
+                    guard sendIndex > 0 else { return }
+                    guard let id = GatewayWebSocketTestSupport.requestID(from: message) else { return }
+                    for _ in 0..<1000 {
+                        if task.hasPendingReceiveHandler() {
+                            task.emitReceiveSuccessOnce(
+                                .data(GatewayWebSocketTestSupport.okResponseData(id: id)))
+                            return
+                        }
+                        try await Task.sleep(nanoseconds: 1_000_000)
+                    }
+                    throw URLError(.timedOut)
+                },
+                receiveHook: { task, receiveIndex in
+                    if index == 0, receiveIndex == 0 {
+                        try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                    }
+                    if receiveIndex == 0 {
+                        return .data(GatewayWebSocketTestSupport.connectChallengeData())
+                    }
+                    let id = task.snapshotConnectRequestID() ?? "connect"
+                    return .data(GatewayWebSocketTestSupport.connectOkData(id: id))
+                })
+        }
+        manager.setTestingDesiredActive(true)
+        manager._testClearLaunchAgentReadinessFailure()
+        defer {
+            manager.setTestingConnection(nil)
+            manager.setTestingDesiredActive(false)
+            manager._testClearLaunchAgentReadinessFailure()
+        }
+
+        #expect(await manager.waitForGatewayReady(timeout: 2.5))
+        #expect(session.snapshotMakeCount() == 2)
+        #expect(session.snapshotCancelCount() == 2)
         await connection.shutdown()
     }
 
@@ -1382,12 +1437,17 @@ struct GatewayProcessManagerTests {
                 }
                 """.utf8)
             let url = try #require(URL(string: "ws://example.invalid"))
+            let healthRequestCount = LockIsolated(0)
             let (_, connection, manager) = self.makeGatewayReadinessFixture(url: url) {
                 GatewayTestWebSocketTask(
                     sendHook: { task, message, sendIndex in
                         guard sendIndex > 0 else { return }
                         guard let id = GatewayWebSocketTestSupport.requestID(from: message) else { return }
-                        if sendIndex == 1 {
+                        let requestIndex = healthRequestCount.withValue { value in
+                            defer { value += 1 }
+                            return value
+                        }
+                        if requestIndex == 0 {
                             let response = Data(
                                 """
                                 {"type":"res","id":"\(id)","ok":false,

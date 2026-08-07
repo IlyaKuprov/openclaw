@@ -1051,19 +1051,28 @@ extension GatewayProcessManager {
     }
 
     private func probeGatewayHealth(timeoutMs: Double) async throws -> Data {
-        let connection = self.connection
+        let connection = await self.connection.isolatedConnection()
         // Startup owns recovery and its wall-clock deadline. A normal request can recursively
         // start the Gateway and spend several 30-second connect retries before its RPC timer begins.
-        return try await AsyncTimeout.withTimeout(
-            seconds: max(0.001, timeoutMs / 1000),
-            onTimeout: { GatewayHealthProbeTimeout(timeoutMs: timeoutMs) },
-            operation: {
-                try await connection.request(
-                    method: GatewayConnection.Method.health.rawValue,
-                    params: nil,
-                    timeoutMs: timeoutMs,
-                    retryTransportFailures: false)
-            })
+        // Each poll owns a fresh connection: cancelling a connect waiter intentionally does not
+        // cancel the channel's shared connect attempt, so reusing it would keep joining a stale socket.
+        do {
+            let response = try await AsyncTimeout.withTimeout(
+                seconds: max(0.001, timeoutMs / 1000),
+                onTimeout: { GatewayHealthProbeTimeout(timeoutMs: timeoutMs) },
+                operation: {
+                    try await connection.request(
+                        method: GatewayConnection.Method.health.rawValue,
+                        params: nil,
+                        timeoutMs: timeoutMs,
+                        retryTransportFailures: false)
+                })
+            await connection.shutdown()
+            return response
+        } catch {
+            await connection.shutdown()
+            throw error
+        }
     }
 
     func clearLog() {

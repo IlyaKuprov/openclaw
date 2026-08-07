@@ -182,6 +182,7 @@ actor GatewayConnection {
         supportsSharedEndpointRecovery: Bool = true,
         activationBindingKeyProvider: @escaping @Sendable () -> SymmetricKey? =
             GatewayConnection.defaultActivationBindingKey,
+        includeDeviceIdentity: Bool = true,
         sessionBox: WebSocketSessionBox? = nil,
         sessionProvider: SessionProvider? = nil,
         clientShutdown: @escaping @Sendable (GatewayChannelActor) async -> Void = { client in
@@ -191,11 +192,23 @@ actor GatewayConnection {
         self.endpointProvider = endpointProvider
         self.supportsSharedEndpointRecovery = supportsSharedEndpointRecovery
         self.activationBindingKeyProvider = activationBindingKeyProvider
-        self.includeDeviceIdentity = true
+        self.includeDeviceIdentity = includeDeviceIdentity
         self.sessionProvider = Self.resolveSessionProvider(
             sessionBox: sessionBox,
             sessionProvider: sessionProvider)
         self.clientShutdown = clientShutdown
+    }
+
+    /// Make a one-operation connection with the same endpoint, authentication, and TLS routing.
+    /// Bounded lifecycle probes must not inherit an older shared socket's in-flight connect attempt.
+    func isolatedConnection() -> GatewayConnection {
+        GatewayConnection(
+            endpointProvider: self.endpointProvider,
+            supportsSharedEndpointRecovery: false,
+            activationBindingKeyProvider: self.activationBindingKeyProvider,
+            includeDeviceIdentity: self.includeDeviceIdentity,
+            sessionProvider: self.sessionProvider,
+            clientShutdown: self.clientShutdown)
     }
 
     #if DEBUG
