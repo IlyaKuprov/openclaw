@@ -168,6 +168,29 @@ describe("gateway suspend coordinator", () => {
     ).toMatchObject({ status: "ready", activeCount: 0, blockers: [] });
   });
 
+  it("reports non-quiescent session lifecycle blockers on the wire", () => {
+    expect(
+      prepareGatewaySuspend({
+        requestId: "request-session-blocker",
+        pauseScheduling: vi.fn(),
+        resumeScheduling: vi.fn(),
+        inspect: inspectors({ getSessionBlockers: () => 1 }),
+      }),
+    ).toEqual({
+      status: "busy",
+      reason: "active-work",
+      retryAfterMs: SUSPEND_RETRY_AFTER_MS,
+      activeCount: 1,
+      blockers: [
+        {
+          kind: "session-blocker",
+          count: 1,
+          message: "1 non-quiescent session lifecycle blocker(s)",
+        },
+      ],
+    });
+  });
+
   it("keeps admission closed until a failed busy rollback resumes scheduling", () => {
     vi.useFakeTimers();
     try {

@@ -33,7 +33,7 @@ const CAPACITY_RUN_PREFIX = "cm_worker_lifecycle_capacity_";
 function parkExpiringRun(
   method: "callValue" | "agentWait",
   runId = EXPIRING_RUN_ID,
-  activityOwner?: CodeModeActivityOwner,
+  activityOwner: CodeModeActivityOwner = createCodeModeActivityOwner(),
 ): ReturnType<typeof vi.fn> {
   const rawConfig = {
     tools: { codeMode: { enabled: true, snapshotTtlSeconds: 1 } },
@@ -184,11 +184,11 @@ describe("Code Mode worker lifecycle", () => {
     const targetFirstId = `${CAPACITY_RUN_PREFIX}owned_first`;
     const targetSecondId = `${CAPACITY_RUN_PREFIX}owned_second`;
     const foreignId = `${CAPACITY_RUN_PREFIX}foreign`;
-    const unownedId = `${CAPACITY_RUN_PREFIX}unowned`;
+    const unrelatedId = `${CAPACITY_RUN_PREFIX}unrelated`;
     const cancelTargetFirst = parkExpiringRun("callValue", targetFirstId, targetOwner);
     const cancelTargetSecond = parkExpiringRun("agentWait", targetSecondId, targetOwner);
     const cancelForeign = parkExpiringRun("callValue", foreignId, foreignOwner);
-    const cancelUnowned = parkExpiringRun("callValue", unownedId);
+    const cancelUnrelated = parkExpiringRun("callValue", unrelatedId);
     resumingRunIds.add(targetFirstId);
     resumingRunIds.add(foreignId);
 
@@ -201,11 +201,11 @@ describe("Code Mode worker lifecycle", () => {
     expect(cancelTargetFirst).toHaveBeenCalledOnce();
     expect(cancelTargetSecond).toHaveBeenCalledOnce();
     expect(cancelForeign).not.toHaveBeenCalled();
-    expect(cancelUnowned).not.toHaveBeenCalled();
+    expect(cancelUnrelated).not.toHaveBeenCalled();
     expect(activeRuns.has(targetFirstId)).toBe(false);
     expect(activeRuns.has(targetSecondId)).toBe(false);
     expect(activeRuns.has(foreignId)).toBe(true);
-    expect(activeRuns.has(unownedId)).toBe(true);
+    expect(activeRuns.has(unrelatedId)).toBe(true);
     expect(resumingRunIds.has(targetFirstId)).toBe(false);
     expect(resumingRunIds.has(foreignId)).toBe(true);
     expect(sampleCodeModeRunFinalQuiescence(targetOwner)).toBe("quiescent");

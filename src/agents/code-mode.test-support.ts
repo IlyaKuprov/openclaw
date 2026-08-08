@@ -1,6 +1,7 @@
 import { expect, vi } from "vitest";
 import { setPluginToolMeta } from "../plugins/tools.js";
 import type { CodeModeActivityOwner } from "./code-mode-activity.js";
+import type { CodeModeWorkerResult } from "./code-mode-runtime.js";
 import type { CodeModeSkill } from "./code-mode-skills.js";
 import { createCodeModeTools } from "./code-mode.js";
 import {
@@ -24,32 +25,6 @@ type CodeModeConfig = {
   searchDefaultLimit: number;
   maxSearchLimit: number;
 };
-
-type CodeModeFailureCode =
-  | "aborted"
-  | "invalid_input"
-  | "runtime_unavailable"
-  | "timeout"
-  | "output_limit_exceeded"
-  | "snapshot_limit_exceeded"
-  | "internal_error";
-
-type CodeModeWorkerResult =
-  | { status: "completed"; value: unknown; output: unknown[] }
-  | {
-      status: "waiting";
-      snapshotBytes: Uint8Array;
-      pendingRequests: Array<{ id: string; method: string; args: unknown[] }>;
-      output: unknown[];
-    }
-  | {
-      status: "failed";
-      error: string;
-      code: CodeModeFailureCode;
-      failurePhase: "input" | "guest" | "bridge" | "host";
-      bridgeDispatchStarted: boolean;
-      output: unknown[];
-    };
 
 type CodeModeTestApi = {
   activeRuns: Map<
