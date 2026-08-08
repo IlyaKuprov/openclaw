@@ -1028,8 +1028,9 @@ jobs:
               echo "Windows-node $channel release is missing its tag." >&2
               exit 1
             }
+            release_sha="$(resolve_tag_sha "$tag")"
             echo "${channel}_tag=${tag}" >> "$GITHUB_OUTPUT"
-            echo "${channel}_release_sha=$(resolve_tag_sha "$tag")" >> "$GITHUB_OUTPUT"
+            echo "${channel}_release_sha=${release_sha}" >> "$GITHUB_OUTPUT"
             echo "${channel}_asset_name=$(jq -r '.asset_name' <<< "$selection")" >> "$GITHUB_OUTPUT"
             echo "${channel}_asset_sha256=$(jq -r '.asset_sha256' <<< "$selection")" >> "$GITHUB_OUTPUT"
           done

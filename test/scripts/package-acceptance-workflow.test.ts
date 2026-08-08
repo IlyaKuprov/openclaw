@@ -3630,6 +3630,7 @@ describe("package artifact reuse", () => {
   });
 
   it("binds both Windows-node release E2E calls to the resolved asset tuple", () => {
+    const workflow = readFileSync(RELEASE_CHECKS_WORKFLOW, "utf8");
     const resolver = workflowJob(RELEASE_CHECKS_WORKFLOW, "resolve_windows_node_release_artifacts");
     const prerelease = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_prerelease_e2e");
     const stable = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_stable_e2e");
@@ -3642,6 +3643,13 @@ describe("package artifact reuse", () => {
       prerelease_asset_name: "${{ steps.resolve.outputs.prerelease_asset_name }}",
       prerelease_asset_sha256: "${{ steps.resolve.outputs.prerelease_asset_sha256 }}",
     });
+    expect(workflow).toContain('release_sha="$(resolve_tag_sha "$tag")"');
+    expect(workflow).toContain(
+      'echo "${channel}_release_sha=${release_sha}" >> "$GITHUB_OUTPUT"',
+    );
+    expect(workflow).not.toContain(
+      'echo "${channel}_release_sha=$(resolve_tag_sha "$tag")" >> "$GITHUB_OUTPUT"',
+    );
     expect(prerelease.uses).toBe(reusableWorkflow);
     expect(prerelease.with).toMatchObject({
       candidate_artifact_name: "${{ needs.prepare_release_package.outputs.artifact_name }}",
