@@ -975,23 +975,27 @@ jobs:
             jq -cer --argjson prerelease "$prerelease" '
               [ .[]
                 | select(.draft == false and .prerelease == $prerelease)
-                | . as $release
-                | ([.assets[]
-                    | select(.name | test("^OpenClawTray-.*-win-x64\\.zip$|^OpenClaw\\.Tray\\.WinUI_.*_x64\\.msix$"))
-                    | select((.digest // "") | test("^sha256:[a-f0-9]{64}$"))]
-                   | sort_by(if (.name | endswith(".zip")) then 0 else 1 end)
-                   | first) as $asset
-                | select($asset != null)
-                  | {
-                    published_at: $release.published_at,
-                    tag: $release.tag_name,
-                    asset_name: $asset.name,
-                    asset_sha256: ($asset.digest | sub("^sha256:"; ""))
-                  }
               ]
               | sort_by(.published_at)
               | last
-              | select(.tag | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(?:[-.][A-Za-z0-9.-]+)?$"))
+              | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"))
+              | . as $release
+              | [.assets[]
+                  | select(.state == "uploaded")
+                  | select(.name | test("^OpenClawTray-[0-9A-Za-z.+-]+-win-x64\\.zip$|^OpenClaw\\.Tray\\.WinUI_[0-9A-Za-z.+-]+_x64\\.msix$"))
+                  | select((.digest // "") | test("^sha256:[a-f0-9]{64}$"))] as $assets
+              | [$assets[] | select(.name | endswith(".zip"))] as $zip_assets
+              | [$assets[] | select(.name | endswith(".msix"))] as $msix_assets
+              | (if ($zip_assets | length) == 1 then $zip_assets[0]
+                 elif ($zip_assets | length) == 0 and ($msix_assets | length) == 1 then $msix_assets[0]
+                 else empty
+                 end) as $asset
+              | {
+                  published_at: $release.published_at,
+                  tag: $release.tag_name,
+                  asset_name: $asset.name,
+                  asset_sha256: ($asset.digest | sub("^sha256:"; ""))
+                }
             ' <<< "$releases"
           }
 
@@ -1024,6 +1028,8 @@ jobs:
           for channel in stable prerelease; do
             selection="${!channel}"
             tag="$(jq -r '.tag' <<< "$selection")"
+            asset_name="$(jq -er '.asset_name | select(type == "string" and length > 0)' <<< "$selection")"
+            asset_sha256="$(jq -er '.asset_sha256 | select(test("^[a-f0-9]{64}$"))' <<< "$selection")"
             [[ -n "${tag// }" && "$tag" != "null" ]] || {
               echo "Windows-node $channel release is missing its tag." >&2
               exit 1
@@ -1031,8 +1037,8 @@ jobs:
             release_sha="$(resolve_tag_sha "$tag")"
             echo "${channel}_tag=${tag}" >> "$GITHUB_OUTPUT"
             echo "${channel}_release_sha=${release_sha}" >> "$GITHUB_OUTPUT"
-            echo "${channel}_asset_name=$(jq -r '.asset_name' <<< "$selection")" >> "$GITHUB_OUTPUT"
-            echo "${channel}_asset_sha256=$(jq -r '.asset_sha256' <<< "$selection")" >> "$GITHUB_OUTPUT"
+            echo "${channel}_asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+            echo "${channel}_asset_sha256=${asset_sha256}" >> "$GITHUB_OUTPUT"
           done
 
           {

@@ -3634,6 +3634,7 @@ describe("package artifact reuse", () => {
     const resolver = workflowJob(RELEASE_CHECKS_WORKFLOW, "resolve_windows_node_release_artifacts");
     const prerelease = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_prerelease_e2e");
     const stable = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_stable_e2e");
+    const resolverScript = resolver.steps?.find((step) => step.id === "resolve")?.run ?? "";
     const reusableWorkflow =
       "openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@c14ead38722e9f505d4034903a22912870018a6d";
 
@@ -3647,6 +3648,26 @@ describe("package artifact reuse", () => {
     expect(workflow).toContain('echo "${channel}_release_sha=${release_sha}" >> "$GITHUB_OUTPUT"');
     expect(workflow).not.toContain(
       'echo "${channel}_release_sha=$(resolve_tag_sha "$tag")" >> "$GITHUB_OUTPUT"',
+    );
+    expect(resolverScript.indexOf("| last")).toBeLessThan(
+      resolverScript.indexOf("| . as $release"),
+    );
+    expect(resolverScript).toContain('select(.state == "uploaded")');
+    expect(resolverScript).toContain("($zip_assets | length) == 1");
+    expect(resolverScript).toContain(
+      "elif ($zip_assets | length) == 0 and ($msix_assets | length) == 1",
+    );
+    expect(resolverScript).toContain(
+      'asset_name="$(jq -er \'.asset_name | select(type == "string" and length > 0)\' <<< "$selection")"',
+    );
+    expect(resolverScript).toContain(
+      'asset_sha256="$(jq -er \'.asset_sha256 | select(test("^[a-f0-9]{64}$"))\' <<< "$selection")"',
+    );
+    expect(resolverScript).not.toContain(
+      'echo "${channel}_asset_name=$(jq -r \'.asset_name\' <<< "$selection")"',
+    );
+    expect(resolverScript).not.toContain(
+      'echo "${channel}_asset_sha256=$(jq -r \'.asset_sha256\' <<< "$selection")"',
     );
     expect(prerelease.uses).toBe(reusableWorkflow);
     expect(prerelease.with).toMatchObject({
