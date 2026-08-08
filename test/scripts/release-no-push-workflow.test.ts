@@ -1034,10 +1034,10 @@ describe("release validation no-push transport", () => {
     expect(dockerCall.needs).toEqual([
       "resolve_release_target",
       "publish",
-      "verify_core_npm_registry",
+      "prepare_extended_stable_release",
     ]);
     expect(dockerCall.if).toContain("needs.publish.result == 'success'");
-    expect(dockerCall.if).toContain("needs.verify_core_npm_registry.result == 'success'");
+    expect(dockerCall.if).toContain("needs.prepare_extended_stable_release.result == 'success'");
     expect(dockerCall.with).toEqual({
       tag: "${{ inputs.tag }}",
       release_sha: "${{ needs.resolve_release_target.outputs.sha }}",
@@ -1065,6 +1065,61 @@ describe("release validation no-push transport", () => {
       "publish",
       "publish_docker",
     ]);
+
+    const prepareRelease = job(releasePublish, "prepare_extended_stable_release");
+    const verifyNpm = step(
+      prepareRelease,
+      "Verify exact npm and selector readback matches preflight bytes",
+    );
+    const createDraft = step(prepareRelease, "Create or resume the canonical draft release");
+    const finalizeRelease = job(releasePublish, "finalize_extended_stable_github_release");
+    const publishDraft = step(finalizeRelease, "Publish the verified extended-stable draft");
+
+    expect(prepareRelease.needs).toEqual(["resolve_release_target"]);
+    expect(prepareRelease.if).toBe("${{ inputs.publish_docker_only }}");
+    expect(prepareRelease.environment).toBe("npm-release");
+    expect(prepareRelease.permissions).toEqual({ contents: "write" });
+    expect(prepareRelease.outputs).toEqual({
+      release_id: "${{ steps.release.outputs.release_id }}",
+      release_body_sha256: "${{ steps.release.outputs.release_body_sha256 }}",
+    });
+    expect(verifyNpm.run).toContain('npm view "openclaw@${version}" version');
+    expect(verifyNpm.run).toContain("Published npm tarball does not match");
+    expect(createDraft.run).toContain("verify_release_tag_target");
+    expect(createDraft.run).toContain(".release-harness/scripts/render-github-release-notes.mjs");
+    expect(createDraft.run).toContain('gh release create "${RELEASE_TAG}"');
+    expect(createDraft.run).toContain("--verify-tag");
+    expect(createDraft.run).toContain("--draft");
+    expect(createDraft.run).toContain("--prerelease=false");
+    expect(createDraft.run).toContain("--latest=false");
+    expect(createDraft.run).toContain("Existing canonical public release will be revalidated");
+    expect(createDraft.run).toContain("wait_for_release_id");
+    expect(createDraft.run).toContain("release_body_sha256=");
+
+    expect(finalizeRelease.needs).toEqual([
+      "resolve_release_target",
+      "prepare_extended_stable_release",
+      "publish_docker",
+    ]);
+    expect(finalizeRelease.if).toContain("inputs.publish_docker_only");
+    expect(finalizeRelease.if).toContain(
+      "needs.prepare_extended_stable_release.result == 'success'",
+    );
+    expect(finalizeRelease.if).toContain("needs.publish_docker.result == 'success'");
+    expect(finalizeRelease.environment).toBe("npm-release");
+    expect(finalizeRelease.permissions).toEqual({ contents: "write" });
+    expect(publishDraft.env).toMatchObject({
+      EXPECTED_BODY_SHA256:
+        "${{ needs.prepare_extended_stable_release.outputs.release_body_sha256 }}",
+      RELEASE_ID: "${{ needs.prepare_extended_stable_release.outputs.release_id }}",
+    });
+    expect(publishDraft.run).toContain("repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}");
+    expect(publishDraft.run).toContain("-F draft=false");
+    expect(publishDraft.run).toContain("-F prerelease=false");
+    expect(publishDraft.run).toContain("-f make_latest=false");
+    expect(publishDraft.run).toContain("EXPECTED_BODY_SHA256");
+    expect(publishDraft.run).toContain("releases/latest");
+    expect(publishDraft.run).toContain("must not become GitHub Latest");
 
     const identity = step(
       job(dockerRelease, "validate_release_identity"),

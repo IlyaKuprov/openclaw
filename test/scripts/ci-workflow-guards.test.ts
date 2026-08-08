@@ -34,6 +34,7 @@ const MANTIS_GITHUB_APP_CLIENT_ID = "Iv23liPJCozR0uHm6P7G";
 const OPENGREP_PR_DIFF_WORKFLOW = ".github/workflows/opengrep-precise.yml";
 const OPENGREP_FULL_WORKFLOW = ".github/workflows/opengrep-precise-full.yml";
 const CONTROL_UI_LOCALE_REFRESH_WORKFLOW = ".github/workflows/control-ui-locale-refresh.yml";
+const DOCS_TRANSLATE_RELEASE_WORKFLOW = ".github/workflows/docs-translate-trigger-release.yml";
 const NATIVE_APP_LOCALE_REFRESH_WORKFLOW = ".github/workflows/native-app-locale-refresh.yml";
 const CREATE_GENERATED_PR_TOKENS_ACTION = ".github/actions/create-generated-pr-tokens/action.yml";
 const PUBLISH_GENERATED_PR_ACTION = ".github/actions/publish-generated-pr/action.yml";
@@ -1364,7 +1365,9 @@ NODE
 
   it("keeps locale refresh matrices alive and publishes each aggregate through a PR", () => {
     const controlUiWorkflow = parse(readFileSync(CONTROL_UI_LOCALE_REFRESH_WORKFLOW, "utf8"));
+    const docsTranslateWorkflow = parse(readFileSync(DOCS_TRANSLATE_RELEASE_WORKFLOW, "utf8"));
     const workflow = parse(readFileSync(NATIVE_APP_LOCALE_REFRESH_WORKFLOW, "utf8"));
+    const controlUiReleasePolicy = controlUiWorkflow.jobs.release_policy;
     const controlUiResolveBase = controlUiWorkflow.jobs["resolve-base"];
     const nativeResolveBase = workflow.jobs["resolve-base"];
     const controlUiPreflight = controlUiWorkflow.jobs["publisher-preflight"];
@@ -1418,8 +1421,23 @@ NODE
     expect(nativeResolveBase.if).not.toContain("chore(i18n): refresh native locales");
     const controlResolveCondition = controlUiResolveBase.if.replace(/\s+/gu, " ");
     expect(controlResolveCondition).toBe(
-      "github.repository == 'openclaw/openclaw' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')",
+      "needs.release_policy.outputs.should_run == 'true' && github.repository == 'openclaw/openclaw' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')",
     );
+    expect(controlUiResolveBase.needs).toBe("release_policy");
+    expect(controlUiReleasePolicy.outputs.should_run).toBe(
+      "${{ steps.release.outputs.should_run }}",
+    );
+    expect(
+      controlUiReleasePolicy.steps.find(
+        (step: WorkflowStep) => step.name === "Classify release track",
+      ).run,
+    ).toContain('track !== "extended-stable"');
+    const docsDispatch = docsTranslateWorkflow.jobs["dispatch-translate"];
+    expect(
+      docsDispatch.steps.find(
+        (step: WorkflowStep) => step.name === "Trigger translation coordinator in publish repo",
+      ).if,
+    ).toBe("${{ steps.release.outputs.track != 'extended-stable' }}");
     expect(controlResolveCondition).not.toContain("inputs.token_preflight_only");
     expect(controlResolveCondition).not.toContain("github.ref_type");
     expect(nativeResolveBase.if).toBe(

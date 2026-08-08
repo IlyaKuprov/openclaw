@@ -46,8 +46,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release_policy:
+    name: Classify release trigger
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.release.outputs.should_run }}
+    steps:
+      - name: Download trusted release classifier
+        if: ${{ github.event_name == 'release' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/contents/scripts/lib/release-version.mjs?ref=${WORKFLOW_SHA}" \
+            --jq .content | base64 --decode > "${RUNNER_TEMP}/release-version.mjs"
+
+      - name: Classify release track
+        id: release
+        env:
+          CLASSIFIER_FILE: ${{ runner.temp }}/release-version.mjs
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+        run: |
+          if [[ "${EVENT_NAME}" != "release" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import { pathToFileURL } from "node:url";
+
+          const { classifyReleaseTrain, parseReleaseVersion } = await import(
+            pathToFileURL(process.env.CLASSIFIER_FILE).href
+          );
+
+          const parsed = parseReleaseVersion(process.env.RELEASE_TAG.replace(/^v/u, ""));
+          const track = parsed === null ? "unknown" : classifyReleaseTrain(parsed);
+          appendFileSync(process.env.GITHUB_OUTPUT, `should_run=${track !== "extended-stable"}\n`);
+          NODE
+
   resolve-base:
+    needs: release_policy
     if: >-
+      needs.release_policy.outputs.should_run == 'true' &&
       github.repository == 'openclaw/openclaw' &&
       (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
