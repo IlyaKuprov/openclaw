@@ -41,6 +41,7 @@ const tempDirs = createTempDirHarness();
 afterEach(async () => {
   fetchWithSsrFGuardMock.mockReset();
   resolveQaNodeExecPathMock.mockReset();
+  vi.unstubAllEnvs();
   qaTempPathState.preferredTmpDir = process.env.TMPDIR || "/tmp";
   await tempDirs.cleanup();
 });
@@ -466,6 +467,71 @@ describe("buildQaRuntimeEnv", () => {
     await expect(readdir(tempParent)).resolves.toStrictEqual([]);
   });
 
+  it("prepares isolated config and auth state before spawning the Gateway", async () => {
+    const tempParent = await tempDirs.makeTempDir("qa-gateway-config-preparation-");
+    const missingExecutable = path.join(tempParent, "missing-openclaw-node");
+    qaTempPathState.preferredTmpDir = tempParent;
+    const prepareConfigBeforeSpawn = vi.fn(async ({ config, stateDir, tempRoot }) => {
+      const authDir = path.join(stateDir, "agents", "proof", "agent");
+      await mkdir(authDir, { recursive: true, mode: 0o700 });
+      expect((await lstat(tempRoot)).mode & 0o777).toBe(0o700);
+      expect((await lstat(authDir)).mode & 0o777).toBe(0o700);
+      return {
+        ...config,
+        agents: {
+          ...config.agents,
+          entries: {
+            ...config.agents?.entries,
+            proof: { model: "openai/test@openai:proof" },
+          },
+        },
+      };
+    });
+
+    await expect(
+      startQaGatewayChild({
+        repoRoot: process.cwd(),
+        command: {
+          executablePath: missingExecutable,
+          tempParentDir: tempParent,
+          usePackagedPlugins: true,
+        },
+        prepareConfigBeforeSpawn,
+        transportBaseUrl: "http://127.0.0.1:43123",
+      }),
+    ).rejects.toThrow(/gateway failed to spawn: .*ENOENT/u);
+
+    expect(prepareConfigBeforeSpawn).toHaveBeenCalledOnce();
+    await expect(readdir(tempParent)).resolves.toStrictEqual([]);
+  });
+
+  it("uses only the explicit child env for live provider config discovery", async () => {
+    const tempParent = await tempDirs.makeTempDir("qa-gateway-child-env-");
+    const ambientConfigPath = path.join(tempParent, "ambient-openclaw.json");
+    await writeFile(ambientConfigPath, "{", "utf8");
+    vi.stubEnv("OPENCLAW_QA_LIVE_PROVIDER_CONFIG_PATH", ambientConfigPath);
+    qaTempPathState.preferredTmpDir = tempParent;
+
+    await expect(
+      startQaGatewayChild({
+        repoRoot: process.cwd(),
+        childBaseEnv: {
+          PATH: process.env.PATH,
+          OPENAI_API_KEY: "qa-explicit-child-env",
+        },
+        command: {
+          executablePath: path.join(tempParent, "missing-openclaw-node"),
+          tempParentDir: tempParent,
+          usePackagedPlugins: true,
+        },
+        providerMode: "live-frontier",
+        primaryModel: "openai/test",
+        alternateModel: "openai/test",
+        transportBaseUrl: "http://127.0.0.1:43123",
+      }),
+    ).rejects.toThrow(/gateway failed to spawn: .*ENOENT/u);
+  });
+
   it.each([
     {
       failure: "bundled plugin staging cannot copy root package metadata",
@@ -607,6 +673,28 @@ describe("buildQaRuntimeEnv", () => {
     });
 
     expect(env.OPENAI_API_KEY).toBe("openai-explicit");
+  });
+
+  it("omits provider credentials after live aliases and runtime patches are applied", () => {
+    const env = buildQaRuntimeEnv({
+      ...createParams({
+        CODEX_API_KEY: "codex-ambient",
+        OPENAI_API_KEY: "openai-ambient",
+        OPENCLAW_LIVE_OPENAI_KEY: "openai-live",
+      }),
+      providerMode: "live-frontier",
+      runtimeEnvPatch: {
+        OpenAi_Api_Key_1: "openai-mixed-case",
+        OPENAI_API_KEY: "openai-patched",
+      },
+      runtimeEnvOmit: ["CODEX_API_KEY", "OPENAI_API_KEY", "OPENCLAW_LIVE_OPENAI_KEY"],
+      runtimeEnvOmitPatterns: [/^openai_api_keys?(?:_\d+)?$/iu],
+    });
+
+    expect(env.CODEX_API_KEY).toBeUndefined();
+    expect(env.OpenAi_Api_Key_1).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.OPENCLAW_LIVE_OPENAI_KEY).toBeUndefined();
   });
 
   it("preserves Codex CLI auth home for live frontier runs while sandboxing OpenClaw home", async () => {
@@ -1968,6 +2056,29 @@ describe("buildQaRuntimeEnv", () => {
 
     await expectPathMissing(tempRoot);
     await expectPathMissing(stagedRoot);
+  });
+
+  it("attempts every temp-root removal before propagating cleanup failure", async () => {
+    const failure = new Error("temp root removal failed");
+    const remove = vi.fn(async (target: string) => {
+      if (target === "/tmp/qa-primary") {
+        throw failure;
+      }
+    });
+
+    await expect(
+      testing.cleanupQaGatewayTempRoots(
+        {
+          tempRoot: "/tmp/qa-primary",
+          stagedBundledPluginsRoot: "/tmp/qa-staged",
+        },
+        remove as typeof rm,
+      ),
+    ).rejects.toBe(failure);
+    expect(remove.mock.calls.map(([target]) => target)).toEqual([
+      "/tmp/qa-primary",
+      "/tmp/qa-staged",
+    ]);
   });
 });
 
