@@ -59,6 +59,9 @@ export type AcpTurnAttachment = {
   data: string;
 };
 
+/** Manager-owned authority for deciding whether another backend may receive the same prompt. */
+export type AcpPromptSubmissionState = "not_submitted" | "unknown" | "submitted";
+
 /** Input for one ACP prompt turn routed through the manager. */
 export type AcpRunTurnInput = {
   cfg: OpenClawConfig;
@@ -69,6 +72,7 @@ export type AcpRunTurnInput = {
   mode: AcpRuntimePromptMode;
   requestId: string;
   signal?: AbortSignal;
+  onTurnStreamAcquired?: () => Promise<void> | void;
   onLifecycle?: (event: AcpTurnLifecycleEvent) => Promise<void> | void;
   onEvent?: (event: AcpRuntimeEvent) => Promise<void> | void;
 };

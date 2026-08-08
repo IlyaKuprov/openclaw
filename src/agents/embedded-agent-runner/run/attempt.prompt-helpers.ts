@@ -33,6 +33,7 @@ import { buildActiveVideoGenerationTaskPromptContextForSession } from "../../vid
 import { buildEmbeddedCompactionRuntimeContext } from "../compaction-runtime-context.js";
 import { resolveContextEngineCapabilities } from "../context-engine-capabilities.js";
 import { log } from "../logger.js";
+import { copyEmbeddedRunAccountingObservers } from "./accounting-observers.js";
 import { shouldInjectHeartbeatPromptForTrigger } from "./trigger-policy.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
@@ -174,7 +175,7 @@ export async function resolvePromptBuildHookResult(params: {
           return undefined;
         })
     : undefined;
-  return {
+  return copyEmbeddedRunAccountingObservers(params.attempt, {
     systemPrompt: promptBuildResult?.systemPrompt,
     ...(promptBuildResult?.toolsAllow !== undefined
       ? { toolsAllow: promptBuildResult.toolsAllow }
@@ -193,7 +194,7 @@ export async function resolvePromptBuildHookResult(params: {
     ]),
     prependSystemContext: wrapPluginSystemContextSection(promptBuildResult?.prependSystemContext),
     appendSystemContext: wrapPluginSystemContextSection(promptBuildResult?.appendSystemContext),
-  };
+  });
 }
 
 export function resolvePromptModeForSession(sessionKey?: string): "minimal" | "full" {
@@ -570,7 +571,7 @@ export function buildAfterTurnRuntimeContext(params: {
     attempt: params.attempt,
     activeAgentId: params.activeAgentId,
   });
-  return {
+  return copyEmbeddedRunAccountingObservers(params.attempt, {
     ...buildEmbeddedCompactionRuntimeContext({
       sessionKey: params.attempt.sessionKey,
       messageChannel: params.attempt.messageChannel,
@@ -626,7 +627,7 @@ export function buildAfterTurnRuntimeContext(params: {
     ...(params.promptCache ? { promptCache: params.promptCache } : {}),
     transcriptStorage: { kind: "sqlite" },
     ...(sessionTarget ? { sessionTarget } : {}),
-  };
+  });
 }
 
 export function buildAfterTurnRuntimeContextFromUsage(

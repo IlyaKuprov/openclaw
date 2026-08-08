@@ -170,6 +170,10 @@ export function lazyStartRuntimeTurn(
   const turnPromise = resolveRuntime().then((runtime) => startRuntimeTurn(runtime, input));
   return {
     requestId: input.requestId,
+    promptSubmission: turnPromise.then(
+      (turn) => turn.promptSubmission ?? "unknown",
+      () => "unknown",
+    ),
     events: {
       async *[Symbol.asyncIterator]() {
         yield* (await turnPromise).events;

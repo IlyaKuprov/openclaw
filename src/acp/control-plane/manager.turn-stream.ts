@@ -6,6 +6,7 @@ import type {
   AcpRuntimeTurnResult,
 } from "@openclaw/acp-core/runtime/types";
 import { AcpRuntimeError } from "../runtime/errors.js";
+import type { AcpPromptSubmissionState } from "./manager.types.js";
 import { normalizeAcpErrorCode } from "./manager.utils.js";
 import { normalizeText } from "./runtime-options.js";
 
@@ -89,6 +90,54 @@ function waitForQueuedEvents(): Promise<"pending"> {
   });
 }
 
+function invokeAcpPromptObserver(observer: (() => Promise<void> | void) | undefined): void {
+  void Promise.resolve()
+    .then(() => observer?.())
+    .catch(() => {
+      // Prompt observation must not affect a request that was already submitted.
+    });
+}
+
+function observeAcpPromptStarted(params: {
+  promptStarted: Promise<void> | undefined;
+  promptSubmission: Promise<AcpPromptSubmissionState> | undefined;
+  onPromptSubmissionState: (state: AcpPromptSubmissionState) => void;
+  onPromptStarted?: () => Promise<void> | void;
+  onTurnStreamAcquired?: () => Promise<void> | void;
+}): void {
+  if (params.promptSubmission) {
+    params.onPromptSubmissionState("unknown");
+    void params.promptSubmission.then(
+      (state) => {
+        params.onPromptSubmissionState(state);
+        if (state === "submitted") {
+          invokeAcpPromptObserver(params.onPromptStarted);
+          invokeAcpPromptObserver(params.onTurnStreamAcquired);
+        }
+      },
+      () => {
+        params.onPromptSubmissionState("unknown");
+      },
+    );
+    return;
+  }
+  if (!params.promptStarted) {
+    params.onPromptSubmissionState("unknown");
+    return;
+  }
+  params.onPromptSubmissionState("unknown");
+  void params.promptStarted.then(
+    () => {
+      params.onPromptSubmissionState("submitted");
+      invokeAcpPromptObserver(params.onPromptStarted);
+      invokeAcpPromptObserver(params.onTurnStreamAcquired);
+    },
+    () => {
+      params.onPromptSubmissionState("not_submitted");
+    },
+  );
+}
+
 async function notifyTerminalResult(params: {
   result: AcpRuntimeTurnResult;
   eventGate: AcpTurnEventGate;
@@ -121,6 +170,9 @@ export async function consumeAcpTurnStream(params: {
   runtime: AcpRuntime;
   turn: AcpRuntimeTurnInput;
   eventGate: AcpTurnEventGate;
+  onPromptSubmissionState: (state: AcpPromptSubmissionState) => void;
+  onPromptStarted?: () => Promise<void> | void;
+  onTurnStreamAcquired?: () => Promise<void> | void;
   onEvent?: (event: AcpRuntimeEvent) => Promise<void> | void;
   onOutputEvent?: (
     event: Extract<AcpRuntimeEvent, { type: "text_delta" | "tool_call" }>,
@@ -128,7 +180,15 @@ export async function consumeAcpTurnStream(params: {
 }): Promise<AcpTurnStreamOutcome> {
   if (params.runtime.startTurn) {
     // startTurn exposes result and event streams separately; coordinate both before reporting done.
+    params.onPromptSubmissionState("unknown");
     const turn = params.runtime.startTurn(params.turn);
+    observeAcpPromptStarted({
+      promptStarted: turn.promptStarted,
+      promptSubmission: turn.promptSubmission,
+      onPromptSubmissionState: params.onPromptSubmissionState,
+      onPromptStarted: params.onPromptStarted,
+      onTurnStreamAcquired: params.onTurnStreamAcquired,
+    });
     const eventsPromise = consumeAcpTurnEvents({
       events: turn.events,
       eventGate: params.eventGate,
@@ -198,8 +258,10 @@ export async function consumeAcpTurnStream(params: {
     };
   }
 
+  params.onPromptSubmissionState("unknown");
+  const events = params.runtime.runTurn(params.turn);
   return await consumeAcpTurnEvents({
-    events: params.runtime.runTurn(params.turn),
+    events,
     eventGate: params.eventGate,
     onEvent: params.onEvent,
     onOutputEvent: params.onOutputEvent,

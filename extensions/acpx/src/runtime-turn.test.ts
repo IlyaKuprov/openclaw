@@ -26,6 +26,72 @@ const turnInput: AcpRuntimeTurnInput = {
 };
 
 describe("lazyStartRuntimeTurn", () => {
+  it("preserves explicit submission authority across an asynchronously resolved runtime", async () => {
+    const turn = lazyStartRuntimeTurn(
+      async () => ({
+        ensureSession: vi.fn(),
+        startTurn: (input) => ({
+          requestId: input.requestId,
+          promptSubmission: Promise.resolve("submitted" as const),
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed" as const }),
+          cancel: vi.fn(async () => {}),
+          closeStream: vi.fn(async () => {}),
+        }),
+        runTurn: vi.fn(),
+        cancel: vi.fn(async () => {}),
+        close: vi.fn(async () => {}),
+      }),
+      turnInput,
+    );
+
+    expect(turn.promptStarted).toBeUndefined();
+    await expect(turn.promptSubmission).resolves.toBe("submitted");
+    await expect(turn.result).resolves.toEqual({ status: "completed" });
+  });
+
+  it("projects unknown readiness when the pinned runtime cannot prove prompt submission", async () => {
+    const turn = lazyStartRuntimeTurn(
+      async () => createLegacyRuntime([{ type: "done", stopReason: "end_turn" }]),
+      turnInput,
+    );
+
+    expect(turn.promptStarted).toBeUndefined();
+    await expect(turn.promptSubmission).resolves.toBe("unknown");
+    await expect(turn.result).resolves.toEqual({ status: "completed", stopReason: "end_turn" });
+  });
+
+  it("does not reinterpret a readiness-looking legacy field as submission authority", async () => {
+    const runtime: AcpRuntime = {
+      ensureSession: vi.fn(),
+      startTurn: (input) => ({
+        requestId: input.requestId,
+        promptStarted: Promise.resolve(),
+        events: (async function* () {})(),
+        result: Promise.resolve({ status: "completed" as const }),
+        cancel: vi.fn(async () => {}),
+        closeStream: vi.fn(async () => {}),
+      }),
+      runTurn: vi.fn(),
+      cancel: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const turn = lazyStartRuntimeTurn(async () => runtime, turnInput);
+
+    expect(turn.promptStarted).toBeUndefined();
+    await expect(turn.promptSubmission).resolves.toBe("unknown");
+    await expect(turn.result).resolves.toEqual({ status: "completed" });
+  });
+
+  it("keeps lazy runtime startup failures out of submission observation", async () => {
+    const turn = lazyStartRuntimeTurn(async () => {
+      throw new Error("runtime unavailable");
+    }, turnInput);
+
+    await expect(turn.promptSubmission).resolves.toBe("unknown");
+    await expect(turn.result).rejects.toThrow("runtime unavailable");
+  });
+
   it.each(["cancel", "cancelled", "manual-cancel"])(
     "preserves %s cancellation from a legacy done event",
     async (stopReason) => {

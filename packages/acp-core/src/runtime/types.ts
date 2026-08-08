@@ -176,6 +176,19 @@ export type AcpRuntimeTurnResult =
 
 export interface AcpRuntimeTurn {
   readonly requestId: string;
+  /**
+   * Resolves only after the backend submits the model-facing ACP prompt.
+   * Rejects only when the runtime can prove the prompt was not submitted.
+   * Runtimes that cannot prove either boundary must leave the field absent.
+   */
+  readonly promptStarted?: Promise<void>;
+  /**
+   * Explicit submission authority for lazy wrappers. Unlike promptStarted,
+   * this can preserve an underlying runtime's unknown state without fabricating
+   * a resolved or rejected readiness promise. Observation failures resolve to
+   * unknown; this promise must not reject or replace the terminal turn result.
+   */
+  readonly promptSubmission?: Promise<"not_submitted" | "unknown" | "submitted">;
   readonly events: AsyncIterable<AcpRuntimeEvent>;
   readonly result: Promise<AcpRuntimeTurnResult>;
   /** Requests backend cancellation while keeping result/error reporting adapter-owned. */

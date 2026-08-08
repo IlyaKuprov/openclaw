@@ -36,6 +36,7 @@ import { findActiveSessionTask } from "../session-async-task-status.js";
 import { SessionManager } from "../sessions/index.js";
 import { resolveContextEngineCapabilities } from "./context-engine-capabilities.js";
 import { log } from "./logger.js";
+import { copyEmbeddedRunAccountingObservers } from "./run/accounting-observers.js";
 import { rewriteTranscriptEntriesInSessionManager } from "./transcript-rewrite.js";
 import { resolveRuntimeTranscriptReadTarget } from "./transcript-runtime-state.js";
 
@@ -231,7 +232,7 @@ function buildContextEngineMaintenanceRuntimeContext(
     contextEnginePluginId?: string;
   },
 ): ContextEngineRuntimeContext {
-  return {
+  const runtimeContext = {
     ...params.runtimeContext,
     ...resolveContextEngineCapabilities({
       config: params.config,
@@ -282,6 +283,9 @@ function buildContextEngineMaintenanceRuntimeContext(
       return result;
     },
   };
+  return params.executionMode === "background" || !params.runtimeContext
+    ? runtimeContext
+    : copyEmbeddedRunAccountingObservers(params.runtimeContext, runtimeContext);
 }
 
 async function executeContextEngineMaintenance(
@@ -496,6 +500,7 @@ function scheduleDeferredTurnMaintenance(
     );
   } catch (err) {
     schedulerAbort.dispose();
+    params.onScheduleFailure?.(err);
     cancelFailedTask(err);
     return undefined;
   }
@@ -562,18 +567,28 @@ export async function runContextEngineMaintenance(
         );
         return undefined;
       }
+      let scheduleFailure: unknown;
       const deferred = scheduleDeferredTurnMaintenance({
         ...params,
         contextEngine,
         sessionKey,
         disposeContextEngineAfterMaintenance: params.disposeDeferredContextEngineAfterMaintenance,
-        onScheduleFailure: params.onDeferredMaintenanceFailure,
+        onScheduleFailure: (error) => {
+          scheduleFailure = error;
+          params.onDeferredMaintenanceFailure?.(error);
+        },
       });
       if (deferred) {
-        params.onDeferredMaintenance?.(deferred);
+        // enqueueCommandInLane reports an admission race as an already-rejected
+        // promise. Let that rejection settle before recording accepted work.
+        await Promise.resolve();
+        if (scheduleFailure === undefined) {
+          params.onDeferredMaintenance?.(deferred);
+        }
       }
     } catch (err) {
       log.warn(`failed to schedule deferred context engine maintenance: ${String(err)}`);
+      params.onDeferredMaintenanceFailure?.(err);
     }
     return undefined;
   }
