@@ -1,6 +1,14 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../shared/deferred.js";
+import { finalizeAgentTools } from "./agent-tools.finalize.js";
+import {
+  createCodeModeActivityOwner,
+  discardCodeModeRunActivity,
+  registerCodeModeRunActivity,
+  sampleCodeModeRunFinalQuiescence,
+  type CodeModeActivityOwner,
+} from "./code-mode-activity.js";
 import type { SettledBridgeRequest } from "./code-mode-runtime.js";
 import { CodeModeBridgeDispatchQueue } from "./code-mode-state.js";
 import {
@@ -46,12 +54,20 @@ function createHeadlessContext(tools: AnyAgentTool[]): ToolSearchToolContext {
   };
 }
 
+let activityOwner: CodeModeActivityOwner;
+
+beforeEach(() => {
+  activityOwner = createCodeModeActivityOwner();
+});
+
 afterEach(() => {
   resetCodeModeTestState();
+  discardCodeModeRunActivity(activityOwner);
 });
 
 describe("Code Mode cancellation ownership", () => {
   it("does not resume an aborted guest when an active tool ignores cancellation", async () => {
+    registerCodeModeRunActivity(activityOwner);
     const catalogRef = createToolSearchCatalogRef();
     const config = {
       tools: { codeMode: { enabled: true, maxPendingToolCalls: 1, timeoutMs: 30_000 } },
@@ -62,25 +78,36 @@ describe("Code Mode cancellation ownership", () => {
       sessionId: "session-code-mode",
       sessionKey: "agent:main:main",
       runId: "run-code-mode",
+      codeModeActivityOwner: activityOwner,
       catalogRef,
     };
     const codeModeTools = createCodeModeTools(ctx);
+    const controller = new AbortController();
     const activeStarted = createDeferred();
     const activeCompletion = createDeferred();
     const activeFinished = createDeferred();
     let activeSawAbort = false;
-    const activeTool = pluginToolWithExecute(
-      "fake_ignore_cancel",
-      "Cancellation-ignoring helper",
-      async (_toolCallId, _input, signal) => {
-        activeStarted.resolve();
-        signal?.addEventListener("abort", () => {
-          activeSawAbort = true;
-        });
-        await activeCompletion.promise;
-        activeFinished.resolve();
-        return jsonResult({ late: true });
-      },
+    const activeTool = expectDefined(
+      finalizeAgentTools({
+        tools: [
+          pluginToolWithExecute(
+            "fake_ignore_cancel",
+            "Cancellation-ignoring helper",
+            async (_toolCallId, _input, signal) => {
+              activeStarted.resolve();
+              signal?.addEventListener("abort", () => {
+                activeSawAbort = true;
+              });
+              await activeCompletion.promise;
+              activeFinished.resolve();
+              return jsonResult({ late: true });
+            },
+          ),
+        ],
+        hookContext: {},
+        abortSignal: controller.signal,
+      })[0],
+      "finalized cancellation test tool",
     );
     const queuedTool = pluginTool("fake_queued_after_ignore", "Queued cancellation helper");
     const lateGuestTool = pluginTool("fake_guest_after_abort", "Late guest helper");
@@ -93,7 +120,6 @@ describe("Code Mode cancellation ownership", () => {
       catalogRef,
     });
 
-    const controller = new AbortController();
     const resultPromise = expectDefined(codeModeTools[0], "Code Mode exec test invariant").execute(
       "code-call-ignore-cancel",
       {
@@ -119,6 +145,7 @@ describe("Code Mode cancellation ownership", () => {
     expect(activeSawAbort).toBe(true);
     expect(queuedTool.execute).not.toHaveBeenCalled();
     expect(lateGuestTool.execute).not.toHaveBeenCalled();
+    expect(sampleCodeModeRunFinalQuiescence(activityOwner)).toBe("non_quiescent");
 
     activeCompletion.resolve();
     await activeFinished.promise;
@@ -129,9 +156,11 @@ describe("Code Mode cancellation ownership", () => {
     expect(queuedTool.execute).not.toHaveBeenCalled();
     expect(lateGuestTool.execute).not.toHaveBeenCalled();
     expect(testing.activeRuns.size).toBe(0);
+    expect(sampleCodeModeRunFinalQuiescence(activityOwner)).toBe("quiescent");
   });
 
   it("does not resume an aborted headless guest when an active tool ignores cancellation", async () => {
+    registerCodeModeRunActivity(activityOwner);
     const activeStarted = createDeferred();
     const activeCompletion = createDeferred();
     const activeFinished = createDeferred();
@@ -156,7 +185,10 @@ describe("Code Mode cancellation ownership", () => {
     );
     const controller = new AbortController();
     const resultPromise = runCodeModeScriptHeadless({
-      ctx: createHeadlessContext([activeTool, queuedTool, lateGuestTool]),
+      ctx: {
+        ...createHeadlessContext([activeTool, queuedTool, lateGuestTool]),
+        codeModeActivityOwner: activityOwner,
+      },
       code: `
         await Promise.all([
           tools.callValue("openclaw:core:headless_ignore_cancel", {}),
@@ -180,6 +212,7 @@ describe("Code Mode cancellation ownership", () => {
     expect(activeSawAbort).toBe(true);
     expect(queuedTool.execute).not.toHaveBeenCalled();
     expect(lateGuestTool.execute).not.toHaveBeenCalled();
+    expect(sampleCodeModeRunFinalQuiescence(activityOwner)).toBe("non_quiescent");
 
     activeCompletion.resolve();
     await activeFinished.promise;
@@ -190,6 +223,7 @@ describe("Code Mode cancellation ownership", () => {
     expect(queuedTool.execute).not.toHaveBeenCalled();
     expect(lateGuestTool.execute).not.toHaveBeenCalled();
     expect(testing.activeRuns.size).toBe(0);
+    expect(sampleCodeModeRunFinalQuiescence(activityOwner)).toBe("quiescent");
   });
 
   it("retains an active slot until a cancelled tool really settles", async () => {
@@ -219,14 +253,15 @@ describe("Code Mode cancellation ownership", () => {
     first.cancel();
     expect(cancelActive).toHaveBeenCalledOnce();
     expect(secondStart).not.toHaveBeenCalled();
-
-    firstCompletion.resolve({ id: "bridge:call:1", ok: true, value: "late success" });
-
     await expect(first.promise).resolves.toEqual({
       id: "bridge:call:1",
       ok: false,
       error: "code mode bridge call cancelled",
     });
+    expect(secondStart).not.toHaveBeenCalled();
+
+    firstCompletion.resolve({ id: "bridge:call:1", ok: true, value: "late success" });
+
     await expect(second.promise).resolves.toEqual({
       id: "bridge:call:2",
       ok: true,

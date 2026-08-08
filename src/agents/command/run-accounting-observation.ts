@@ -1,4 +1,5 @@
 import { estimateUsageCost, resolveModelCostConfig } from "../../utils/usage-format.js";
+import type { CodeModeRunFinalQuiescence } from "../code-mode-activity.js";
 import { cloneCodeModeStats, createCodeModeStats, mergeCodeModeStats } from "../code-mode-stats.js";
 import type { EmbeddedRunAccountingObservation } from "../embedded-agent-runner/run/accounting-observers.js";
 import type { ToolSummaryTrace } from "../embedded-agent-runner/types.js";
@@ -71,6 +72,7 @@ export type MutableRunAccounting = {
   codeModeLifecycleMissing: number;
   maxUnresolvedAtExtraction: number;
   attemptsWithUnresolved: number;
+  codeModeFinalQuiescence?: CodeModeRunFinalQuiescence;
 };
 
 type ModelUsageObservation = Pick<

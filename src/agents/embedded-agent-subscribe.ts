@@ -101,6 +101,10 @@ function resolveEmbeddedAgentSessionLogger(messageChannel?: string) {
   return embeddedLog;
 }
 
+function usageHasNonzeroValue(usage?: NormalizedUsage): boolean {
+  return hasNonzeroUsage(usage);
+}
+
 function mergeAssistantUsageSnapshots(
   pendingUsage: NormalizedUsage | undefined,
   resolvedUsage: NormalizedUsage,
@@ -109,15 +113,14 @@ function mergeAssistantUsageSnapshots(
     ? resolveNormalizedUsageObservedBuckets(pendingUsage)
     : undefined;
   const resolvedObservedBuckets = resolveNormalizedUsageObservedBuckets(resolvedUsage);
-  const tokenUsage = hasNonzeroUsage(resolvedUsage)
-    ? resolvedUsage
-    : hasNonzeroUsage(pendingUsage)
-      ? pendingUsage
-      : resolvedObservedBuckets.size > 0
-        ? resolvedUsage
-        : pendingObservedBuckets && pendingObservedBuckets.size > 0
-          ? pendingUsage
-          : resolvedUsage;
+  let tokenUsage = resolvedUsage;
+  if (!usageHasNonzeroValue(resolvedUsage)) {
+    if (pendingUsage && usageHasNonzeroValue(pendingUsage)) {
+      tokenUsage = pendingUsage;
+    } else if (resolvedObservedBuckets.size === 0 && pendingObservedBuckets?.size && pendingUsage) {
+      tokenUsage = pendingUsage;
+    }
+  }
   const providerBilledCost = resolvedUsage.providerBilledCost ?? pendingUsage?.providerBilledCost;
   if (!providerBilledCost || tokenUsage.providerBilledCost === providerBilledCost) {
     return tokenUsage;
@@ -720,7 +723,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     }
     for (const candidate of authoritativeCandidates) {
       const usage = normalizeUsage((candidate ?? undefined) as UsageLike | undefined);
-      if (hasNonzeroUsage(usage)) {
+      if (usageHasNonzeroValue(usage)) {
         return usage;
       }
       if (
@@ -732,7 +735,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     }
     for (const candidate of structuralCandidates) {
       const usage = normalizeUsage((candidate ?? undefined) as UsageLike | undefined);
-      if (hasNonzeroUsage(usage)) {
+      if (usageHasNonzeroValue(usage)) {
         return usage;
       }
     }

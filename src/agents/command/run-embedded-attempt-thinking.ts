@@ -1,6 +1,7 @@
-import type { ThinkLevel, ThinkingCatalogEntry } from "../../auto-reply/thinking.js";
+import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { ModelCatalogEntry } from "../model-catalog.types.js";
 import type { ModelManifestNormalizationContext } from "../model-ref-shared.js";
 import { resolveThinkingDefault } from "../model-selection.js";
 import { resolveConfiguredThinkingDefault } from "../model-thinking-default.js";
@@ -22,7 +23,7 @@ export function createEmbeddedAttemptCandidateThinkingResolver(params: {
   defaultProvider: string;
   defaultModel: string;
   immutableThinkLevel?: ThinkLevel;
-  initialCatalog?: ThinkingCatalogEntry[];
+  initialCatalog?: ModelCatalogEntry[];
 }): (candidate: {
   provider: string;
   model: string;

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { CodeModeRunFinalQuiescence } from "../code-mode-activity.js";
 import { cloneCodeModeStats } from "../code-mode-stats.js";
 import type { EmbeddedRunOpaqueWorkReason } from "../embedded-agent-runner/run/accounting-observers.js";
 import {
@@ -335,6 +336,9 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
     markOpaqueWork(reason) {
       state.opaqueWorkReasons.add(reason);
     },
+    observeCodeModeFinalQuiescence(finalQuiescence) {
+      state.codeModeFinalQuiescence = finalQuiescence;
+    },
     project(): AgentCommandRunAccountingSnapshot {
       const runtimeReasons = runtimeCoverageReasons(state.candidates.runtimes);
       const opaqueWorkReasons = [...state.opaqueWorkReasons];
@@ -492,10 +496,20 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
       const effectiveCostCoverage = exactZeroModelWork
         ? ({ state: "complete" } as const)
         : costCoverage;
+      const codeModeFinalQuiescenceReasons: AgentCommandRunAccountingCoverageReason[] =
+        runtimeReasons.length > 0 ? runtimeReasons : ["not_observed"];
+      const observedCodeModeFinalQuiescence:
+        | Exclude<CodeModeRunFinalQuiescence, "unavailable">
+        | undefined =
+        state.codeModeFinalQuiescence === "quiescent" ||
+        state.codeModeFinalQuiescence === "non_quiescent"
+          ? state.codeModeFinalQuiescence
+          : undefined;
+      const codeModeFinalQuiescenceObserved = observedCodeModeFinalQuiescence !== undefined;
       const codeMode =
-        state.codeModeEngaged || state.codeModeStats
+        state.codeModeEngaged || state.codeModeStats || codeModeFinalQuiescenceObserved
           ? {
-              engaged: state.codeModeEngaged,
+              engaged: state.codeModeEngaged || codeModeFinalQuiescenceObserved,
               ...(state.codeModeStats ? { stats: cloneCodeModeStats(state.codeModeStats) } : {}),
               lifecycle: {
                 ...(state.codeModeAttempts > 0 &&
@@ -505,12 +519,12 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
                       attemptsWithUnresolved: state.attemptsWithUnresolved,
                     }
                   : {}),
-                finalQuiescence:
-                  state.codeModeLifecycleObserved === 0
-                    ? createCoverage("unavailable", ["not_observed"])
-                    : state.codeModeLifecycleMissing > 0
-                      ? createCoverage("partial", ["attempt_extraction_only", "not_observed"])
-                      : createCoverage("partial", ["attempt_extraction_only"]),
+                finalQuiescence: observedCodeModeFinalQuiescence
+                  ? { state: observedCodeModeFinalQuiescence }
+                  : {
+                      state: "unavailable" as const,
+                      reasons: codeModeFinalQuiescenceReasons,
+                    },
               },
             }
           : undefined;

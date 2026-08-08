@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerExecApprovalFollowupRuntimeHandoff } from "../../agents/bash-tools.exec-approval-followup-state.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { SessionLifecycleBlockedError } from "../../sessions/session-lifecycle-blocker.js";
 import { resolveAgentRunExpiresAtMs } from "../chat-abort.js";
 import { setGatewayDedupeEntry } from "./agent-job.js";
 import { prepareAgentRunDispatch } from "./agent-run-admission-phase.js";
@@ -1688,6 +1689,58 @@ describe("gateway agent handler chat.abort integration", () => {
       releaseAcquire();
       dateNow.mockRestore();
     }
+  });
+
+  it("reports non-quiescent session lifecycle blockers as unavailable", async () => {
+    prime();
+    const context = makeContext();
+    const respond = vi.fn();
+    const sessionId = "existing-session-id";
+
+    const result = await prepareAgentRunDispatch({
+      request: {
+        message: "wait for prior Code Mode work",
+        idempotencyKey: "idem-session-lifecycle-blocked",
+      },
+      cfg: {},
+      sessionEntry: { sessionId, updatedAt: Date.now() },
+      resolvedSessionKey: "agent:main:main",
+      activeSessionAgentId: "main",
+      delivery: {} as never,
+      allowModelOverride: false,
+      lifecycleGeneration: "test-generation",
+      getAdmittedSessionId: () => sessionId,
+      suppressVisibleSessionEffects: false,
+      isOneShotModelRun: false,
+      isRestartRecoveryResumeRun: false,
+      runId: "idem-session-lifecycle-blocked",
+      agentDedupeKeys: ["agent:idem-session-lifecycle-blocked"],
+      context,
+      client: null,
+      respond,
+      abortForLifecycleRotation: () => false,
+      acquireGatewayWorkAdmission: async () => {
+        throw new SessionLifecycleBlockedError("code_mode_non_quiescent", [
+          "agent:main:main",
+          sessionId,
+        ]);
+      },
+      assertGatewayWorkAdmissionAllowed: () => {},
+      hasGatewayAdmissionOutcome: () => false,
+      respondToGatewayAdmissionOutcome: () => false,
+      admissionAgentId: () => "main",
+      getGatewayWorkAdmission: () => undefined,
+      setAdmittedRunAbort: () => {},
+      getAdmittedRunAbort: () => undefined,
+      markAgentRunAccepted: () => {},
+    } as unknown as Parameters<typeof prepareAgentRunDispatch>[0]);
+
+    expect(result).toBeUndefined();
+    expectRecordFields(respond.mock.calls[0]?.[2], {
+      code: "UNAVAILABLE",
+      message:
+        "SessionLifecycleBlockedError: Session still has non-quiescent Code Mode tool work; retry after it settles.",
+    });
   });
 
   it("uses the explicit no-timeout agent expiry instead of the chat 24h cap", async () => {

@@ -27,6 +27,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { claimAgentRunContext } from "../../infra/agent-run-registry.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
 import type { SessionWorkAdmissionLease } from "../../sessions/session-lifecycle-admission.js";
+import { isSessionLifecycleBlockedError } from "../../sessions/session-lifecycle-blocker.js";
 import { registerChatAbortController, resolveAgentRunExpiresAtMs } from "../chat-abort.js";
 import { loadSessionEntry, resolveSessionModelRef } from "../session-utils.js";
 import { consumeSubagentCompletionToolHandoff } from "../subagent-completion-tool-handoff.js";
@@ -224,7 +225,14 @@ export async function prepareAgentRunDispatch(params: {
       );
     }
   } catch (err) {
-    params.respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
+    params.respond(
+      false,
+      undefined,
+      errorShape(
+        isSessionLifecycleBlockedError(err) ? ErrorCodes.UNAVAILABLE : ErrorCodes.INVALID_REQUEST,
+        formatForLog(err),
+      ),
+    );
     return undefined;
   }
   if (params.respondToGatewayAdmissionOutcome()) {

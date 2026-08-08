@@ -232,7 +232,7 @@ function buildContextEngineMaintenanceRuntimeContext(
     contextEnginePluginId?: string;
   },
 ): ContextEngineRuntimeContext {
-  const runtimeContext = {
+  const runtimeContext: ContextEngineRuntimeContext = {
     ...params.runtimeContext,
     ...resolveContextEngineCapabilities({
       config: params.config,
