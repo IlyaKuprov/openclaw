@@ -13,6 +13,7 @@ import {
 } from "./agent-tools.read.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { createApplyPatchTool } from "./apply-patch.js";
+import { resolveAllowedExecTargets } from "./bash-tools.exec-targets.js";
 import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
 import type { ProcessToolDefaults } from "./bash-tools.process.js";
 import type { ImageSanitizationLimits } from "./image-sanitization.js";
@@ -223,30 +224,37 @@ export function createCoreCodingTools(options: CoreCodingToolsOptions): AnyAgent
         }) as unknown as AnyAgentTool,
       );
     }
-    shell.push(
-      createLazyExecTool({
-        ...options.execDefaults,
-        cwd: options.codingRoot,
-        sandbox: sandbox
-          ? {
-              containerName: sandbox.containerName,
-              workspaceDir: sandbox.workspaceDir,
-              containerWorkdir: sandbox.containerWorkdir,
-              workdirValidation: sandbox.backend?.workdirValidation,
-              validateWorkdir: sandbox.backend?.validateWorkdir?.bind(sandbox.backend),
-              discardPreparedWorkdir: sandbox.backend?.discardPreparedWorkdir?.bind(
-                sandbox.backend,
-              ),
-              workdirRoots: sandbox.backend?.workdirRoots,
-              readOnlyWorkspaceSkillMounts,
-              env: sandbox.backend?.env ?? sandbox.docker.env,
-              buildExecSpec: sandbox.backend?.buildExecSpec.bind(sandbox.backend),
-              finalizeExec: sandbox.backend?.finalizeExec?.bind(sandbox.backend),
-            }
-          : undefined,
-      }) as unknown as AnyAgentTool,
-      createLazyProcessTool(options.processDefaults),
-    );
+    if (
+      resolveAllowedExecTargets({
+        configuredTarget: options.execDefaults.host,
+        sandboxAvailable: Boolean(sandbox),
+      }).length > 0
+    ) {
+      shell.push(
+        createLazyExecTool({
+          ...options.execDefaults,
+          cwd: options.codingRoot,
+          sandbox: sandbox
+            ? {
+                containerName: sandbox.containerName,
+                workspaceDir: sandbox.workspaceDir,
+                containerWorkdir: sandbox.containerWorkdir,
+                workdirValidation: sandbox.backend?.workdirValidation,
+                validateWorkdir: sandbox.backend?.validateWorkdir?.bind(sandbox.backend),
+                discardPreparedWorkdir: sandbox.backend?.discardPreparedWorkdir?.bind(
+                  sandbox.backend,
+                ),
+                workdirRoots: sandbox.backend?.workdirRoots,
+                readOnlyWorkspaceSkillMounts,
+                env: sandbox.backend?.env ?? sandbox.docker.env,
+                buildExecSpec: sandbox.backend?.buildExecSpec.bind(sandbox.backend),
+                finalizeExec: sandbox.backend?.finalizeExec?.bind(sandbox.backend),
+              }
+            : undefined,
+        }) as unknown as AnyAgentTool,
+      );
+    }
+    shell.push(createLazyProcessTool(options.processDefaults));
   }
   options.recordToolPrepStage?.("shell-tools");
 
