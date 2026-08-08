@@ -3,6 +3,7 @@ import type { CodeModeRunFinalQuiescence } from "../code-mode-activity.js";
 import { cloneCodeModeStats, createCodeModeStats, mergeCodeModeStats } from "../code-mode-stats.js";
 import type { EmbeddedRunAccountingObservation } from "../embedded-agent-runner/run/accounting-observers.js";
 import type { ToolSummaryTrace } from "../embedded-agent-runner/types.js";
+import type { createProviderTransportAccountingCollector } from "../provider-transport-accounting.js";
 import {
   NORMALIZED_USAGE_BUCKET_ORDER,
   resolveNormalizedUsageObservedBuckets,
@@ -73,6 +74,7 @@ export type MutableRunAccounting = {
   maxUnresolvedAtExtraction: number;
   attemptsWithUnresolved: number;
   codeModeFinalQuiescence?: CodeModeRunFinalQuiescence;
+  providerTransport: ReturnType<typeof createProviderTransportAccountingCollector>;
 };
 
 type ModelUsageObservation = Pick<

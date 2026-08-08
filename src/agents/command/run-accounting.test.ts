@@ -205,7 +205,7 @@ describe("command run accounting", () => {
         agentTime: { state: "unavailable", reasons: ["not_instrumented"] },
         commandExecutionDuration: { state: "complete" },
         wallLatency: { state: "unavailable", reasons: ["not_instrumented"] },
-        providerTransport: { state: "unavailable", reasons: ["not_instrumented"] },
+        providerTransport: { state: "unavailable", reasons: ["not_observed"] },
       },
       codeMode: {
         engaged: true,
@@ -246,7 +246,10 @@ describe("command run accounting", () => {
         usage: { state: "unavailable", reasons: ["cli_runtime"] },
         tools: { state: "unavailable", reasons: ["cli_runtime"] },
         cost: { state: "unavailable", reasons: ["cli_runtime"] },
-        providerTransport: { state: "unavailable", reasons: ["not_instrumented"] },
+        providerTransport: {
+          state: "unavailable",
+          reasons: ["not_observed", "cli_runtime"],
+        },
       },
     });
     expect(accounting.project()).not.toHaveProperty("agentSubmissions");
@@ -782,7 +785,7 @@ describe("command run accounting", () => {
       },
       providerTransport: {
         state: "unavailable",
-        reasons: ["not_instrumented", "session_core_compaction"],
+        reasons: ["not_observed", "session_core_compaction"],
       },
     });
   });
@@ -977,7 +980,7 @@ describe("command run accounting", () => {
           agentTime: { state: "unavailable", reasons: ["not_instrumented"] },
           commandExecutionDuration: { state: "complete" },
           wallLatency: { state: "unavailable", reasons: ["not_instrumented"] },
-          providerTransport: { state: "unavailable", reasons: ["not_instrumented"] },
+          providerTransport: { state: "unavailable", reasons: ["not_observed"] },
         },
       }),
     ).not.toThrow();

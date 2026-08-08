@@ -3,6 +3,10 @@ import type { CodeModeRunFinalQuiescence } from "../code-mode-activity.js";
 import { cloneCodeModeStats } from "../code-mode-stats.js";
 import type { EmbeddedRunOpaqueWorkReason } from "../embedded-agent-runner/run/accounting-observers.js";
 import {
+  createProviderTransportAccountingCollector,
+  runWithProviderTransportAccountingObserver,
+} from "../provider-transport-accounting.js";
+import {
   AGENT_COMMAND_USAGE_BUCKETS,
   boundAccountingIdentity,
   observeEmbeddedAttempt,
@@ -26,6 +30,7 @@ const COVERAGE_REASON_ORDER: readonly AgentCommandRunAccountingCoverageReason[] 
   "candidate_details_truncated",
   "candidate_identity_truncated",
   "effective_model_details_truncated",
+  "not_observed",
   "cli_runtime",
   "native_runtime",
   "cloud_runtime",
@@ -47,7 +52,6 @@ const COVERAGE_REASON_ORDER: readonly AgentCommandRunAccountingCoverageReason[] 
   "tool_details_truncated",
   "agent_submission_unsettled",
   "attempt_extraction_only",
-  "not_observed",
   "acp_runtime",
 ];
 const COVERAGE_REASON_RANK = new Map(
@@ -96,7 +100,10 @@ export async function runWithAgentCommandAccounting<T>(
   const accounting = createRunAccountingAccumulator();
   return await activeCommandRunAccounting.run(accounting, async () => {
     try {
-      return await run(accounting);
+      return await runWithProviderTransportAccountingObserver(
+        accounting.providerTransportObserver,
+        () => run(accounting),
+      );
     } catch (error) {
       if ((typeof error === "object" && error !== null) || typeof error === "function") {
         bindAgentCommandRunAccounting(error, accounting.project());
@@ -118,6 +125,17 @@ function createCoverage(
         (COVERAGE_REASON_RANK.get(right) ?? Number.MAX_SAFE_INTEGER),
     ),
   };
+}
+
+function extendCoverage(
+  coverage: AgentCommandRunAccountingCoverage,
+  reasons: AgentCommandRunAccountingCoverageReason[],
+): AgentCommandRunAccountingCoverage {
+  if (reasons.length === 0) {
+    return coverage;
+  }
+  const combined = [...("reasons" in coverage ? coverage.reasons : []), ...reasons];
+  return createCoverage(coverage.state === "unavailable" ? "unavailable" : "partial", combined);
 }
 
 function runtimeCoverageReasons(
@@ -216,9 +234,11 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
     codeModeLifecycleMissing: 0,
     maxUnresolvedAtExtraction: 0,
     attemptsWithUnresolved: 0,
+    providerTransport: createProviderTransportAccountingCollector(),
   };
 
   return {
+    providerTransportObserver: state.providerTransport.observer,
     beginModelCall() {
       state.modelCalls.total += 1;
       let settled = false;
@@ -340,6 +360,7 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
       state.codeModeFinalQuiescence = finalQuiescence;
     },
     project(): AgentCommandRunAccountingSnapshot {
+      const providerTransport = state.providerTransport.project();
       const runtimeReasons = runtimeCoverageReasons(state.candidates.runtimes);
       const opaqueWorkReasons = [...state.opaqueWorkReasons];
       const settledFinalizationReasons = opaqueWorkReasons.filter(
@@ -348,6 +369,10 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
       const auxiliaryHiddenWorkReasons = opaqueWorkReasons.filter(
         (reason) => reason !== "settled_finalization_failed",
       );
+      const providerTransportCoverage = extendCoverage(providerTransport.coverage, [
+        ...runtimeReasons,
+        ...auxiliaryHiddenWorkReasons,
+      ]);
       const candidateCoverageReasons = [
         ...(state.candidates.truncated > 0 ? (["candidate_details_truncated"] as const) : []),
         ...(state.candidateIdentityTruncated ? (["candidate_identity_truncated"] as const) : []),
@@ -575,6 +600,7 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
               costUsd: hasProviderBilledCost ? state.providerBilledCostUsd : state.estimatedCostUsd,
             }
           : {}),
+        ...(providerTransport.snapshot ? { providerTransport: providerTransport.snapshot } : {}),
         commandExecutionDurationMs: Math.max(0, Date.now() - state.startedAtMs),
         coverage: {
           candidates: candidatesCoverage,
@@ -613,10 +639,7 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
           agentTime: createCoverage("unavailable", ["not_instrumented"]),
           commandExecutionDuration: { state: "complete" },
           wallLatency: createCoverage("unavailable", ["not_instrumented"]),
-          providerTransport: createCoverage("unavailable", [
-            "not_instrumented",
-            ...auxiliaryHiddenWorkReasons,
-          ]),
+          providerTransport: providerTransportCoverage,
         },
         ...(codeMode ? { codeMode } : {}),
       };

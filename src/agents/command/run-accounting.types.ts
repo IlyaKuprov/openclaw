@@ -4,6 +4,11 @@ import type { CodeModeStats } from "../code-mode-stats.js";
 import type { EmbeddedRunAccountingObservation } from "../embedded-agent-runner/run/accounting-observers.js";
 import type { EmbeddedRunOpaqueWorkReason } from "../embedded-agent-runner/run/accounting-observers.js";
 import type { ToolSummaryTrace } from "../embedded-agent-runner/types.js";
+import type {
+  ProviderTransportAccountingCoverageReason,
+  ProviderTransportAccountingObserver,
+  ProviderTransportAccountingSnapshot,
+} from "../provider-transport-accounting.js";
 import type { AgentSubmissionHandle } from "../sessions/agent-session-accounting.js";
 import type { NormalizedUsage } from "../usage.js";
 
@@ -36,7 +41,8 @@ export type AgentCommandRunAccountingCoverageReason =
   | "model_call_unsettled"
   | "not_instrumented"
   | "not_observed"
-  | "attempt_extraction_only";
+  | "attempt_extraction_only"
+  | ProviderTransportAccountingCoverageReason;
 
 export type AgentCommandRunAccountingCoverage =
   | { state: "complete" }
@@ -69,6 +75,7 @@ export type AgentCommandModelCallAccounting = {
 };
 
 export type RunAccountingAccumulator = {
+  readonly providerTransportObserver: ProviderTransportAccountingObserver;
   beginCandidate: (identity: {
     provider: string;
     model: string;
@@ -116,6 +123,7 @@ export type AgentCommandRunAccountingSnapshot = {
   toolSummary?: ToolSummaryTrace;
   toolNamesTruncated?: true;
   costUsd?: number;
+  providerTransport?: ProviderTransportAccountingSnapshot;
   commandExecutionDurationMs: number;
   coverage: {
     candidates: AgentCommandRunAccountingCoverage;
