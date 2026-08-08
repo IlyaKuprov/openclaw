@@ -172,7 +172,7 @@ artifact when package or Docker-facing stages need it.
 | Package artifact            | **Job:** `Prepare release package artifact`<br />**Backing workflow:** none<br />**Tests:** validates the umbrella's immutable package tuple, or packs one candidate tarball for a direct/focused Release Checks dispatch, then exposes it to downstream package-facing checks.<br />**Rerun:** the affected package, cross-OS, or live/E2E group.                                                                                                                                                                                                                                                     |
 | Install smoke               | **Job:** `Run install smoke`<br />**Backing workflow:** `Install Smoke`<br />**Tests:** full install path with root Dockerfile smoke image reuse, QR package install, root and gateway Docker smokes, installer Docker tests, and Bun global install image-provider smoke.<br />**Rerun:** `rerun_group=install-smoke`.                                                                                                                                                                                                                                                                                |
 | Cross-OS                    | **Job:** `cross_os_release_checks`<br />**Backing workflow:** `OpenClaw Cross-OS Release Checks (Reusable)`<br />**Tests:** fresh and upgrade lanes on Linux, Windows, and macOS for the selected provider and mode, using the candidate tarball plus a baseline package.<br />**Rerun:** `rerun_group=cross-os`.                                                                                                                                                                                                                                                                                      |
-| Windows-node prerelease E2E | **Job:** `windows_node_prerelease_e2e`<br />**Backing workflow:** `openclaw/openclaw-windows-node` release-candidate E2E<br />**Tests:** resolves one published Windows-node prerelease artifact, carries its exact name and SHA-256 through the reusable boundary, binds the OpenClaw candidate to its producer run, and proves setup, tray connection, Windows-node capability registration, and MCP execution against the exact OpenClaw tarball.<br />**Runs:** every full release validation (`rerun_group=all`) or focused Windows validation (`rerun_group=windows-node`); success is required. |
+| Windows-node prerelease E2E | **Job:** `windows_node_prerelease_e2e`<br />**Backing workflow:** `openclaw/openclaw-windows-node` release-candidate E2E<br />**Tests:** resolves the current Windows-node production prerelease, carries its exact name and SHA-256 through the reusable boundary, binds the OpenClaw candidate to its producer run, and proves setup, tray connection, Windows-node capability registration, and MCP execution against the exact OpenClaw tarball.<br />**Runs:** every full release validation (`rerun_group=all`) or focused Windows validation (`rerun_group=windows-node`); success is required. |
 | Windows-node stable E2E     | **Job:** `windows_node_stable_e2e`<br />**Backing workflow:** `openclaw/openclaw-windows-node` release-candidate E2E<br />**Tests:** runs the same producer-run-bound E2E against the exact selected published stable Windows-node artifact. A failure passes only when its evidence contains the gateway's explicit `PROTOCOL_MISMATCH` code; install, network, pairing, auth, and all other failures remain blocking.<br />**Runs:** every full release validation (`rerun_group=all`) or focused Windows validation (`rerun_group=windows-node`).                                                   |
 | Repo and live E2E           | **Job:** `Run repo/live E2E validation`<br />**Backing workflow:** `OpenClaw Live And E2E Checks (Reusable)`<br />**Tests:** repository E2E, live cache, OpenAI websocket streaming, native live provider and plugin shards, and Docker-backed live model/backend/gateway harnesses selected by `release_profile`.<br />**Runs:** `run_release_soak=true`, `release_profile=full`, or focused `rerun_group=live-e2e`.<br />**Rerun:** `rerun_group=live-e2e`, optionally with `live_suite_filter`.                                                                                                     |
 | Docker release path         | **Job:** `Run Docker release-path validation`<br />**Backing workflow:** `OpenClaw Live And E2E Checks (Reusable)`<br />**Tests:** release-path Docker chunks against the shared package artifact.<br />**Runs:** `run_release_soak=true`, `release_profile=full`, or focused `rerun_group=live-e2e`.<br />**Rerun:** `rerun_group=live-e2e`.                                                                                                                                                                                                                                                          |
@@ -188,6 +188,42 @@ artifact when package or Docker-facing stages need it.
 | QA live WhatsApp            | **Job:** `Run QA Lab live WhatsApp lane`<br />**Backing workflow:** direct advisory job<br />**Tests:** live WhatsApp QA with Convex CI credential leases when `OPENCLAW_RELEASE_QA_WHATSAPP_LIVE_CI_ENABLED` is enabled.<br />**Rerun:** `rerun_group=qa-live` with `live_suite_filter=qa-live-whatsapp`.                                                                                                                                                                                                                                                                                             |
 | QA live Slack               | **Job:** `Run QA Lab live Slack lane`<br />**Backing workflow:** direct advisory job<br />**Tests:** live Slack QA with Convex CI credential leases when `OPENCLAW_RELEASE_QA_SLACK_LIVE_CI_ENABLED` is enabled.<br />**Rerun:** `rerun_group=qa-live` with `live_suite_filter=qa-live-slack`.                                                                                                                                                                                                                                                                                                         |
 | Release verifier            | **Job:** `Verify release checks`<br />**Backing workflow:** none<br />**Tests:** required release-check jobs for the selected rerun group.<br />**Rerun:** rerun after focused child jobs pass.                                                                                                                                                                                                                                                                                                                                                                                                        |
+
+## Windows-node release channel selection
+
+`Resolve Windows-node release artifacts` picks the two artifacts the Windows-node
+E2E lanes install. It selects by the canonical release-tag convention documented
+in `openclaw/openclaw-windows-node` (`docs/RELEASING.md` "Release channel policy"
+and `docs/VERSIONING.md` "Canonical release tags"), not by ad-hoc name
+exclusions:
+
+- Stable channel: the newest published, non-draft, non-prerelease release tagged
+  `vX.Y.Z`.
+- Production prerelease channel: the newest published, non-draft, prerelease
+  release tagged `vX.Y.Z-alpha.N`.
+
+Every other tag shape is outside that signed release train and is never
+installed. Throwaway pipeline experiments such as `vX.Y.Z-msixtest.N`, whose
+release bodies say `THROWAWAY TEST RELEASE - DO NOT INSTALL` and whose tags are
+deleted once testing ends, are therefore ineligible in both channels even when
+they are the newest prerelease.
+
+The resolver then fails closed instead of degrading to a weaker artifact:
+
+- The newest release in each channel must expose exactly one uploaded x64 tray
+  ZIP, or exactly one uploaded x64 MSIX when no ZIP is present, with a lowercase
+  `sha256:` digest. An older release is never used as a substitute.
+- Each selected tag must resolve to an immutable commit SHA.
+- The selected prerelease must outrank the selected stable release by SemVer
+  precedence. `vX.Y.Z-alpha.N` is the prerelease of `X.Y.Z`, so once `vX.Y.Z`
+  ships that alpha is spent; validating it would report the fail-closed
+  prerelease lane green against a superseded build while the alpha channel has no
+  current production prerelease. When that happens the fix is to publish the next
+  `vX.Y.Z-alpha.N` in `openclaw/openclaw-windows-node`, never to relax the
+  selector.
+
+The job summary records both selected tags, asset names, and publish timestamps
+so the artifacts behind a green lane stay auditable.
 
 ## Docker release-path chunks
 

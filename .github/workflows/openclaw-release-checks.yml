@@ -966,19 +966,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # openclaw/openclaw-windows-node `docs/RELEASING.md` ("Release channel
+          # policy") and `docs/VERSIONING.md` ("Canonical release tags") define the
+          # only two tag shapes its signed release pipeline publishes: `vX.Y.Z` for
+          # stable and `vX.Y.Z-alpha.N` for the production prerelease channel that
+          # is built to be installed. Any other tag shape is outside that release
+          # train - for example the throwaway `vX.Y.Z-msixtest.N` signing
+          # experiments whose bodies say "THROWAWAY TEST RELEASE - DO NOT INSTALL"
+          # and whose tags are deleted after testing. Release validation selects by
+          # channel convention rather than by ad-hoc exclusions so a future
+          # throwaway label is rejected without another workflow change.
+          stable_tag_pattern='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          prerelease_tag_pattern='^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$'
+
           # GitHub returns releases newest-first. One 100-item page is enough to
           # resolve the current stable and prerelease without concatenating pages.
           releases="$(gh api 'repos/openclaw/openclaw-windows-node/releases?per_page=100')"
 
           select_release() {
             local prerelease="$1"
-            jq -cer --argjson prerelease "$prerelease" '
+            local tag_pattern="$2"
+            jq -cer --argjson prerelease "$prerelease" --arg tag_pattern "$tag_pattern" '
               [ .[]
                 | select(.draft == false and .prerelease == $prerelease)
+                | select(.tag_name | test($tag_pattern))
               ]
               | sort_by(.published_at)
               | last
-              | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"))
+              | select(. != null)
               | . as $release
               | [.assets[]
                   | select(.state == "uploaded")
@@ -999,14 +1014,36 @@ jobs:
             ' <<< "$releases"
           }
 
-          stable="$(select_release false)" || {
-            echo "No published stable Windows-node release exposes a hashed x64 ZIP or MSIX tray artifact." >&2
+          stable="$(select_release false "$stable_tag_pattern")" || {
+            echo "No published stable Windows-node release (vX.Y.Z) exposes a hashed x64 ZIP or MSIX tray artifact." >&2
             exit 1
           }
-          prerelease="$(select_release true)" || {
-            echo "No published Windows-node prerelease exposes a hashed x64 ZIP or MSIX tray artifact." >&2
+          prerelease="$(select_release true "$prerelease_tag_pattern")" || {
+            echo "No published Windows-node production prerelease (vX.Y.Z-alpha.N) exposes a hashed x64 ZIP or MSIX tray artifact." >&2
             exit 1
           }
+
+          # `docs/VERSIONING.md` keeps release tags plus GitVersion SemVer as the
+          # versioning contract, so `vX.Y.Z-alpha.N` is the prerelease of `X.Y.Z`.
+          # Once a stable release outranks it that alpha is spent, and validating it
+          # would report the fail-closed prerelease lane green against a superseded
+          # build while the current production prerelease is simply missing.
+          if ! jq -ne --argjson stable "$stable" --argjson prerelease "$prerelease" '
+              def semver_key:
+                ltrimstr("v")
+                | capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(?:-alpha\\.(?<alpha>[0-9]+))?$")
+                | [
+                    (.major | tonumber),
+                    (.minor | tonumber),
+                    (.patch | tonumber),
+                    (if .alpha == null then 1 else 0 end),
+                    ((.alpha // "0") | tonumber)
+                  ];
+              ($prerelease.tag | semver_key) > ($stable.tag | semver_key)
+            ' > /dev/null; then
+            echo "Windows-node prerelease $(jq -r .tag <<< "$prerelease") is superseded by stable $(jq -r .tag <<< "$stable"); the alpha channel has no current production prerelease to validate." >&2
+            exit 1
+          fi
 
           resolve_tag_sha() {
             local tag="$1"
@@ -1044,8 +1081,8 @@ jobs:
           {
             echo "## Windows-node release artifacts"
             echo
-            echo "- Stable: \`$(jq -r .tag <<< "$stable")\` / \`$(jq -r .asset_name <<< "$stable")\`"
-            echo "- Prerelease: \`$(jq -r .tag <<< "$prerelease")\` / \`$(jq -r .asset_name <<< "$prerelease")\`"
+            echo "- Stable: \`$(jq -r .tag <<< "$stable")\` / \`$(jq -r .asset_name <<< "$stable")\` (published $(jq -r .published_at <<< "$stable"))"
+            echo "- Prerelease: \`$(jq -r .tag <<< "$prerelease")\` / \`$(jq -r .asset_name <<< "$prerelease")\` (published $(jq -r .published_at <<< "$prerelease"))"
           } >> "$GITHUB_STEP_SUMMARY"
 
   install_smoke_release_checks:

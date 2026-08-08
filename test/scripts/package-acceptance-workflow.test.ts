@@ -624,6 +624,78 @@ esac
   });
 }
 
+function windowsNodeRelease(params: {
+  assetName?: string;
+  digest?: string;
+  draft?: boolean;
+  prerelease: boolean;
+  publishedAt: string;
+  state?: string;
+  tag: string;
+}) {
+  return {
+    assets: [
+      {
+        digest: params.digest ?? `sha256:${"c".repeat(64)}`,
+        name: params.assetName ?? `OpenClawTray-${params.tag.replace(/^v/u, "")}-win-x64.zip`,
+        state: params.state ?? "uploaded",
+      },
+    ],
+    draft: params.draft ?? false,
+    prerelease: params.prerelease,
+    published_at: params.publishedAt,
+    tag_name: params.tag,
+  };
+}
+
+function runWindowsNodeReleaseResolver(releases: ReturnType<typeof windowsNodeRelease>[]) {
+  const job = workflowJob(RELEASE_CHECKS_WORKFLOW, "resolve_windows_node_release_artifacts");
+  const script = workflowStep(job, "Select immutable stable and prerelease assets").run;
+  if (!script) {
+    throw new Error("Expected Windows-node release resolver script");
+  }
+  const workdir = tempDirs.make("windows-node-release-resolver-");
+  const releasesPath = resolve(workdir, "releases.json");
+  writeFileSync(releasesPath, JSON.stringify(releases));
+  const ghPath = resolve(workdir, "gh");
+  writeFileSync(
+    ghPath,
+    `#!/bin/sh
+case "$2" in
+  repos/openclaw/openclaw-windows-node/releases*) cat "$MOCK_RELEASES_FILE" ;;
+  repos/openclaw/openclaw-windows-node/git/ref/tags/*)
+    printf '{"object":{"type":"commit","sha":"%s"}}\\n' "$MOCK_TAG_SHA" ;;
+  *) exit 2 ;;
+esac
+`,
+  );
+  chmodSync(ghPath, 0o755);
+  const outputPath = resolve(workdir, "github-output.txt");
+  const summaryPath = resolve(workdir, "github-summary.md");
+  writeFileSync(outputPath, "");
+  writeFileSync(summaryPath, "");
+  const result = spawnSync("bash", ["-c", script], {
+    cwd: workdir,
+    encoding: "utf8",
+    env: {
+      GH_TOKEN: "test-token",
+      GITHUB_OUTPUT: outputPath,
+      GITHUB_STEP_SUMMARY: summaryPath,
+      MOCK_RELEASES_FILE: releasesPath,
+      MOCK_TAG_SHA: "b".repeat(40),
+      PATH: `${workdir}:${process.env.PATH}`,
+    },
+  });
+  const outputs: Record<string, string> = {};
+  for (const line of readFileSync(outputPath, "utf8").split("\n")) {
+    const separator = line.indexOf("=");
+    if (separator > 0) {
+      outputs[line.slice(0, separator)] = line.slice(separator + 1);
+    }
+  }
+  return { outputs, result, summary: readFileSync(summaryPath, "utf8") };
+}
+
 function runReleasePublishInputValidation(overrides: Record<string, string>) {
   const job = workflowJob(RELEASE_PUBLISH_WORKFLOW, "resolve_release_target");
   const script = workflowStep(job, "Validate inputs").run;
@@ -3652,6 +3724,14 @@ describe("package artifact reuse", () => {
     expect(resolverScript.indexOf("| last")).toBeLessThan(
       resolverScript.indexOf("| . as $release"),
     );
+    expect(resolverScript).toContain("stable_tag_pattern='^v[0-9]+\\.[0-9]+\\.[0-9]+$'");
+    expect(resolverScript).toContain(
+      "prerelease_tag_pattern='^v[0-9]+\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$'",
+    );
+    expect(resolverScript.indexOf("select(.tag_name | test($tag_pattern))")).toBeLessThan(
+      resolverScript.indexOf("| sort_by(.published_at)"),
+    );
+    expect(resolverScript).toContain("($prerelease.tag | semver_key) > ($stable.tag | semver_key)");
     expect(resolverScript).toContain('select(.state == "uploaded")');
     expect(resolverScript).toContain("($zip_assets | length) == 1");
     expect(resolverScript).toContain(
@@ -3689,6 +3769,121 @@ describe("package artifact reuse", () => {
         "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}",
       windows_node_sha: "c14ead38722e9f505d4034903a22912870018a6d",
     });
+  });
+
+  it("selects Windows-node release channels by canonical tag convention", () => {
+    const releases = [
+      windowsNodeRelease({
+        assetName: "OpenClaw.Tray.WinUI_0.7.0_x64.msix",
+        prerelease: true,
+        publishedAt: "2026-07-20T00:00:00Z",
+        tag: "v0.7.0-msixtest.9",
+      }),
+      windowsNodeRelease({
+        prerelease: true,
+        publishedAt: "2026-07-10T00:00:00Z",
+        tag: "v0.6.13-alpha.2",
+      }),
+      windowsNodeRelease({
+        prerelease: true,
+        publishedAt: "2026-07-05T00:00:00Z",
+        tag: "v0.6.13-alpha.1",
+      }),
+      windowsNodeRelease({
+        prerelease: false,
+        publishedAt: "2026-06-30T00:00:00Z",
+        tag: "v0.6.12",
+      }),
+      windowsNodeRelease({
+        prerelease: false,
+        publishedAt: "2026-06-29T00:00:00Z",
+        tag: "v0.6.11",
+      }),
+    ];
+    const { outputs, result, summary } = runWindowsNodeReleaseResolver(releases);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(outputs.stable_tag).toBe("v0.6.12");
+    expect(outputs.stable_asset_name).toBe("OpenClawTray-0.6.12-win-x64.zip");
+    expect(outputs.prerelease_tag).toBe("v0.6.13-alpha.2");
+    expect(outputs.prerelease_asset_name).toBe("OpenClawTray-0.6.13-alpha.2-win-x64.zip");
+    expect(outputs.prerelease_asset_sha256).toBe("c".repeat(64));
+    expect(outputs.prerelease_release_sha).toBe("b".repeat(40));
+    expect(summary).toContain("v0.6.13-alpha.2");
+    expect(summary).not.toContain("msixtest");
+  });
+
+  it("rejects throwaway Windows-node test releases as the prerelease channel", () => {
+    const releases = [
+      windowsNodeRelease({
+        assetName: "OpenClaw.Tray.WinUI_0.6.11_x64.msix",
+        prerelease: true,
+        publishedAt: "2026-06-12T19:41:07Z",
+        tag: "v0.6.11-msixtest.1",
+      }),
+      windowsNodeRelease({
+        prerelease: false,
+        publishedAt: "2026-06-30T00:00:00Z",
+        tag: "v0.6.12",
+      }),
+    ];
+    const { outputs, result } = runWindowsNodeReleaseResolver(releases);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "No published Windows-node production prerelease (vX.Y.Z-alpha.N)",
+    );
+    expect(outputs).toEqual({});
+  });
+
+  it("fails closed when the newest alpha prerelease is superseded by stable", () => {
+    const releases = [
+      windowsNodeRelease({
+        prerelease: false,
+        publishedAt: "2026-06-30T00:00:00Z",
+        tag: "v0.6.12",
+      }),
+      windowsNodeRelease({
+        prerelease: true,
+        publishedAt: "2026-06-03T00:00:00Z",
+        tag: "v0.6.2-alpha.1",
+      }),
+    ];
+    const { outputs, result } = runWindowsNodeReleaseResolver(releases);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "Windows-node prerelease v0.6.2-alpha.1 is superseded by stable v0.6.12",
+    );
+    expect(outputs).toEqual({});
+  });
+
+  it("fails closed when the current alpha prerelease has no hashed uploaded artifact", () => {
+    const releases = [
+      windowsNodeRelease({
+        digest: "",
+        prerelease: true,
+        publishedAt: "2026-07-10T00:00:00Z",
+        tag: "v0.6.13-alpha.1",
+      }),
+      windowsNodeRelease({
+        prerelease: true,
+        publishedAt: "2026-07-05T00:00:00Z",
+        tag: "v0.6.12-alpha.1",
+      }),
+      windowsNodeRelease({
+        prerelease: false,
+        publishedAt: "2026-06-30T00:00:00Z",
+        tag: "v0.6.11",
+      }),
+    ];
+    const { outputs, result } = runWindowsNodeReleaseResolver(releases);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "No published Windows-node production prerelease (vX.Y.Z-alpha.N)",
+    );
+    expect(outputs).toEqual({});
   });
 
   it("routes release Matrix through the QA Lab selector", () => {
