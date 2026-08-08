@@ -313,7 +313,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneBoard {
     this.onFocusPane?.(this.paneId);
   };
 
-  /** Receives a browser-panel annotation: attach the marked-up screenshot and append the prepackaged prompt. */
+  /** Receives one complete browser annotation without mixing generated context into the user's draft. */
   protected receiveBrowserAnnotation(event: Event): void {
     const state = this.state;
     // Only the active pane consumes the annotation; defaultPrevented tells the
@@ -322,7 +322,12 @@ export abstract class ChatPaneLifecycle extends ChatPaneBoard {
       return;
     }
     const detail = event.detail as BrowserAnnotationDraft | null;
-    if (!detail || typeof detail.text !== "string" || typeof detail.dataUrl !== "string") {
+    if (
+      !detail ||
+      typeof detail.modelContext !== "string" ||
+      typeof detail.dataUrl !== "string" ||
+      !detail.card
+    ) {
       return;
     }
     const attachment = chatAttachmentFromDataUrl(detail.dataUrl, detail.fileName || "annotation");
@@ -330,9 +335,19 @@ export abstract class ChatPaneLifecycle extends ChatPaneBoard {
       return;
     }
     event.preventDefault();
-    state.chatAttachments = [...state.chatAttachments, attachment];
-    const current = state.chatMessage.trimEnd();
-    state.handleChatDraftChange(current ? `${current}\n\n${detail.text}` : detail.text);
+    state.chatAttachments = [
+      ...state.chatAttachments,
+      {
+        ...attachment,
+        browserAnnotation: {
+          modelContext: detail.modelContext,
+          title: detail.card.title,
+          displayUrl: detail.card.displayUrl,
+          markedRegionCount: detail.card.markedRegionCount,
+          inspectedElement: detail.card.inspectedElement,
+        },
+      },
+    ];
     state.requestUpdate?.();
     void this.updateComplete.then(() => {
       this.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR)?.focus({

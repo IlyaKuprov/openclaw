@@ -1,6 +1,6 @@
 import { t } from "../../i18n/index.ts";
 import {
-  buildAnnotationPrompt,
+  buildBrowserAnnotationContent,
   composeAnnotatedImage,
   dispatchBrowserAnnotation,
   paintAnnotations,
@@ -138,7 +138,7 @@ export function dispatchCompositedBrowserAnnotation(
 ): boolean {
   const url = view.metrics?.url || view.url || tab?.url || "";
   const title = view.metrics?.title || tab?.title || "";
-  const text = buildAnnotationPrompt({ url, title, strokes, element });
+  const content = buildBrowserAnnotationContent({ url, title, strokes, element });
   const dataUrl = composeAnnotatedImage({
     image: view.image,
     width: view.image.naturalWidth,
@@ -146,5 +146,5 @@ export function dispatchCompositedBrowserAnnotation(
     strokes,
     highlight,
   });
-  return dispatchBrowserAnnotation({ text, dataUrl, fileName: "annotated-page.png" });
+  return dispatchBrowserAnnotation({ ...content, dataUrl, fileName: "annotated-page.png" });
 }

@@ -12,6 +12,7 @@ import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gatewa
 import type { GatewaySessionRow } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { createInitialUserMessageHandoff } from "../../app/initial-user-message-handoff.ts";
+import type { BrowserAnnotationDraft } from "../../components/browser/browser-annotation.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import { createTestChatPane, type TestChatPane } from "./chat-pane.test-support.ts";
 import { applySelectedChatAgent } from "./chat-session.ts";
@@ -25,6 +26,91 @@ import { prepareInitialUserMessageHandoff } from "./initial-turn-handoff.ts";
 
 const SKIP_REWIND_CONFIRM_PREFERENCE = "openclaw:skip-rewind-confirm";
 const confirmationOwners = new Set<HTMLElement>();
+
+describe("browser annotation composer handoff", () => {
+  it("keeps generated context on the attachment and leaves the user's draft unchanged", () => {
+    const { pane, state } = createTestChatPane({
+      client: {} as GatewayBrowserClient,
+      sessions: {} as SessionCapability,
+    });
+    pane.active = true;
+    state.chatMessage = "Keep my question exactly.";
+    state.chatAttachments = [];
+    state.handleChatDraftChange = vi.fn();
+    const detail: BrowserAnnotationDraft = {
+      modelContext: "Generated page context",
+      dataUrl: "data:image/png;base64,aGVsbG8=",
+      fileName: "annotated-page.png",
+      card: {
+        title: "Example Domain",
+        displayUrl: "example.com",
+        markedRegionCount: 2,
+        inspectedElement: true,
+      },
+    };
+    const event = new CustomEvent<BrowserAnnotationDraft>("openclaw:browser-annotation", {
+      detail,
+      cancelable: true,
+    });
+
+    (
+      pane as TestChatPane & { receiveBrowserAnnotation: (candidate: Event) => void }
+    ).receiveBrowserAnnotation(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(state.chatMessage).toBe("Keep my question exactly.");
+    expect(state.handleChatDraftChange).not.toHaveBeenCalled();
+    expect(state.chatAttachments).toHaveLength(1);
+    expect(state.chatAttachments[0]?.browserAnnotation).toEqual({
+      modelContext: "Generated page context",
+      title: "Example Domain",
+      displayUrl: "example.com",
+      markedRegionCount: 2,
+      inspectedElement: true,
+    });
+  });
+
+  it("lets only the active pane consume a shared annotation event", () => {
+    const first = createTestChatPane({
+      client: {} as GatewayBrowserClient,
+      sessions: {} as SessionCapability,
+    });
+    const second = createTestChatPane({
+      client: {} as GatewayBrowserClient,
+      sessions: {} as SessionCapability,
+    });
+    first.pane.active = false;
+    second.pane.active = true;
+    first.state.chatAttachments = [];
+    second.state.chatAttachments = [];
+    const event = new CustomEvent<BrowserAnnotationDraft>("openclaw:browser-annotation", {
+      detail: {
+        modelContext: "Context",
+        dataUrl: "data:image/png;base64,aGVsbG8=",
+        fileName: "annotated-page.png",
+        card: {
+          title: "",
+          displayUrl: "example.com",
+          markedRegionCount: 1,
+          inspectedElement: false,
+        },
+      },
+      cancelable: true,
+    });
+
+    const receive = (pane: TestChatPane) =>
+      (
+        pane as TestChatPane & { receiveBrowserAnnotation: (candidate: Event) => void }
+      ).receiveBrowserAnnotation(event);
+    receive(first.pane);
+    receive(second.pane);
+    receive(first.pane);
+
+    expect(first.state.chatAttachments).toEqual([]);
+    expect(second.state.chatAttachments).toHaveLength(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+});
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;

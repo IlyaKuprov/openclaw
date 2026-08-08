@@ -5,6 +5,7 @@ import { cancelQuestionPrompt, submitQuestionPrompt } from "../../app/question-p
 import { readPresenceEntries, resolveCurrentSelfUser } from "../../app/user-profile.ts";
 import { hasSessionPresenceViewers } from "../../components/viewer-facepile.ts";
 import { t } from "../../i18n/index.ts";
+import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
 import {
   resolveControlUiFollowUpMode,
   resolveControlUiServerQueueMode,
@@ -16,6 +17,7 @@ import {
   resolveChatPaneObserverRunId,
 } from "../../lib/observer-digest.ts";
 import { buildAgentMainSessionKey } from "../../lib/sessions/session-key.ts";
+import { removeBrowserAnnotationWithUndo } from "./browser-annotation-removal.ts";
 import { clearChatHistory } from "./chat-history.ts";
 import { resolveChatMessageAccess } from "./chat-message-access.ts";
 import { createChatModelSetupBanner, requiresChatModelSetup } from "./chat-model-setup.ts";
@@ -75,6 +77,49 @@ import { configureToolTitleFetcher } from "./tool-titles.ts";
 import { workspaceResultConflictFromPlacement } from "./workspace-conflict.ts";
 
 export class ChatPane extends ChatPaneHeader {
+  private readonly removeBrowserAnnotation = (attachment: ChatAttachment) => {
+    const state = this.state;
+    if (!state) {
+      return;
+    }
+    const sourceSessionKey = state.sessionKey;
+    removeBrowserAnnotationWithUndo(
+      {
+        getSessionKey: () => this.state?.sessionKey ?? "",
+        getAttachments: () => this.state?.chatAttachments ?? [],
+        setAttachments: (attachments) => {
+          if (this.state) {
+            this.state.chatAttachments = attachments;
+          }
+        },
+        requestUpdate: () => this.state?.requestUpdate?.(),
+        focusComposer: () => {
+          void this.updateComplete.then(() => {
+            if (this.state?.sessionKey !== sourceSessionKey) {
+              return;
+            }
+            this.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR)?.focus({
+              preventScroll: true,
+            });
+          });
+        },
+        focusRestoredAnnotation: (attachmentId) => {
+          void this.updateComplete.then(() => {
+            if (this.state?.sessionKey !== sourceSessionKey) {
+              return;
+            }
+            const card = [...this.querySelectorAll<HTMLElement>("[data-attachment-id]")].find(
+              (candidate) => candidate.dataset.attachmentId === attachmentId,
+            );
+            card?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+          });
+        },
+      },
+      attachment,
+      { removed: t("chat.composer.browserAnnotationRemoved"), undo: t("common.undo") },
+    );
+  };
+
   override render() {
     const state = this.state;
     if (!state) {
@@ -487,6 +532,7 @@ export class ChatPane extends ChatPaneHeader {
         state.chatAttachments = next;
         state.requestUpdate?.();
       },
+      onRemoveAttachment: this.removeBrowserAnnotation,
       onSend: () =>
         catalogKey
           ? void this.continueCatalogSession(catalogKey)
