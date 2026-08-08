@@ -847,6 +847,9 @@ function runReleaseChecksSummary(params: {
   discordResult?: "failure" | "skipped" | "success";
   resolveResult?: "failure" | "success";
   telegramSelected?: boolean;
+  windowsSelected?: boolean;
+  windowsPrereleaseResult?: "cancelled" | "failure" | "skipped" | "success";
+  windowsStableResult?: "cancelled" | "failure" | "skipped" | "success";
   validatedStatuses?: Array<{ job: string; status: string; variant: string }>;
   workflowRef?: string;
 }) {
@@ -895,6 +898,9 @@ function runReleaseChecksSummary(params: {
       RESOLVE_TARGET_RESULT: params.resolveResult ?? "success",
       RUNTIME_TOOL_COVERAGE_RELEASE_CHECKS_RESULT: "skipped",
       VALIDATE_ADVISORY_STATUSES_OUTCOME: "success",
+      WINDOWS_NODE_PRERELEASE_E2E_RESULT: params.windowsPrereleaseResult ?? "skipped",
+      WINDOWS_NODE_SELECTED: String(params.windowsSelected ?? false),
+      WINDOWS_NODE_STABLE_E2E_RESULT: params.windowsStableResult ?? "skipped",
       WORKFLOW_REF: params.workflowRef ?? "refs/heads/release/2026.7.1",
     },
   });
@@ -5092,6 +5098,69 @@ describe("package artifact reuse", () => {
     if (emptyStderr) {
       expect(result.stderr).toBe("");
     }
+    for (const snippet of expected ?? []) {
+      expect(output).toContain(snippet);
+    }
+  });
+
+  it.each([
+    {
+      expected: [] as string[],
+      name: "accepts both successful selected Windows-node E2E children",
+      params: {
+        currentAttempt: "2",
+        currentResult: "skipped" as const,
+        telegramSelected: false,
+        windowsSelected: true,
+        windowsPrereleaseResult: "success" as const,
+        windowsStableResult: "success" as const,
+      },
+      status: 0,
+    },
+    {
+      expected: ["::error::windows_node_prerelease_e2e ended with skipped"],
+      name: "rejects a skipped selected Windows-node prerelease E2E child",
+      params: {
+        currentAttempt: "2",
+        currentResult: "skipped" as const,
+        telegramSelected: false,
+        windowsSelected: true,
+        windowsPrereleaseResult: "skipped" as const,
+        windowsStableResult: "success" as const,
+      },
+      status: 1,
+    },
+    {
+      expected: ["::error::windows_node_stable_e2e ended with failure"],
+      name: "rejects a failed selected Windows-node stable E2E child",
+      params: {
+        currentAttempt: "2",
+        currentResult: "skipped" as const,
+        telegramSelected: false,
+        windowsSelected: true,
+        windowsPrereleaseResult: "success" as const,
+        windowsStableResult: "failure" as const,
+      },
+      status: 1,
+    },
+    {
+      expected: [] as string[],
+      name: "accepts skipped Windows-node E2E children when unselected",
+      params: {
+        currentAttempt: "2",
+        currentResult: "skipped" as const,
+        telegramSelected: false,
+        windowsSelected: false,
+        windowsPrereleaseResult: "skipped" as const,
+        windowsStableResult: "skipped" as const,
+      },
+      status: 0,
+    },
+  ] as const)("$name", ({ expected, params, status }) => {
+    const result = runReleaseChecksSummary(params);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(status);
     for (const snippet of expected ?? []) {
       expect(output).toContain(snippet);
     }
