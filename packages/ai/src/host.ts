@@ -245,6 +245,17 @@ export type AiModelTransportEvent =
       transport: string;
     })
   | (AiModelTransportCallEventBase & {
+      /** Semantic or dispatch uncertainty scoped to one transport. */
+      type: "coverage";
+      scope: "transport_semantics";
+      state: "unverified";
+      reason:
+        | "transport_terminal_unverified"
+        | "transport_endpoint_authority_partial"
+        | "transport_submission_authority_partial";
+      transport: string;
+    })
+  | (AiModelTransportCallEventBase & {
       type: "submission";
       transport: string;
       total: 0;

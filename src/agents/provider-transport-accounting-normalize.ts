@@ -40,7 +40,11 @@ export function hasTransportFallbackCause(
         call.fallbackCause.reason === "connection_failure"
       );
     case "submission_failure":
-      return call.fallbackCause === undefined;
+      return (
+        call.fallbackCause === undefined &&
+        call.latestZeroSubmissionOutcome === "failed" &&
+        call.currentTransport === event.fromTransport
+      );
     case "stream_failure":
       return (
         call.fallbackCause?.transport === event.fromTransport &&
@@ -261,11 +265,28 @@ export function normalizeTransportEvent(
     }
     case "coverage": {
       const transport = requireIdentity(event.transport, reject, "event");
+      if (!transport) {
+        return rejectValue(reject, "transport_invalid_fact", "event");
+      }
+      if (event.scope === "provider_fallbacks") {
+        if (event.state !== "lower_bound" || event.reason !== "terminal_metadata_unavailable") {
+          return rejectValue(reject, "transport_invalid_fact", "event");
+        }
+        return {
+          ...callBase,
+          type: event.type,
+          transport,
+          scope: "provider_fallbacks",
+          state: "lower_bound",
+          reason: "terminal_metadata_unavailable",
+        };
+      }
       if (
-        !transport ||
-        event.scope !== "provider_fallbacks" ||
-        event.state !== "lower_bound" ||
-        event.reason !== "terminal_metadata_unavailable"
+        event.scope !== "transport_semantics" ||
+        event.state !== "unverified" ||
+        (event.reason !== "transport_terminal_unverified" &&
+          event.reason !== "transport_endpoint_authority_partial" &&
+          event.reason !== "transport_submission_authority_partial")
       ) {
         return rejectValue(reject, "transport_invalid_fact", "event");
       }
@@ -273,9 +294,9 @@ export function normalizeTransportEvent(
         ...callBase,
         type: event.type,
         transport,
-        scope: "provider_fallbacks",
-        state: "lower_bound",
-        reason: "terminal_metadata_unavailable",
+        scope: "transport_semantics",
+        state: "unverified",
+        reason: event.reason,
       };
     }
     case "submission": {

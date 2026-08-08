@@ -102,6 +102,11 @@ describe("provider transport accounting transitions", () => {
         transport: "websocket",
         outcome: "completed",
       });
+      emitZeroSubmission({
+        callId: "call-submit-failure",
+        outcome: "failed",
+        transport: "websocket",
+      });
       emitTransportFallback({
         callId: "call-submit-failure",
         fromTransport: "websocket",
@@ -136,6 +141,11 @@ describe("provider transport accounting transitions", () => {
     const collector = createProviderTransportAccountingCollector();
     runWithProviderTransportAccountingObserver(collector.observer, () => {
       startCall("call-cached-submit-failure");
+      emitZeroSubmission({
+        callId: "call-cached-submit-failure",
+        outcome: "failed",
+        transport: "websocket",
+      });
       emitTransportFallback({
         callId: "call-cached-submit-failure",
         fromTransport: "websocket",
@@ -158,6 +168,7 @@ describe("provider transport accounting transitions", () => {
         connections: { total: 0, totalKind: "exact" },
         attempts: { total: 1, transportFallbacks: 1, totalKind: "exact" },
         fallbacks: { total: 1, submissionFailures: 1, totalKind: "exact" },
+        zeroSubmissions: { total: 1, failed: 1, totalKind: "exact" },
       },
     });
   });
@@ -236,6 +247,7 @@ describe("provider transport accounting transitions", () => {
         logicalCalls: { completed: 1 },
         attempts: { total: 2, transportFallbacks: 1 },
         fallbacks: { total: 1, submissionFailures: 0, streamFailures: 1 },
+        zeroSubmissions: { total: 0, totalKind: "lower_bound" },
       },
     });
 

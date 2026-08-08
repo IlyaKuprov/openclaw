@@ -4,7 +4,8 @@ import {
   type LowerBoundScope,
 } from "./provider-transport-accounting-normalize.js";
 import {
-  providerTransportAggregateKeyForEventType,
+  providerTransportAggregateKeyForEvent,
+  type ProviderTransportAggregateLowerBoundKey,
   type ProviderTransportProjectionState,
 } from "./provider-transport-accounting-project.js";
 import type { ProviderTransportAccountingCoverageReason } from "./provider-transport-accounting.types.js";
@@ -17,8 +18,8 @@ export type PreparedProviderTransportEventIdentity = {
   decision: EventIdentityDecision;
   identityKey?: string;
   record?: {
+    aggregateKey?: ProviderTransportAggregateLowerBoundKey;
     fingerprint: string;
-    type: AiModelTransportEvent["type"];
   };
 };
 
@@ -50,9 +51,8 @@ export function markProviderTransportObservationFailure(
 
 function markEventTotalsLowerBound(state: MutableProviderTransportAccounting): void {
   state.aggregateLowerBounds.events = true;
-  if (state.activeEventType) {
-    state.aggregateLowerBounds[providerTransportAggregateKeyForEventType(state.activeEventType)] =
-      true;
+  if (state.activeAggregateKey) {
+    state.aggregateLowerBounds[state.activeAggregateKey] = true;
   }
   state.issues.add("transport_totals_lower_bound");
 }
@@ -122,14 +122,15 @@ export function prepareProviderTransportEventIdentity(
     return { decision: "rejected" };
   }
   const identityKey = `${identityScope.length}:${identityScope}:${event.eventId}`;
+  const aggregateKey = providerTransportAggregateKeyForEvent(event);
   const existing = state.eventFingerprints.get(identityKey);
   if (existing?.fingerprint === fingerprint) {
     return { decision: "exact_duplicate" };
   }
   if (existing !== undefined) {
     rejectProviderTransportFact(state, "transport_event_conflict", "event");
-    if (existing.type !== event.type) {
-      state.aggregateLowerBounds[providerTransportAggregateKeyForEventType(existing.type)] = true;
+    if (existing.aggregateKey !== aggregateKey && existing.aggregateKey) {
+      state.aggregateLowerBounds[existing.aggregateKey] = true;
     }
     return { decision: "rejected" };
   }
@@ -140,7 +141,10 @@ export function prepareProviderTransportEventIdentity(
   return {
     decision: "accepted",
     identityKey,
-    record: { fingerprint, type: event.type },
+    record: {
+      aggregateKey,
+      fingerprint,
+    },
   };
 }
 
