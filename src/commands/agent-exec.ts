@@ -13,6 +13,7 @@ import { mergeDeep } from "../infra/deep-merge.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { parseStrictNonNegativeInteger } from "../infra/parse-finite-number.js";
 import { writeRuntimeJson, writeRuntimeStdout, type RuntimeEnv } from "../runtime.js";
+import type { AgentExecTrace } from "./agent-exec-trace.js";
 
 const AGENT_EXEC_MESSAGE_MAX_BYTES = 4 * 1024 * 1024;
 const AGENT_EXEC_DEFAULT_TIMEOUT_SECONDS = 600;
@@ -64,6 +65,7 @@ export type AgentExecEnvelope = {
   bridgeCalls?: NonNullable<NonNullable<EmbeddedAgentRunMeta["agentMeta"]>["bridgeCalls"]>;
   codeModeStats?: NonNullable<NonNullable<EmbeddedAgentRunMeta["agentMeta"]>["codeModeStats"]>;
   toolSummary?: NonNullable<EmbeddedAgentRunMeta["toolSummary"]>;
+  trace?: AgentExecTrace;
   model: string | null;
   provider: string | null;
   sessionId: string;
@@ -185,6 +187,7 @@ export function classifyAgentExecResult(
   result: AgentExecRunResult,
   fallbackExhausted = false,
   projectedErrorPayload?: string | true,
+  trace?: AgentExecTrace,
 ): AgentExecEnvelope {
   const meta = result.meta;
   const errorPayload = firstErrorPayload(result);
@@ -250,6 +253,7 @@ export function classifyAgentExecResult(
     ...(agentMeta?.bridgeCalls ? { bridgeCalls: agentMeta.bridgeCalls } : {}),
     ...(agentMeta?.codeModeStats ? { codeModeStats: agentMeta.codeModeStats } : {}),
     ...(meta.toolSummary ? { toolSummary: meta.toolSummary } : {}),
+    ...(trace ? { trace: structuredClone(trace) } : {}),
     model: agentMeta?.model ?? null,
     provider: agentMeta?.provider ?? null,
     sessionId: agentMeta?.sessionId ?? "",
