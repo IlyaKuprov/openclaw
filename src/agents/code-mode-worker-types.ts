@@ -1,7 +1,7 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type { CodeModeApiVirtualFile } from "./code-mode-namespaces.js";
 
-type CodeModeBridgeMethod =
+export type CodeModeBridgeMethod =
   | "search"
   | "describe"
   | "call"
@@ -73,6 +73,16 @@ export type CodeModeSettlementMode =
   | { kind: "draining"; requiredRequestIds: string[] };
 
 export type CodeModeFailurePhase = "input" | "guest" | "bridge" | "host";
+
+export type CodeModeSnapshotMeasurement = {
+  bytes: number;
+  serializationMs: number;
+};
+
+export type CodeModeWorkerThreadMessage =
+  | { kind: "snapshot_started" }
+  | ({ kind: "snapshot_produced" } & CodeModeSnapshotMeasurement)
+  | { kind: "result"; result: CodeModeWorkerThreadResult };
 
 export type CodeModeWorkerThreadResult =
   | {

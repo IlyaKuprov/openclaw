@@ -11,6 +11,7 @@ import type {
   CodeModeConfig,
   CodeModeNamespaceDescriptor,
   CodeModeWorkerPayload,
+  CodeModeWorkerThreadMessage,
   CodeModeWorkerThreadResult as CodeModeWorkerResult,
   PendingBridgeRequest,
   SettledBridgeRequest,
@@ -48,6 +49,14 @@ class CodeModeGuestError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CodeModeGuestError";
+  }
+}
+
+function postWorkerMessage(message: CodeModeWorkerThreadMessage): void {
+  if (parentPort) {
+    Reflect.apply(Reflect.get(parentPort, "postMessage") as (value: unknown) => void, parentPort, [
+      message,
+    ]);
   }
 }
 
@@ -409,7 +418,15 @@ function waitingResult(params: {
   output: unknown[];
   config: CodeModeConfig;
 }): CodeModeWorkerResult {
+  postWorkerMessage({ kind: "snapshot_started" });
+  const serializationStartedAt = performance.now();
   const snapshotBytes = QuickJS.serializeSnapshot(params.vm.snapshot());
+  const snapshotSerializationMs = Math.max(0, performance.now() - serializationStartedAt);
+  postWorkerMessage({
+    kind: "snapshot_produced",
+    bytes: snapshotBytes.byteLength,
+    serializationMs: snapshotSerializationMs,
+  });
   if (snapshotBytes.byteLength > params.config.maxSnapshotBytes) {
     throw new CodeModeWorkerFailure("snapshot_limit_exceeded", "code mode snapshot limit exceeded");
   }
@@ -631,7 +648,5 @@ async function main(): Promise<CodeModeWorkerResult> {
 }
 
 if (parentPort) {
-  Reflect.apply(Reflect.get(parentPort, "postMessage") as (message: unknown) => void, parentPort, [
-    await main(),
-  ]);
+  postWorkerMessage({ kind: "result", result: await main() });
 }

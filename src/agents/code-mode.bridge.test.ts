@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../shared/deferred.js";
 import { buildBlockedToolResult } from "./agent-tools.before-tool-call.js";
+import { cloneCodeModeStats } from "./code-mode-stats.js";
 import { applyCodeModeCatalog, createCodeModeTools } from "./code-mode.js";
 import {
   resetCodeModeTestState,
@@ -185,6 +186,7 @@ describe("Code Mode bridge settlement and cancellation", () => {
     );
 
     expect(details).toMatchObject({ status: "completed" });
+    expect(details).not.toHaveProperty("snapshotAttempt");
     expect(details.value).toEqual([
       { index: 0 },
       { index: 1 },
@@ -194,6 +196,37 @@ describe("Code Mode bridge settlement and cancellation", () => {
     ]);
     expect(bounded.execute).toHaveBeenCalledTimes(5);
     expect(peakActive).toBe(2);
+    const stats = cloneCodeModeStats(
+      expectDefined(catalogRef.current?.codeModeStats, "Code Mode stats test invariant"),
+    );
+    expect(stats).toMatchObject({
+      controlCalls: { exec: 1 },
+      bridgeCalls: { callValue: 5 },
+      workerRuns: {
+        exec: { count: 1 },
+        resume: { count: 2 },
+      },
+      bridgeLifecycle: {
+        registered: 5,
+        started: 5,
+        settled: 5,
+        unresolvedAtExtraction: 0,
+      },
+      snapshots: {
+        attempted: 2,
+        produced: 2,
+        accepted: 2,
+        rejected: 0,
+        incomplete: 0,
+        coverage: "exact",
+      },
+      outcomes: { completed: 1 },
+    });
+    expect(stats.workerRuns.exec?.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(stats.workerRuns.resume?.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(stats.snapshots?.totalBytes).toBeGreaterThan(0);
+    expect(stats.snapshots?.maxBytes).toBeGreaterThan(0);
+    expect(stats.snapshots?.serializationMs).toBeGreaterThanOrEqual(0);
     expect(testing.activeRuns.size).toBe(0);
   });
 
@@ -264,6 +297,22 @@ describe("Code Mode bridge settlement and cancellation", () => {
     expect(activeTool.execute).toHaveBeenCalledOnce();
     expect(activeAborted).toBe(true);
     expect(queuedTool.execute).not.toHaveBeenCalled();
+    expect(
+      cloneCodeModeStats(
+        expectDefined(catalogRef.current?.codeModeStats, "Code Mode stats test invariant"),
+      ),
+    ).toMatchObject({
+      bridgeCalls: { callValue: 2 },
+      bridgeLifecycle: {
+        registered: 2,
+        started: 1,
+        settled: 1,
+        cancelRequested: 2,
+        cancelledBeforeStart: 1,
+        unresolvedAtExtraction: 1,
+      },
+      outcomes: { aborted: 1 },
+    });
     expect(testing.activeRuns.size).toBe(0);
   });
 
