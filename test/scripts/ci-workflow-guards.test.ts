@@ -674,6 +674,151 @@ function writeExecutable(filePath: string, lines: string[]): void {
   chmodSync(filePath, 0o755);
 }
 
+function writeProtocolDescriptor(
+  repo: string,
+  additions: Array<{ name: string; since?: string }> = [],
+): void {
+  const rows = [{ name: "health", since: "2026.7" }, ...additions].map(({ name, since }) => {
+    const sinceProperty = since === undefined ? "" : `, since: ${JSON.stringify(since)}`;
+    return `  { name: ${JSON.stringify(name)}${sinceProperty} },`;
+  });
+  const descriptor = path.join(repo, "src/gateway/methods/core-descriptors.ts");
+  mkdirSync(path.dirname(descriptor), { recursive: true });
+  writeFileSync(
+    descriptor,
+    `export const CORE_GATEWAY_METHOD_SPECS = [\n${rows.join("\n")}\n] as const;\n`,
+  );
+}
+
+function initializeProtocolFixture(repo: string): void {
+  writeFileSync(
+    path.join(repo, "package.json"),
+    '{"name":"qa-protocol-fixture","version":"2026.8.0"}\n',
+  );
+  writeProtocolDescriptor(repo);
+}
+
+function commitFixture(repo: string, message: string): string {
+  runGit(repo, ["add", "-A"]);
+  runGit(repo, ["commit", "-m", message]);
+  return runGit(repo, ["rev-parse", "HEAD"]);
+}
+
+function createQaProtocolTopology() {
+  const root = tempDirs.make("openclaw-qa-protocol-topology-");
+  const origin = path.join(root, "origin");
+  const checkout = path.join(root, "checkout");
+  const releaseBranch = "release/2026.8.1";
+  const releaseTag = "v2026.8.1";
+
+  runGit(root, ["init", "--initial-branch=main", origin]);
+  runGit(origin, ["config", "user.email", "qa-protocol@example.invalid"]);
+  runGit(origin, ["config", "user.name", "QA Protocol Fixture"]);
+  initializeProtocolFixture(origin);
+  const mainBase = commitFixture(origin, "base protocol");
+
+  writeProtocolDescriptor(origin, [{ name: "sessions.patchMany", since: "2026.8" }]);
+  const mainHead = commitFixture(origin, "add sessions patchMany");
+  writeFileSync(path.join(origin, "main-tip.txt"), "later main tip\n");
+  commitFixture(origin, "advance main after selected revision");
+
+  runGit(origin, ["checkout", "-b", releaseBranch, mainBase]);
+  writeProtocolDescriptor(origin, [{ name: "sessions.releaseOnly" }]);
+  commitFixture(origin, "add release protocol method");
+  writeFileSync(path.join(origin, "release.txt"), "release tip\n");
+  const releaseHead = commitFixture(origin, "advance release branch");
+
+  runGit(origin, ["checkout", "--detach", mainBase]);
+  writeFileSync(path.join(origin, "tag.txt"), "release tag\n");
+  commitFixture(origin, "create release tag target");
+  runGit(origin, ["tag", releaseTag]);
+
+  runGit(origin, ["checkout", "-b", "feature/untrusted", mainBase]);
+  writeFileSync(path.join(origin, "feature.txt"), "untrusted\n");
+  commitFixture(origin, "add untrusted feature");
+
+  runGit(origin, ["checkout", "--orphan", "unrelated"]);
+  runGit(origin, ["rm", "-rf", "."]);
+  initializeProtocolFixture(origin);
+  writeProtocolDescriptor(origin, [{ name: "sessions.unrelated", since: "2026.8" }]);
+  commitFixture(origin, "unrelated tagged history");
+  runGit(origin, ["tag", "v2026.8.99"]);
+  runGit(origin, ["checkout", "main"]);
+
+  runGit(root, ["clone", "--no-local", origin, checkout]);
+  const fakeBin = path.join(root, "bin");
+  mkdirSync(fakeBin);
+  writeExecutable(path.join(fakeBin, "timeout"), ["#!/usr/bin/env bash", "shift 3", 'exec "$@"']);
+
+  return {
+    checkout,
+    fakeBin,
+    mainBase,
+    mainHead,
+    origin,
+    releaseBranch,
+    releaseHead,
+    releaseTag,
+  };
+}
+
+function readWorkflowOutputs(outputPath: string): Record<string, string> {
+  if (!existsSync(outputPath)) {
+    return {};
+  }
+  const output = readFileSync(outputPath, "utf8").trim();
+  return output ? Object.fromEntries(output.split("\n").map((line) => line.split("=", 2))) : {};
+}
+
+function runQaSelectedRefValidation(
+  topology: ReturnType<typeof createQaProtocolTopology>,
+  inputRef: string,
+  revision: string,
+  expectedSha = revision,
+) {
+  runGit(topology.checkout, ["checkout", "--detach", revision]);
+  const githubOutput = path.join(topology.checkout, "github-output");
+  rmSync(githubOutput, { force: true });
+  const validateStep = readQaProfileEvidenceWorkflow().jobs.validate_selected_ref.steps.find(
+    (step: WorkflowStep) => step.name === "Validate selected ref",
+  );
+  const result = runWorkflowShellScript(expectDefined(validateStep?.run, "validation script"), {
+    cwd: topology.checkout,
+    env: {
+      ...process.env,
+      EXPECTED_SHA: expectedSha,
+      GITHUB_OUTPUT: githubOutput,
+      GITHUB_STEP_SUMMARY: path.join(topology.checkout, "github-summary"),
+      INPUT_REF: inputRef,
+      PATH: `${topology.fakeBin}:${process.env.PATH ?? ""}`,
+    },
+  });
+  return {
+    ...result,
+    outputs: readWorkflowOutputs(githubOutput),
+  };
+}
+
+function runProtocolSinceFixture(checkout: string, baseSha: string) {
+  const nodeModules = path.join(checkout, "node_modules");
+  for (const scriptPath of ["scripts/check-protocol-since.mjs", "scripts/lib/repo-root.mjs"]) {
+    const target = path.join(checkout, scriptPath);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, readFileSync(scriptPath, "utf8"));
+  }
+  if (!existsSync(nodeModules)) {
+    symlinkSync(path.resolve("node_modules"), nodeModules, "dir");
+  }
+  return spawnSync(process.execPath, ["scripts/check-protocol-since.mjs"], {
+    cwd: checkout,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PROTOCOL_SINCE_BASE_SHA: baseSha,
+    },
+  });
+}
+
 function runDependencyCheckFixture(options: { historicalTarget: boolean; scripts: string[] }): {
   calls: string[];
   output: string;
@@ -5446,64 +5591,182 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     },
   );
 
-  it("bounds QA profile selected-ref fetches", () => {
-    const validateSelectedRef = expectDefined(
-      readQaProfileEvidenceWorkflow().jobs.validate_selected_ref.steps.find(
-        (step: WorkflowStep) => step.name === "Validate selected ref",
-      ),
-      "QA profile selected-ref validation step",
-    );
-    const gitFetchLines = validateSelectedRef.run
-      .split("\n")
-      .filter((line: string) => line.includes("git fetch"));
+  it.skipIf(process.platform === "win32")(
+    "executes the trusted protocol-base topology table",
+    () => {
+      const topology = createQaProtocolTopology();
+      const releaseTagHead = runGit(topology.checkout, ["rev-parse", topology.releaseTag]);
+      // Mirrors 51944498 -> 50ee791a after origin/main advances past the selected revision.
+      expect(runGit(topology.checkout, ["rev-parse", "origin/main^"])).toBe(topology.mainHead);
+      const cases = [
+        ["main", topology.mainHead, "main-ancestor"],
+        [topology.releaseBranch, topology.releaseHead, "release-branch-head"],
+        [`refs/heads/${topology.releaseBranch}`, topology.releaseHead, "release-branch-head"],
+        [topology.releaseTag, releaseTagHead, "release-tag"],
+      ] as const;
 
-    expect(gitFetchLines).toHaveLength(2);
-    expect(
-      gitFetchLines.every((line: string) =>
-        line.trimStart().startsWith("timeout --signal=TERM --kill-after=10s 120s git fetch"),
-      ),
-    ).toBe(true);
+      for (const [inputRef, revision, trustedReason] of cases) {
+        const result = runQaSelectedRefValidation(topology, inputRef, revision);
+        expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+        expect(result.outputs).toEqual({
+          protocol_base_revision: topology.mainBase,
+          selected_revision: revision,
+          trusted_reason: trustedReason,
+        });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("executes the protocol-base failure table", () => {
+    const topology = createQaProtocolTopology();
+    const releaseChange = runGit(topology.checkout, ["rev-parse", `${topology.releaseHead}^`]);
+    const releaseTagHead = runGit(topology.checkout, ["rev-parse", topology.releaseTag]);
+    const featureHead = runGit(topology.checkout, [
+      "rev-parse",
+      "refs/remotes/origin/feature/untrusted",
+    ]);
+    const unrelatedHead = runGit(topology.checkout, ["rev-parse", "v2026.8.99"]);
+    const failures: Array<readonly [string, string, string, (() => void)?]> = [
+      ["not-a-sha", "main", topology.mainHead],
+      [topology.mainHead, topology.releaseTag, releaseTagHead],
+      [featureHead, featureHead, featureHead],
+      [releaseChange, topology.releaseBranch, releaseChange],
+      [topology.releaseHead, "release/2099.1.1", topology.releaseHead],
+      [unrelatedHead, "v2026.8.99", unrelatedHead],
+      [
+        topology.mainHead,
+        "main",
+        topology.mainHead,
+        () => void runGit(topology.origin, ["update-ref", "-d", "refs/heads/main"]),
+      ],
+      [
+        topology.mainBase,
+        "main",
+        topology.mainBase,
+        () => void runGit(topology.origin, ["update-ref", "refs/heads/main", topology.mainBase]),
+      ],
+    ];
+
+    for (const [expectedSha, inputRef, revision, prepare] of failures) {
+      prepare?.();
+      const result = runQaSelectedRefValidation(topology, inputRef, revision, expectedSha);
+      expect(result.status, `${result.stdout}${result.stderr}`).not.toBe(0);
+      expect(result.outputs).toEqual({});
+    }
   });
 
-  it("provides the shallow QA checkout an exact protocol comparison base", () => {
-    const workflow = readQaProfileEvidenceWorkflow();
-    const validateJob = workflow.jobs.validate_selected_ref;
-    const validateStep = expectDefined(
-      validateJob.steps.find((step: WorkflowStep) => step.name === "Validate selected ref"),
-      "QA profile selected-ref validation step",
-    );
-    const runJob = workflow.jobs.run_qa_profile;
-    const fetchStep = expectDefined(
-      runJob.steps.find((step: WorkflowStep) => step.name === "Fetch protocol comparison base"),
-      "QA profile protocol-base fetch step",
-    );
-    const runStep = expectDefined(
-      runJob.steps.find((step: WorkflowStep) => step.name === "Run QA profile"),
-      "QA profile run step",
-    );
+  it.skipIf(process.platform === "win32")(
+    "runs the real protocol resolver across main and release ranges",
+    () => {
+      const topology = createQaProtocolTopology();
+      const mainResolution = runQaSelectedRefValidation(topology, "main", topology.mainHead);
+      expect(mainResolution.status, `${mainResolution.stdout}${mainResolution.stderr}`).toBe(0);
+      const mainCheck = runProtocolSinceFixture(
+        topology.checkout,
+        expectDefined(mainResolution.outputs.protocol_base_revision, "main protocol base"),
+      );
+      expect(mainCheck.status, `${mainCheck.stdout}${mainCheck.stderr}`).toBe(0);
+      expect(mainCheck.stdout).toContain("1 new core method");
 
-    expect(validateJob.outputs.protocol_base_revision).toBe(
-      "${{ steps.validate.outputs.protocol_base_revision }}",
-    );
-    expect(validateStep.run).toContain(
-      'protocol_base_revision="$(git rev-parse "${selected_revision}^1")"',
-    );
-    expect(validateStep.run).toContain(
-      'echo "protocol_base_revision=$protocol_base_revision" >> "$GITHUB_OUTPUT"',
-    );
-    expect(fetchStep.env.PROTOCOL_SINCE_BASE_SHA).toBe(
-      "${{ needs.validate_selected_ref.outputs.protocol_base_revision }}",
-    );
-    expect(fetchStep.run).toContain(
-      '"+${PROTOCOL_SINCE_BASE_SHA}:refs/remotes/origin/qa-protocol-base"',
-    );
-    expect(fetchStep.run).toContain(
-      "timeout --signal=TERM --kill-after=10s 120s git fetch --no-tags --no-recurse-submodules --depth=1 origin",
-    );
-    expect(runStep.env.PROTOCOL_SINCE_BASE_SHA).toBe(
-      "${{ needs.validate_selected_ref.outputs.protocol_base_revision }}",
-    );
-  });
+      const releaseResolution = runQaSelectedRefValidation(
+        topology,
+        topology.releaseBranch,
+        topology.releaseHead,
+      );
+      expect(
+        releaseResolution.status,
+        `${releaseResolution.stdout}${releaseResolution.stderr}`,
+      ).toBe(0);
+      // Mirrors divergent release resolution 33ea7ffa -> f66995cf via merge-base.
+      const releaseBase = expectDefined(
+        releaseResolution.outputs.protocol_base_revision,
+        "release protocol base",
+      );
+      const staleReleaseCheck = runProtocolSinceFixture(topology.checkout, releaseBase);
+      expect(staleReleaseCheck.status).not.toBe(0);
+      expect(staleReleaseCheck.stderr).toContain("sessions.releaseOnly is missing since metadata");
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "executes protocol-base wiring, ordering, and exact fetch failures",
+    () => {
+      const workflow = readQaProfileEvidenceWorkflow();
+      const validateJob = workflow.jobs.validate_selected_ref;
+      const runJob = workflow.jobs.run_qa_profile;
+      const stepNames = runJob.steps.map((step: WorkflowStep) => step.name);
+      const orderedSteps =
+        "Checkout selected ref|Fetch protocol comparison base|Setup Node environment|Build private QA runtime|Run QA profile"
+          .split("|")
+          .map((name) => stepNames.indexOf(name));
+      expect(
+        orderedSteps.every((index, position) => index > (orderedSteps[position - 1] ?? -1)),
+      ).toBe(true);
+
+      const fetchStep = expectDefined(
+        runJob.steps.find((step: WorkflowStep) => step.name === "Fetch protocol comparison base"),
+        "QA profile protocol-base fetch step",
+      );
+      const runStep = expectDefined(
+        runJob.steps.find((step: WorkflowStep) => step.name === "Run QA profile"),
+        "QA profile run step",
+      );
+      const protocolOutput = "${{ needs.validate_selected_ref.outputs.protocol_base_revision }}";
+      const trustedRefInput = "${{ inputs.trusted_ref || inputs.ref }}";
+      expect(validateJob.outputs.protocol_base_revision).toBe(
+        "${{ steps.validate.outputs.protocol_base_revision }}",
+      );
+      expect(validateJob.steps[0].with.ref).toBe("${{ inputs.ref }}");
+      expect(validateJob.steps[1].env.INPUT_REF).toBe(trustedRefInput);
+      expect(runJob.steps[0].with.ref).toBe(
+        "${{ needs.validate_selected_ref.outputs.selected_revision }}",
+      );
+      expect(fetchStep.env.PROTOCOL_SINCE_BASE_SHA).toBe(protocolOutput);
+      expect(runStep.env.PROTOCOL_SINCE_BASE_SHA).toBe(protocolOutput);
+      expect(runStep.env.REQUESTED_REF).toBe(trustedRefInput);
+
+      const topology = createQaProtocolTopology();
+      const evidenceCheckout = tempDirs.make("openclaw-qa-protocol-fetch-");
+      runGit(evidenceCheckout, ["init", "--initial-branch=main"]);
+      runGit(evidenceCheckout, ["remote", "add", "origin", topology.origin]);
+      runGit(evidenceCheckout, [
+        "fetch",
+        "--depth=2",
+        "origin",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ]);
+      runGit(evidenceCheckout, ["checkout", "--detach", topology.mainHead]);
+      const sentinel = path.join(evidenceCheckout, "qa-sentinel");
+      const runFetch = (baseSha: string) => {
+        rmSync(sentinel, { force: true });
+        return runWorkflowShellScript(
+          `${expectDefined(fetchStep.run, "protocol-base fetch script")}\nprintf 'ran\\n' > "$QA_SENTINEL"\n`,
+          {
+            cwd: evidenceCheckout,
+            env: {
+              ...process.env,
+              PATH: `${topology.fakeBin}:${process.env.PATH ?? ""}`,
+              PROTOCOL_SINCE_BASE_SHA: baseSha,
+              QA_SENTINEL: sentinel,
+            },
+          },
+        );
+      };
+
+      const success = runFetch(topology.mainBase);
+      expect(success.status, `${success.stdout}${success.stderr}`).toBe(0);
+      expect(runGit(evidenceCheckout, ["rev-parse", "refs/remotes/origin/qa-protocol-base"])).toBe(
+        topology.mainBase,
+      );
+      expect(existsSync(sentinel)).toBe(true);
+
+      for (const invalidBase of ["not-a-sha", "f".repeat(40)]) {
+        const failure = runFetch(invalidBase);
+        expect(failure.status, `${failure.stdout}${failure.stderr}`).not.toBe(0);
+        expect(existsSync(sentinel)).toBe(false);
+      }
+    },
+  );
 
   it.skipIf(process.platform !== "linux")(
     "classifies QA timeouts only from isolated supervisor diagnostics",
@@ -5691,7 +5954,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     expect(runProfileStep.env?.OPENCLAW_QA_ALLOW_UPDATE_RUN_SELF).toBe("1");
     expect(runProfileStep.env?.OPENCLAW_QA_CREDENTIAL_ACQUIRE_TIMEOUT_MS).toBe("120000");
-    expect(runProfileStep.env?.REQUESTED_REF).toBe("${{ inputs.ref }}");
+    expect(runProfileStep.env?.REQUESTED_REF).toBe("${{ inputs.trusted_ref || inputs.ref }}");
     expect(runProfileStep.env?.TARGET_SHA).toBe(
       "${{ needs.validate_selected_ref.outputs.selected_revision }}",
     );
@@ -5757,8 +6020,8 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     expect(generateJob.uses).toBe("./.github/workflows/qa-profile-evidence.yml");
     expect(generateJob.with).toMatchObject({
-      // Reusable jobs start later, so forward the immutable revision instead of a moving branch.
       ref: "${{ needs.validate_selected_ref.outputs.selected_revision }}",
+      trusted_ref: "${{ inputs.ref }}",
       expected_sha: "${{ needs.validate_selected_ref.outputs.selected_revision }}",
       qa_profile: "all",
       allow_failures: "${{ inputs.allow_failures }}",
@@ -5918,6 +6181,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(qaEvidenceStep.run).toContain("qaProfileEvidencePlan.attest");
     expect(qaEvidenceStep.run).toContain("profilePlanSha256");
     expect(qaEvidenceStep.run).toContain("rerun the QA Profile Evidence workflow");
+    expect(qaEvidenceStep.env.REQUESTED_REF).toBe("${{ inputs.trusted_ref || inputs.ref }}");
     expect(qaEvidenceStep.env.ALLOW_FAILURES).toBe("${{ inputs.allow_failures }}");
     expect(qaEvidenceStep.run).toContain("qaExitCode: Number(process.env.QA_EXIT_CODE)");
     expect(qaEvidenceStep.run).toContain('qaPassed: process.env.QA_EXIT_CODE === "0"');

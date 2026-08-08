@@ -10,6 +10,11 @@ on:
         required: true
         default: main
         type: string
+      trusted_ref:
+        description: Optional trusted branch or tag identity for an immutable ref
+        required: false
+        default: ""
+        type: string
       expected_sha:
         description: Optional full SHA that ref must resolve to
         required: false
@@ -30,6 +35,11 @@ on:
       ref:
         description: OpenClaw branch, tag, or SHA to run
         required: true
+        type: string
+      trusted_ref:
+        description: Optional trusted branch or tag identity for an immutable ref
+        required: false
+        default: ""
         type: string
       expected_sha:
         description: Optional full SHA that ref must resolve to
@@ -156,13 +166,14 @@ jobs:
         id: validate
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
-          INPUT_REF: ${{ inputs.ref }}
+          INPUT_REF: ${{ inputs.trusted_ref || inputs.ref }}
         shell: bash
         run: |
           set -euo pipefail
 
           selected_revision="$(git rev-parse HEAD)"
           expected_sha="${EXPECTED_SHA,,}"
+          branch_candidate="${INPUT_REF#refs/heads/}"
           trusted_reason=""
 
           if [[ -n "${expected_sha// }" && ! "$expected_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -180,9 +191,9 @@ jobs:
             trusted_reason="main-ancestor"
           elif git tag --points-at "$selected_revision" | grep -Eq '^v'; then
             trusted_reason="release-tag"
-          elif [[ "$INPUT_REF" =~ ^release/[0-9]{4}\.[0-9]+\.[0-9]+$ ]]; then
-            timeout --signal=TERM --kill-after=10s 120s git fetch --no-tags origin "+refs/heads/${INPUT_REF}:refs/remotes/origin/${INPUT_REF}"
-            release_branch_sha="$(git rev-parse "refs/remotes/origin/${INPUT_REF}")"
+          elif [[ "$branch_candidate" =~ ^release/[0-9]{4}\.[0-9]+\.[0-9]+$ ]]; then
+            timeout --signal=TERM --kill-after=10s 120s git fetch --no-tags origin "+refs/heads/${branch_candidate}:refs/remotes/origin/${branch_candidate}"
+            release_branch_sha="$(git rev-parse "refs/remotes/origin/${branch_candidate}")"
             if [[ "$selected_revision" == "$release_branch_sha" ]]; then
               trusted_reason="release-branch-head"
             fi
@@ -194,9 +205,23 @@ jobs:
             exit 1
           fi
 
-          # The evidence job intentionally uses a shallow checkout. Carry its exact
-          # first parent forward so protocol vintage checks never guess a moving base.
-          protocol_base_revision="$(git rev-parse "${selected_revision}^1")"
+          case "$trusted_reason" in
+            main-ancestor)
+              protocol_base_revision="$(git rev-parse "${selected_revision}^1")"
+              ;;
+            release-branch-head | release-tag)
+              protocol_base_revision="$(git merge-base "$selected_revision" refs/remotes/origin/main)"
+              ;;
+            *)
+              echo "Unsupported trusted ref classification: ${trusted_reason}" >&2
+              exit 1
+              ;;
+          esac
+          if [[ ! "$protocol_base_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Protocol comparison base must resolve to a full commit SHA." >&2
+            exit 1
+          fi
+          git cat-file -e "${protocol_base_revision}^{commit}"
 
           echo "protocol_base_revision=$protocol_base_revision" >> "$GITHUB_OUTPUT"
           echo "selected_revision=$selected_revision" >> "$GITHUB_OUTPUT"
@@ -247,6 +272,12 @@ jobs:
           fi
           timeout --signal=TERM --kill-after=10s 120s git fetch --no-tags --no-recurse-submodules --depth=1 origin \
             "+${PROTOCOL_SINCE_BASE_SHA}:refs/remotes/origin/qa-protocol-base"
+          resolved_protocol_base="$(git rev-parse refs/remotes/origin/qa-protocol-base^{commit})"
+          if [[ "$resolved_protocol_base" != "$PROTOCOL_SINCE_BASE_SHA" ]]; then
+            echo "Protocol comparison base resolved to ${resolved_protocol_base}, expected ${PROTOCOL_SINCE_BASE_SHA}." >&2
+            exit 1
+          fi
+          git cat-file -e "${resolved_protocol_base}^{commit}"
 
       - name: Setup Node environment
         uses: ./.github/actions/setup-node-env
@@ -318,7 +349,7 @@ jobs:
         id: run_profile
         env:
           QA_PROFILE: ${{ steps.profile.outputs.profile }}
-          REQUESTED_REF: ${{ inputs.ref }}
+          REQUESTED_REF: ${{ inputs.trusted_ref || inputs.ref }}
           TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_revision }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENCLAW_QA_CONVEX_SITE_URL: ${{ secrets.OPENCLAW_QA_CONVEX_SITE_URL }}
@@ -424,7 +455,7 @@ jobs:
           OUTPUT_DIR: ${{ steps.run_profile.outputs.output_dir }}
           QA_EXIT_CODE: ${{ steps.run_profile.outputs.qa_exit_code }}
           QA_PROFILE: ${{ steps.profile.outputs.profile }}
-          REQUESTED_REF: ${{ inputs.ref }}
+          REQUESTED_REF: ${{ inputs.trusted_ref || inputs.ref }}
           TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_revision }}
           TRUSTED_REASON: ${{ needs.validate_selected_ref.outputs.trusted_reason }}
         shell: bash
