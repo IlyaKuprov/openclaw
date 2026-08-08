@@ -28,6 +28,7 @@ import {
   renderChatPaneComposerControls,
 } from "./chat-pane-session-controls.ts";
 import {
+  CHAT_COMPOSER_TEXTAREA_SELECTOR,
   SESSION_RAIL_DOCK_MIN_WIDTH,
   WORKSPACE_RAIL_MAX_WIDTH,
   WORKSPACE_RAIL_SIDE_MIN_PANE_WIDTH,
