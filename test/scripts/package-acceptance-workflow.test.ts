@@ -3610,7 +3610,7 @@ describe("package artifact reuse", () => {
     const prerelease = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_prerelease_e2e");
     const stable = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_stable_e2e");
     const reusableWorkflow =
-      "openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@61afe0424758a224d18849b46393179667480614";
+      "openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@0defe9eecb9774842c6eea93a5fb2fda5b1ccb5b";
 
     expect(resolver.outputs).toMatchObject({
       stable_asset_name: "${{ steps.resolve.outputs.stable_asset_name }}",
@@ -3624,7 +3624,7 @@ describe("package artifact reuse", () => {
         "${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_name }}",
       windows_node_release_asset_sha256:
         "${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_sha256 }}",
-      windows_node_sha: "61afe0424758a224d18849b46393179667480614",
+      windows_node_sha: "0defe9eecb9774842c6eea93a5fb2fda5b1ccb5b",
     });
     expect(stable.uses).toBe(reusableWorkflow);
     expect(stable.with).toMatchObject({
@@ -3632,7 +3632,7 @@ describe("package artifact reuse", () => {
         "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_name }}",
       windows_node_release_asset_sha256:
         "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}",
-      windows_node_sha: "61afe0424758a224d18849b46393179667480614",
+      windows_node_sha: "0defe9eecb9774842c6eea93a5fb2fda5b1ccb5b",
     });
   });
 
