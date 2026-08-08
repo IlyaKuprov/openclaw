@@ -233,7 +233,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: shared transcript credential-safety prompt for plugin-owned agent harnesses.
       // +3: channel streaming config reader re-exports and session-agent scope resolver.
       // +45: multiplayer-memory authorization shapes, runtime contract, and conformance types.
-      4889,
+      // +4: current principal and selected-membership evidence references and facts.
+      4893,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
