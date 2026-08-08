@@ -5069,6 +5069,9 @@ describe("package artifact reuse", () => {
     expect(extendedPrepareJob.needs).toEqual(["resolve_release_target"]);
     expect(extendedPrepare.run).toContain("verify_release_tag_target");
     expect(extendedPrepare.run).toContain("verifyGithubReleaseNotes");
+    expect(extendedPrepare.run).toContain("body !== expectedBody");
+    expect(extendedPrepare.run).toContain("release.assets.length !== 0");
+    expect(extendedPrepare.run).toContain("release_already_public=true");
     expect(extendedPrepare.run).toContain("--draft");
     expect(extendedPrepare.run).toContain("--latest=false");
     expect(extendedFinalizeJob.needs).toEqual([
@@ -5079,6 +5082,14 @@ describe("package artifact reuse", () => {
     expect(extendedFinalizeJob.if).toContain("needs.publish_docker.result == 'success'");
     expect(extendedFinalize.run).toContain("-f make_latest=false");
     expect(extendedFinalize.run).toContain("EXPECTED_BODY_SHA256");
+    expect(extendedFinalize.run).toContain("release.assets.length !== 0");
+    expect(extendedFinalize.run).toContain("for attempt in $(seq 1 12)");
+    expect(extendedFinalize.run).toContain(
+      'git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git"',
+    );
+    expect(extendedFinalize.run.indexOf("verify_release_tag_target\n")).toBeLessThan(
+      extendedFinalize.run.indexOf('current_draft="$(gh api'),
+    );
   });
 
   it("accepts tag-matched frozen release branches in OpenClaw npm preflight", () => {

@@ -12,36 +12,7 @@ jobs:
   dispatch-translate:
     runs-on: ubuntu-latest
     steps:
-      - name: Download trusted release classifier
-        env:
-          GH_TOKEN: ${{ github.token }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: |
-          set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/contents/scripts/lib/release-version.mjs?ref=${WORKFLOW_SHA}" \
-            --jq .content | base64 --decode > "${RUNNER_TEMP}/release-version.mjs"
-
-      - name: Classify release track
-        id: release
-        env:
-          CLASSIFIER_FILE: ${{ runner.temp }}/release-version.mjs
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync } from "node:fs";
-          import { pathToFileURL } from "node:url";
-
-          const { classifyReleaseTrain, parseReleaseVersion } = await import(
-            pathToFileURL(process.env.CLASSIFIER_FILE).href
-          );
-
-          const parsed = parseReleaseVersion(process.env.RELEASE_TAG.replace(/^v/u, ""));
-          const track = parsed === null ? "unknown" : classifyReleaseTrain(parsed);
-          appendFileSync(process.env.GITHUB_OUTPUT, `track=${track}\n`);
-          NODE
-
       - name: Trigger translation coordinator in publish repo
-        if: ${{ steps.release.outputs.track != 'extended-stable' }}
         env:
           GH_TOKEN: ${{ secrets.OPENCLAW_DOCS_SYNC_TOKEN }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
