@@ -546,6 +546,11 @@ export class ToolSearchRuntime {
     return describeEntry(findEntry(catalog, id, options, options));
   };
 
+  resolveCallTargetId = (
+    id: string,
+    options?: CatalogVisibilityOptions & UnknownToolErrorOptions,
+  ): string => findEntry(resolveCatalog(this.ctx), id, options, options).id;
+
   call = async (id: string, input?: unknown, options?: ToolSearchCallOptions) => {
     const catalog = resolveCatalog(this.ctx);
     return await this.callEntry(catalog, findEntry(catalog, id, options, options), input, options);

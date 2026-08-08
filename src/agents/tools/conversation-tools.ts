@@ -13,6 +13,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGateway } from "../../gateway/call.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { consumeActiveCodeModeConversationAuthority } from "../code-mode-private-authority.js";
 import { optionalPositiveIntegerSchema } from "../schema/typebox.js";
 import type { AnyAgentTool } from "./common.js";
 import {
@@ -112,7 +113,7 @@ export function createConversationsListTool(
     name: "conversations_list",
     displaySummary: "List exact external conversation addresses.",
     description:
-      "List external conversations as stable conversationRef values. Sessions hold local model context; conversationRef selects an exact external channel destination.",
+      "List external conversations as stable conversationRef values. In OpenClaw Code Mode, await the result before a dependent mutation and continue only when complete is true with exactly one address; otherwise return the candidates as evidence.",
     parameters: ConversationsListSchema,
     outputSchema: ConversationListResultSchema,
     execute: async (_toolCallId, args) => {
@@ -131,7 +132,7 @@ export function createConversationsListTool(
         },
         ...(options.config ? { config: options.config } : {}),
       });
-      return jsonResult(result);
+      return jsonResult({ ...result, complete: result.complete === true });
     },
   };
 }
@@ -146,7 +147,7 @@ export function createConversationsSendTool(
     name: "conversations_send",
     displaySummary: "Send to an exact external conversation.",
     description:
-      "Send directly through a conversationRef from conversations_list. This performs channel delivery; it does not run the local agent in the backing session.",
+      "Send directly through an explicit conversationRef. For list-derived selection in OpenClaw Code Mode, await one complete singleton conversations_list result sequentially in the same cell. This performs channel delivery; it does not run the local agent in the backing session.",
     parameters: ConversationsSendSchema,
     outputSchema: ConversationSendResultSchema,
     execute: async (toolCallId, args, signal) => {
@@ -162,6 +163,11 @@ export function createConversationsSendTool(
         toolName: "conversations_send",
         conversationRef,
       });
+      if (consumeActiveCodeModeConversationAuthority(conversationRef) === false) {
+        throw new ToolAuthorizationError(
+          "Code Mode conversation send requires one complete, unique conversations_list result from this exec.",
+        );
+      }
       const result = await deps.callGateway<ConversationSendResult>({
         method: "conversations.send",
         params: {
@@ -189,7 +195,7 @@ export function createConversationsTurnTool(
     name: "conversations_turn",
     displaySummary: "Send and wait for the correlated peer reply.",
     description:
-      "Send through a conversationRef and wait for its correlated inbound reply. The reply returns here instead of starting a second local agent turn; unsolicited messages still start normal turns.",
+      "Send through an explicit conversationRef and wait for its correlated inbound reply. For list-derived selection in OpenClaw Code Mode, await one complete singleton conversations_list result sequentially in the same cell. The reply returns here instead of starting a second local agent turn; unsolicited messages still start normal turns.",
     parameters: ConversationsTurnSchema,
     outputSchema: ConversationTurnResultSchema,
     execute: async (toolCallId, args, signal) => {
@@ -208,6 +214,11 @@ export function createConversationsTurnTool(
         toolName: "conversations_turn",
         conversationRef,
       });
+      if (consumeActiveCodeModeConversationAuthority(conversationRef) === false) {
+        throw new ToolAuthorizationError(
+          "Code Mode conversation turn requires one complete, unique conversations_list result from this exec.",
+        );
+      }
       const result = await deps.callGateway<ConversationTurnResult>({
         method: "conversations.turn",
         params: {

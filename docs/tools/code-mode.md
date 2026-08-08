@@ -185,10 +185,7 @@ const requestedAddress = {
   target: "build-bot",
   threadId: null,
 };
-const listed = await tools.conversations_list({
-  channel: requestedAddress.channel,
-  query: requestedAddress.target,
-});
+const listed = await tools.conversations_list({ query: requestedAddress.target });
 const matches = listed.conversations.filter(
   (item) =>
     item.channel === requestedAddress.channel &&
@@ -197,9 +194,10 @@ const matches = listed.conversations.filter(
     item.target === requestedAddress.target &&
     (item.threadId ?? null) === requestedAddress.threadId,
 );
-if (matches.length !== 1) {
+if (!listed.complete || matches.length !== 1) {
   return {
     requestedAddress,
+    complete: listed.complete,
     candidates: matches.map(({ conversationRef, channel, accountId, kind, target, threadId }) => ({
       conversationRef,
       channel,
@@ -216,10 +214,12 @@ return await tools.conversations_send({
 });
 ```
 
-Labels are display-only metadata, never conversation identity. List filters only
-narrow discovery; guest code still matches the complete request-supplied
-address. Duplicate exact addresses remain ambiguous, so return their
-owner-issued references without sending.
+Labels are display-only metadata, never conversation identity. Query-only reads
+can prove completeness across persisted addresses; guest code still matches the
+complete request-supplied address. Passing `channel` also refreshes its directory,
+whose bounded adapter result is intentionally `complete: false`; return those
+candidates as evidence instead of mutating. Duplicate exact addresses remain
+ambiguous, so return their owner-issued references without sending.
 
 The same composition applies to `conversations_turn`. One returned candidate
 does not establish intent by itself. If the request does not determine which
@@ -760,10 +760,7 @@ const requestedAddress = {
   target: "build-bot",
   threadId: null,
 };
-const listed = await tools.conversations_list({
-  channel: requestedAddress.channel,
-  query: requestedAddress.target,
-});
+const listed = await tools.conversations_list({ query: requestedAddress.target });
 const matches = listed.conversations.filter(
   (item) =>
     item.channel === requestedAddress.channel &&
@@ -772,9 +769,10 @@ const matches = listed.conversations.filter(
     item.target === requestedAddress.target &&
     (item.threadId ?? null) === requestedAddress.threadId,
 );
-if (matches.length !== 1) {
+if (!listed.complete || matches.length !== 1) {
   return {
     requestedAddress,
+    complete: listed.complete,
     candidates: matches.map(({ conversationRef, channel, accountId, kind, target, threadId }) => ({
       conversationRef,
       channel,

@@ -122,6 +122,7 @@ describe("conversations.list Gateway handler", () => {
           lastSeenAt: 100,
         },
       ],
+      complete: false,
     };
     const runConversationList = vi.fn(
       async (_params: Parameters<typeof runGatewayConversationList>[0]) => listed,

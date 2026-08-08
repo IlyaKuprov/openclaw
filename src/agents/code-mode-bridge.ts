@@ -8,6 +8,11 @@ import { parseNodeList } from "../shared/node-list-parse.js";
 import type { NodeListNode } from "../shared/node-list-types.js";
 import { toCodeModeJsonSafe } from "./code-mode-json.js";
 import type { CodeModeNamespaceRuntime } from "./code-mode-namespaces.js";
+import {
+  type CodeModePrivateAuthority,
+  markTrustedCodeModePreflightSettlement,
+  runWithCodeModeConversationAuthority,
+} from "./code-mode-private-authority.js";
 import type { PendingBridgeRequest, SettledBridgeRequest } from "./code-mode-runtime.js";
 import { readCodeModeSkill } from "./code-mode-skills.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
@@ -18,6 +23,7 @@ import {
   SWARM_CODE_MODE_REQUEST_FINGERPRINT,
 } from "./swarm-code-mode.js";
 import { resolveSwarmConfig } from "./swarm-config.js";
+import { isTrustedToolPreparationError } from "./tool-result-error.js";
 import { ToolSearchRuntime, type ToolSearchToolContext } from "./tool-search.js";
 import {
   waitForCollectorCompletion,
@@ -42,6 +48,7 @@ const defaultCodeModeSwarmDeps: CodeModeSwarmDeps = {
 };
 
 const CODE_MODE_NODES_TOOL_ID = "openclaw:core:nodes";
+export const CODE_MODE_CONVERSATIONS_LIST_TOOL_ID = "openclaw:core:conversations_list";
 
 type CodeModeNode = {
   id: string;
@@ -386,6 +393,7 @@ export async function runBridgeRequest(params: {
   codeModeRunId: string;
   ctx: ToolSearchToolContext;
   request: PendingBridgeRequest;
+  privateAuthority?: CodeModePrivateAuthority;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
 }): Promise<SettledBridgeRequest> {
@@ -421,13 +429,17 @@ export async function runBridgeRequest(params: {
         if (typeof id !== "string") {
           throw new ToolInputError("call id must be a string.");
         }
-        value = await params.runtime.call(id, values[1] ?? {}, {
-          includeMcp: false,
-          parentToolCallId: params.parentToolCallId,
-          signal: params.signal,
-          onUpdate: params.onUpdate,
-          recoverySurface: "tools",
-        });
+        const operation = async () =>
+          await params.runtime.call(id, values[1] ?? {}, {
+            includeMcp: false,
+            parentToolCallId: params.parentToolCallId,
+            signal: params.signal,
+            onUpdate: params.onUpdate,
+            recoverySurface: "tools",
+          });
+        value = params.privateAuthority
+          ? await runWithCodeModeConversationAuthority(params.privateAuthority, operation)
+          : await operation();
         break;
       }
       case "callValue": {
@@ -435,13 +447,17 @@ export async function runBridgeRequest(params: {
         if (typeof id !== "string") {
           throw new ToolInputError("callValue id must be a string.");
         }
-        value = await params.runtime.callValue(id, values[1] ?? {}, {
-          includeMcp: false,
-          parentToolCallId: params.parentToolCallId,
-          signal: params.signal,
-          onUpdate: params.onUpdate,
-          recoverySurface: "tools",
-        });
+        const operation = async () =>
+          await params.runtime.callValue(id, values[1] ?? {}, {
+            includeMcp: false,
+            parentToolCallId: params.parentToolCallId,
+            signal: params.signal,
+            onUpdate: params.onUpdate,
+            recoverySurface: "tools",
+          });
+        value = params.privateAuthority
+          ? await runWithCodeModeConversationAuthority(params.privateAuthority, operation)
+          : await operation();
         break;
       }
       case "nodes": {
@@ -535,7 +551,15 @@ export async function runBridgeRequest(params: {
     }
     return { id: params.request.id, ok: true, value: toCodeModeJsonSafe(value) };
   } catch (error) {
-    return { id: params.request.id, ok: false, error: formatErrorMessage(error) };
+    const settlement = {
+      id: params.request.id,
+      ok: false as const,
+      error: formatErrorMessage(error),
+    };
+    if (isTrustedToolPreparationError(error)) {
+      markTrustedCodeModePreflightSettlement(settlement);
+    }
+    return settlement;
   }
 }
 

@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConversationIdentity } from "../config/sessions/conversation-identity.js";
+import type { ConversationRecord } from "../config/sessions/conversation-registry.js";
 import { runGatewayConversationList } from "./conversation-list.js";
+
+function conversationRecord(index: number, target = `peer-${index}`): ConversationRecord {
+  return {
+    conversationRef: `conv_${index.toString(16).padStart(32, "0")}`,
+    channel: "reef",
+    accountId: "default",
+    kind: "direct",
+    target,
+    firstSeenAt: index,
+    lastSeenAt: index,
+  };
+}
 
 describe("runGatewayConversationList", () => {
   it("discovers a trusted directory peer without creating a session", async () => {
@@ -80,6 +93,7 @@ describe("runGatewayConversationList", () => {
       }),
     ]);
     expect(result.conversations[0]).not.toHaveProperty("sessionId");
+    expect(result.complete).toBe(false);
   });
 
   it("keeps route identity separate from its delivery address", async () => {
@@ -305,5 +319,72 @@ describe("runGatewayConversationList", () => {
       expect.not.objectContaining({ query: expect.anything() }),
     ]);
     expect(resolvedTargets).toEqual(["configured-peer", "configured-peer"]);
+  });
+
+  it.each([
+    { count: 0, complete: true, returned: 0 },
+    { count: 1, complete: true, returned: 1 },
+    { count: 100, complete: true, returned: 100 },
+    { count: 101, complete: false, returned: 100 },
+  ])(
+    "derives persisted-list completeness before slicing $count rows",
+    async ({ count, complete, returned }) => {
+      const rows = Array.from({ length: count }, (_, index) => conversationRecord(index + 1));
+      const listConversations = vi.fn(() => rows);
+      const result = await runGatewayConversationList({ config: {}, agentId: "main", limit: 100 }, {
+        listConversations,
+        registerConversationAddresses: vi.fn(),
+        resolveOutboundChannelPlugin: vi.fn(),
+        resolveOutboundSessionRoute: vi.fn(),
+      } as never);
+
+      expect(listConversations).toHaveBeenCalledWith({ agentId: "main" }, { limit: 101 });
+      expect(result.complete).toBe(complete);
+      expect(result.conversations).toHaveLength(returned);
+      expect(result.conversations).not.toContainEqual(
+        expect.objectContaining({ conversationRef: conversationRecord(101).conversationRef }),
+      );
+    },
+  );
+
+  it("reads all persisted rows before query filtering", async () => {
+    const selected = conversationRecord(101, "unique-build-peer");
+    const rows = [
+      ...Array.from({ length: 100 }, (_, index) => conversationRecord(index + 1)),
+      selected,
+    ];
+    const listConversations = vi.fn(() => rows);
+
+    const result = await runGatewayConversationList(
+      { config: {}, agentId: "main", query: "unique-build-peer", limit: 1 },
+      {
+        listConversations,
+        registerConversationAddresses: vi.fn(),
+        resolveOutboundChannelPlugin: vi.fn(),
+        resolveOutboundSessionRoute: vi.fn(),
+      } as never,
+    );
+
+    expect(listConversations).toHaveBeenCalledWith({ agentId: "main" }, {});
+    expect(result).toEqual({
+      conversations: [expect.objectContaining({ conversationRef: selected.conversationRef })],
+      complete: true,
+    });
+  });
+
+  it("marks a saturated query result incomplete before slicing", async () => {
+    const rows = [conversationRecord(1, "build-peer"), conversationRecord(2, "build-peer")];
+    const result = await runGatewayConversationList(
+      { config: {}, agentId: "main", query: "build-peer", limit: 1 },
+      {
+        listConversations: vi.fn(() => rows),
+        registerConversationAddresses: vi.fn(),
+        resolveOutboundChannelPlugin: vi.fn(),
+        resolveOutboundSessionRoute: vi.fn(),
+      } as never,
+    );
+
+    expect(result.conversations).toHaveLength(1);
+    expect(result.complete).toBe(false);
   });
 });

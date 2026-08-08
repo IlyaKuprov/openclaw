@@ -8,6 +8,7 @@ import {
   type CodeModeNamespaceDescriptor,
   type SerializedCodeModeNamespaceValue,
 } from "./code-mode-namespaces.js";
+import { CodeModePrivateAuthority } from "./code-mode-private-authority.js";
 import {
   DEFAULT_HEADLESS_TOOL_CALLS,
   DEFAULT_HEADLESS_WALL_CLOCK_MS,
@@ -216,6 +217,7 @@ export async function runCodeModeScriptHeadless(params: {
   const output: unknown[] = [];
   let pending: PendingBridgeState[] = [];
   let toolCallCount = 0;
+  const privateAuthority = new CodeModePrivateAuthority();
   try {
     // Headless runs publish no resumable snapshot/handle, so collector globals stay unavailable.
     const swarmEnabled = false;
@@ -304,6 +306,7 @@ export async function runCodeModeScriptHeadless(params: {
           parentToolCallId,
           codeModeRunId,
           ctx: ownedCtx,
+          privateAuthority,
           signal: abortScope.signal,
           bridgeDispatchQueue,
         }),
@@ -327,7 +330,7 @@ export async function runCodeModeScriptHeadless(params: {
         createTimeoutError: () => new CodeModeHeadlessTimeoutError(),
         createAbortError: headlessAbortError,
       });
-      const settledRequests = settledBridgeRequestsInCompletionOrder(pending);
+      const settledRequests = settledBridgeRequestsInCompletionOrder(pending, privateAuthority);
       pending = pending.filter((entry) => !entry.settled);
       result = normalizeCodeModeWorkerResult(
         await runHeadlessWorkerLeg({
@@ -358,6 +361,7 @@ export async function runCodeModeScriptHeadless(params: {
       toolCallCount,
     });
   } finally {
+    privateAuthority.revoke();
     cancelPendingBridgeStates(pending);
     abortScope.cleanup();
   }

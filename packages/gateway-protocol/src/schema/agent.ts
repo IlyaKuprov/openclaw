@@ -171,6 +171,9 @@ export const ConversationListItemSchema = closedObject({
 
 export const ConversationListResultSchema = closedObject({
   conversations: Type.Array(ConversationListItemSchema),
+  // Older Gateway producers may omit this additive field. Consumers must
+  // normalize absence to false rather than infer completeness from row count.
+  complete: Type.Optional(Type.Boolean()),
 });
 
 /** Gateway-owned request that sends to one durable external conversation. */

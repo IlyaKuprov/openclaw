@@ -179,6 +179,12 @@ describe("Conversation schemas", () => {
         ],
       }),
     ).toBe(true);
+    expect(
+      Value.Check(ConversationListResultSchema, {
+        conversations: [],
+        complete: true,
+      }),
+    ).toBe(true);
   });
 
   it("accepts a Gateway-owned durable send and result", () => {

@@ -77,7 +77,7 @@ A **session** is local model context. A **conversation** is an exact external ad
 
 Use the shared `message` tool when you already have an explicit raw channel target or need a channel-specific action. Conversation references are scoped to the active agent and should be obtained through `conversations_list`, not constructed from session keys.
 
-In Code Mode, the conversation tools reuse their exact Gateway output contracts. A single `exec` cell can list addresses, select a returned `conversationRef`, and call `conversations_send` or `conversations_turn`; normal tool policy and approvals still apply to the nested calls.
+In OpenClaw Code Mode, an explicit `conversationRef` can use normal tool authorization directly. For list-derived selection, one `exec` cell awaits `conversations_list` and continues to `conversations_send` or `conversations_turn` only when the delivered result is `complete: true` with exactly one address. Parallel, incomplete, or ambiguous discovery returns candidates as evidence; normal tool policy and approvals still apply to every nested call.
 
 ## Sending cross-session messages
 

@@ -34,7 +34,12 @@ import {
   resolveCodeModeConfig,
   resolveCodeModeHeadlessConfig,
 } from "./code-mode-runtime.js";
-import { activeRuns, removeExpiredRuns, resumingRunIds } from "./code-mode-state.js";
+import {
+  activeRuns,
+  disposeAllCodeModeRuns,
+  removeExpiredRuns,
+  resumingRunIds,
+} from "./code-mode-state.js";
 import {
   ensureCodeModeStats,
   recordCodeModeControlCall,
@@ -83,11 +88,12 @@ type CodeModeToolContext = ToolSearchToolContext & CodeModeActivityContext;
 const MAX_CODE_MODE_CATALOG_INDEX_CHARS = 8_000;
 
 const CODE_MODE_CATALOG_INDEX_HEADING = [
-  "OpenClaw/plugin tool quick index (exact ids; descriptions are intentionally deferred):",
-  "Each line is `id input -> output`; `-> ?` means unknown.",
-  "OUTPUT DECLARED RULE: use declared fields for deterministic transforms and dependent calls; `tools.search` catalog lookup stays inline. Stable IDs supplied by the request/trusted prior context or returned by their owning tool may flow into a dependent mutation when the request identifies the target unambiguously. A singleton result alone does not establish intent; return candidates/evidence when target selection remains ambiguous.",
+  "OpenClaw/plugin tool quick index; descriptions are intentionally deferred:",
+  "Lines: `id input -> output`; `-> ?` unknown.",
+  "OUTPUT DECLARED RULE: deterministic transforms and dependent calls keep `tools.search` catalog lookup inline. Stable IDs supplied by the request/trusted prior context or returned by their owning tool may flow into a dependent mutation when the request identifies the target unambiguously. A singleton result alone does not establish intent; return candidates/evidence when target selection remains ambiguous.",
+  "CONVERSATION RULE: explicit conversationRef is direct; list-derived mutation requires one awaited complete singleton result. Otherwise return evidence.",
   "AUTHORITY RULE: return conflicting authority/permission/ownership evidence before mutation.",
-  "OUTPUT UNKNOWN RULE: unknown output shape is schema ambiguity; return the raw tool value unchanged, then inspect or map it in a later exec.",
+  "OUTPUT UNKNOWN RULE: unknown output shape is schema ambiguity; return raw and inspect later.",
 ].join("\n");
 
 function codeModeCatalogIndexFooter(included: number, total: number): string {
@@ -179,7 +185,7 @@ function createCodeModeExecDescription(
     : "";
   const catalogIndex = catalog ? formatCodeModeCatalogIndex(catalog) : "";
   return (
-    "Run JavaScript or TypeScript in OpenClaw Code Mode. `return` sets final value; otherwise `null`. Quick-index arrows are trusted output hints; `-> ?` marks unknown output. Declared fields support deterministic transforms and dependent calls in one cell; `tools.search` catalog lookup stays inline. Stable target IDs from the request, trusted prior context, or their owning tool may feed a dependent mutation when intent is unambiguous. Singleton output alone is not intent; return evidence when target selection is ambiguous. Return conflicting authority/permission/ownership evidence before mutation. Compose dependent calls in order; parallelize independent work. Unknown output stays raw for observation; transform it later. Nested calls enforce policy and approvals. `ALL_TOOLS` is the complete compact catalog. Select exact IDs with `tools.search(query: string, options?)`; use `tools.describe(id: string)` when needed and keep IDs unchanged. `tools.callValue(id: string, args?)` returns JSON; `tools.call(id: string, args?)` preserves `{ tool, result }`. Use exact enabled catalog tools from JavaScript or TypeScript for shell, file, network, and external actions; raw shell commands and Node.js `require`/`import` are unavailable." +
+    "Run JavaScript or TypeScript in OpenClaw Code Mode. `return` sets final value. Quick-index arrows are trusted output hints; `-> ?` marks unknown output. Declared fields support deterministic transforms and dependent calls in one cell; `tools.search` catalog lookup stays inline. Stable target IDs from the request, trusted prior context, or their owning tool may feed a dependent mutation when intent is unambiguous. Singleton output alone is not intent; return evidence when target selection is ambiguous. Return conflicting authority/permission/ownership evidence before mutation. Compose dependent calls in order; parallelize independent work. Unknown output stays raw for observation; transform it later. Nested calls enforce policy and approvals. `ALL_TOOLS` is the complete compact catalog. Use `tools.search(query: string, options?)`, `tools.describe(id: string)`, `tools.callValue(id: string, args?)`, or `tools.call(id: string, args?)`; keep IDs unchanged. `tools.callValue` returns JSON. Use exact enabled catalog tools from JavaScript or TypeScript for shell, file, network, and external actions; raw shell commands and Node.js `require`/`import` are unavailable." +
     apiGuidance +
     mcpGuidance +
     swarmGuidance +
@@ -203,7 +209,7 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
       // model-facing field prevents schema-valid empty calls from constrained models.
       code: Type.String({
         description:
-          "Run JavaScript or TypeScript in OpenClaw Code Mode. `return` sets result; else `null`. Declared fields enable deterministic transforms/dependent calls; `tools.search` resolves catalog IDs inline. Stable target IDs from request/trusted prior context or the owning tool may feed a mutation when intent is unambiguous; singleton alone is not intent. Return ambiguous targets as evidence. Return authority/permission/ownership conflicts as evidence. `-> ?`: return raw, inspect later. Use exact enabled catalog tools for shell/file/network/external actions; raw shell commands and Node `require`/`import` are unavailable.",
+          "Run JavaScript or TypeScript in OpenClaw Code Mode. Declared fields enable deterministic transforms/dependent calls; `tools.search` resolves catalog IDs inline. Stable target IDs from request/trusted prior context or the owning tool may feed a mutation when intent is unambiguous; singleton alone is not intent. List-derived send/turn await complete singleton. Return ambiguous targets. Return authority/permission/ownership conflicts as evidence. `-> ?`: return raw, inspect later. Use exact enabled catalog tools for shell/file/network/external actions; raw shell commands and Node `require`/`import` are unavailable.",
       }),
       language: optionalStringEnum(["javascript", "typescript"] as const, {
         description:
@@ -386,6 +392,7 @@ const testing = {
   resumingRunIds,
   codeModeReplayIdForToolCall,
   removeExpiredRuns,
+  disposeAllCodeModeRuns,
   runBridgeRequest,
   createHeadlessAbortScope,
   normalizeCodeModeWorkerResult,

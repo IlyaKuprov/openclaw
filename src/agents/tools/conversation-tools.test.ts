@@ -106,7 +106,7 @@ describe("conversation tools", () => {
     expect(Value.Check(send.outputSchema!, sendResult.details)).toBe(true);
     expect(Value.Check(turn.outputSchema!, turnResult.details)).toBe(true);
     expect(compactToolOutputHint(list.outputSchema)).toBe(
-      '{ conversations: Array<{ accountId: string; channel: string; conversationRef: string; firstSeenAt: number; kind: "direct" | "group" | "channel"; lastSeenAt: number; target: string; label?: string; threadId?: string }> }',
+      '{ conversations: Array<{ accountId: string; channel: string; conversationRef: string; firstSeenAt: number; kind: "direct" | "group" | "channel"; lastSeenAt: number; target: string; label?: string; threadId?: string }>; complete?: boolean }',
     );
     expect(compactToolOutputHint(send.outputSchema)).toBe(
       '{ channel: string; conversationRef: string; status: "sent" | "queued" | "suppressed" | "unknown"; messageId?: string; queueId?: string }',
@@ -139,7 +139,28 @@ describe("conversation tools", () => {
           lastSeenAt: 200,
         },
       ],
+      complete: false,
     });
+  });
+
+  it("preserves only explicit producer completeness", async () => {
+    const deps = createDeps();
+    deps.callGatewayMock.mockResolvedValueOnce({
+      conversations: [],
+      complete: true,
+    } as never);
+
+    const explicit = await createConversationsListTool({ agentId: "main" }, deps).execute(
+      "list-complete",
+      {},
+    );
+    const missing = await createConversationsListTool({ agentId: "main" }, createDeps()).execute(
+      "list-unknown",
+      {},
+    );
+
+    expect(explicit.details).toEqual({ conversations: [], complete: true });
+    expect(missing.details).toMatchObject({ complete: false });
   });
 
   it("routes sends through the Gateway with a stable operation id", async () => {
