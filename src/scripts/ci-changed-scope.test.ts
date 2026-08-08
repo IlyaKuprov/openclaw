@@ -384,6 +384,7 @@ describe("detectChangedScope", () => {
       "scripts/codesign-mac-app.sh",
       "scripts/create-dmg.sh",
       "scripts/e2e/macos-app-bootstrap-ci.ts",
+      "scripts/e2e/lib/plugins/npm-registry-server.mjs",
       "scripts/e2e/parallels/host-command.ts",
       "scripts/e2e/parallels/host-server.ts",
       "scripts/e2e/parallels/package-artifact.ts",
