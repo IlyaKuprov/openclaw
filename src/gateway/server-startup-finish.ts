@@ -324,9 +324,7 @@ export async function finishGatewayStartup(params: {
   );
   clearFallbackGatewayContextForServer.set(
     typeof fallbackGatewayContextCleanup === "function"
-      ? () => {
-          fallbackGatewayContextCleanup();
-        }
+      ? () => fallbackGatewayContextCleanup()
       : () => {},
   );
   const [{ attachGatewayWsHandlers }, { listPluginNodeCapabilities }] = await startupTrace.measure(
