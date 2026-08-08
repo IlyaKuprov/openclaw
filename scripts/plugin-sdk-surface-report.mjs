@@ -169,7 +169,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: dependency-light agent scope helpers for doctor migration enumeration.
       // +1: dependency-light channel streaming config readers for doctor closures
       //     (realtime-voice-activation is private-local and not counted here).
-      151,
+      // +1: versioned multiplayer-memory authorization contract and conformance suite.
+      152,
       env,
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
@@ -231,7 +232,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +4: focused agent scope functions for doctor migration enumeration.
       // +1: shared transcript credential-safety prompt for plugin-owned agent harnesses.
       // +3: channel streaming config reader re-exports and session-agent scope resolver.
-      4844,
+      // +45: multiplayer-memory authorization shapes, runtime contract, and conformance types.
+      4889,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -284,7 +286,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: simple channel secret contract factory replacing repeated collectors.
       // +4: focused agent scope functions for doctor migration enumeration.
       // +3: channel streaming config reader functions and session-agent scope resolver.
-      2920,
+      // +6: memory capability guards, runtime admission helpers, and conformance evaluators.
+      2926,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
@@ -304,7 +307,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_WILDCARD_REEXPORTS",
       // -1: text-runtime now names its global-singleton exports explicitly.
       // -1: infra-runtime now names its error exports explicitly.
-      80,
+      // +2: serializable memory authorization contract and pure conformance suite.
+      82,
       env,
     ),
   };
