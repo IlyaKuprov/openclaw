@@ -450,11 +450,20 @@ function applyCoverage(
     return false;
   }
   if (!call.lastAttempt) {
-    if (event.scope !== "transport_semantics") {
+    if (
+      event.scope === "provider_fallbacks" &&
+      call.unattestedAuthorityTransport === event.transport
+    ) {
+      // Endpoint-authority coverage established this call and transport even though
+      // the injected client cannot attest the physical submission.
+    } else if (event.scope !== "transport_semantics") {
       return rejectFact(state, "transport_event_conflict", "event");
-    }
-    if (!bindOrValidateCurrentTransport(call, event.transport, state)) {
+    } else if (!bindOrValidateCurrentTransport(call, event.transport, state)) {
       return false;
+    } else {
+      if (event.reason === "transport_endpoint_authority_partial") {
+        call.unattestedAuthorityTransport = event.transport;
+      }
     }
   } else if (
     !validateEventTransport(event, call.lastAttempt.transport, state) ||
