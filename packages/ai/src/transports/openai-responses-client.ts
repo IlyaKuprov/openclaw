@@ -13,6 +13,7 @@ import {
   getFirstStreamEventTimeoutMs,
 } from "../utils/stream-first-event-timeout.js";
 import { buildGuardedModelFetchResult } from "./host-policy.js";
+import { createDispatchCompatibilityObservers } from "./model-transport-accounting-internal.js";
 import { emitModelTransportDebug } from "./model-transport-debug.js";
 import { formatModelTransportDebugBaseUrl } from "./model-transport-url.js";
 import {
@@ -119,10 +120,11 @@ export function createOpenAIResponsesClient(
       scopeId: requestId ?? randomUUID(),
       callerSignal,
     });
+  const dispatchObservers = createDispatchCompatibilityObservers(accounting.onFetchDispatch);
   const guardedFetch = buildGuardedModelFetchResult(model, undefined, {
     ...(beforeFetchDispatch ? { beforeFetchDispatch } : {}),
+    ...dispatchObservers,
     ...(observeFetchDispatch ? { observeFetchDispatch } : {}),
-    onFetchDispatch: accounting.onFetchDispatch,
   });
   setOpenAISdkFetchProvenance(accounting.scope, guardedFetch.provenance);
   const client = new OpenAI({
@@ -410,8 +412,9 @@ export function createAzureOpenAIClient(
       scopeId: requestId ?? randomUUID(),
       callerSignal,
     });
+  const dispatchObservers = createDispatchCompatibilityObservers(accounting.onFetchDispatch);
   const guardedFetch = buildGuardedModelFetchResult(model, undefined, {
-    onFetchDispatch: accounting.onFetchDispatch,
+    ...dispatchObservers,
   });
   setOpenAISdkFetchProvenance(accounting.scope, guardedFetch.provenance);
   const clientOptions = {

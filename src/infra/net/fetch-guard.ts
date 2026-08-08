@@ -77,6 +77,11 @@ export type GuardedFetchOptions = {
    */
   observeFetchDispatch?: (params: { url: string; init: RequestInit }) => void;
   /**
+   * Observes every physical hop without exposing request material. It runs
+   * after the fetch invocation returns normally and is isolated from peers.
+   */
+  onPhysicalFetchDispatch?: () => void;
+  /**
    * Fires once after the first fetch invocation returns normally. Redirect
    * hops remain one transport attempt.
    */
@@ -674,6 +679,11 @@ async function fetchWithSsrFGuardInternal(
       const responsePromise = shouldUseRuntimeFetch
         ? invokeRuntimeDispatcherFetch(parsedUrl.toString(), init)
         : defaultFetch(parsedUrl.toString(), init);
+      try {
+        params.onPhysicalFetchDispatch?.();
+      } catch {
+        // Dispatch accounting is observational and must never alter provider traffic.
+      }
       try {
         params.observeFetchDispatch?.({ url: parsedUrl.toString(), init });
       } catch {

@@ -71,7 +71,10 @@ describe("provider transport accounting", () => {
     });
 
     expect(collector.project()).toMatchObject({
-      coverage: { state: "complete" },
+      coverage: {
+        state: "partial",
+        reasons: expect.arrayContaining(["transport_dispatch_relation_incomplete"]),
+      },
       snapshot: {
         attempts: { total: 1, retries: 1, totalKind: "exact" },
         zeroSubmissions: { total: 2, failed: 2, totalKind: "exact" },
@@ -130,7 +133,10 @@ describe("provider transport accounting", () => {
     expect(collector.project()).toMatchObject({
       coverage: {
         state: "partial",
-        reasons: ["transport_endpoint_authority_partial"],
+        reasons: expect.arrayContaining([
+          "transport_endpoint_authority_partial",
+          "transport_dispatch_relation_incomplete",
+        ]),
       },
       snapshot: {
         attempts: { total: 1, totalKind: "exact" },
@@ -231,11 +237,17 @@ describe("provider transport accounting", () => {
     ]);
 
     expect(first.project()).toMatchObject({
-      coverage: { state: "complete" },
+      coverage: {
+        state: "partial",
+        reasons: expect.arrayContaining(["transport_dispatch_relation_incomplete"]),
+      },
       snapshot: { logicalCalls: { entries: [{ callId: "call-first" }] } },
     });
     expect(second.project()).toMatchObject({
-      coverage: { state: "complete" },
+      coverage: {
+        state: "partial",
+        reasons: expect.arrayContaining(["transport_dispatch_relation_incomplete"]),
+      },
       snapshot: { logicalCalls: { entries: [{ callId: "call-second" }] } },
     });
   });
@@ -266,7 +278,10 @@ describe("provider transport accounting", () => {
     });
 
     expect(collector.project()).toMatchObject({
-      coverage: { state: "complete" },
+      coverage: {
+        state: "partial",
+        reasons: expect.arrayContaining(["transport_dispatch_relation_incomplete"]),
+      },
       snapshot: {
         attempts: { total: 1, initial: 1, retries: 0, transportFallbacks: 0 },
         connections: { total: 2, initial: 1, prewarms: 1, reconnects: 0 },
@@ -717,7 +732,10 @@ describe("provider transport accounting", () => {
     });
 
     expect(collector.project()).toMatchObject({
-      coverage: { state: "complete" },
+      coverage: {
+        state: "partial",
+        reasons: expect.arrayContaining(["transport_dispatch_relation_incomplete"]),
+      },
       snapshot: { attempts: { total: 1 }, events: { total: 1 } },
     });
   });
@@ -788,18 +806,30 @@ describe("provider transport accounting", () => {
     });
 
     expect(collector.project()).toMatchObject({
-      coverage: { state: "complete" },
+      coverage: {
+        state: "partial",
+        reasons: expect.arrayContaining([
+          "transport_dispatch_relation_incomplete",
+          "transport_lifecycle_ambiguous",
+        ]),
+      },
       snapshot: {
         logicalCalls: {
           total: 2,
           completed: 2,
+          outcomeKind: "lower_bound",
           entries: [
             { callId: "call-reused-lifecycle", outcome: "completed" },
             { callId: "call-reused-lifecycle", outcome: "completed" },
           ],
         },
-        attempts: { total: 2, initial: 2, totalKind: "exact" },
-        events: { total: 2, totalKind: "exact" },
+        attempts: { total: 2, initial: 2, totalKind: "lower_bound" },
+        dispatches: { total: 0, totalKind: "lower_bound" },
+        connections: { totalKind: "lower_bound" },
+        fallbacks: { totalKind: "lower_bound" },
+        providerFallbacks: { totalKind: "lower_bound" },
+        zeroSubmissions: { totalKind: "lower_bound" },
+        events: { total: 2, totalKind: "lower_bound" },
       },
     });
   });

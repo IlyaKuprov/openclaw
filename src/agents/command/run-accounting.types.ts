@@ -83,6 +83,7 @@ export type RunAccountingAccumulator = {
   beginModelCall: () => AgentCommandModelCallAccounting;
   markOpaqueWork: (reason: EmbeddedRunOpaqueWorkReason) => void;
   observeCodeModeFinalQuiescence: (state: CodeModeRunFinalQuiescence) => void;
+  seal: () => void;
   project: () => AgentCommandRunAccountingSnapshot;
 };
 

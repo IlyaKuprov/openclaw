@@ -879,6 +879,9 @@ export function buildGuardedModelFetch(
             observeFetchDispatch: options.observeFetchDispatch,
           }
         : {}),
+      ...(options?.onPhysicalFetchDispatch
+        ? { onPhysicalFetchDispatch: options.onPhysicalFetchDispatch }
+        : {}),
       ...(options?.onFetchDispatch ? { onFetchDispatch: options.onFetchDispatch } : {}),
     };
     let result: Awaited<ReturnType<typeof fetchWithSsrFGuard>>;

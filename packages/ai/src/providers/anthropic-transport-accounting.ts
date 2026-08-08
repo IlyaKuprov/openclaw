@@ -153,6 +153,7 @@ export function createAnthropicTransportAccounting(params: {
   let completedAttemptAwaitingPotentialRetry = false;
   let retryInvocationAwaitingDispatch = false;
   let zeroSubmissionObservedForInvocation = false;
+  let currentDispatchAttemptKey: object | undefined;
   let backoffZeroSubmissionObserved = false;
   let fetchProvenance: AiModelFetchProvenance | undefined;
   let fallbackCoverageObserved = false;
@@ -279,6 +280,15 @@ export function createAnthropicTransportAccounting(params: {
       if (fetchProvenance !== "dispatch_attested") {
         return;
       }
+      const reason = currentInvocationOrdinal === 1 ? context.reason : "retry";
+      state.events.observeDispatch({
+        attemptKey: (currentDispatchAttemptKey ??= {}),
+        transport: ANTHROPIC_TRANSPORT,
+        reason,
+      });
+      if (activeAttempt) {
+        return;
+      }
       phaseAwaitingSubmission = false;
       completedAttemptAwaitingPotentialRetry = false;
       retryInvocationAwaitingDispatch = false;
@@ -286,13 +296,14 @@ export function createAnthropicTransportAccounting(params: {
       backoffZeroSubmissionObserved = false;
       activeAttempt = state.events.startAttempt({
         transport: ANTHROPIC_TRANSPORT,
-        reason: currentInvocationOrdinal === 1 ? context.reason : "retry",
+        reason,
       });
     },
     wrapFetch(fetch, provenance) {
       fetchProvenance = provenance;
       return async (input, init) => {
         currentInvocationOrdinal = ++phaseInvocationCount;
+        currentDispatchAttemptKey = {};
         phaseAwaitingSubmission = true;
         retryInvocationAwaitingDispatch = currentInvocationOrdinal > 1;
         completedAttemptAwaitingPotentialRetry = false;

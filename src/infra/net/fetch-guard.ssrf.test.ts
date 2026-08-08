@@ -998,6 +998,9 @@ describe("fetchWithSsrFGuard hardening", () => {
 
   it("observes every physical redirect hop after blocking policy succeeds", async () => {
     const order: string[] = [];
+    const onPhysicalFetchDispatch = vi.fn(() => {
+      order.push("physical");
+    });
     const observeFetchDispatch = vi.fn(({ url }: { url: string }) => {
       order.push(`observe:${url}`);
     });
@@ -1016,14 +1019,18 @@ describe("fetchWithSsrFGuard hardening", () => {
       url: "https://api.example.com/start",
       fetchImpl,
       lookupFn: createPublicLookup(),
+      onPhysicalFetchDispatch,
       observeFetchDispatch,
     });
 
+    expect(onPhysicalFetchDispatch).toHaveBeenCalledTimes(2);
     expect(observeFetchDispatch).toHaveBeenCalledTimes(2);
     expect(order).toEqual([
       "fetch:https://api.example.com/start",
+      "physical",
       "observe:https://api.example.com/start",
       "fetch:https://cdn.example.com/asset",
+      "physical",
       "observe:https://cdn.example.com/asset",
     ]);
     await result.release();
@@ -1048,6 +1055,7 @@ describe("fetchWithSsrFGuard hardening", () => {
 
   it("lets the blocking pre-fetch hook reject before network egress", async () => {
     const fetchImpl = vi.fn(async () => okResponse());
+    const onPhysicalFetchDispatch = vi.fn();
     const observeFetchDispatch = vi.fn();
 
     await expect(
@@ -1055,6 +1063,7 @@ describe("fetchWithSsrFGuard hardening", () => {
         url: "https://api.example.com/data",
         fetchImpl,
         lookupFn: createPublicLookup(),
+        onPhysicalFetchDispatch,
         observeFetchDispatch,
         beforeFetchDispatch: () => {
           throw new Error("policy rejected");
@@ -1063,10 +1072,12 @@ describe("fetchWithSsrFGuard hardening", () => {
     ).rejects.toThrow("policy rejected");
 
     expect(fetchImpl).not.toHaveBeenCalled();
+    expect(onPhysicalFetchDispatch).not.toHaveBeenCalled();
     expect(observeFetchDispatch).not.toHaveBeenCalled();
   });
 
   it("does not observe a redirect hop rejected during network preflight", async () => {
+    const onPhysicalFetchDispatch = vi.fn();
     const observeFetchDispatch = vi.fn();
     const fetchImpl = vi.fn().mockResolvedValueOnce(redirectResponse("http://127.0.0.1:6379/"));
 
@@ -1075,10 +1086,12 @@ describe("fetchWithSsrFGuard hardening", () => {
         url: "https://public.example/start",
         fetchImpl,
         lookupFn: createPublicLookup(),
+        onPhysicalFetchDispatch,
         observeFetchDispatch,
       }),
     ).rejects.toThrow(/private|internal|blocked/i);
 
+    expect(onPhysicalFetchDispatch).toHaveBeenCalledOnce();
     expect(observeFetchDispatch).toHaveBeenCalledOnce();
     expect(observeFetchDispatch.mock.calls[0]?.[0].url).toBe("https://public.example/start");
     expect(fetchImpl).toHaveBeenCalledOnce();
@@ -1086,7 +1099,7 @@ describe("fetchWithSsrFGuard hardening", () => {
 
   it("isolates throwing physical-dispatch observers", async () => {
     const fetchImpl = vi.fn(async () => okResponse());
-    const observeFetchDispatch = vi.fn(() => {
+    const onPhysicalFetchDispatch = vi.fn(() => {
       throw new Error("observer failure");
     });
 
@@ -1094,10 +1107,10 @@ describe("fetchWithSsrFGuard hardening", () => {
       url: "https://api.example.com/data",
       fetchImpl,
       lookupFn: createPublicLookup(),
-      observeFetchDispatch,
+      onPhysicalFetchDispatch,
     });
 
-    expect(observeFetchDispatch).toHaveBeenCalledOnce();
+    expect(onPhysicalFetchDispatch).toHaveBeenCalledOnce();
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(result.response.status).toBe(200);
     await result.release();
@@ -1126,6 +1139,7 @@ describe("fetchWithSsrFGuard hardening", () => {
     const fetchImpl = vi.fn(() => {
       throw new Error("fetch invocation failed");
     });
+    const onPhysicalFetchDispatch = vi.fn();
     const observeFetchDispatch = vi.fn();
     const onFetchDispatch = vi.fn();
 
@@ -1134,14 +1148,40 @@ describe("fetchWithSsrFGuard hardening", () => {
         url: "https://api.example.com/data",
         fetchImpl,
         lookupFn: createPublicLookup(),
+        onPhysicalFetchDispatch,
         observeFetchDispatch,
         onFetchDispatch,
       }),
     ).rejects.toThrow("fetch invocation failed");
 
     expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(onPhysicalFetchDispatch).not.toHaveBeenCalled();
     expect(observeFetchDispatch).not.toHaveBeenCalled();
     expect(onFetchDispatch).not.toHaveBeenCalled();
+  });
+
+  it("reports one physical dispatch when fetch returns a rejected promise", async () => {
+    const failure = new Error("remote fetch failed");
+    const fetchImpl = vi.fn(() => Promise.reject(failure));
+    const onPhysicalFetchDispatch = vi.fn();
+    const observeFetchDispatch = vi.fn();
+    const onFetchDispatch = vi.fn();
+
+    await expect(
+      fetchWithSsrFGuard({
+        url: "https://api.example.com/data",
+        fetchImpl,
+        lookupFn: createPublicLookup(),
+        onPhysicalFetchDispatch,
+        observeFetchDispatch,
+        onFetchDispatch,
+      }),
+    ).rejects.toBe(failure);
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(onPhysicalFetchDispatch).toHaveBeenCalledOnce();
+    expect(observeFetchDispatch).toHaveBeenCalledOnce();
+    expect(onFetchDispatch).toHaveBeenCalledOnce();
   });
 
   it("does not report runtime-dispatcher sync failures as physical dispatches", async () => {
@@ -1154,6 +1194,7 @@ describe("fetchWithSsrFGuard hardening", () => {
       ProxyAgent: proxyAgentCtor,
       fetch: runtimeFetch,
     };
+    const onPhysicalFetchDispatch = vi.fn();
     const observeFetchDispatch = vi.fn();
     const onFetchDispatch = vi.fn();
 
@@ -1161,12 +1202,14 @@ describe("fetchWithSsrFGuard hardening", () => {
       fetchWithSsrFGuard({
         url: "https://api.example.com/data",
         lookupFn: createPublicLookup(),
+        onPhysicalFetchDispatch,
         observeFetchDispatch,
         onFetchDispatch,
       }),
     ).rejects.toThrow("runtime fetch invocation failed");
 
     expect(runtimeFetch).toHaveBeenCalledOnce();
+    expect(onPhysicalFetchDispatch).not.toHaveBeenCalled();
     expect(observeFetchDispatch).not.toHaveBeenCalled();
     expect(onFetchDispatch).not.toHaveBeenCalled();
   });

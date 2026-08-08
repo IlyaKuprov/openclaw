@@ -159,8 +159,14 @@ export type AiModelFetchOptions = {
    */
   observeFetchDispatch?: AiBeforeFetchDispatch;
   /**
+   * Observes each physical hop after invocation returns without a synchronous
+   * throw. It receives no request URL, headers, or body.
+   */
+  onPhysicalFetchDispatch?: () => void;
+  /**
    * Fires after the underlying fetch invocation returns normally. Synchronous
    * preflight rejection therefore remains an attested zero-dispatch outcome.
+   * New hosts should prefer `onPhysicalFetchDispatch` for per-hop authority.
    */
   onFetchDispatch?: () => void;
 };
@@ -197,6 +203,15 @@ type AiModelTransportCallEventBase = AiModelTransportEventBase & {
  * or active transport.
  */
 export type AiModelTransportEvent =
+  | (AiModelTransportCallEventBase & {
+      /** Positive provider submission admitted after the transport invocation returns normally. */
+      type: "dispatch";
+      transport: string;
+      ordinal: number;
+      attemptOrdinal: number;
+      hopOrdinal: number;
+      reason: AiModelTransportAttemptReason;
+    })
   | (AiModelTransportCallEventBase & {
       type: "attempt";
       transport: string;

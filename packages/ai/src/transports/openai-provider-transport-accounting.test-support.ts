@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import {
   configureAiTransportHost,
   getAiTransportHost,
+  type AiModelFetchOptions,
   type AiModelTransportEvent,
 } from "../host.js";
 import {
@@ -136,7 +137,7 @@ export function waitForRequestAbort(init?: RequestInit): Promise<Response> {
 export function configureTransportObserver(
   events: AiModelTransportEvent[],
   buildNetworkFetch?: () => typeof fetch,
-  buildAttestedFetch?: (options: { onFetchDispatch?: () => void }) => typeof fetch,
+  buildAttestedFetch?: (options: AiModelFetchOptions) => typeof fetch,
 ): void {
   configureAiTransportHost({
     ...initialHost,
@@ -146,7 +147,7 @@ export function configureTransportObserver(
           buildModelFetchWithDispatchAttestation: (
             _model: Model,
             _timeoutMs: number | undefined,
-            options: { onFetchDispatch?: () => void },
+            options: AiModelFetchOptions,
           ) => {
             const attestedFetch = buildAttestedFetch?.(options);
             if (attestedFetch) {
@@ -158,6 +159,7 @@ export function configureTransportObserver(
             }
             const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
               const dispatched = networkFetch(input, init);
+              options?.onPhysicalFetchDispatch?.();
               options?.onFetchDispatch?.();
               return await dispatched;
             };
@@ -177,6 +179,13 @@ export function attemptEvents(events: AiModelTransportEvent[]) {
   return events.filter(
     (event): event is Extract<AiModelTransportEvent, { type: "attempt" }> =>
       event.type === "attempt",
+  );
+}
+
+export function dispatchEvents(events: AiModelTransportEvent[]) {
+  return events.filter(
+    (event): event is Extract<AiModelTransportEvent, { type: "dispatch" }> =>
+      event.type === "dispatch",
   );
 }
 

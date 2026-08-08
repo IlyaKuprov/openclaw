@@ -40,6 +40,7 @@ function observeTestPhysicalDispatch(
   init?: RequestInit,
 ): void {
   const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+  options?.onPhysicalFetchDispatch?.();
   options?.observeFetchDispatch?.({ url, init: init ?? {} });
 }
 
@@ -350,6 +351,7 @@ describe("Anthropic SDK endpoint authority and injected clients", () => {
       buildModelFetchWithDispatchAttestation: (_model, _timeout, options) => ({
         fetch: async () => {
           const dispatch = { url: "https://compatible.example/v1/messages", init: {} };
+          options.onPhysicalFetchDispatch?.();
           options.observeFetchDispatch?.(dispatch);
           options.onFetchDispatch?.();
           return new Response(body, {
@@ -375,13 +377,21 @@ describe("Anthropic SDK endpoint authority and injected clients", () => {
 
     expect(result.stopReason).toBe("error");
     expect(result.errorMessage).toContain("ended before message_stop");
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "attempt",
-        callId: "call-sdk-incomplete-tail",
-        outcome: "failed",
-      }),
-    ]);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "dispatch",
+          callId: "call-sdk-incomplete-tail",
+          attemptOrdinal: 1,
+          hopOrdinal: 1,
+        }),
+        expect.objectContaining({
+          type: "attempt",
+          callId: "call-sdk-incomplete-tail",
+          outcome: "failed",
+        }),
+      ]),
+    );
   });
 
   it("keeps SDK token-cache 401 refresh accounting explicitly partial", async () => {
@@ -550,8 +560,10 @@ describe("Anthropic SDK endpoint authority and injected clients", () => {
     configureAiTransportHost({
       buildModelFetchWithDispatchAttestation: (_model, _timeout, options) => ({
         fetch: async () => {
+          options.onPhysicalFetchDispatch?.();
           options.observeFetchDispatch?.({ url: testCase.hops[0], init: {} });
           options.onFetchDispatch?.();
+          options.onPhysicalFetchDispatch?.();
           options.observeFetchDispatch?.({ url: testCase.hops[1], init: {} });
           return new Response(testCase.body, {
             status: 200,
@@ -601,6 +613,7 @@ describe("Anthropic SDK endpoint authority and injected clients", () => {
             init: {},
           };
           options.beforeFetchDispatch(official);
+          options.onPhysicalFetchDispatch?.();
           options.observeFetchDispatch?.(official);
           observedPhysicalUrls.push(official.url);
           options.onFetchDispatch?.();

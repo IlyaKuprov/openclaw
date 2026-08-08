@@ -86,6 +86,7 @@ function buildTestGuardedFetch(
     options?.beforeFetchDispatch?.(dispatch);
     options?.observeFetchDispatch?.(dispatch);
     const response = guardedFetchMock(input, init);
+    options?.onPhysicalFetchDispatch?.();
     options?.onFetchDispatch?.();
     return await response;
   };
@@ -1413,6 +1414,12 @@ describe("anthropic transport stream", () => {
     expect(result.stopReason).toBe("stop");
     expect(events).toEqual([
       expect.objectContaining({
+        type: "dispatch",
+        callId: "call-native-complete",
+        attemptOrdinal: 1,
+        hopOrdinal: 1,
+      }),
+      expect.objectContaining({
         type: "attempt",
         callId: "call-native-complete",
         ordinal: 1,
@@ -1470,6 +1477,12 @@ describe("anthropic transport stream", () => {
     expect(result.stopReason).toBe("error");
     expect(result.errorMessage).toBe("Anthropic stream ended before message_stop");
     expect(events).toEqual([
+      expect.objectContaining({
+        type: "dispatch",
+        callId: "call-native-incomplete",
+        attemptOrdinal: 1,
+        hopOrdinal: 1,
+      }),
       expect.objectContaining({
         type: "attempt",
         callId: "call-native-incomplete",
@@ -1700,8 +1713,10 @@ describe("anthropic transport stream", () => {
         buildModelFetchWithDispatchAttestation: (_model, _timeout, options) => ({
           fetch: async (input, init) => {
             options?.observeFetchDispatch?.({ url: testFetchUrl(input), init: init ?? {} });
+            const response = createRawSseResponse(createStandaloneDoneBody());
+            options?.onPhysicalFetchDispatch?.();
             options?.onFetchDispatch?.();
-            return createRawSseResponse(createStandaloneDoneBody());
+            return response;
           },
           provenance: "dispatch_attested",
         }),
@@ -1716,6 +1731,12 @@ describe("anthropic transport stream", () => {
 
       expect(result.stopReason).toBe(expectedStopReason);
       expect(events).toEqual([
+        expect.objectContaining({
+          type: "dispatch",
+          callId: requestId,
+          attemptOrdinal: 1,
+          hopOrdinal: 1,
+        }),
         expect.objectContaining({
           type: "attempt",
           callId: requestId,
@@ -2064,6 +2085,12 @@ describe("anthropic transport stream", () => {
     expect(result.errorMessage).toBe("Anthropic stream ended before message_stop");
     expect(events).toEqual([
       expect.objectContaining({
+        type: "dispatch",
+        callId: "call-native-compatible-clean-eof",
+        attemptOrdinal: 1,
+        hopOrdinal: 1,
+      }),
+      expect.objectContaining({
         type: "attempt",
         callId: "call-native-compatible-clean-eof",
         outcome: "failed",
@@ -2103,6 +2130,12 @@ describe("anthropic transport stream", () => {
     expect(result.stopReason).toBe("error");
     expect(result.errorMessage).toBe("Anthropic stream ended before message_stop");
     expect(events).toEqual([
+      expect.objectContaining({
+        type: "dispatch",
+        callId: "call-native-incomplete-tail",
+        attemptOrdinal: 1,
+        hopOrdinal: 1,
+      }),
       expect.objectContaining({
         type: "attempt",
         callId: "call-native-incomplete-tail",
@@ -2394,7 +2427,7 @@ describe("anthropic transport stream", () => {
         },
       }),
     ]);
-    expect(events.map((event) => event.type)).toEqual(["provider_fallback", "attempt"]);
+    expect(events.map((event) => event.type)).toEqual(["dispatch", "provider_fallback", "attempt"]);
   });
 
   it("preserves native no-boundary fallback identity when the stream ends incomplete", async () => {
@@ -2453,6 +2486,12 @@ describe("anthropic transport stream", () => {
     ]);
     expect(result.usage.cost.total).toBeCloseTo(0.000075, 10);
     expect(events).toEqual([
+      expect.objectContaining({
+        type: "dispatch",
+        callId: "call-native-incomplete-no-boundary",
+        attemptOrdinal: 1,
+        hopOrdinal: 1,
+      }),
       expect.objectContaining({
         type: "provider_fallback",
         callId: "call-native-incomplete-no-boundary",
@@ -2742,6 +2781,12 @@ describe("anthropic transport stream", () => {
     );
     expect(result.usage.cost.total).toBeCloseTo(0.000075, 10);
     expect(events).toEqual([
+      expect.objectContaining({
+        type: "dispatch",
+        callId: "call-native-fallback-refusal",
+        attemptOrdinal: 1,
+        hopOrdinal: 1,
+      }),
       expect.objectContaining({
         type: "provider_fallback",
         callId: "call-native-fallback-refusal",

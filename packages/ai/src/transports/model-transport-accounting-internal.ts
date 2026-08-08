@@ -1,6 +1,7 @@
 import type { Model } from "@openclaw/llm-core";
 import {
   getAiTransportHost,
+  type AiModelFetchOptions,
   type AiModelTransportEvent,
   type AiModelTransportAttemptReason,
   type AiModelTransportConnectionReason,
@@ -35,6 +36,24 @@ export type PendingTransportEvent = {
   finish(outcome: ModelTransportOutcome, statusCode?: number): void;
 };
 
+export function createDispatchCompatibilityObservers(
+  onDispatch: () => void,
+): Pick<AiModelFetchOptions, "onFetchDispatch" | "onPhysicalFetchDispatch"> {
+  let physicalObserved = false;
+  return {
+    onPhysicalFetchDispatch() {
+      physicalObserved = true;
+      onDispatch();
+    },
+    onFetchDispatch() {
+      if (!physicalObserved) {
+        onDispatch();
+      }
+      physicalObserved = false;
+    },
+  };
+}
+
 export type ModelTransportAttemptAuthority = {
   observeServingModel(model: unknown): void;
   readServingModel(): string | undefined;
@@ -42,6 +61,11 @@ export type ModelTransportAttemptAuthority = {
 };
 
 export type ModelTransportEventScope = {
+  observeDispatch(params: {
+    attemptKey: object;
+    transport: string;
+    reason: ModelTransportAttemptReason;
+  }): number;
   startAttempt(params: {
     transport: string;
     reason: ModelTransportAttemptReason;
@@ -153,6 +177,10 @@ export function createModelTransportEventScope(params: {
     `${params.model.provider}\0${params.model.api}\0${params.model.id}\0${params.scopeId}`,
   );
   let attemptOrdinal = 0;
+  let dispatchOrdinal = 0;
+  let dispatchAttemptKey: object | undefined;
+  let dispatchAttemptOrdinal = 0;
+  let dispatchHopOrdinal = 0;
   let connectionOrdinal = 0;
   let fallbackOrdinal = 0;
   let coverageOrdinal = 0;
@@ -162,6 +190,31 @@ export function createModelTransportEventScope(params: {
   const observeEvent = params.observeEvent ?? observeModelTransportEventSafely;
 
   return {
+    observeDispatch({ attemptKey, transport, reason }) {
+      if (dispatchAttemptKey !== attemptKey) {
+        dispatchAttemptKey = attemptKey;
+        dispatchAttemptOrdinal += 1;
+        dispatchHopOrdinal = 0;
+      }
+      const ordinal = ++dispatchOrdinal;
+      dispatchHopOrdinal += 1;
+      if (callId) {
+        observeEvent({
+          type: "dispatch",
+          eventId: `${eventIdPrefix}:${routeHash}:dispatch:${ordinal}`,
+          callId,
+          provider: params.model.provider,
+          model: params.model.id,
+          api: params.model.api,
+          transport,
+          ordinal,
+          attemptOrdinal: dispatchAttemptOrdinal,
+          hopOrdinal: dispatchHopOrdinal,
+          reason,
+        });
+      }
+      return ordinal;
+    },
     startAttempt({ transport, reason }) {
       const ordinal = ++attemptOrdinal;
       const startedAt = nowMs();

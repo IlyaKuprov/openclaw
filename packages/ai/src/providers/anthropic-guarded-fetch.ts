@@ -4,6 +4,7 @@ import {
   buildGuardedModelFetchResult,
   snapshotProviderEndpointResolver,
 } from "../transports/host-policy.js";
+import { createDispatchCompatibilityObservers } from "../transports/model-transport-accounting-internal.js";
 import {
   createAnthropicEndpointAuthority,
   type AnthropicEndpointAuthoritySnapshot,
@@ -32,11 +33,12 @@ export function buildAnthropicGuardedFetch(params: {
   let fetchAuthorityResolved = false;
   let physicalDispatchAttested = false;
   const pendingDispatchUrls: string[] = [];
+  const dispatchObservers = params.transportAccounting
+    ? createDispatchCompatibilityObservers(params.transportAccounting.onFetchDispatch)
+    : undefined;
   const guardedFetch = buildGuardedModelFetchResult(params.model, undefined, {
     ...(params.sanitizeSse === undefined ? {} : { sanitizeSse: params.sanitizeSse }),
-    ...(params.transportAccounting
-      ? { onFetchDispatch: params.transportAccounting.onFetchDispatch }
-      : {}),
+    ...dispatchObservers,
     observeFetchDispatch: ({ url }) => {
       if (!fetchAuthorityResolved) {
         pendingDispatchUrls.push(url);

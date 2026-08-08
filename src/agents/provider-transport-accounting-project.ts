@@ -5,11 +5,14 @@ import type {
   ProviderTransportAccountingCoverageReason,
   ProviderTransportAccountingSnapshot,
   ProviderTransportAccountingTotalKind,
+  ProviderTransportAttempt,
+  ProviderTransportDispatch,
   ProviderTransportLogicalCall,
 } from "./provider-transport-accounting.types.js";
 
 export type ProviderTransportAggregateLowerBoundKey =
   | "attempts"
+  | "dispatches"
   | "connections"
   | "fallbacks"
   | "providerFallbacks"
@@ -19,6 +22,8 @@ export function providerTransportAggregateKeyForEvent(
   event: AiModelTransportEvent,
 ): ProviderTransportAggregateLowerBoundKey | undefined {
   switch (event.type) {
+    case "dispatch":
+      return "dispatches";
     case "attempt":
       return "attempts";
     case "connection":
@@ -43,6 +48,7 @@ export function providerTransportAggregateKeyForEvent(
 }
 
 export type ProviderTransportProjectionCall = {
+  ordinal: number;
   callId: string;
   provider: string;
   model: string;
@@ -62,6 +68,13 @@ export type ProviderTransportProjectionCall = {
     transport: string;
     servingModel: string;
     outcome: AiModelTransportOutcome;
+  };
+  nextDispatchOrdinal: number;
+  unsettledDispatches: number;
+  pendingDispatchAttempt?: {
+    ordinal: number;
+    reason: import("@openclaw/ai").AiModelTransportAttemptReason;
+    nextHopOrdinal: number;
   };
   phase?: {
     transport: string;
@@ -98,12 +111,17 @@ export type ProviderTransportProjectionState = {
     zeroSubmissions: Omit<ProviderTransportAccountingSnapshot["zeroSubmissions"], "totalKind">;
   };
   events: AiModelTransportEvent[];
+  attempts: ProviderTransportAttempt[];
+  dispatches: ProviderTransportDispatch[];
   acceptedEvents: number;
+  acceptedDispatches: number;
+  nextDispatchSequence: number;
   nextPrewarmConnectionOrdinal: number;
   callTotalsLowerBound: boolean;
   outcomeTotalsLowerBound: boolean;
   aggregateLowerBounds: {
     attempts: boolean;
+    dispatches: boolean;
     connections: boolean;
     fallbacks: boolean;
     providerFallbacks: boolean;
@@ -113,6 +131,9 @@ export type ProviderTransportProjectionState = {
   activeAggregateKey?: ProviderTransportAggregateLowerBoundKey;
   callDetailsTruncated: boolean;
   eventDetailsTruncated: boolean;
+  attemptDetailsTruncated: boolean;
+  dispatchDetailsTruncated: boolean;
+  sealed: boolean;
   issues: Set<ProviderTransportAccountingCoverageReason>;
 };
 
@@ -163,6 +184,47 @@ export function retainProviderTransportEventDetail(
   state.events.push(event);
 }
 
+export function retainProviderTransportAttempt(
+  attempt: ProviderTransportAttempt,
+  state: ProviderTransportProjectionState,
+  maxAttempts: number,
+): void {
+  if (state.attempts.length < maxAttempts) {
+    state.attempts.push(attempt);
+  } else {
+    state.attemptDetailsTruncated = true;
+  }
+}
+
+export function retainProviderTransportDispatch(
+  event: Extract<AiModelTransportEvent, { type: "dispatch" }>,
+  logicalCallOrdinal: number,
+  state: ProviderTransportProjectionState,
+  maxDispatches: number,
+): void {
+  state.acceptedDispatches += 1;
+  const dispatch = {
+    sequence: state.nextDispatchSequence,
+    logicalCallOrdinal,
+    callId: event.callId,
+    provider: event.provider,
+    model: event.model,
+    api: event.api,
+    transport: event.transport,
+    ordinal: event.ordinal,
+    attemptOrdinal: event.attemptOrdinal,
+    hopOrdinal: event.hopOrdinal,
+    reason: event.reason,
+  };
+  state.nextDispatchSequence += 1;
+  if (state.dispatches.length < maxDispatches) {
+    state.dispatches.push(dispatch);
+  } else {
+    state.dispatchDetailsTruncated = true;
+    state.issues.add("transport_details_truncated");
+  }
+}
+
 export function countProviderTransportAttempt(
   event: Extract<AiModelTransportEvent, { type: "attempt" }>,
   state: ProviderTransportProjectionState,
@@ -199,6 +261,7 @@ function totalsKind(lowerBound: boolean): ProviderTransportAccountingTotalKind {
 
 function projectLogicalCall(call: ProviderTransportProjectionCall): ProviderTransportLogicalCall {
   return {
+    ordinal: call.ordinal,
     callId: call.callId,
     provider: call.provider,
     model: call.model,
@@ -208,6 +271,7 @@ function projectLogicalCall(call: ProviderTransportProjectionCall): ProviderTran
       ? { servingModel: call.phase?.servingModel ?? call.currentServingModel }
       : {}),
     ...(call.logicalOutcome ? { outcome: call.logicalOutcome } : {}),
+    finalized: call.finalized === true,
     cachedInput: call.cachedInput ?? { state: "unknown" },
   };
 }
@@ -222,7 +286,11 @@ function callHasMissingAttemptEventEvidence(call: ProviderTransportProjectionCal
   if (call.latestZeroSubmissionOutcome) {
     return hasUnresolvedSettlementAfterSubmission;
   }
-  return hasServerSubmissionWithoutTerminalAttempt || hasUnresolvedSettlementAfterSubmission;
+  return (
+    hasServerSubmissionWithoutTerminalAttempt ||
+    hasUnresolvedSettlementAfterSubmission ||
+    call.unsettledDispatches > 0
+  );
 }
 
 export function projectProviderTransportAccounting(state: ProviderTransportProjectionState) {
@@ -241,6 +309,9 @@ export function projectProviderTransportAccounting(state: ProviderTransportProje
     }
     if (call.phase?.submissionEvidence) {
       issues.add("not_instrumented");
+    }
+    if (call.pendingDispatchAttempt) {
+      issues.add("transport_dispatch_relation_incomplete");
     }
   }
   const hasSnapshot =
@@ -262,6 +333,15 @@ export function projectProviderTransportAccounting(state: ProviderTransportProje
       (call) =>
         !call.latestZeroSubmissionOutcome && (!call.lastAttempt || call.pendingTransportTarget),
     );
+  const dispatchesLowerBound =
+    state.aggregateLowerBounds.dispatches ||
+    hasCallWithoutAcceptedTransportEvent ||
+    missingAttemptEventEvidence ||
+    calls.some(
+      (call) =>
+        call.pendingDispatchAttempt !== undefined ||
+        (call.lastAttempt !== undefined && call.nextDispatchOrdinal === 1),
+    );
   const connectionsLowerBound =
     state.aggregateLowerBounds.connections || hasCallWithoutAcceptedTransportEvent;
   const fallbacksLowerBound =
@@ -276,6 +356,7 @@ export function projectProviderTransportAccounting(state: ProviderTransportProje
     missingAttemptEventEvidence;
   if (
     attemptsLowerBound ||
+    dispatchesLowerBound ||
     connectionsLowerBound ||
     fallbacksLowerBound ||
     providerFallbacksLowerBound ||
@@ -299,7 +380,18 @@ export function projectProviderTransportAccounting(state: ProviderTransportProje
       entries: calls.map(projectLogicalCall),
       entriesTruncated: state.callDetailsTruncated,
     },
-    attempts: { ...state.aggregate.attempts, totalKind: totalsKind(attemptsLowerBound) },
+    attempts: {
+      ...state.aggregate.attempts,
+      totalKind: totalsKind(attemptsLowerBound),
+      entries: state.attempts.map((attempt) => ({ ...attempt })),
+      entriesTruncated: state.attemptDetailsTruncated,
+    },
+    dispatches: {
+      total: state.acceptedDispatches,
+      totalKind: totalsKind(dispatchesLowerBound),
+      entries: state.dispatches.map((dispatch) => ({ ...dispatch })),
+      entriesTruncated: state.dispatchDetailsTruncated,
+    },
     connections: {
       ...state.aggregate.connections,
       totalKind: totalsKind(connectionsLowerBound),
