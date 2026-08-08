@@ -1027,7 +1027,7 @@ jobs:
 
           for channel in stable prerelease; do
             selection="${!channel}"
-            tag="$(jq -r '.tag' <<< "$selection")"
+            tag="$(jq -er '.tag | select(type == "string" and length > 0)' <<< "$selection")"
             asset_name="$(jq -er '.asset_name | select(type == "string" and length > 0)' <<< "$selection")"
             asset_sha256="$(jq -er '.asset_sha256 | select(test("^[a-f0-9]{64}$"))' <<< "$selection")"
             [[ -n "${tag// }" && "$tag" != "null" ]] || {

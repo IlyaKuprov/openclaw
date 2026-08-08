@@ -85,6 +85,7 @@ const RERUN_GROUP_CHILD_KEYS = new Map([
   ["release-checks", ["releaseChecks"]],
   ["install-smoke", ["releaseChecks"]],
   ["cross-os", ["releaseChecks"]],
+  ["windows-node", ["releaseChecks"]],
   ["live-e2e", ["releaseChecks"]],
   ["package", ["releaseChecks"]],
   ["qa", ["releaseChecks"]],
