@@ -1095,7 +1095,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@6cfb586f116afbbb97e91b1923be42b9dcc47cf2
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@599faffd2c1dde42e55e3a442b8e13ebb8ea9595
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_artifact_run_id: ${{ needs.prepare_release_package.outputs.artifact_run_id }}
@@ -1106,7 +1106,7 @@ jobs:
       windows_node_release_asset_name: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_name }}
       windows_node_release_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_sha256 }}
       allow_protocol_mismatch: false
-      windows_node_sha: 6cfb586f116afbbb97e91b1923be42b9dcc47cf2
+      windows_node_sha: 599faffd2c1dde42e55e3a442b8e13ebb8ea9595
 
   windows_node_stable_e2e:
     name: Run Windows-node stable E2E
@@ -1116,7 +1116,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@6cfb586f116afbbb97e91b1923be42b9dcc47cf2
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@599faffd2c1dde42e55e3a442b8e13ebb8ea9595
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_artifact_run_id: ${{ needs.prepare_release_package.outputs.artifact_run_id }}
@@ -1127,7 +1127,7 @@ jobs:
       windows_node_release_asset_name: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_name }}
       windows_node_release_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}
       allow_protocol_mismatch: true
-      windows_node_sha: 6cfb586f116afbbb97e91b1923be42b9dcc47cf2
+      windows_node_sha: 599faffd2c1dde42e55e3a442b8e13ebb8ea9595
 
   live_repo_e2e_release_checks:
     name: Run repo/live E2E validation
