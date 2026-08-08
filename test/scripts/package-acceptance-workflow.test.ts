@@ -3625,7 +3625,10 @@ describe("package artifact reuse", () => {
       prerelease_asset_sha256: "${{ steps.resolve.outputs.prerelease_asset_sha256 }}",
     });
     expect(prerelease.uses).toBe(reusableWorkflow);
+    expect(prerelease.needs).toContain("stage_windows_node_candidate");
     expect(prerelease.with).toMatchObject({
+      candidate_artifact_name:
+        "${{ needs.stage_windows_node_candidate.outputs.candidate_artifact_name }}",
       windows_node_release_asset_name:
         "${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_name }}",
       windows_node_release_asset_sha256:
@@ -3633,12 +3636,29 @@ describe("package artifact reuse", () => {
       windows_node_sha: "0defe9eecb9774842c6eea93a5fb2fda5b1ccb5b",
     });
     expect(stable.uses).toBe(reusableWorkflow);
+    expect(stable.needs).toContain("stage_windows_node_candidate");
     expect(stable.with).toMatchObject({
+      candidate_artifact_name:
+        "${{ needs.stage_windows_node_candidate.outputs.candidate_artifact_name }}",
       windows_node_release_asset_name:
         "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_name }}",
       windows_node_release_asset_sha256:
         "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}",
       windows_node_sha: "0defe9eecb9774842c6eea93a5fb2fda5b1ccb5b",
+    });
+
+    const stage = workflowJob(RELEASE_CHECKS_WORKFLOW, "stage_windows_node_candidate");
+    expect(stage.outputs).toMatchObject({
+      candidate_artifact_name: "${{ steps.stage.outputs.name }}",
+    });
+    const stageDownload = stage.steps?.find(
+      (step) =>
+        step.with?.["run-id"] ===
+        "${{ needs.prepare_release_package.outputs.artifact_run_id }}",
+    );
+    expect(stageDownload?.with).toMatchObject({
+      name: "${{ needs.prepare_release_package.outputs.artifact_name }}",
+      "run-id": "${{ needs.prepare_release_package.outputs.artifact_run_id }}",
     });
   });
 

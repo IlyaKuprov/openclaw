@@ -1087,9 +1087,74 @@ jobs:
       OPENCLAW_DISCORD_SMOKE_GUILD_ID: ${{ secrets.OPENCLAW_DISCORD_SMOKE_GUILD_ID }}
       OPENCLAW_DISCORD_SMOKE_CHANNEL_ID: ${{ secrets.OPENCLAW_DISCORD_SMOKE_CHANNEL_ID }}
 
+  stage_windows_node_candidate:
+    name: Stage Windows-node candidate artifact
+    needs: [resolve_target, prepare_release_package]
+    if: contains(fromJSON('["all","windows-node"]'), needs.resolve_target.outputs.rerun_group)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      candidate_artifact_name: ${{ steps.stage.outputs.name }}
+    steps:
+      # The external Windows-node reusable workflow downloads the candidate by
+      # name from its own (caller) run and requires both openclaw-current.tgz
+      # and package-candidate.json. The shared release candidate lives in the
+      # parent Full Release Validation run and ships only the tarball, so mirror
+      # it into this run and synthesize the metadata the caller already trusts.
+      - name: Download candidate tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.prepare_release_package.outputs.artifact_name }}
+          run-id: ${{ needs.prepare_release_package.outputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          path: .artifacts/windows-node-candidate
+      - name: Assemble caller-run candidate
+        id: stage
+        shell: bash
+        env:
+          CANDIDATE_SHA256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
+          CANDIDATE_VERSION: ${{ needs.prepare_release_package.outputs.package_version }}
+          CANDIDATE_SOURCE_SHA: ${{ needs.prepare_release_package.outputs.source_sha }}
+          CANDIDATE_FILE_NAME: ${{ needs.prepare_release_package.outputs.package_file_name }}
+        run: |
+          set -euo pipefail
+          dir=.artifacts/windows-node-candidate
+          tarball="$dir/${CANDIDATE_FILE_NAME}"
+          [[ -f "$tarball" ]] || {
+            echo "Candidate tarball ${CANDIDATE_FILE_NAME} missing from staged artifact." >&2
+            exit 1
+          }
+          if [[ "$CANDIDATE_FILE_NAME" != "openclaw-current.tgz" ]]; then
+            mv "$tarball" "$dir/openclaw-current.tgz"
+          fi
+          actual="$(sha256sum "$dir/openclaw-current.tgz" | awk '{print $1}')"
+          if [[ "$actual" != "$CANDIDATE_SHA256" ]]; then
+            echo "Staged candidate tarball SHA-256 mismatch: expected ${CANDIDATE_SHA256}, got ${actual}." >&2
+            exit 1
+          fi
+          jq -n \
+            --arg sha256 "$CANDIDATE_SHA256" \
+            --arg version "$CANDIDATE_VERSION" \
+            --arg packageSourceSha "$CANDIDATE_SOURCE_SHA" \
+            '{sha256: $sha256, version: $version, packageSourceSha: $packageSourceSha}' \
+            > "$dir/package-candidate.json"
+          echo "name=windows-node-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Upload caller-run candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-node-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/windows-node-candidate/openclaw-current.tgz
+            .artifacts/windows-node-candidate/package-candidate.json
+          retention-days: 14
+          if-no-files-found: error
+
   windows_node_prerelease_e2e:
     name: Run Windows-node prerelease E2E
-    needs: [resolve_target, prepare_release_package, resolve_windows_node_release_artifacts]
+    needs: [resolve_target, prepare_release_package, resolve_windows_node_release_artifacts, stage_windows_node_candidate]
     if: contains(fromJSON('["all","windows-node"]'), needs.resolve_target.outputs.rerun_group)
     permissions:
       actions: read
@@ -1097,7 +1162,7 @@ jobs:
       id-token: write
     uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@0defe9eecb9774842c6eea93a5fb2fda5b1ccb5b
     with:
-      candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
+      candidate_artifact_name: ${{ needs.stage_windows_node_candidate.outputs.candidate_artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
       candidate_version: ${{ needs.prepare_release_package.outputs.package_version }}
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_tag }}
@@ -1109,7 +1174,7 @@ jobs:
 
   windows_node_stable_e2e:
     name: Run Windows-node stable E2E
-    needs: [resolve_target, prepare_release_package, resolve_windows_node_release_artifacts]
+    needs: [resolve_target, prepare_release_package, resolve_windows_node_release_artifacts, stage_windows_node_candidate]
     if: contains(fromJSON('["all","windows-node"]'), needs.resolve_target.outputs.rerun_group)
     permissions:
       actions: read
@@ -1117,7 +1182,7 @@ jobs:
       id-token: write
     uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@0defe9eecb9774842c6eea93a5fb2fda5b1ccb5b
     with:
-      candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
+      candidate_artifact_name: ${{ needs.stage_windows_node_candidate.outputs.candidate_artifact_name }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
       candidate_version: ${{ needs.prepare_release_package.outputs.package_version }}
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_tag }}
