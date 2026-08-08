@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { WORKER_PROVIDER_REPLAY_MAX_DATA_BYTES } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
+import { createTestAdmittedRunContext } from "../../agents/admitted-run-context.test-support.js";
 import type { SessionPlacementTurnParams } from "../../agents/session-placement-admission.js";
 import { assertSupportedTurn, windowInitialMessages } from "./worker-turn-payload.js";
 
@@ -8,6 +9,7 @@ describe("assertSupportedTurn", () => {
   it("accepts scheduled authority for the worker launch envelope", () => {
     expect(
       assertSupportedTurn({
+        admittedRunContext: createTestAdmittedRunContext("run-1"),
         sessionId: "session-1",
         sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
