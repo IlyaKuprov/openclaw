@@ -22,10 +22,11 @@ import { ensureSessionDiffBaseline } from "../sessions/session-diff-baseline.js"
 import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { classifySessionStateActor } from "../sessions/session-state-events.js";
 import { sessionDeliveryChannel, type DeliveryContext } from "../utils/delivery-context.shared.js";
-import { createOperationalRunInstanceRef } from "./admitted-run-context.js";
 import {
-  bindAgentCommandRecoveryExecutionIdentity,
   executionIdentity,
+  prepareAgentCommandExecutionIdentity,
+  sanitizePublicAgentCommandIngressOpts,
+  type AgentCommandAdmissionIngress,
 } from "./agent-command-execution-identity.js";
 import { runLocalAgentCommand } from "./agent-command-local.js";
 import { runWithAgentCommandRecoveryOwner } from "./agent-command-recovery-owner.js";
@@ -67,8 +68,6 @@ import type { MainSessionRecoveryPendingTarget } from "./main-session-recovery-s
 import type { AgentRunSessionTarget } from "./run-session-target.js";
 import { createAgentRunRestartAbortError } from "./run-termination.js";
 import { measureAgentStartup } from "./startup-timing.js";
-
-type AgentCommandAdmissionIngress = Parameters<typeof executionIdentity.prepare>[0]["ingress"];
 
 const log = createSubsystemLogger("agents/agent-command");
 
@@ -235,38 +234,11 @@ async function agentCommandInternal(
       },
     });
     return await sessionWorkAdmission.run(async () => {
-      preparedRunAdmission = executionIdentity.prepare({
-        admission: opts.executionIdentityAdmission,
-        agentId: sessionAgentId,
-        cfg,
+      preparedRunAdmission = prepareAgentCommandExecutionIdentity({
+        opts,
+        prepared,
         ingress: admissionIngress,
-        operationalRunInstance:
-          opts.operationalRunInstance ?? createOperationalRunInstanceRef(runId),
-        runId,
-        onAdmitted: async (admittedRunContext) => {
-          await opts.onAdmittedRunContext?.(admittedRunContext);
-          if (
-            opts.mainRestartRecoveryAdmitted !== true ||
-            !opts.mainRestartRecoveryOwnerLease ||
-            !admittedRunContext.executionIdentityToken ||
-            !sessionKey ||
-            !storePath
-          ) {
-            return;
-          }
-          const bindingFailure = await bindAgentCommandRecoveryExecutionIdentity({
-            cycleId: opts.mainRestartRecoveryOwnerLease.cycleId,
-            lifecycleGeneration,
-            runId,
-            sessionId,
-            sessionKey,
-            storePath,
-            token: admittedRunContext.executionIdentityToken,
-          });
-          if (bindingFailure) {
-            log.warn(`failed to bind restart recovery execution identity: ${bindingFailure}`);
-          }
-        },
+        lifecycleGeneration,
       });
       if (sessionStore && sessionKey && !suppressVisibleSessionEffects) {
         try {
@@ -710,12 +682,7 @@ export async function agentCommandFromIngress(
   // Plugin SDK callers may be plain JavaScript. Enforce the private recovery
   // boundary at runtime so extra or inherited properties cannot author audit identity.
   return await agentCommandFromIngressInternal(
-    {
-      ...opts,
-      executionIdentityAdmission: undefined,
-      operationalRunInstance: undefined,
-      onAdmittedRunContext: undefined,
-    },
+    sanitizePublicAgentCommandIngressOpts(opts),
     runtime,
     deps,
   );
