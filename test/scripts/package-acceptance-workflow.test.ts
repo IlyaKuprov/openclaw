@@ -2502,6 +2502,24 @@ describe("package artifact reuse", () => {
     ).toContain("inputs.enable_prepublish_plugin_registry");
     expect(workflow).toContain("bash .release-harness/scripts/ci-docker-pull-retry.sh");
     const prepareDockerImage = workflowJob(LIVE_E2E_WORKFLOW, "prepare_docker_e2e_image");
+    const validatePackage = workflowStep(
+      prepareDockerImage,
+      "Validate OpenClaw Docker E2E package",
+    );
+    expectTextToIncludeAll(validatePackage.run, [
+      'metadata=".artifacts/docker-e2e-package/package-candidate.json"',
+      '--arg packageSourceSha "$package_source_sha"',
+      '--arg sha256 "$digest"',
+      '--arg version "$version"',
+      '[[ -s "$metadata" ]]',
+    ]);
+    const uploadPackage = workflowStep(prepareDockerImage, "Upload OpenClaw Docker E2E package");
+    expect(uploadPackage.with?.path).toContain(
+      ".artifacts/docker-e2e-package/openclaw-current.tgz",
+    );
+    expect(uploadPackage.with?.path).toContain(
+      ".artifacts/docker-e2e-package/package-candidate.json",
+    );
     expect(workflowStep(prepareDockerImage, "Plan Docker E2E images").env).toEqual({
       INCLUDE_OPENWEBUI: "${{ inputs.include_openwebui }}",
       INCLUDE_RELEASE_PATH_SUITES: "${{ inputs.include_release_path_suites }}",
