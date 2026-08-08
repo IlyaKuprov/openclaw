@@ -40,7 +40,7 @@ final class ConnectionModeCoordinator {
             let shouldStart = GatewayAutostartPolicy.shouldStartGateway(mode: .local, paused: paused)
             if shouldStart {
                 GatewayProcessManager.shared.setActive(true)
-                await GatewayProcessManager.shared.waitForStartupAttempt()
+                await GatewayProcessManager.shared.waitForCurrentStartupAttempt()
                 guard self.applyGeneration == applyGeneration else { return }
                 var launchAgentInstalled = false
                 if GatewayAutostartPolicy.shouldEnsureLaunchAgent(

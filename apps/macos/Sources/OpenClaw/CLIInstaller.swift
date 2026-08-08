@@ -586,8 +586,8 @@ enum CLIInstaller {
         mode: AppState.ConnectionMode = AppStateStore.shared.connectionMode,
         paused: Bool = AppStateStore.shared.isPaused,
         start: @MainActor () -> Void = { GatewayProcessManager.shared.setActive(true) },
-        waitForStartupAttempt: @MainActor () async -> Void = {
-            await GatewayProcessManager.shared.waitForStartupAttempt()
+        waitForCurrentStartupAttempt: @MainActor () async -> Void = {
+            await GatewayProcessManager.shared.waitForCurrentStartupAttempt()
         },
         waitUntilReady: @MainActor () async -> Bool = {
             await GatewayProcessManager.shared.waitForGatewayReady(timeout: 30)
@@ -595,9 +595,9 @@ enum CLIInstaller {
     {
         guard mode == .local, !paused else { return .deferred }
         start()
-        // The process manager owns launchd installation and its first readiness cycle. Wait for
-        // that lifecycle before taking the onboarding verdict so the two probes cannot race.
-        await waitForStartupAttempt()
+        // Wait only for the startup attempt visible at activation. A sibling replacement can keep
+        // running; onboarding's bounded readiness probe below still owns the user-visible verdict.
+        await waitForCurrentStartupAttempt()
         return await waitUntilReady() ? .ready : .failed
     }
 

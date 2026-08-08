@@ -2,9 +2,66 @@ import Foundation
 import Testing
 @testable import OpenClaw
 
+private actor CLIActivationGate {
+    private var entered = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        self.entered = true
+        guard !self.released else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func hasEntered() -> Bool {
+        self.entered
+    }
+
+    func release() {
+        self.released = true
+        let continuation = self.continuation
+        self.continuation = nil
+        continuation?.resume()
+    }
+}
+
+private actor CLIActivationResultRecorder {
+    private var result: CLIInstaller.LocalGatewayActivation?
+
+    func record(_ result: CLIInstaller.LocalGatewayActivation) {
+        self.result = result
+    }
+
+    func snapshot() -> CLIInstaller.LocalGatewayActivation? {
+        self.result
+    }
+}
+
+@MainActor
+private final class CLIActivationCaptureRecorder {
+    private(set) var didCapture = false
+
+    func recordCapture() {
+        self.didCapture = true
+    }
+}
+
 @Suite(.serialized)
 @MainActor
 struct CLIInstallerTests {
+    private func waitForAsyncCondition(
+        attempts: Int = 500,
+        _ condition: () async -> Bool) async -> Bool
+    {
+        for _ in 0..<attempts {
+            if await condition() { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return false
+    }
+
     @Test func `installed location finds executable`() throws {
         let fm = FileManager()
         let root = fm.temporaryDirectory.appendingPathComponent(
@@ -370,7 +427,7 @@ struct CLIInstallerTests {
             mode: .local,
             paused: false,
             start: { events.append("start") },
-            waitForStartupAttempt: {
+            waitForCurrentStartupAttempt: {
                 events.append("startup-settled")
             },
             waitUntilReady: {
@@ -380,6 +437,59 @@ struct CLIInstallerTests {
 
         #expect(events == ["start", "startup-settled", "ready"])
         #expect(activation == .ready)
+    }
+
+    @Test func `local gateway activation does not follow a replacement startup attempt`() async {
+        let manager = GatewayProcessManager.shared
+        let firstAttempt = CLIActivationGate()
+        let replacementAttempt = CLIActivationGate()
+        let resultRecorder = CLIActivationResultRecorder()
+        let captureRecorder = CLIActivationCaptureRecorder()
+        manager._testClearGatewayStartTask()
+
+        let watchdog = Task {
+            try? await Task.sleep(for: .seconds(1))
+            await firstAttempt.release()
+            await replacementAttempt.release()
+        }
+        defer {
+            watchdog.cancel()
+            manager._testClearGatewayStartTask()
+        }
+
+        manager._testSetGatewayStartTask {
+            await firstAttempt.wait()
+            manager._testSetGatewayStartTask {
+                await replacementAttempt.wait()
+            }
+        }
+        #expect(await self.waitForAsyncCondition { await firstAttempt.hasEntered() })
+
+        let activationTask = Task { @MainActor in
+            let result = await CLIInstaller.activateLocalGateway(
+                mode: .local,
+                paused: false,
+                start: {},
+                waitForCurrentStartupAttempt: {
+                    await manager._testWaitForCurrentStartupAttempt {
+                        captureRecorder.recordCapture()
+                    }
+                },
+                waitUntilReady: { true })
+            await resultRecorder.record(result)
+        }
+
+        #expect(await self.waitForAsyncCondition { captureRecorder.didCapture })
+        await firstAttempt.release()
+        #expect(await self.waitForAsyncCondition { await replacementAttempt.hasEntered() })
+        let completedBeforeReplacement = await self.waitForAsyncCondition {
+            await resultRecorder.snapshot() != nil
+        }
+        #expect(completedBeforeReplacement)
+        #expect(await resultRecorder.snapshot() == .ready)
+
+        await replacementAttempt.release()
+        await activationTask.value
     }
 
     @Test func `paused CLI setup defers gateway activation`() async {

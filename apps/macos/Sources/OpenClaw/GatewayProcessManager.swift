@@ -386,12 +386,18 @@ final class GatewayProcessManager {
         self.gatewayStartTask = task
     }
 
-    func waitForStartupAttempt() async {
-        // Persistence/repair follows the complete attach-or-start decision. This prevents the
-        // automatic ensure path from replacing a PID while startup is accepting that same PID.
-        while let task = self.gatewayStartTask {
-            await task.value
-        }
+    func waitForCurrentStartupAttempt() async {
+        await self.waitForCurrentStartupAttempt(onCaptured: {})
+    }
+
+    private func waitForCurrentStartupAttempt(
+        onCaptured: @MainActor () -> Void) async
+    {
+        // Wait only for the attempt visible at entry. A sibling can start a replacement while this
+        // task finishes; following that future work would make onboarding's own deadline unbounded.
+        guard let task = self.gatewayStartTask else { return }
+        onCaptured()
+        await task.value
     }
 
     func waitForCurrentStartupReadiness() async -> Bool {
@@ -1277,6 +1283,12 @@ extension GatewayProcessManager {
         self.gatewayStartTask?.cancel()
         self.gatewayStartTask = nil
         self.gatewayStartTaskGeneration = nil
+    }
+
+    func _testWaitForCurrentStartupAttempt(
+        onCaptured: @MainActor () -> Void) async
+    {
+        await self.waitForCurrentStartupAttempt(onCaptured: onCaptured)
     }
 
     func _testPendingLaunchAgentPort() -> Int? {
