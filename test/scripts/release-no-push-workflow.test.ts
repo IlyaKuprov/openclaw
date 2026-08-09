@@ -1023,6 +1023,13 @@ describe("release validation no-push transport", () => {
     const releasePublishPath = ".github/workflows/openclaw-release-publish.yml";
     const releasePublish = readWorkflow(releasePublishPath);
     const dockerCall = job(releasePublish, "publish_docker");
+    const resolveTarget = job(releasePublish, "resolve_release_target");
+    const validateInputs = step(resolveTarget, "Validate inputs");
+    const validateEvidence = step(resolveTarget, "Validate full release validation manifest");
+    const validateReleaseBranch = step(
+      resolveTarget,
+      "Validate release tag is reachable from a trusted release branch",
+    );
 
     expect(dockerRelease.on?.push).toBeUndefined();
     expect(dockerRelease.on?.workflow_dispatch).toBeUndefined();
@@ -1045,6 +1052,20 @@ describe("release validation no-push transport", () => {
       .toSorted();
     expect(callers).toEqual(["openclaw-release-publish.yml"]);
 
+    expect(validateInputs.id).toBe("inputs");
+    expect(validateInputs.run).toContain(
+      'expected_validation_branch="extended-stable/${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.33"',
+    );
+    expect(validateEvidence.env?.EXPECTED_WORKFLOW_BRANCH).toBe(
+      "${{ steps.inputs.outputs.expected_validation_branch }}",
+    );
+    expect(validateReleaseBranch.run).toContain(
+      'expected_ref="refs/remotes/origin/${EXPECTED_VALIDATION_BRANCH}"',
+    );
+    expect(validateReleaseBranch.run).toContain(
+      "must be reachable from ${EXPECTED_VALIDATION_BRANCH}",
+    );
+
     expect(dockerCall.needs).toEqual([
       "resolve_release_target",
       "publish",
@@ -1053,7 +1074,7 @@ describe("release validation no-push transport", () => {
     expect(dockerCall.if).toContain("needs.publish.result == 'success'");
     expect(dockerCall.if).toContain("needs.prepare_extended_stable_release.result == 'success'");
     expect(dockerCall.if).toContain(
-      "needs.prepare_extended_stable_release.outputs.release_already_public != 'true'",
+      "needs.prepare_extended_stable_release.outputs.docker_already_published != 'true'",
     );
     expect(dockerCall.with).toEqual({
       tag: "${{ inputs.tag }}",
@@ -1095,11 +1116,16 @@ describe("release validation no-push transport", () => {
     expect(prepareRelease.needs).toEqual(["resolve_release_target"]);
     expect(prepareRelease.if).toBe("${{ inputs.publish_docker_only }}");
     expect(prepareRelease.environment).toBe("npm-release");
-    expect(prepareRelease.permissions).toEqual({ contents: "write" });
+    expect(prepareRelease.permissions).toEqual({
+      actions: "read",
+      contents: "write",
+      statuses: "read",
+    });
     expect(prepareRelease.outputs).toEqual({
+      docker_already_published: "${{ steps.release.outputs.docker_already_published }}",
+      docker_status_run_id: "${{ steps.release.outputs.docker_status_run_id }}",
       release_id: "${{ steps.release.outputs.release_id }}",
       release_body_sha256: "${{ steps.release.outputs.release_body_sha256 }}",
-      release_already_public: "${{ steps.release.outputs.release_already_public }}",
     });
     expect(verifyNpm.run).toContain('npm view "openclaw@${version}" version');
     expect(verifyNpm.run).toContain("Published npm tarball does not match");
@@ -1114,21 +1140,37 @@ describe("release validation no-push transport", () => {
     expect(createDraft.run).toContain("release.assets.length !== 0");
     expect(createDraft.run).toContain('verify_release_resource "${release_id}" false true');
     expect(createDraft.run).toContain("wait_until_not_latest");
-    expect(createDraft.run).toContain("release_already_public=true");
-    expect(createDraft.run).toContain("Docker will not be rebuilt");
+    expect(createDraft.run).toContain("Docker completion will be checked independently");
+    expect(createDraft.run).toContain("--find-status-file");
+    expect(createDraft.run).toContain("docker_already_published=true");
+    expect(createDraft.run).toContain("public without Docker completion");
     expect(createDraft.run).toContain("wait_for_release_id");
     expect(createDraft.run).toContain('sha256sum "${notes_file}"');
 
-    expect(finalizeRelease.needs).toEqual([
+    const verifyDockerCompletion = job(releasePublish, "verify_extended_stable_docker_completion");
+    expect(verifyDockerCompletion.needs).toEqual([
       "resolve_release_target",
       "prepare_extended_stable_release",
       "publish_docker",
+    ]);
+    expect(verifyDockerCompletion.if).toContain(
+      "needs.prepare_extended_stable_release.outputs.docker_already_published == 'true'",
+    );
+    expect(step(verifyDockerCompletion, "Verify durable Docker completion status").run).toContain(
+      "--find-status-file",
+    );
+    expect(finalizeRelease.needs).toEqual([
+      "resolve_release_target",
+      "prepare_extended_stable_release",
+      "verify_extended_stable_docker_completion",
     ]);
     expect(finalizeRelease.if).toContain("inputs.publish_docker_only");
     expect(finalizeRelease.if).toContain(
       "needs.prepare_extended_stable_release.result == 'success'",
     );
-    expect(finalizeRelease.if).toContain("needs.publish_docker.result == 'success'");
+    expect(finalizeRelease.if).toContain(
+      "needs.verify_extended_stable_docker_completion.result == 'success'",
+    );
     expect(finalizeRelease.environment).toBe("npm-release");
     expect(finalizeRelease.permissions).toEqual({ contents: "write" });
     expect(publishDraft.env).toMatchObject({

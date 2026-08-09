@@ -204,7 +204,11 @@ saved npm preflight artifact, exact `Full Release Validation` evidence, exact np
 version and `extended-stable` selector, and published tarball digest. It then
 creates or resumes a canonical non-prerelease GitHub Release draft with
 `latest=false`, calls the reusable `Docker Release` workflow, and makes the
-draft public only after Docker succeeds. A tag push never publishes Docker
+draft public only after Docker succeeds. After image, attestation, platform,
+and channel-alias verification, Docker Release records a success status on the
+immutable release SHA. Retries skip a rebuild only when that exact durable
+status and its release-workflow run are verified; a public GitHub Release page
+alone is never Docker-completion evidence. A tag push never publishes Docker
 images or a release page by itself:
 
 ```bash

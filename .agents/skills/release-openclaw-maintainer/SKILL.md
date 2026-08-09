@@ -290,7 +290,9 @@ on pinned current `main` as the exact command and validation contract.
 10. Dispatch the Docker-only `OpenClaw Release Publish` closeout. It must
     reverify the exact npm selector and tarball, prepare a canonical
     non-prerelease GitHub Release draft with `latest=false`, publish Docker,
-    and only then make the release public. Do not publish macOS, Windows,
+    persist and verify the exact-SHA Docker completion status, and only then
+    make the release public. On retry, skip Docker only for that durable status;
+    release draft/public state is never completion evidence. Do not publish macOS, Windows,
     mobile, website, ClawHub, npm `latest`, or private dist-tag artifacts from
     this path.
 

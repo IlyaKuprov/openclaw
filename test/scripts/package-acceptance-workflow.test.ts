@@ -554,11 +554,13 @@ function runReleasePublishInputValidation(overrides: Record<string, string>) {
   if (!script) {
     throw new Error("Expected release publish input validation script");
   }
+  const githubOutput = resolve(tempDirs.make("release-publish-inputs-"), "github-output");
   return spawnSync("bash", ["-c", script], {
     encoding: "utf8",
     env: {
       FULL_RELEASE_VALIDATION_RUN_ATTEMPT: "1",
       FULL_RELEASE_VALIDATION_RUN_ID: "222",
+      GITHUB_OUTPUT: githubOutput,
       OPENCLAW_NPM_RESUME_RUN_ID: "",
       PATH: process.env.PATH,
       PLUGINS: "",
@@ -4990,6 +4992,7 @@ describe("package artifact reuse", () => {
     );
     expect(trustedTooling.env?.WORKFLOW_SHA).toBe("${{ github.sha }}");
     expect(validateManifest.env).toMatchObject({
+      EXPECTED_WORKFLOW_BRANCH: "${{ steps.inputs.outputs.expected_validation_branch }}",
       RUN_JSON_FILE: "${{ runner.temp }}/full-release-validation-run.json",
       TRUSTED_MAIN_REF: "refs/remotes/origin/main",
       VALIDATOR_FILE:
@@ -5058,6 +5061,14 @@ describe("package artifact reuse", () => {
       extendedPrepareJob,
       "Create or resume the canonical draft release",
     );
+    const extendedDockerCompletionJob = workflowJob(
+      RELEASE_PUBLISH_WORKFLOW,
+      "verify_extended_stable_docker_completion",
+    );
+    const extendedDockerCompletion = workflowStep(
+      extendedDockerCompletionJob,
+      "Verify durable Docker completion status",
+    );
     const extendedFinalizeJob = workflowJob(
       RELEASE_PUBLISH_WORKFLOW,
       "finalize_extended_stable_github_release",
@@ -5071,15 +5082,26 @@ describe("package artifact reuse", () => {
     expect(extendedPrepare.run).toContain("verifyGithubReleaseNotes");
     expect(extendedPrepare.run).toContain("body !== expectedBody");
     expect(extendedPrepare.run).toContain("release.assets.length !== 0");
-    expect(extendedPrepare.run).toContain("release_already_public=true");
+    expect(extendedPrepare.run).toContain("--find-status-file");
+    expect(extendedPrepare.run).toContain("docker_already_published=true");
+    expect(extendedPrepare.run).toContain("public without Docker completion");
     expect(extendedPrepare.run).toContain("--draft");
     expect(extendedPrepare.run).toContain("--latest=false");
-    expect(extendedFinalizeJob.needs).toEqual([
+    expect(extendedDockerCompletionJob.needs).toEqual([
       "resolve_release_target",
       "prepare_extended_stable_release",
       "publish_docker",
     ]);
-    expect(extendedFinalizeJob.if).toContain("needs.publish_docker.result == 'success'");
+    expect(extendedDockerCompletion.run).toContain("--find-status-file");
+    expect(extendedDockerCompletion.run).toContain("Docker publication completed without");
+    expect(extendedFinalizeJob.needs).toEqual([
+      "resolve_release_target",
+      "prepare_extended_stable_release",
+      "verify_extended_stable_docker_completion",
+    ]);
+    expect(extendedFinalizeJob.if).toContain(
+      "needs.verify_extended_stable_docker_completion.result == 'success'",
+    );
     expect(extendedFinalize.run).toContain("-f make_latest=false");
     expect(extendedFinalize.run).toContain("EXPECTED_BODY_SHA256");
     expect(extendedFinalize.run).toContain("release.assets.length !== 0");

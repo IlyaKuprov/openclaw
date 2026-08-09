@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import {
   createDockerChannelPromotionPlan,
+  createDockerPublicationStatus,
+  findDockerPublicationStatus,
   promoteDockerChannel,
 } from "../../scripts/docker-channel-promote.mjs";
 
@@ -80,6 +82,72 @@ function requireJob(workflow: Workflow, name: string): WorkflowJob {
 }
 
 describe("Docker channel promotion", () => {
+  it("binds durable extended-stable completion to the release SHA and workflow run", () => {
+    const sourceSha = "a".repeat(40);
+    const payload = createDockerPublicationStatus({
+      version: "2026.6.35",
+      repository: "openclaw/openclaw",
+      sourceSha,
+      runId: "12345",
+    });
+
+    expect(payload).toEqual({
+      context: "openclaw/docker-release/2026.6.35",
+      description:
+        "Verified GHCR + Docker Hub images, attestations, platforms, and channel aliases.",
+      state: "success",
+      target_url: "https://github.com/openclaw/openclaw/actions/runs/12345",
+    });
+    expect(
+      findDockerPublicationStatus({
+        combinedStatus: {
+          sha: sourceSha,
+          statuses: [{ ...payload, creator: { login: "github-actions[bot]" } }],
+        },
+        version: "2026.6.35",
+        repository: "openclaw/openclaw",
+        sourceSha,
+      }),
+    ).toEqual({ runId: "12345", targetUrl: payload.target_url });
+  });
+
+  it("does not accept release visibility or malformed status as Docker completion", () => {
+    const sourceSha = "a".repeat(40);
+    expect(
+      findDockerPublicationStatus({
+        combinedStatus: { sha: sourceSha, statuses: [] },
+        version: "2026.6.35",
+        repository: "openclaw/openclaw",
+        sourceSha,
+      }),
+    ).toBeNull();
+
+    const payload = createDockerPublicationStatus({
+      version: "2026.6.35",
+      repository: "openclaw/openclaw",
+      sourceSha,
+      runId: "12345",
+    });
+    for (const status of [
+      { ...payload, state: "pending", creator: { login: "github-actions[bot]" } },
+      { ...payload, creator: { login: "someone-else" } },
+      {
+        ...payload,
+        description: "images probably published",
+        creator: { login: "github-actions[bot]" },
+      },
+    ]) {
+      expect(() =>
+        findDockerPublicationStatus({
+          combinedStatus: { sha: sourceSha, statuses: [status] },
+          version: "2026.6.35",
+          repository: "openclaw/openclaw",
+          sourceSha,
+        }),
+      ).toThrow("is not canonical");
+    }
+  });
+
   it("plans every extended-stable image variant in both registries", () => {
     expect(createDockerChannelPromotionPlan({ version: "2026.6.33", images })).toEqual({
       channel: "extended-stable",
@@ -379,7 +447,11 @@ describe("Docker channel promotion", () => {
       "cancel-in-progress": false,
       queue: "max",
     });
-    expect(verifyAttestations.permissions).toEqual({ contents: "read", packages: "write" });
+    expect(verifyAttestations.permissions).toEqual({
+      contents: "read",
+      packages: "write",
+      statuses: "write",
+    });
 
     const manifestTagStep = createManifest.steps?.find(
       (step) => step.name === "Resolve manifest tags",
@@ -406,9 +478,21 @@ describe("Docker channel promotion", () => {
       "node scripts/docker-channel-promote.mjs",
     );
     expect(releaseSteps[releasePromotionIndex]?.run).not.toContain("--allow-rollback");
+    const completionIndex = releaseSteps.findIndex(
+      (step) => step.name === "Record durable extended-stable Docker completion",
+    );
+    expect(completionIndex).toBeGreaterThan(releasePromotionIndex);
+    expect(releaseSteps[completionIndex]?.if).toBe(
+      "${{ needs.resolve_release_policy.outputs.channel == 'extended-stable' }}",
+    );
+    expect(releaseSteps[completionIndex]?.run).toContain("--status-payload");
+    expect(releaseSteps[completionIndex]?.run).toContain("statuses/${RELEASE_SHA}");
     expect(
       Object.values(releaseWorkflow.jobs ?? {}).flatMap((job) =>
-        (job.steps ?? []).filter((step) => step.run?.includes("docker-channel-promote.mjs")),
+        (job.steps ?? []).filter(
+          (step) =>
+            step.run?.includes("docker-channel-promote.mjs") && step.run.includes("--image"),
+        ),
       ),
     ).toHaveLength(1);
 

@@ -101,8 +101,10 @@ the live tag, workflow, registry, provenance, and image state.
    digest binding to the release SHA. Preserve output and workflow URLs.
 5. **Docker:** verify exact default, slim, browser, and architecture images and
    attestations in both registries. Only the three `extended-stable*` aliases may
-   resolve to those digests. Repair aliases through current-main `Docker Channel
-Promotion` for the exact tag, without rebuilding.
+   resolve to those digests. Require the canonical `openclaw/docker-release/<VERSION>`
+   success status on the immutable release SHA and its `OpenClaw Release Publish`
+   run URL; release visibility is not Docker evidence. Repair aliases through
+   current-main `Docker Channel Promotion` for the exact tag, without rebuilding.
 6. **Recovery:** never republish. Use the generated command only for the root
    selector and approved credential-isolated tooling for others, then repeat
    complete readback. Do not require ClawHub, native/mobile apps, website,

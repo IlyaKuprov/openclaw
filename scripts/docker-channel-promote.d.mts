@@ -17,6 +17,27 @@ export function createDockerChannelPromotionPlan(params: {
   images: string[];
 }): DockerChannelPromotionPlan;
 
+export type DockerPublicationStatus = {
+  context: string;
+  description: string;
+  state: "success";
+  target_url: string;
+};
+
+export function createDockerPublicationStatus(params: {
+  version: string;
+  repository: string;
+  sourceSha: string;
+  runId: string | number;
+}): DockerPublicationStatus;
+
+export function findDockerPublicationStatus(params: {
+  combinedStatus: unknown;
+  version: string;
+  repository: string;
+  sourceSha: string;
+}): { runId: string; targetUrl: string } | null;
+
 export function promoteDockerChannel(
   params: { version: string; images: string[] },
   options?: {

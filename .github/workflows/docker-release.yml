@@ -756,12 +756,21 @@ jobs:
     permissions:
       contents: read
       packages: write
+      statuses: write
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.resolve_build_provenance.outputs.source_sha }}
           fetch-depth: 1
+
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: .release-harness
+          fetch-depth: 1
+          persist-credentials: false
 
       - *buildkit_prepull_step
       - name: Set up Docker Builder
@@ -912,3 +921,32 @@ jobs:
             --version "${VERSION}" \
             --image "${GHCR_IMAGE}" \
             --image "${DOCKERHUB_IMAGE}"
+
+      # This status is the durable resume boundary. Release visibility is not
+      # Docker evidence and must never suppress a missing publication.
+      - name: Record durable extended-stable Docker completion
+        if: ${{ needs.resolve_release_policy.outputs.channel == 'extended-stable' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          VERSION: ${{ needs.resolve_release_policy.outputs.version }}
+        run: |
+          set -euo pipefail
+          payload="$(node .release-harness/scripts/docker-channel-promote.mjs \
+            --status-payload \
+            --version "${VERSION}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --source-sha "${RELEASE_SHA}" \
+            --run-id "${GITHUB_RUN_ID}")"
+          for attempt in 1 2 3; do
+            if printf '%s' "${payload}" | gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/statuses/${RELEASE_SHA}" \
+              --input - >/dev/null; then
+              exit 0
+            fi
+            if [[ "${attempt}" != "3" ]]; then
+              sleep $((attempt * 5))
+            fi
+          done
+          echo "Failed to persist durable Docker completion after verified publication." >&2
+          exit 1
