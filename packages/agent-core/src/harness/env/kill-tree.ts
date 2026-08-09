@@ -1,6 +1,6 @@
 // Agent Core module implements kill tree behavior.
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 const DEFAULT_GRACE_MS = 3000;
 const MAX_GRACE_MS = 60_000;
@@ -24,7 +24,8 @@ export type KillProcessTreeOptions = {
  * This prevents accidentally signaling the gateway's process group when the
  * child shares its parent's group.
  *
- * - `detached: false`: skip group kill unconditionally.
+ * - `detached: false`: skip group kill unconditionally and signal the PID plus
+ *   its descendants individually instead.
  * - `detached: true`: use group kill unconditionally (trust caller).
  * - `detached` omitted: use group kill only when PID is the group leader.
  */
@@ -149,6 +150,91 @@ function isProcessGroupLeader(pid: number): boolean {
   return pgid === pid;
 }
 
+function parseProcessParentTable(text: string): Map<number, number[]> {
+  const children = new Map<number, number[]>();
+  for (const line of text.split("\n")) {
+    const [pidText, ppidText] = line.trim().split(/\s+/);
+    const pid = Number(pidText);
+    const ppid = Number(ppidText);
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(ppid) || ppid <= 0) {
+      continue;
+    }
+    const siblings = children.get(ppid);
+    if (siblings) {
+      siblings.push(pid);
+    } else {
+      children.set(ppid, [pid]);
+    }
+  }
+  return children;
+}
+
+function readProcessParentTableFromProc(): Map<number, number[]> | undefined {
+  try {
+    const lines: string[] = [];
+    for (const entry of readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) {
+        continue;
+      }
+      try {
+        const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+        const commEnd = stat.lastIndexOf(")");
+        if (commEnd < 0) {
+          continue;
+        }
+        // After comm: state, ppid. The command name may contain spaces or ')'.
+        const fields = stat
+          .slice(commEnd + 1)
+          .trim()
+          .split(/\s+/);
+        lines.push(`${entry} ${fields[1] ?? ""}`);
+      } catch {
+        // The process exited while the snapshot was being taken.
+      }
+    }
+    return parseProcessParentTable(lines.join("\n"));
+  } catch {
+    return undefined;
+  }
+}
+
+function readProcessParentTableFromPs(): Map<number, number[]> | undefined {
+  try {
+    const res = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8", timeout: 500 });
+    if (res.error || res.status !== 0 || typeof res.stdout !== "string") {
+      return undefined;
+    }
+    return parseProcessParentTable(res.stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Best-effort descendant snapshot for a PID that does not lead its own group. */
+function collectDescendantPids(pid: number): number[] {
+  const children =
+    (process.platform === "linux" ? readProcessParentTableFromProc() : undefined) ??
+    readProcessParentTableFromPs();
+  if (!children) {
+    return [];
+  }
+  const descendants: number[] = [];
+  const seen = new Set<number>([pid]);
+  const queue = [pid];
+  while (queue.length > 0) {
+    const current = queue.shift() as number;
+    for (const child of children.get(current) ?? []) {
+      if (seen.has(child)) {
+        continue;
+      }
+      seen.add(child);
+      descendants.push(child);
+      queue.push(child);
+    }
+  }
+  return descendants;
+}
+
 function signalProcessTreeUnix(
   pid: number,
   signal: "SIGTERM" | "SIGKILL",
@@ -160,6 +246,18 @@ function signalProcessTreeUnix(
       return;
     } catch {
       // Process group does not exist or we lack permission; try direct pid.
+    }
+  }
+
+  // Without group kill this is the only way descendants are reached. Signaling
+  // the direct PID alone leaves everything the child forked running, reparented
+  // to init with its output already closed, so a timed-out run keeps consuming
+  // the machine and can never deliver a result.
+  for (const descendant of collectDescendantPids(pid)) {
+    try {
+      process.kill(descendant, signal);
+    } catch {
+      // Already gone, or not ours to signal.
     }
   }
 

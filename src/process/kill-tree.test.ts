@@ -3,13 +3,15 @@ import { EventEmitter } from "node:events";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withMockedPlatform } from "../test-utils/vitest-spies.js";
 
-const { readFileSyncMock, spawnMock, spawnSyncMock } = vi.hoisted(() => ({
+const { readdirSyncMock, readFileSyncMock, spawnMock, spawnSyncMock } = vi.hoisted(() => ({
+  readdirSyncMock: vi.fn((..._args: unknown[]) => [] as string[]),
   readFileSyncMock: vi.fn(),
   spawnMock: vi.fn(),
   spawnSyncMock: vi.fn(),
 }));
 
 vi.mock("node:fs", () => ({
+  readdirSync: (...args: unknown[]) => readdirSyncMock(...args),
   readFileSync: (...args: unknown[]) => readFileSyncMock(...args),
 }));
 
@@ -59,6 +61,8 @@ describe("killProcessTree", () => {
   });
 
   beforeEach(() => {
+    readdirSyncMock.mockReset();
+    readdirSyncMock.mockReturnValue([]);
     readFileSyncMock.mockReset();
     readFileSyncMock.mockImplementation(() => {
       throw new Error("proc unavailable");
@@ -296,6 +300,40 @@ describe("killProcessTree", () => {
       expect(killSpy).toHaveBeenCalledWith(5555, "SIGTERM");
       expect(killSpy).not.toHaveBeenCalledWith(-5555, "SIGTERM");
       expect(killSpy).not.toHaveBeenCalledWith(-5555, "SIGKILL");
+    });
+  });
+
+  it("on Unix signals descendants explicitly when detached:false rules out group kill", async () => {
+    // 5555 is the shell the supervisor spawned; 5556 is what the shell forked
+    // and 5557 is that process's own child. Without group kill they are only
+    // reachable one PID at a time.
+    const parents = new Map([
+      [5555, 1],
+      [5556, 5555],
+      [5557, 5556],
+      [6001, 1],
+    ]);
+    readdirSyncMock.mockReturnValue([...parents.keys()].map(String));
+    readFileSyncMock.mockImplementation((filePath: unknown) => {
+      const pid = Number(String(filePath).replace("/proc/", "").replace("/stat", ""));
+      const ppid = parents.get(pid);
+      if (ppid === undefined) {
+        throw new Error("proc unavailable");
+      }
+      return `${pid} (bash cmd) S ${ppid} ${pid} ${pid} 0`;
+    });
+    killSpy.mockImplementation((() => true) as typeof process.kill);
+
+    await withMockedPlatform("linux", async () => {
+      signalProcessTree(5555, "SIGKILL", { detached: false });
+
+      expect(killSpy).toHaveBeenCalledWith(5556, "SIGKILL");
+      expect(killSpy).toHaveBeenCalledWith(5557, "SIGKILL");
+      expect(killSpy).toHaveBeenCalledWith(5555, "SIGKILL");
+      // Group kill stays forbidden: the child shares the gateway's group.
+      expect(killSpy).not.toHaveBeenCalledWith(-5555, "SIGKILL");
+      // An unrelated process must not be signaled.
+      expect(killSpy).not.toHaveBeenCalledWith(6001, "SIGKILL");
     });
   });
 
