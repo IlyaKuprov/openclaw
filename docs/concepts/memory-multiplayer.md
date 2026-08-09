@@ -455,6 +455,7 @@ type MemoryOperation =
   | "export"
   | "delete"
   | "sync"
+  | "status"
   | "policy-admin";
 
 type MemoryAccessContext = DeepReadonly<{
