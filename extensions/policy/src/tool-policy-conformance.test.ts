@@ -19,6 +19,10 @@ describe("policy tool group conformance", () => {
       "web_fetch",
       "x_search",
     ]);
+    expect(toolListCoversTool(["cron"], "automations")).toBe(true);
+    expect(expandPolicyToolRequirement("group:sessions")).toEqual(
+      expect.arrayContaining(["sessions", "sessions_search", "conversations_list"]),
+    );
   });
 
   it("matches wildcard tool requirements", () => {
