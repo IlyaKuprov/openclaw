@@ -6,6 +6,7 @@ import {
   validateSessionsCompactParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { clearAllCliSessions } from "../../agents/cli-session.js";
 import { resolveEmbeddedSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
 import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.js";
 import {
@@ -418,6 +419,11 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
                   entryToUpdate.updatedAt = Date.now();
                   entryToUpdate.compactionCount =
                     Math.max(0, entryToUpdate.compactionCount ?? 0) + 1;
+                  // Every CLI backend session predates the compacted transcript, so
+                  // none of them may be resumed. Bindings are keyed by backend id
+                  // (claude-cli), not by the session's resolved provider (anthropic),
+                  // so releasing them cannot be scoped to the compaction provider.
+                  clearAllCliSessions(entryToUpdate);
                   if (
                     result.result?.sessionId &&
                     result.result.sessionId !== entryToUpdate.sessionId

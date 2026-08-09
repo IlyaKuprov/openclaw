@@ -1,6 +1,7 @@
 /** Session update helpers for skill snapshots, compaction, and lifecycle hooks. */
 import crypto from "node:crypto";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { clearAllCliSessions } from "../../agents/cli-session.js";
 import {
   type ExecPolicyOverrides,
   resolveNodeExecEligibility,
@@ -322,6 +323,13 @@ export async function incrementCompactionCount(params: {
   tokensAfter?: number;
   /** Session id after compaction when a context engine changed identity. */
   newSessionId?: string;
+  /**
+   * Release every CLI backend session binding. Callers that compacted the
+   * OpenClaw transcript set this so the next turn reseeds from the compacted
+   * transcript instead of resuming the backend's uncompacted session. Callers
+   * that rebind to a new backend session themselves must leave it unset.
+   */
+  clearCliSessions?: boolean;
 }): Promise<number | undefined> {
   const {
     agentId,
@@ -334,6 +342,7 @@ export async function incrementCompactionCount(params: {
     amount = 1,
     tokensAfter,
     newSessionId,
+    clearCliSessions,
   } = params;
   if (!sessionStore || !sessionKey) {
     return undefined;
@@ -349,6 +358,9 @@ export async function incrementCompactionCount(params: {
     compactionCount: nextCount,
     updatedAt: now,
   };
+  if (clearCliSessions) {
+    clearAllCliSessions(updates);
+  }
   const sessionIdChanged = Boolean(newSessionId && newSessionId !== entry.sessionId);
   if (sessionIdChanged && newSessionId) {
     updates.sessionId = newSessionId;

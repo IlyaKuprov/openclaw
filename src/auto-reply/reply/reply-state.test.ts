@@ -510,6 +510,53 @@ describe("incrementCompactionCount", () => {
     ).toBe(3);
   });
 
+  it("releases CLI backend session bindings when the caller compacted the transcript", async () => {
+    const entry = {
+      sessionId: "s1",
+      updatedAt: Date.now(),
+      compactionCount: 0,
+      cliSessionIds: { "claude-cli": "backend-session-1" },
+      cliSessionBindings: { "claude-cli": { sessionId: "backend-session-1" } },
+      claudeCliSessionId: "backend-session-1",
+    } as unknown as SessionEntry;
+    const { storePath, sessionKey, sessionStore } = await createCompactionSessionFixture(entry);
+
+    await incrementCompactionCount({
+      sessionEntry: entry,
+      sessionStore,
+      sessionKey,
+      storePath,
+      clearCliSessions: true,
+    });
+
+    const stored = await loadStoredEntry(storePath, sessionKey);
+    expect(stored.compactionCount).toBe(1);
+    expect(stored.cliSessionIds).toBeUndefined();
+    expect(stored.cliSessionBindings).toBeUndefined();
+    expect(stored.claudeCliSessionId).toBeUndefined();
+  });
+
+  it("keeps CLI backend session bindings for callers that rebind them", async () => {
+    const entry = {
+      sessionId: "s1",
+      updatedAt: Date.now(),
+      compactionCount: 0,
+      cliSessionIds: { "claude-cli": "backend-session-1" },
+    } as unknown as SessionEntry;
+    const { storePath, sessionKey, sessionStore } = await createCompactionSessionFixture(entry);
+
+    await incrementCompactionCount({
+      sessionEntry: entry,
+      sessionStore,
+      sessionKey,
+      storePath,
+    });
+
+    const stored = await loadStoredEntry(storePath, sessionKey);
+    expect(stored.compactionCount).toBe(1);
+    expect(stored.cliSessionIds).toEqual({ "claude-cli": "backend-session-1" });
+  });
+
   it("persists incognito compaction metadata only in the scoped store", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-incognito-compact-"));
     tempDirs.push(tmp);

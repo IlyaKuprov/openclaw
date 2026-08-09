@@ -337,6 +337,9 @@ export const handleCompactCommand: CommandHandler = async (params) => {
       // Update token counts after compaction
       tokensAfter: result.result?.tokensAfter,
       newSessionId: result.result?.sessionId,
+      // The compacted transcript is the new starting point; resuming a CLI
+      // backend session would replay the pre-compaction history instead.
+      clearCliSessions: true,
     });
   }
   // Use the post-compaction token count for context summary if available

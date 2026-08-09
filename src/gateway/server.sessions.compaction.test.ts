@@ -893,6 +893,50 @@ test("sessions.compact records terminal Codex native compaction", async () => {
   ws.close();
 });
 
+test("sessions.compact releases CLI backend session bindings", async () => {
+  const { storePath } = await createSessionStoreDir();
+  await seedSessionEntry({
+    entry: sessionStoreEntry("sess-cli-bound", {
+      agentHarnessId: "claude",
+      cliSessionIds: { "claude-cli": "backend-session-1" },
+      cliSessionBindings: { "claude-cli": { sessionId: "backend-session-1" } },
+      claudeCliSessionId: "backend-session-1",
+    }),
+    sessionKey: "agent:main:main",
+    storePath,
+  });
+  await seedTranscriptRows({
+    sessionId: "sess-cli-bound",
+    sessionKey: "agent:main:main",
+    storePath,
+    totalLines: 2,
+  });
+  embeddedRunMock.compactEmbeddedAgentSession.mockResolvedValueOnce({
+    ok: true,
+    compacted: true,
+    result: { summary: "summary", firstKeptEntryId: "entry-0", tokensBefore: 120, tokensAfter: 80 },
+  });
+
+  const { ws } = await openClient();
+  const compacted = await rpcReq<{ ok: true; key: string; compacted: boolean }>(
+    ws,
+    "sessions.compact",
+    { key: "main" },
+  );
+
+  expectMainCompactionResult(compacted, true);
+  // The bindings are keyed by backend id, so a compaction that summarizes the
+  // OpenClaw transcript must release them or the next turn resumes the
+  // backend's uncompacted session and the compaction is invisible to the model.
+  const boundEntry = loadSessionEntry({ sessionKey: "agent:main:main", storePath });
+  expect(boundEntry?.compactionCount).toBe(1);
+  expect(boundEntry?.cliSessionIds).toBeUndefined();
+  expect(boundEntry?.cliSessionBindings).toBeUndefined();
+  expect(boundEntry?.claudeCliSessionId).toBeUndefined();
+
+  ws.close();
+});
+
 test("sessions.compact emits a terminal operation event when persistence fails", async () => {
   const { storePath } = await createSessionStoreDir();
   const sessionId = "sess-compact-write-failure";
