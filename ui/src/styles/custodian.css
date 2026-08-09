@@ -291,6 +291,10 @@ openclaw-custodian-page {
   max-width: 100%;
 }
 
+.custodian__wizard-guidance .code-block-copy {
+  cursor: pointer;
+}
+
 .custodian__wizard-guidance .code-block-wrapper pre {
   max-height: min(38vh, 340px);
 }
