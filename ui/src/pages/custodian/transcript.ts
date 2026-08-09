@@ -256,7 +256,7 @@ function formatTrailingJson(markdown: string): string {
   }
 }
 
-export function custodianWizardSupportingMarkdown(text: string, step: WizardStep): string {
+function custodianWizardSupportingMarkdown(text: string, step: WizardStep): string {
   const cancelHint = "Say `cancel` to stop this setup.";
   const fallback = wizardFallbackText(step);
   let supporting = text.trim();
