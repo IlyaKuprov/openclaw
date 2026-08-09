@@ -5,7 +5,9 @@ import { materializeGatewayAuthSecretRefs } from "../gateway/auth-config-utils.j
 import { assertExplicitGatewayAuthModeWhenBothConfigured } from "../gateway/auth-mode-policy.js";
 import { issueDeviceBootstrapToken } from "../infra/device-bootstrap.js";
 import {
+  resolveActivePairingSetupConnectivity,
   resolvePairingSetupConnectivityFromConfig,
+  type PairingConnectivityAuth,
   type ResolvePairingSetupConnectivityOptions,
 } from "./connectivity.js";
 
@@ -16,6 +18,8 @@ type PairingSetupPayload = {
 };
 
 type ResolvePairingSetupOptions = ResolvePairingSetupConnectivityOptions & {
+  activeAuth?: PairingConnectivityAuth;
+  getActiveAuth?: () => PairingConnectivityAuth;
   pairingBaseDir?: string;
 };
 
@@ -42,24 +46,34 @@ export async function resolvePairingSetupFromConfig(
   cfg: OpenClawConfig,
   options: ResolvePairingSetupOptions = {},
 ): Promise<PairingSetupResolution> {
-  assertExplicitGatewayAuthModeWhenBothConfigured(cfg);
+  if (!options.activeAuth) {
+    assertExplicitGatewayAuthModeWhenBothConfigured(cfg);
+  }
   const env = options.env ?? process.env;
-  const cfgForAuth = await materializeGatewayAuthSecretRefs({
-    cfg,
-    env,
-    mode: cfg.gateway?.auth?.mode,
-    hasTokenOverride: false,
-    hasPasswordOverride: false,
-    hasTokenFallback: Boolean(normalizeOptionalString(env.OPENCLAW_GATEWAY_TOKEN)),
-    hasPasswordFallback: Boolean(normalizeOptionalString(env.OPENCLAW_GATEWAY_PASSWORD)),
-  });
-  const resolved = await resolvePairingSetupConnectivityFromConfig(cfgForAuth, options);
+  const cfgForAuth = options.activeAuth
+    ? cfg
+    : await materializeGatewayAuthSecretRefs({
+        cfg,
+        env,
+        mode: cfg.gateway?.auth?.mode,
+        hasTokenOverride: false,
+        hasPasswordOverride: false,
+        hasTokenFallback: Boolean(normalizeOptionalString(env.OPENCLAW_GATEWAY_TOKEN)),
+        hasPasswordFallback: Boolean(normalizeOptionalString(env.OPENCLAW_GATEWAY_PASSWORD)),
+      });
+  const resolved = options.activeAuth
+    ? await resolveActivePairingSetupConnectivity(cfgForAuth, options.activeAuth, options)
+    : await resolvePairingSetupConnectivityFromConfig(cfgForAuth, options);
   if (!resolved.ok) {
     return resolved;
   }
   const [url] = resolved.urls;
   if (!url) {
     return { ok: false, error: "Gateway URL unavailable." };
+  }
+  const issuanceAuth = options.getActiveAuth?.() ?? resolved.authLabel;
+  if (issuanceAuth !== resolved.authLabel) {
+    return { ok: false, error: "Gateway auth changed before setup-code issuance." };
   }
   const issued = await issueDeviceBootstrapToken({
     baseDir: options.pairingBaseDir,

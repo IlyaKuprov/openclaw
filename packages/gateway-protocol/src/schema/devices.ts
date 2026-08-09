@@ -87,10 +87,12 @@ const PairingConnectivityAuthSchema = Type.Union([
   Type.Literal("token"),
   Type.Literal("password"),
   Type.Literal("missing"),
+  Type.Literal("unavailable"),
   Type.Literal("invalid"),
 ]);
 const PairingConnectivityBlockerSchema = Type.Union([
   Type.Literal("gateway-auth-required"),
+  Type.Literal("gateway-auth-unavailable"),
   Type.Literal("gateway-auth-invalid"),
   Type.Literal("route-unavailable"),
   Type.Literal("route-insecure"),
@@ -129,6 +131,11 @@ const PairingConnectivityChangesSchema = Type.Array(
   { maxItems: 2, uniqueItems: true },
 );
 const PairingConnectivityConfigHashSchema = Type.String({ minLength: 1, maxLength: 128 });
+const PairingConnectivityConfigStateSchema = Type.Union([
+  Type.Literal("applied"),
+  Type.Literal("pending"),
+  Type.Literal("unknown"),
+]);
 
 const TailscalePublishedRouteSchema = Type.Union([
   closedObject({ status: Type.Literal("ready"), urls: PairingConnectivityUrlsSchema }),
@@ -162,6 +169,7 @@ const TailscaleConnectivityInspectionSchema = Type.Union([
 export const DevicePairConnectivityInspectParamsSchema = closedObject({});
 export const DevicePairConnectivityInspectResultSchema = closedObject({
   configHash: Type.Optional(PairingConnectivityConfigHashSchema),
+  configState: PairingConnectivityConfigStateSchema,
   auth: PairingConnectivityAuthSchema,
   current: Type.Union([
     closedObject({
@@ -208,6 +216,7 @@ export const DevicePairConnectivityPlanResultSchema = Type.Union([
     status: Type.Literal("blocked"),
     mode: PairingConnectivityModeSchema,
     configHash: Type.Optional(PairingConnectivityConfigHashSchema),
+    configState: PairingConnectivityConfigStateSchema,
     auth: PairingConnectivityAuthSchema,
     blocker: PairingConnectivityBlockerSchema,
     changes: PairingConnectivityChangesSchema,
@@ -216,6 +225,7 @@ export const DevicePairConnectivityPlanResultSchema = Type.Union([
     status: Type.Literal("confirmation-required"),
     mode: PairingConnectivityModeSchema,
     configHash: Type.Optional(PairingConnectivityConfigHashSchema),
+    configState: PairingConnectivityConfigStateSchema,
     urls: PairingConnectivityUrlsSchema,
     exposure: PairingConnectivityExposureSchema,
     auth: Type.Union([Type.Literal("token"), Type.Literal("password")]),
@@ -253,9 +263,9 @@ export const DevicePairSetupCodeParamsSchema = closedObject({
 export const DevicePairSetupCodeResultSchema = closedObject({
   setupCode: NonEmptyString,
   qrDataUrl: Type.Optional(SetupCodeQrDataUrlSchema),
-  gatewayUrl: NonEmptyString,
+  gatewayUrl: PairingConnectivityUrlSchema,
   gatewayUrls: Type.Optional(
-    Type.Array(NonEmptyString, { minItems: 2, maxItems: 8, uniqueItems: true }),
+    Type.Array(PairingConnectivityUrlSchema, { minItems: 2, maxItems: 8, uniqueItems: true }),
   ),
   auth: Type.Union([Type.Literal("token"), Type.Literal("password")]),
   urlSource: NonEmptyString,

@@ -16,11 +16,17 @@ const mocks = vi.hoisted(() => ({
   runCommandWithTimeout: vi.fn(),
   readConfigFileSnapshot: vi.fn(),
   resolveConfigSnapshotHash: vi.fn(),
+  getRuntimeConfigAppliedHash: vi.fn(),
+  hashRuntimeConfigValue: vi.fn(),
 }));
 
 vi.mock("../../config/config.js", () => ({
   readConfigFileSnapshot: mocks.readConfigFileSnapshot,
   resolveConfigSnapshotHash: mocks.resolveConfigSnapshotHash,
+}));
+vi.mock("../../config/runtime-snapshot.js", () => ({
+  getRuntimeConfigAppliedHash: mocks.getRuntimeConfigAppliedHash,
+  hashRuntimeConfigValue: mocks.hashRuntimeConfigValue,
 }));
 
 vi.mock("../../pairing/connectivity.js", () => ({
@@ -58,6 +64,11 @@ function createOptions(
     respond,
     context: {
       getRuntimeConfig: vi.fn(() => config),
+      getResolvedAuth: vi.fn(() => ({
+        mode: "token",
+        token: "runtime-token",
+        allowTailscale: false,
+      })),
     },
   } as unknown as GatewayRequestHandlerOptions;
   return { options, respond };
@@ -354,8 +365,10 @@ describe("device pairing connectivity preflight", () => {
     mocks.resolvePairingSetupFromConfig.mockReset();
     mocks.encodePairingSetupCode.mockReset();
     mocks.renderQrPngDataUrl.mockReset();
-    mocks.readConfigFileSnapshot.mockResolvedValue({ runtimeConfig: {}, raw: null });
+    mocks.readConfigFileSnapshot.mockResolvedValue({ sourceConfig: {}, raw: null });
     mocks.resolveConfigSnapshotHash.mockReturnValue(null);
+    mocks.getRuntimeConfigAppliedHash.mockReturnValue(null);
+    mocks.hashRuntimeConfigValue.mockReturnValue("persisted-semantic-hash");
   });
 
   it("registers read-only admin methods without advertising them", () => {
@@ -370,6 +383,7 @@ describe("device pairing connectivity preflight", () => {
 
   it("returns typed inspect facts without issuing a setup code", async () => {
     const result = {
+      configState: "pending",
       auth: "token",
       current: { status: "blocked", blocker: "route-unavailable" },
       lan: { status: "unavailable" },
@@ -378,12 +392,14 @@ describe("device pairing connectivity preflight", () => {
     };
     mocks.inspectPairingConnectivity.mockResolvedValue(result);
     mocks.readConfigFileSnapshot.mockResolvedValue({
-      runtimeConfig: { gateway: { auth: { mode: "token", token: "secret" } } },
+      sourceConfig: { gateway: { bind: "loopback" } },
       hash: "a".repeat(64),
     });
     mocks.resolveConfigSnapshotHash.mockReturnValue("a".repeat(64));
+    mocks.getRuntimeConfigAppliedHash.mockReturnValue("active-semantic-hash");
 
-    const { options, respond } = createOptions({});
+    const activeConfig = { gateway: { bind: "lan", auth: { mode: "token", token: "secret" } } };
+    const { options, respond } = createOptions({}, activeConfig);
     await expectDefined(
       devicePairSetupHandlers["device.pair.connectivity.inspect"],
       'devicePairSetupHandlers["device.pair.connectivity.inspect"] test invariant',
@@ -391,9 +407,11 @@ describe("device pairing connectivity preflight", () => {
 
     expect(respond).toHaveBeenCalledWith(true, result, undefined);
     expect(mocks.inspectPairingConnectivity).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({ configHash: "a".repeat(64) }),
+      activeConfig,
+      expect.objectContaining({ configHash: "a".repeat(64), configState: "pending" }),
     );
+    expect(options.context.getRuntimeConfig).toHaveBeenCalledTimes(1);
+    expect(options.context.getResolvedAuth).toHaveBeenCalledTimes(1);
     expect(mocks.resolvePairingSetupFromConfig).not.toHaveBeenCalled();
     expect(mocks.encodePairingSetupCode).not.toHaveBeenCalled();
     expect(mocks.renderQrPngDataUrl).not.toHaveBeenCalled();
@@ -401,6 +419,7 @@ describe("device pairing connectivity preflight", () => {
 
   it("plans from a fresh inspection without issuing a setup code", async () => {
     const inspected = {
+      configState: "pending",
       auth: "token",
       current: { status: "blocked", blocker: "route-unavailable" },
       lan: { status: "available", url: "ws://192.168.1.20:18789", requiresGatewayChange: true },
@@ -410,6 +429,7 @@ describe("device pairing connectivity preflight", () => {
     const planned = {
       status: "confirmation-required",
       mode: "lan",
+      configState: "pending",
       urls: ["ws://192.168.1.20:18789"],
       exposure: "local-network",
       auth: "token",
@@ -422,14 +442,149 @@ describe("device pairing connectivity preflight", () => {
     mocks.inspectPairingConnectivity.mockResolvedValue(inspected);
     mocks.planPairingConnectivity.mockReturnValue(planned);
 
-    const { options, respond } = createOptions({ mode: "lan" });
+    const activeConfig = { gateway: { bind: "loopback" } };
+    mocks.readConfigFileSnapshot.mockResolvedValue({
+      sourceConfig: { gateway: { bind: "lan" } },
+      raw: "{}",
+    });
+    mocks.getRuntimeConfigAppliedHash.mockReturnValue("active-semantic-hash");
+    const { options, respond } = createOptions({ mode: "lan" }, activeConfig);
     await expectDefined(
       devicePairSetupHandlers["device.pair.connectivity.plan"],
       'devicePairSetupHandlers["device.pair.connectivity.plan"] test invariant',
     )(options);
 
     expect(mocks.planPairingConnectivity).toHaveBeenCalledWith(inspected, { mode: "lan" });
+    expect(mocks.inspectPairingConnectivity).toHaveBeenCalledWith(
+      activeConfig,
+      expect.objectContaining({ configState: "pending" }),
+    );
+    expect(options.context.getRuntimeConfig).toHaveBeenCalledTimes(1);
+    expect(options.context.getResolvedAuth).toHaveBeenCalledTimes(1);
     expect(respond).toHaveBeenCalledWith(true, planned, undefined);
     expect(mocks.resolvePairingSetupFromConfig).not.toHaveBeenCalled();
+  });
+
+  it("uses the same active config contract for inspection and setup issuance", async () => {
+    const activeConfig = {
+      gateway: { bind: "lan", auth: { mode: "token", token: "secret" } },
+    };
+    const inspected = {
+      configState: "applied",
+      auth: "token",
+      current: { status: "ready", urls: ["ws://192.168.1.20:18789"] },
+      lan: { status: "available", url: "ws://192.168.1.20:18789", requiresGatewayChange: false },
+      tailscale: { status: "unavailable" },
+      publicUrl: { status: "not-configured" },
+    };
+    mocks.inspectPairingConnectivity.mockResolvedValue(inspected);
+    mocks.resolvePairingSetupFromConfig.mockResolvedValue(okResolution);
+    mocks.encodePairingSetupCode.mockReturnValue("SETUP-CODE-XYZ");
+    mocks.readConfigFileSnapshot.mockResolvedValue({ sourceConfig: activeConfig, raw: "{}" });
+    mocks.getRuntimeConfigAppliedHash.mockReturnValue("active-semantic-hash");
+    mocks.hashRuntimeConfigValue.mockReturnValue("active-semantic-hash");
+
+    const inspectRequest = createOptions({}, activeConfig);
+    await expectDefined(
+      devicePairSetupHandlers["device.pair.connectivity.inspect"],
+      'devicePairSetupHandlers["device.pair.connectivity.inspect"] test invariant',
+    )(inspectRequest.options);
+    const setupRequest = createOptions({ includeQr: false }, activeConfig);
+    await expectDefined(
+      devicePairSetupHandlers["device.pair.setupCode"],
+      'devicePairSetupHandlers["device.pair.setupCode"] test invariant',
+    )(setupRequest.options);
+
+    expect(mocks.inspectPairingConnectivity).toHaveBeenCalledWith(activeConfig, expect.any(Object));
+    expect(mocks.resolvePairingSetupFromConfig).toHaveBeenCalledWith(
+      activeConfig,
+      expect.any(Object),
+    );
+    expect(inspectRequest.options.context.getRuntimeConfig).toHaveBeenCalledTimes(1);
+    expect(inspectRequest.options.context.getResolvedAuth).toHaveBeenCalledTimes(1);
+    expect(setupRequest.options.context.getRuntimeConfig).toHaveBeenCalledTimes(1);
+    expect(setupRequest.options.context.getResolvedAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the latest resolved active auth without inspecting SecretRefs", async () => {
+    const activeConfig = {
+      gateway: {
+        bind: "lan",
+        auth: {
+          mode: "token",
+          token: { source: "env", provider: "missing", id: "GATEWAY_TOKEN" },
+          password: { source: "env", provider: "missing", id: "INACTIVE_PASSWORD" },
+        },
+      },
+    };
+    mocks.inspectPairingConnectivity.mockResolvedValue({
+      configState: "pending",
+      auth: "token",
+      current: { status: "blocked", blocker: "route-unavailable" },
+      lan: { status: "unavailable" },
+      tailscale: { status: "unavailable" },
+      publicUrl: { status: "not-configured" },
+    });
+    const { options } = createOptions({}, activeConfig);
+    const getResolvedAuth = vi.mocked(options.context.getResolvedAuth);
+    getResolvedAuth
+      .mockReturnValueOnce({ mode: "token", token: "active-token", allowTailscale: false })
+      .mockReturnValueOnce({ mode: "token", token: "rotated-token", allowTailscale: false });
+
+    const inspect = expectDefined(
+      devicePairSetupHandlers["device.pair.connectivity.inspect"],
+      'devicePairSetupHandlers["device.pair.connectivity.inspect"] test invariant',
+    );
+    await inspect(options);
+    await inspect(options);
+
+    expect(mocks.inspectPairingConnectivity).toHaveBeenNthCalledWith(
+      1,
+      activeConfig,
+      expect.objectContaining({ activeAuth: "token" }),
+    );
+    expect(mocks.inspectPairingConnectivity).toHaveBeenNthCalledWith(
+      2,
+      activeConfig,
+      expect.objectContaining({ activeAuth: "token" }),
+    );
+    expect(getResolvedAuth).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(mocks.inspectPairingConnectivity.mock.calls)).not.toMatch(
+      /active-token|rotated-token/,
+    );
+  });
+
+  it("blocks setup before mint when the selected active auth is unavailable", async () => {
+    mocks.resolvePairingSetupFromConfig.mockResolvedValue({
+      ok: false,
+      error: "Gateway auth is not configured.",
+    });
+    const { options, respond } = createOptions(
+      { includeQr: false },
+      {
+        gateway: {
+          auth: {
+            mode: "token",
+            token: { source: "env", provider: "missing", id: "GATEWAY_TOKEN" },
+          },
+        },
+      },
+    );
+    vi.mocked(options.context.getResolvedAuth).mockReturnValue({
+      mode: "token",
+      allowTailscale: false,
+    });
+
+    await expectDefined(
+      devicePairSetupHandlers["device.pair.setupCode"],
+      'devicePairSetupHandlers["device.pair.setupCode"] test invariant',
+    )(options);
+
+    expect(mocks.resolvePairingSetupFromConfig).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ activeAuth: "unavailable" }),
+    );
+    expect(mocks.encodePairingSetupCode).not.toHaveBeenCalled();
+    expect(respond.mock.calls[0]?.[0]).toBe(false);
   });
 });

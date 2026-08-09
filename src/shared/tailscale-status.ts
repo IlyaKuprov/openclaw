@@ -2,6 +2,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { z } from "zod";
 import { safeParseJsonWithSchema } from "../utils/zod-parse.js";
+import { projectPairingConnectivityUrls } from "./pairing-connectivity-urls.js";
 
 export type TailscaleStatusCommandResult = {
   code: number | null;
@@ -11,13 +12,14 @@ export type TailscaleStatusCommandResult = {
 
 export type TailscaleStatusCommandRunner = (
   argv: string[],
-  opts: { timeoutMs: number; env?: NodeJS.ProcessEnv },
+  opts: { timeoutMs: number; maxOutputBytes?: number; env?: NodeJS.ProcessEnv },
 ) => Promise<TailscaleStatusCommandResult>;
 
 const TAILSCALE_STATUS_COMMAND_CANDIDATES = [
   "tailscale",
   "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
 ];
+const TAILSCALE_STATUS_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 const TailscaleStatusSchema = z.object({
   BackendState: z.string().optional(),
@@ -63,6 +65,7 @@ const TailscaleServeServiceSchema = z.object({
 
 const TailscaleServeConfigSchema = TailscaleServeServiceSchema.extend({
   AllowFunnel: z.record(z.string(), z.boolean()).optional(),
+  Services: z.record(z.string(), TailscaleServeServiceSchema).optional(),
 });
 
 function parsePossiblyNoisyStatus(raw: string): z.infer<typeof TailscaleStatusSchema> | null {
@@ -106,13 +109,13 @@ function parseLoopbackProxyPort(proxy: string): number | null {
 function collectServeGatewayUrls(
   config: z.infer<typeof TailscaleServeServiceSchema>,
   gatewayPort: number,
-  allowFunnel: Record<string, boolean>,
+  acceptsHostPort: (hostPort: string) => boolean,
 ): string[] {
   const urls: string[] = [];
   for (const [hostPort, webServer] of Object.entries(config.Web ?? {})) {
     const handler = webServer.Handlers["/"];
     if (
-      allowFunnel[hostPort] ||
+      !acceptsHostPort(hostPort) ||
       !handler?.Proxy ||
       parseLoopbackProxyPort(handler.Proxy) !== gatewayPort
     ) {
@@ -129,12 +132,13 @@ function collectServeGatewayUrls(
       continue;
     }
   }
-  return urls;
+  return projectPairingConnectivityUrls(urls);
 }
 
 function extractPublishedGatewayUrls(
   raw: string,
   gatewayPort: number,
+  serviceName?: string,
 ): { serve: string[]; funnel: string[] } | null {
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
@@ -145,22 +149,22 @@ function extractPublishedGatewayUrls(
   if (!parsed) {
     return null;
   }
+  const normalizedServiceName = serviceName?.trim();
+  if (normalizedServiceName) {
+    const service = parsed.Services?.[normalizedServiceName];
+    return {
+      serve: service ? collectServeGatewayUrls(service, gatewayPort, () => true) : [],
+      funnel: [],
+    };
+  }
   const funnelHosts = parsed.AllowFunnel ?? {};
   return {
-    serve: [...new Set(collectServeGatewayUrls(parsed, gatewayPort, funnelHosts))].toSorted(),
-    funnel: [
-      ...new Set(
-        collectServeGatewayUrls(parsed, gatewayPort, {}).filter((url) => {
-          try {
-            const parsedUrl = new URL(url);
-            const hostPort = `${parsedUrl.hostname}:${parsedUrl.port || "443"}`;
-            return funnelHosts[hostPort] === true;
-          } catch {
-            return false;
-          }
-        }),
-      ),
-    ].toSorted(),
+    serve: collectServeGatewayUrls(parsed, gatewayPort, (hostPort) => !funnelHosts[hostPort]),
+    funnel: collectServeGatewayUrls(
+      parsed,
+      gatewayPort,
+      (hostPort) => funnelHosts[hostPort] === true,
+    ),
   };
 }
 
@@ -183,6 +187,7 @@ async function runTailscaleCandidate(
 ): Promise<TailscaleStatusCommandResult> {
   return await runCommandWithTimeout([candidate, ...args], {
     timeoutMs: 5000,
+    maxOutputBytes: TAILSCALE_STATUS_MAX_OUTPUT_BYTES,
     env: tailscaleCommandEnv(),
   });
 }
@@ -191,6 +196,7 @@ async function runTailscaleCandidate(
 export async function inspectTailscaleConnectivityWithRunner(
   gatewayPort: number,
   runCommandWithTimeout?: TailscaleStatusCommandRunner,
+  serviceName?: string,
 ): Promise<TailscaleConnectivityInspection> {
   if (!runCommandWithTimeout) {
     return { status: "unavailable" };
@@ -249,7 +255,9 @@ export async function inspectTailscaleConnectivityWithRunner(
       };
     }
     const published =
-      serveResult.code === 0 ? extractPublishedGatewayUrls(serveResult.stdout, gatewayPort) : null;
+      serveResult.code === 0
+        ? extractPublishedGatewayUrls(serveResult.stdout, gatewayPort, serviceName)
+        : null;
     return {
       status: "running",
       backendState,
@@ -267,6 +275,29 @@ export async function inspectTailscaleConnectivityWithRunner(
     };
   }
   return sawNonMissingFailure ? { status: "error" } : { status: "unavailable" };
+}
+
+export async function resolveConfiguredTailscaleGatewayUrlsWithRunner(
+  params: { mode: "serve" | "funnel"; gatewayPort: number; serviceName?: string },
+  runCommandWithTimeout?: TailscaleStatusCommandRunner,
+): Promise<string[]> {
+  const inspected = await inspectTailscaleConnectivityWithRunner(
+    params.gatewayPort,
+    runCommandWithTimeout,
+    params.mode === "serve" ? params.serviceName : undefined,
+  );
+  return selectTailscaleGatewayUrls(inspected, params.mode);
+}
+
+export function selectTailscaleGatewayUrls(
+  inspection: TailscaleConnectivityInspection,
+  mode: "serve" | "funnel",
+): string[] {
+  if (inspection.status !== "running") {
+    return [];
+  }
+  const route = mode === "serve" ? inspection.serve : inspection.funnel;
+  return route.status === "ready" ? route.urls : [];
 }
 
 /** Resolves the host published to clients for tailnet or Tailscale Serve gateway modes. */
@@ -304,6 +335,7 @@ export async function resolveTailnetHostWithRunner(
     try {
       const result = await runCommandWithTimeout([candidate, "status", "--json"], {
         timeoutMs: 5000,
+        maxOutputBytes: TAILSCALE_STATUS_MAX_OUTPUT_BYTES,
       });
       if (result.code !== 0) {
         continue;
@@ -335,6 +367,7 @@ export async function resolveTailscaleServeGatewayUrlsWithRunner(
     try {
       const result = await runCommandWithTimeout([candidate, "serve", "status", "--json"], {
         timeoutMs: 5000,
+        maxOutputBytes: TAILSCALE_STATUS_MAX_OUTPUT_BYTES,
       });
       if (result.code !== 0 || !result.stdout.trim()) {
         continue;

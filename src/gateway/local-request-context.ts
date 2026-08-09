@@ -17,6 +17,7 @@ import {
   withPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { resolveGatewayAuth } from "./auth.js";
 import { NodeRegistry } from "./node-registry.js";
 import type { ChannelRuntimeSnapshot } from "./server-channel-runtime.types.js";
 import { createChatRunState } from "./server-chat-state.js";
@@ -116,6 +117,14 @@ function createLocalGatewayRequestContext(
     cron,
     cronStorePath: "",
     getRuntimeConfig: params.getRuntimeConfig,
+    getResolvedAuth: () => {
+      const cfg = params.getRuntimeConfig();
+      return resolveGatewayAuth({
+        authConfig: cfg.gateway?.auth,
+        env: process.env,
+        tailscaleMode: cfg.gateway?.tailscale?.mode ?? "off",
+      });
+    },
     notifyPluginMetadataChanged: () => {},
     resolveTerminalLaunchPolicy: () => ({ ok: false, block: { kind: "disabled" } }),
     isTerminalEnabled: () => false,

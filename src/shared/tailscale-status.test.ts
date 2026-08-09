@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   inspectTailscaleConnectivityWithRunner,
+  resolveConfiguredTailscaleGatewayUrlsWithRunner,
   resolveTailnetHostWithRunner,
   resolveTailscaleServeGatewayUrlsWithRunner,
 } from "./tailscale-status.js";
@@ -91,7 +92,10 @@ describe("shared/tailscale-status", () => {
     });
 
     await expect(resolveTailnetHostWithRunner(run)).resolves.toBe("mac.tail123.ts.net");
-    expect(run).toHaveBeenCalledWith(["tailscale", "status", "--json"], { timeoutMs: 5000 });
+    expect(run).toHaveBeenCalledWith(["tailscale", "status", "--json"], {
+      timeoutMs: 5000,
+      maxOutputBytes: 1024 * 1024,
+    });
   });
 
   it("falls back across command candidates and then to the first tailscale ip", async () => {
@@ -106,6 +110,7 @@ describe("shared/tailscale-status", () => {
       ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "status", "--json"],
       {
         timeoutMs: 5000,
+        maxOutputBytes: 1024 * 1024,
       },
     );
   });
@@ -162,26 +167,30 @@ describe("shared/tailscale-status", () => {
   });
 
   it("finds persistent HTTPS Serve routes that proxy the gateway root", async () => {
-    const run = vi.fn().mockResolvedValue({
-      code: 0,
-      stdout: JSON.stringify({
-        TCP: { "443": { HTTPS: true }, "8443": { HTTPS: true } },
-        Web: {
-          "mac.tail.ts.net:443": {
-            Handlers: { "/": { Proxy: "http://127.0.0.1:8096" } },
-          },
-          "mac.tail.ts.net:8443": {
-            Handlers: { "/": { Proxy: "http://127.0.0.1:18789" } },
-          },
+    const serveConfig = {
+      TCP: { "443": { HTTPS: true }, "8443": { HTTPS: true } },
+      Web: {
+        "mac.tail.ts.net:443": {
+          Handlers: { "/": { Proxy: "http://127.0.0.1:8096" } },
         },
-      }),
-    });
+        "mac.tail.ts.net:8443": {
+          Handlers: { "/": { Proxy: "http://127.0.0.1:18789" } },
+        },
+      },
+    };
+    const run = vi.fn(async (argv: string[]) => ({
+      code: 0,
+      stdout: argv.includes("serve")
+        ? JSON.stringify(serveConfig)
+        : JSON.stringify({ BackendState: "Running" }),
+    }));
 
     await expect(resolveTailscaleServeGatewayUrlsWithRunner(18789, run)).resolves.toEqual([
       "wss://mac.tail.ts.net:8443",
     ]);
     expect(run).toHaveBeenCalledWith(["tailscale", "serve", "status", "--json"], {
       timeoutMs: 5000,
+      maxOutputBytes: 1024 * 1024,
     });
   });
 
@@ -232,5 +241,55 @@ describe("shared/tailscale-status", () => {
     });
 
     await expect(resolveTailscaleServeGatewayUrlsWithRunner(18789, run)).resolves.toEqual([]);
+  });
+
+  it("requires the configured publication mode and exact service name", async () => {
+    const serveConfig = {
+      TCP: { "443": { HTTPS: true }, "8443": { HTTPS: true } },
+      Web: {
+        "node.tail.ts.net:443": {
+          Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+        },
+        "public.tail.ts.net:8443": {
+          Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+        },
+      },
+      AllowFunnel: { "public.tail.ts.net:8443": true },
+      Services: {
+        "svc:openclaw": {
+          TCP: { "443": { HTTPS: true } },
+          Web: {
+            "openclaw.tail.ts.net:443": {
+              Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+            },
+          },
+        },
+      },
+    };
+    const run = vi.fn(async (argv: string[]) => ({
+      code: 0,
+      stdout: argv.includes("serve")
+        ? JSON.stringify(serveConfig)
+        : JSON.stringify({ BackendState: "Running" }),
+    }));
+
+    await expect(
+      resolveConfiguredTailscaleGatewayUrlsWithRunner({ mode: "serve", gatewayPort: 18789 }, run),
+    ).resolves.toEqual(["wss://node.tail.ts.net"]);
+    await expect(
+      resolveConfiguredTailscaleGatewayUrlsWithRunner({ mode: "funnel", gatewayPort: 18789 }, run),
+    ).resolves.toEqual(["wss://public.tail.ts.net:8443"]);
+    await expect(
+      resolveConfiguredTailscaleGatewayUrlsWithRunner(
+        { mode: "serve", gatewayPort: 18789, serviceName: "svc:openclaw" },
+        run,
+      ),
+    ).resolves.toEqual(["wss://openclaw.tail.ts.net"]);
+    await expect(
+      resolveConfiguredTailscaleGatewayUrlsWithRunner(
+        { mode: "serve", gatewayPort: 18789, serviceName: "svc:wrong" },
+        run,
+      ),
+    ).resolves.toEqual([]);
   });
 });

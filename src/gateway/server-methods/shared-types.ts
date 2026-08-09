@@ -24,6 +24,7 @@ import type { RuntimePluginToolGrant } from "../../plugins/runtime/tool-grant.js
 import type { SystemAgentOperation } from "../../system-agent/operation-types.js";
 import type { WizardSession } from "../../wizard/session.js";
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
+import type { ResolvedGatewayAuth } from "../auth.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import type { GatewayHotReloadStatus } from "../config-reload-status.types.js";
 import type { ExecApprovalManager, ExecApprovalRecord } from "../exec-approval-manager.js";
@@ -178,6 +179,7 @@ export type GatewayRequestContext = {
   cron: GatewayCronServiceContract;
   cronStorePath: string;
   getRuntimeConfig: () => OpenClawConfig;
+  getResolvedAuth: () => ResolvedGatewayAuth;
   controlUiSessionPullRequests?: ReturnType<
     typeof import("../control-ui-session-pr-subscriptions.js").createControlUiSessionPullRequestSubscriptions
   >;

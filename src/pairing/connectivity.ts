@@ -1,17 +1,7 @@
 // Pairing connectivity owns route, transport, and access planning before token issuance.
 import os from "node:os";
-import {
-  isCarrierGradeNatIpv4Address,
-  isIpv4Address,
-  isIpv6Address,
-  isLoopbackIpAddress,
-  isRfc1918Ipv4Address,
-  parseCanonicalIpAddress,
-} from "@openclaw/net-policy/ip";
-import {
-  normalizeLowercaseStringOrEmpty,
-  normalizeOptionalString,
-} from "@openclaw/normalization-core/string-coerce";
+import { isCarrierGradeNatIpv4Address } from "@openclaw/net-policy/ip";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveGatewayPort } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { normalizeSecretInputString, resolveSecretInputRef } from "../config/types.secrets.js";
@@ -33,18 +23,26 @@ import {
 } from "../shared/device-bootstrap-profile.js";
 import { resolveGatewayBindUrl } from "../shared/gateway-bind-url.js";
 import {
+  isFullAccessPairingConnectivityUrl,
+  isPairingCleartextAllowedHost,
+  isPrivatePairingLanHost,
+  normalizePairingConnectivityHost,
+  projectPairingConnectivityUrls,
+} from "../shared/pairing-connectivity-urls.js";
+import {
   inspectTailscaleConnectivityWithRunner,
-  resolveTailnetHostWithRunner,
-  resolveTailscalePublishedHost,
-  resolveTailscaleServeGatewayUrlsWithRunner,
+  resolveConfiguredTailscaleGatewayUrlsWithRunner,
+  selectTailscaleGatewayUrls,
   type TailscaleConnectivityInspection,
 } from "../shared/tailscale-status.js";
 
-export type PairingConnectivityMode = "lan" | "tailscale" | "public";
-export type PairingConnectivityAuth = "token" | "password" | "missing" | "invalid";
-export type PairingSetupAccess = "full" | "limited" | "node";
-export type PairingConnectivityBlocker =
+type PairingConnectivityMode = "lan" | "tailscale" | "public";
+export type PairingConnectivityAuth = "token" | "password" | "missing" | "unavailable" | "invalid";
+type PairingConnectivityConfigState = "applied" | "pending" | "unknown";
+type PairingSetupAccess = "full" | "limited" | "node";
+type PairingConnectivityBlocker =
   | "gateway-auth-required"
+  | "gateway-auth-unavailable"
   | "gateway-auth-invalid"
   | "route-unavailable"
   | "route-insecure"
@@ -58,15 +56,9 @@ export type PairingConnectivityBlocker =
   | "public-url-required"
   | "public-url-invalid"
   | "public-url-insecure";
-export type PairingConnectivityChange =
-  | "expose-gateway-on-local-network"
-  | "enable-tailscale-serve";
-export type PairingConnectivityExposure =
-  | "same-host"
-  | "local-network"
-  | "tailnet"
-  | "public-internet";
-export type PairingConnectivitySource =
+type PairingConnectivityChange = "expose-gateway-on-local-network" | "enable-tailscale-serve";
+type PairingConnectivityExposure = "same-host" | "local-network" | "tailnet" | "public-internet";
+type PairingConnectivitySource =
   | "manual"
   | "remote"
   | "tailscale-serve"
@@ -75,13 +67,13 @@ export type PairingConnectivitySource =
   | "tailnet"
   | "custom";
 
-export type PairingConnectivityCommandResult = {
+type PairingConnectivityCommandResult = {
   code: number | null;
   stdout: string;
   errorCode?: string;
 };
 
-export type PairingConnectivityCommandRunner = (
+type PairingConnectivityCommandRunner = (
   argv: string[],
   opts: { timeoutMs: number; maxOutputBytes?: number; env?: NodeJS.ProcessEnv },
 ) => Promise<PairingConnectivityCommandResult>;
@@ -95,8 +87,9 @@ type PairingConnectivityReadyRoute = {
   accessDowngraded: boolean;
 };
 
-export type PairingConnectivityInspection = {
+type PairingConnectivityInspection = {
   configHash?: string;
+  configState: PairingConnectivityConfigState;
   auth: PairingConnectivityAuth;
   current:
     | PairingConnectivityReadyRoute
@@ -111,11 +104,12 @@ export type PairingConnectivityInspection = {
     | { status: "invalid" };
 };
 
-export type PairingConnectivityPlan =
+type PairingConnectivityPlan =
   | {
       status: "blocked";
       mode: PairingConnectivityMode;
       configHash?: string;
+      configState: PairingConnectivityConfigState;
       auth: PairingConnectivityAuth;
       blocker: PairingConnectivityBlocker;
       changes: PairingConnectivityChange[];
@@ -124,6 +118,7 @@ export type PairingConnectivityPlan =
       status: "confirmation-required";
       mode: PairingConnectivityMode;
       configHash?: string;
+      configState: PairingConnectivityConfigState;
       urls: string[];
       exposure: PairingConnectivityExposure;
       auth: "token" | "password";
@@ -156,68 +151,12 @@ export type ResolvePairingSetupConnectivityOptions = {
   networkInterfaces?: () => ReturnType<typeof os.networkInterfaces>;
 };
 
-const PAIRING_SETUP_MAX_URLS = 8;
+type InternalPairingConnectivityOptions = ResolvePairingSetupConnectivityOptions & {
+  activeAuth?: PairingConnectivityAuth;
+};
+
 const GATEWAY_SCHEME_WITHOUT_AUTHORITY_RE = /^(?:https?|wss?):(?!\/\/)/i;
 const SCHEME_LIKE_PATH_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\//;
-
-function normalizeMobilePairingHost(host: string): string {
-  let normalized = normalizeLowercaseStringOrEmpty(host);
-  if (normalized.startsWith("[") && normalized.endsWith("]")) {
-    normalized = normalized.slice(1, -1);
-  }
-  if (normalized.endsWith(".")) {
-    normalized = normalized.slice(0, -1);
-  }
-  const zoneIndex = normalized.indexOf("%");
-  return zoneIndex >= 0 ? normalized.slice(0, zoneIndex) : normalized;
-}
-
-function isPrivateLanHost(host: string): boolean {
-  const normalized = normalizeMobilePairingHost(host);
-  if (normalized.endsWith(".local") || isRfc1918Ipv4Address(normalized)) {
-    return true;
-  }
-  const parsed = parseCanonicalIpAddress(normalized);
-  if (!parsed) {
-    return false;
-  }
-  if (isIpv4Address(parsed)) {
-    const normalizedIp = parsed.toString();
-    return normalizedIp.startsWith("169.254.") && !isCarrierGradeNatIpv4Address(normalizedIp);
-  }
-  if (!isIpv6Address(parsed)) {
-    return false;
-  }
-  const normalizedIp = normalizeLowercaseStringOrEmpty(parsed.toString());
-  return (
-    normalizedIp.startsWith("fe80:") ||
-    normalizedIp.startsWith("fc") ||
-    normalizedIp.startsWith("fd")
-  );
-}
-
-function isMobilePairingCleartextAllowedHost(host: string): boolean {
-  const normalized = normalizeMobilePairingHost(host);
-  return (
-    normalized === "localhost" ||
-    isLoopbackIpAddress(normalized) ||
-    normalized === "10.0.2.2" ||
-    isPrivateLanHost(normalized)
-  );
-}
-
-function isFullAccessMobilePairingUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const host = normalizeMobilePairingHost(parsed.hostname);
-    return (
-      parsed.protocol === "wss:" ||
-      (parsed.protocol === "ws:" && (host === "localhost" || isLoopbackIpAddress(host)))
-    );
-  } catch {
-    return false;
-  }
-}
 
 function describeSecureMobilePairingFix(source?: string): string {
   const sourceNote = source ? ` Resolved source: ${source}.` : "";
@@ -236,7 +175,7 @@ function validateMobilePairingUrl(url: string, source?: string): string | null {
     const protocol =
       parsed.protocol === "https:" ? "wss:" : parsed.protocol === "http:" ? "ws:" : parsed.protocol;
     return protocol === "wss:" ||
-      (protocol === "ws:" && isMobilePairingCleartextAllowedHost(parsed.hostname))
+      (protocol === "ws:" && isPairingCleartextAllowedHost(parsed.hostname))
       ? null
       : describeSecureMobilePairingFix(source);
   } catch {
@@ -368,7 +307,7 @@ async function resolveGatewayUrl(
   cfg: OpenClawConfig,
   opts: Required<Pick<ResolvePairingSetupConnectivityOptions, "env" | "networkInterfaces">> &
     Omit<ResolvePairingSetupConnectivityOptions, "env" | "networkInterfaces" | "bootstrapProfile">,
-): Promise<{ url?: string; source?: string; error?: string }> {
+): Promise<{ url?: string; urls?: string[]; source?: string; error?: string }> {
   const scheme = resolveScheme(cfg, opts.forceSecure);
   const port = resolveGatewayPort(cfg, opts.env);
   if (normalizeOptionalString(opts.publicUrl)) {
@@ -387,21 +326,19 @@ async function resolveGatewayUrl(
   }
   const tailscaleMode = cfg.gateway?.tailscale?.mode ?? "off";
   if (tailscaleMode === "serve" || tailscaleMode === "funnel") {
-    const host = await resolveTailnetHostWithRunner(opts.runCommandWithTimeout);
-    if (!host) {
-      return { error: "Tailscale Serve is enabled, but MagicDNS could not be resolved." };
-    }
-    const publishedHost = resolveTailscalePublishedHost({
-      tailscaleMode,
-      tailnetHost: host,
-      serviceName: cfg.gateway?.tailscale?.serviceName,
-    });
-    return publishedHost
-      ? { url: `wss://${publishedHost}`, source: `gateway.tailscale.mode=${tailscaleMode}` }
-      : {
-          error:
-            "Tailscale Serve serviceName is configured, but Service MagicDNS could not be derived.",
-        };
+    const urls = await resolveConfiguredTailscaleGatewayUrlsWithRunner(
+      {
+        mode: tailscaleMode,
+        gatewayPort: port,
+        ...(tailscaleMode === "serve" && cfg.gateway?.tailscale?.serviceName
+          ? { serviceName: cfg.gateway.tailscale.serviceName }
+          : {}),
+      },
+      opts.runCommandWithTimeout,
+    );
+    return urls[0]
+      ? { url: urls[0], urls, source: `gateway.tailscale.mode=${tailscaleMode}` }
+      : { error: `Configured Tailscale ${tailscaleMode} route is not available.` };
   }
   if (remoteUrl) {
     return { url: remoteUrl, source: "gateway.remote.url" };
@@ -441,11 +378,11 @@ function exposureForRoute(url: string, source: string): PairingConnectivityExpos
   }
   try {
     const parsed = new URL(url);
-    const host = normalizeMobilePairingHost(parsed.hostname);
-    if (host === "localhost" || isLoopbackIpAddress(host)) {
+    const host = normalizePairingConnectivityHost(parsed.hostname);
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
       return "same-host";
     }
-    return isPrivateLanHost(host) ? "local-network" : "public-internet";
+    return isPrivatePairingLanHost(host) ? "local-network" : "public-internet";
   } catch {
     return "public-internet";
   }
@@ -473,15 +410,20 @@ function semanticSource(source: string): PairingConnectivitySource {
   return "manual";
 }
 
-export async function resolvePairingSetupConnectivityFromConfig(
+async function resolvePairingSetupConnectivity(
   cfg: OpenClawConfig,
-  options: ResolvePairingSetupConnectivityOptions = {},
+  options: InternalPairingConnectivityOptions,
 ): Promise<PairingSetupConnectivityResolution> {
-  assertExplicitGatewayAuthModeWhenBothConfigured(cfg);
+  if (!options.activeAuth) {
+    assertExplicitGatewayAuthModeWhenBothConfigured(cfg);
+  }
   const env = options.env ?? process.env;
-  const auth = resolvePairingAuth(cfg, env);
+  const auth = options.activeAuth ?? resolvePairingAuth(cfg, env);
   if (auth === "invalid") {
     return { ok: false, error: "Gateway auth mode is ambiguous." };
+  }
+  if (auth === "unavailable") {
+    return { ok: false, error: "Gateway auth is configured but unavailable." };
   }
   if (auth === "missing") {
     return { ok: false, error: "Gateway auth is not configured (no token or password)." };
@@ -495,22 +437,16 @@ export async function resolvePairingSetupConnectivityFromConfig(
   if (routeError) {
     return { ok: false, error: routeError };
   }
-  const urls = [route.url];
-  if (route.source === "gateway.bind=lan") {
-    for (const url of await resolveTailscaleServeGatewayUrlsWithRunner(
-      resolveGatewayPort(cfg, env),
-      options.runCommandWithTimeout,
-    )) {
-      if (!validateMobilePairingUrl(url, "tailscale serve status")) {
-        urls.push(url);
-      }
-    }
+  const uniqueUrls = projectPairingConnectivityUrls(route.urls ?? [route.url]).filter(
+    (url) => !validateMobilePairingUrl(url, route.source),
+  );
+  if (uniqueUrls.length === 0) {
+    return { ok: false, error: "Gateway URL unavailable." };
   }
-  const uniqueUrls = [...new Set(urls)].slice(0, PAIRING_SETUP_MAX_URLS);
   const requestedProfile = options.bootstrapProfile ?? FULL_ACCESS_PAIRING_SETUP_BOOTSTRAP_PROFILE;
   const accessDowngraded =
     deviceBootstrapProfilesEqual(requestedProfile, FULL_ACCESS_PAIRING_SETUP_BOOTSTRAP_PROFILE) &&
-    uniqueUrls.some((url) => !isFullAccessMobilePairingUrl(url));
+    uniqueUrls.some((url) => !isFullAccessPairingConnectivityUrl(url));
   const bootstrapProfile = accessDowngraded ? PAIRING_SETUP_BOOTSTRAP_PROFILE : requestedProfile;
   return {
     ok: true,
@@ -523,6 +459,21 @@ export async function resolvePairingSetupConnectivityFromConfig(
   };
 }
 
+export async function resolvePairingSetupConnectivityFromConfig(
+  cfg: OpenClawConfig,
+  options: ResolvePairingSetupConnectivityOptions = {},
+): Promise<PairingSetupConnectivityResolution> {
+  return await resolvePairingSetupConnectivity(cfg, options);
+}
+
+export async function resolveActivePairingSetupConnectivity(
+  cfg: OpenClawConfig,
+  activeAuth: PairingConnectivityAuth,
+  options: ResolvePairingSetupConnectivityOptions = {},
+): Promise<PairingSetupConnectivityResolution> {
+  return await resolvePairingSetupConnectivity(cfg, { ...options, activeAuth });
+}
+
 function currentBlocker(error: string | undefined): PairingConnectivityBlocker {
   return error?.includes("secure gateway URL") ? "route-insecure" : "route-unavailable";
 }
@@ -531,6 +482,8 @@ export async function inspectPairingConnectivity(
   cfg: OpenClawConfig,
   options: {
     configHash?: string;
+    configState?: PairingConnectivityConfigState;
+    activeAuth?: PairingConnectivityAuth;
     configuredPublicUrl?: string;
     env?: NodeJS.ProcessEnv;
     runCommandWithTimeout?: PairingConnectivityCommandRunner;
@@ -539,11 +492,12 @@ export async function inspectPairingConnectivity(
 ): Promise<PairingConnectivityInspection> {
   const env = options.env ?? process.env;
   const networkInterfaces = options.networkInterfaces ?? os.networkInterfaces;
-  const auth = resolvePairingAuth(cfg, env);
+  const auth = options.activeAuth ?? resolvePairingAuth(cfg, env);
   const port = resolveGatewayPort(cfg, env);
   const [currentResolution, lanHost, tailscale] = await Promise.all([
-    resolvePairingSetupConnectivityFromConfig(cfg, {
+    resolvePairingSetupConnectivity(cfg, {
       env,
+      activeAuth: auth,
       publicUrl: options.configuredPublicUrl,
       runCommandWithTimeout: options.runCommandWithTimeout,
       networkInterfaces,
@@ -552,12 +506,16 @@ export async function inspectPairingConnectivity(
       networkInterfaces,
       runCommandWithTimeout: options.runCommandWithTimeout,
     }),
-    inspectTailscaleConnectivityWithRunner(port, options.runCommandWithTimeout),
+    inspectTailscaleConnectivityWithRunner(
+      port,
+      options.runCommandWithTimeout,
+      cfg.gateway?.tailscale?.mode === "serve" ? cfg.gateway.tailscale.serviceName : undefined,
+    ),
   ]);
   const configuredPublic = normalizeOptionalString(options.configuredPublicUrl);
   const strictPublic = configuredPublic ? normalizeOperatorPublicUrl(configuredPublic) : undefined;
   const current =
-    currentResolution.ok && auth !== "missing" && auth !== "invalid"
+    currentResolution.ok && auth !== "missing" && auth !== "unavailable" && auth !== "invalid"
       ? {
           status: "ready" as const,
           urls: currentResolution.urls,
@@ -571,12 +529,15 @@ export async function inspectPairingConnectivity(
           blocker:
             auth === "missing"
               ? ("gateway-auth-required" as const)
-              : auth === "invalid"
-                ? ("gateway-auth-invalid" as const)
-                : currentBlocker(currentResolution.ok ? undefined : currentResolution.error),
+              : auth === "unavailable"
+                ? ("gateway-auth-unavailable" as const)
+                : auth === "invalid"
+                  ? ("gateway-auth-invalid" as const)
+                  : currentBlocker(currentResolution.ok ? undefined : currentResolution.error),
         };
   return {
     ...(options.configHash ? { configHash: options.configHash } : {}),
+    configState: options.configState ?? "unknown",
     auth,
     current,
     lan: lanHost
@@ -605,6 +566,7 @@ function blockedPlan(
     status: "blocked",
     mode,
     ...(inspect.configHash ? { configHash: inspect.configHash } : {}),
+    configState: inspect.configState,
     auth: inspect.auth,
     blocker,
     changes,
@@ -615,11 +577,15 @@ export function planPairingConnectivity(
   inspect: PairingConnectivityInspection,
   request: { mode: PairingConnectivityMode; publicUrl?: string },
 ): PairingConnectivityPlan {
-  if (inspect.auth === "missing" || inspect.auth === "invalid") {
+  if (inspect.auth === "missing" || inspect.auth === "unavailable" || inspect.auth === "invalid") {
     return blockedPlan(
       inspect,
       request.mode,
-      inspect.auth === "missing" ? "gateway-auth-required" : "gateway-auth-invalid",
+      inspect.auth === "missing"
+        ? "gateway-auth-required"
+        : inspect.auth === "unavailable"
+          ? "gateway-auth-unavailable"
+          : "gateway-auth-invalid",
     );
   }
   let urls: string[];
@@ -630,7 +596,7 @@ export function planPairingConnectivity(
     if (inspect.lan.status !== "available") {
       return blockedPlan(inspect, request.mode, "lan-unavailable");
     }
-    urls = [inspect.lan.url];
+    urls = projectPairingConnectivityUrls([inspect.lan.url]);
     exposure = "local-network";
     if (inspect.lan.requiresGatewayChange) {
       changes = ["expose-gateway-on-local-network"];
@@ -653,26 +619,28 @@ export function planPairingConnectivity(
     if (tailscale.status === "error") {
       return blockedPlan(inspect, request.mode, "tailscale-status-error");
     }
-    if (tailscale.serve.status !== "ready") {
+    const tailscaleUrls = selectTailscaleGatewayUrls(tailscale, "serve");
+    if (tailscaleUrls.length === 0) {
       return blockedPlan(inspect, request.mode, "tailscale-serve-required", [
         "enable-tailscale-serve",
       ]);
     }
-    urls = tailscale.serve.urls;
+    urls = projectPairingConnectivityUrls(tailscaleUrls);
     exposure = "tailnet";
   } else {
     const publicUrl = normalizeOperatorPublicUrl(request.publicUrl);
     if (!publicUrl.ok) {
       return blockedPlan(inspect, request.mode, publicUrl.blocker);
     }
-    urls = [publicUrl.url];
+    urls = projectPairingConnectivityUrls([publicUrl.url]);
     exposure = "public-internet";
   }
-  const accessDowngraded = urls.some((url) => !isFullAccessMobilePairingUrl(url));
+  const accessDowngraded = urls.some((url) => !isFullAccessPairingConnectivityUrl(url));
   return {
     status: "confirmation-required",
     mode: request.mode,
     ...(inspect.configHash ? { configHash: inspect.configHash } : {}),
+    configState: inspect.configState,
     urls,
     exposure,
     auth: inspect.auth,

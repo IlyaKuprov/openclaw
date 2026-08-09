@@ -10,6 +10,10 @@ import {
   validateDevicePairSetupCodeParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { readConfigFileSnapshot, resolveConfigSnapshotHash } from "../../config/config.js";
+import {
+  getRuntimeConfigAppliedHash,
+  hashRuntimeConfigValue,
+} from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { renderQrPngDataUrl } from "../../media/qr-image.js";
 import { inspectPairingConnectivity, planPairingConnectivity } from "../../pairing/connectivity.js";
@@ -19,6 +23,9 @@ import {
   NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   PAIRING_SETUP_BOOTSTRAP_PROFILE,
 } from "../../shared/device-bootstrap-profile.js";
+import { hasAmbiguousGatewayAuthModeConfig } from "../auth-mode-policy.js";
+import type { ResolvedGatewayAuth } from "../auth.js";
+import { createGatewayCredentialPlan } from "../credential-planner.js";
 import { formatForLog } from "../ws-log.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -34,11 +41,38 @@ function readConfiguredDevicePairPublicUrl(config: OpenClawConfig): string | und
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-async function inspectCurrentPairingConnectivity() {
+function projectPairingAuth(
+  config: OpenClawConfig,
+  auth: ResolvedGatewayAuth,
+): "token" | "password" | "missing" | "unavailable" | "invalid" {
+  if (hasAmbiguousGatewayAuthModeConfig(config)) {
+    return "invalid";
+  }
+  if (auth.mode === "token" && auth.token) {
+    return "token";
+  }
+  if (auth.mode === "password" && auth.password) {
+    return "password";
+  }
+  const plan = createGatewayCredentialPlan({ config, env: process.env });
+  const selectedInputConfigured =
+    (plan.localTokenSurfaceActive && Boolean(plan.envToken || plan.localToken.configured)) ||
+    (plan.localPasswordCanWin && Boolean(plan.envPassword || plan.localPassword.configured));
+  return selectedInputConfigured ? "unavailable" : "missing";
+}
+
+async function inspectCurrentPairingConnectivity(
+  config: OpenClawConfig,
+  auth: "token" | "password" | "missing" | "unavailable" | "invalid",
+) {
   const snapshot = await readConfigFileSnapshot({ observe: false });
-  const config = snapshot.runtimeConfig;
+  const appliedHash = getRuntimeConfigAppliedHash();
+  const persistedHash = hashRuntimeConfigValue(snapshot.sourceConfig);
   return inspectPairingConnectivity(config, {
     configHash: resolveConfigSnapshotHash(snapshot) ?? undefined,
+    configState:
+      appliedHash === null ? "unknown" : appliedHash === persistedHash ? "applied" : "pending",
+    activeAuth: auth,
     configuredPublicUrl: readConfiguredDevicePairPublicUrl(config),
     env: process.env,
     runCommandWithTimeout: async (argv, runOpts) =>
@@ -52,7 +86,7 @@ async function inspectCurrentPairingConnectivity() {
 
 /** Gateway handler for producing a device-pairing setup code + connect QR. */
 export const devicePairSetupHandlers: GatewayRequestHandlers = {
-  "device.pair.connectivity.inspect": async ({ params, respond }) => {
+  "device.pair.connectivity.inspect": async ({ params, respond, context }) => {
     if (
       !assertValidParams(
         params,
@@ -64,12 +98,14 @@ export const devicePairSetupHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      respond(true, await inspectCurrentPairingConnectivity(), undefined);
+      const config = context.getRuntimeConfig();
+      const auth = projectPairingAuth(config, context.getResolvedAuth());
+      respond(true, await inspectCurrentPairingConnectivity(config, auth), undefined);
     } catch (err) {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
     }
   },
-  "device.pair.connectivity.plan": async ({ params, respond }) => {
+  "device.pair.connectivity.plan": async ({ params, respond, context }) => {
     if (
       !assertValidParams(
         params,
@@ -81,7 +117,9 @@ export const devicePairSetupHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      const inspected = await inspectCurrentPairingConnectivity();
+      const config = context.getRuntimeConfig();
+      const auth = projectPairingAuth(config, context.getResolvedAuth());
+      const inspected = await inspectCurrentPairingConnectivity(config, auth);
       respond(
         true,
         planPairingConnectivity(inspected, {
@@ -107,12 +145,15 @@ export const devicePairSetupHandlers: GatewayRequestHandlers = {
     }
     try {
       const config = context.getRuntimeConfig();
+      const auth = projectPairingAuth(config, context.getResolvedAuth());
       const requestPublicUrl = typeof params.publicUrl === "string" ? params.publicUrl : undefined;
       const configuredPublicUrl =
         params.preferRemoteUrl === true ? undefined : readConfiguredDevicePairPublicUrl(config);
       const publicUrl = requestPublicUrl ?? configuredPublicUrl;
       const resolved = await resolvePairingSetupFromConfig(config, {
         env: process.env,
+        activeAuth: auth,
+        getActiveAuth: () => projectPairingAuth(config, context.getResolvedAuth()),
         publicUrl,
         preferRemoteUrl: params.preferRemoteUrl === true,
         ...(params.bootstrapProfile
@@ -125,7 +166,11 @@ export const devicePairSetupHandlers: GatewayRequestHandlers = {
           : {}),
         // Lets Tailscale serve/funnel URLs resolve, mirroring the `openclaw qr` CLI.
         runCommandWithTimeout: async (argv, runOpts) =>
-          await runCommandWithTimeout(argv, { timeoutMs: runOpts.timeoutMs }),
+          await runCommandWithTimeout(argv, {
+            timeoutMs: runOpts.timeoutMs,
+            maxOutputBytes: runOpts.maxOutputBytes,
+            env: runOpts.env,
+          }),
       });
       if (!resolved.ok) {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, resolved.error));

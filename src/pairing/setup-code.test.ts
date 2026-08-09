@@ -60,18 +60,37 @@ describe("pairing setup code", () => {
     };
   }
 
-  function createTailnetDnsRunner() {
-    return vi.fn(async () => ({
+  function createTailscaleRouteRunner(serviceName?: string) {
+    return vi.fn(async (argv: string[]) => ({
       code: 0,
-      stdout: '{"Self":{"DNSName":"mb-server.tailnet.ts.net."}}',
-      stderr: "",
-    }));
-  }
-
-  function createTailnetIpRunner() {
-    return vi.fn(async () => ({
-      code: 0,
-      stdout: '{"Self":{"TailscaleIPs":["100.64.0.9"]}}',
+      stdout: argv.includes("serve")
+        ? JSON.stringify(
+            serviceName
+              ? {
+                  Services: {
+                    [serviceName]: {
+                      TCP: { "443": { HTTPS: true } },
+                      Web: {
+                        "openclaw.tailnet.ts.net:443": {
+                          Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+                        },
+                      },
+                    },
+                  },
+                }
+              : {
+                  TCP: { "443": { HTTPS: true } },
+                  Web: {
+                    "mb-server.tailnet.ts.net:443": {
+                      Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+                    },
+                  },
+                },
+          )
+        : JSON.stringify({
+            BackendState: "Running",
+            Self: { DNSName: "mb-server.tailnet.ts.net." },
+          }),
       stderr: "",
     }));
   }
@@ -664,7 +683,7 @@ describe("pairing setup code", () => {
         ...limitedPlaintextAccess,
       },
       runCommandWithTimeout,
-      expectedRunCommandCalls: 3,
+      expectedRunCommandCalls: 1,
     });
   });
 
@@ -710,11 +729,11 @@ describe("pairing setup code", () => {
         ...limitedPlaintextAccess,
       },
       runCommandWithTimeout,
-      expectedRunCommandCalls: 3,
+      expectedRunCommandCalls: 1,
     });
   });
 
-  it("adds a configured Tailscale Serve route to a LAN setup code", async () => {
+  it("does not augment LAN setup with unrelated Tailscale routes", async () => {
     const defaultRoute = createDefaultRouteRunner("en0");
     const runCommandWithTimeout = vi.fn(async (argv: string[]) => {
       if (argv.includes("serve")) {
@@ -748,13 +767,13 @@ describe("pairing setup code", () => {
       expected: {
         authLabel: "token",
         url: "ws://192.168.139.3:18789",
-        urls: ["ws://192.168.139.3:18789", "wss://clawmac.tail.ts.net:8443"],
         urlSource: "gateway.bind=lan",
         ...limitedPlaintextAccess,
       },
       runCommandWithTimeout,
-      expectedRunCommandCalls: 2,
+      expectedRunCommandCalls: 1,
     });
+    expect(runCommandWithTimeout.mock.calls.some(([argv]) => argv.includes("serve"))).toBe(false);
   });
 
   it("does not advertise a loopback Serve route for a custom bind", async () => {
@@ -842,13 +861,13 @@ describe("pairing setup code", () => {
     {
       name: "uses tailscale serve DNS when available",
       createOptions: () => {
-        const runCommandWithTimeout = createTailnetDnsRunner();
+        const runCommandWithTimeout = createTailscaleRouteRunner();
         return {
           options: {
             runCommandWithTimeout,
           } satisfies ResolveSetupOptions,
           runCommandWithTimeout,
-          expectedRunCommandCalls: 1,
+          expectedRunCommandCalls: 2,
         };
       },
       config: {
@@ -866,13 +885,13 @@ describe("pairing setup code", () => {
     {
       name: "uses configured Tailscale Service DNS when available",
       createOptions: () => {
-        const runCommandWithTimeout = createTailnetDnsRunner();
+        const runCommandWithTimeout = createTailscaleRouteRunner("svc:openclaw");
         return {
           options: {
             runCommandWithTimeout,
           } satisfies ResolveSetupOptions,
           runCommandWithTimeout,
-          expectedRunCommandCalls: 1,
+          expectedRunCommandCalls: 2,
         };
       },
       config: {
@@ -890,7 +909,7 @@ describe("pairing setup code", () => {
     {
       name: "prefers gateway.remote.url over tailscale when requested",
       createOptions: () => {
-        const runCommandWithTimeout = createTailnetDnsRunner();
+        const runCommandWithTimeout = createTailscaleRouteRunner();
         return {
           options: {
             preferRemoteUrl: true,
@@ -933,9 +952,9 @@ describe("pairing setup code", () => {
         },
       } satisfies ResolveSetupConfig,
       options: {
-        runCommandWithTimeout: createTailnetIpRunner(),
+        runCommandWithTimeout: createTailscaleRouteRunner(),
       } satisfies ResolveSetupOptions,
-      expectedError: "Service MagicDNS could not be derived",
+      expectedError: "Configured Tailscale serve route is not available",
     });
   });
 });

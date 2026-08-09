@@ -32,6 +32,11 @@ function makeContextParams(
     deps: {} as never,
     runtimeState,
     getRuntimeConfig: vi.fn(() => config),
+    getResolvedAuth: vi.fn(() => ({
+      mode: "token" as const,
+      token: "token",
+      allowTailscale: false,
+    })),
     sessionCompanion: {} as never,
     sessionObserver: {} as never,
     resolveTerminalLaunchPolicy: vi.fn(() => ({
@@ -130,6 +135,17 @@ function makeGatewayClient(params: {
 }
 
 describe("createGatewayRequestContext", () => {
+  it("forwards the live resolved-auth getter without snapshotting it", () => {
+    let currentAuth = { mode: "token" as const, token: "token-before", allowTailscale: false };
+    const context = createGatewayRequestContext(
+      makeContextParams({ getResolvedAuth: () => currentAuth }),
+    );
+
+    expect(context.getResolvedAuth().token).toBe("token-before");
+    currentAuth = { mode: "token", token: "token-after", allowTailscale: false };
+    expect(context.getResolvedAuth().token).toBe("token-after");
+  });
+
   it("cleans connection-scoped replace-sets with the other session subscriptions", () => {
     const unsubscribeAllSessionEvents = vi.fn();
     const unsubscribePullRequests = vi.fn();
