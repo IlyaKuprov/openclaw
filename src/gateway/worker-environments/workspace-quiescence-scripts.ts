@@ -185,8 +185,9 @@ writeLease();
 let quietScans = 0;
 try {
   if (sharedHost) {
-    // Skipping the process sweep can miss double-forked strays and late writers. This is
-    // acceptable only because the provider explicitly declared a shared host it does not own.
+    // The worker has already published its terminal result. Manifest stability fences around
+    // transfer, apply, renewal, and publication reject later writes; only the uid-wide SIGSTOP
+    // sweep is skipped because this provider explicitly declared processes the lease does not own.
     process.stderr.write("workspace quiescence: shared host declared; skipping process freeze sweep\n");
     quietScans = 3;
   }
