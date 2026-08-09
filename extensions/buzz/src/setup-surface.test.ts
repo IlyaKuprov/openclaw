@@ -120,6 +120,7 @@ describe("Buzz guided setup", () => {
     const runSecretStep = vi.fn(async ({ cfg, applySet }: Parameters<RunSecretStep>[0]) => ({
       cfg: await applySet!(cfg, secretRef, privateKey),
       action: "set" as const,
+      inputMode: "ref" as const,
       resolvedValue: privateKey,
     }));
     const wizard = createBuzzSetupWizard({
