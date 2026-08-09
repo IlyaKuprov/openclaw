@@ -39,7 +39,9 @@ export function buildSlackThreadingToolContext(params: {
   const rawMessagingTarget = normalizeOptionalString(params.context.To);
   const currentMessagingTarget = qualifyEnterpriseApprovalTarget({
     enterpriseOrgInstall: account.config.enterpriseOrgInstall === true,
-    teamId: normalizeOptionalString(params.context.GroupSpace),
+    teamId: normalizeOptionalString(
+      (params.context as ChannelThreadingContext & { GroupSpace?: string }).GroupSpace,
+    ),
     target: rawMessagingTarget,
   });
   const currentChannelId = currentMessagingTarget?.startsWith("channel:")

@@ -152,6 +152,7 @@ vi.mock("../conversation.runtime.js", () => {
 type RegisteredHandler = (args: {
   ack: () => Promise<void>;
   body: {
+    api_app_id?: string;
     user: { id: string };
     team?: { id?: string };
     trigger_id?: string;
@@ -161,6 +162,8 @@ type RegisteredHandler = (args: {
     message?: { ts?: string; thread_ts?: string; text?: string; blocks?: unknown[] };
   };
   action: Record<string, unknown>;
+  client?: { chat: { update: (payload: unknown) => Promise<unknown> } };
+  context?: Record<string, unknown>;
   respond?: (payload: { text: string; response_type: string }) => Promise<void>;
 }) => Promise<void>;
 

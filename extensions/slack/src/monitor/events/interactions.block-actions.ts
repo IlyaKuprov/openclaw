@@ -1,5 +1,5 @@
 // Slack plugin module implements interactions.block actions behavior.
-import type { SlackActionMiddlewareArgs } from "@slack/bolt";
+import type { AllMiddlewareArgs, SlackActionMiddlewareArgs } from "@slack/bolt";
 import type { Block, KnownBlock, WebClient } from "@slack/web-api";
 import { resolveApprovalOverGateway } from "openclaw/plugin-sdk/approval-gateway-runtime";
 import { parseExecApprovalCommandText } from "openclaw/plugin-sdk/approval-reply-runtime";
@@ -36,12 +36,12 @@ import {
 } from "../auth.js";
 import { resolveSlackChannelConfig } from "../channel-config.js";
 import type { SlackMonitorContext } from "../context.js";
-import { resolveSlackEventScope } from "../event-scope.js";
 import {
   buildPluginBindingResolvedText,
   parsePluginBindingApprovalCustomId,
   resolvePluginConversationBindingApproval,
 } from "../conversation.runtime.js";
+import { resolveSlackEventScope } from "../event-scope.js";
 import { escapeSlackMrkdwn } from "../mrkdwn.js";
 
 type InteractionMessageBlock = {
@@ -111,6 +111,7 @@ type SlackBlockActionBody = {
 };
 
 type SlackBlockActionRespond = NonNullable<SlackActionMiddlewareArgs["respond"]>;
+type SlackBlockActionMiddlewareArgs = SlackActionMiddlewareArgs & AllMiddlewareArgs;
 
 type ParsedSlackBlockAction = {
   typedBody: SlackBlockActionBody;
@@ -1040,7 +1041,7 @@ async function updateSlackLegacyBlockAction(params: {
 async function handleSlackBlockAction(params: {
   ctx: SlackMonitorContext;
   trackEvent?: () => void;
-  args: SlackActionMiddlewareArgs;
+  args: SlackBlockActionMiddlewareArgs;
   formatSystemEvent: (payload: Record<string, unknown>) => string;
   approvalsOnly?: boolean;
 }): Promise<void> {
@@ -1191,7 +1192,7 @@ export function registerSlackBlockActionHandler(params: {
   if (typeof params.ctx.app.action !== "function") {
     return;
   }
-  params.ctx.app.action(/.+/, async (args: SlackActionMiddlewareArgs) => {
+  params.ctx.app.action(/.+/, async (args: SlackBlockActionMiddlewareArgs) => {
     await handleSlackBlockAction({
       ctx: params.ctx,
       trackEvent: params.trackEvent,

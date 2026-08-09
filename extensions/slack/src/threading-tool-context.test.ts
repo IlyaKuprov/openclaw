@@ -38,7 +38,7 @@ describe("buildSlackThreadingToolContext", () => {
         ChatType: "channel",
         To: "channel:C123",
         GroupSpace: "T456",
-      },
+      } as never,
     });
 
     expect(result.currentMessagingTarget).toBe("team:T456:channel:C123");

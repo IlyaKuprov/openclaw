@@ -586,7 +586,10 @@ function resolveApprovalEnterpriseScope(params: {
   };
 }
 
-async function resolveEnterpriseApprovalChannel(client: WebClient, target: string): Promise<string> {
+async function resolveEnterpriseApprovalChannel(
+  client: WebClient,
+  target: string,
+): Promise<string> {
   const parsed = parseSlackApprovalTarget(target, { defaultKind: "channel" });
   if (!parsed) {
     throw new Error("Slack approval delivery target is missing");

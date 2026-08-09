@@ -2,7 +2,7 @@
 import type { MessagingTargetParseOptions } from "openclaw/plugin-sdk/channel-targets";
 import { parseSlackTarget, type SlackTargetKind } from "./target-parsing.js";
 
-export type SlackApprovalTarget = {
+type SlackApprovalTarget = {
   kind: SlackTargetKind;
   id: string;
   teamId?: string;

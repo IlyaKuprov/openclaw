@@ -30,14 +30,11 @@ import {
   resolveSlackAccount,
 } from "./accounts.js";
 import { getSlackApprovalApprovers } from "./approval-auth.js";
+import { formatSlackApprovalTarget, parseSlackApprovalTarget } from "./approval-target.js";
 import {
   getSlackExecApprovalApprovers,
   isSlackExecApprovalClientEnabled,
 } from "./exec-approvals.js";
-import {
-  formatSlackApprovalTarget,
-  parseSlackApprovalTarget,
-} from "./approval-target.js";
 import { canonicalizeSlackApiTargetId } from "./target-parsing.js";
 
 export type SlackApprovalKind = "exec" | "plugin";

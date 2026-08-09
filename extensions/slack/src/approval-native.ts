@@ -10,7 +10,6 @@ import type { ChannelApprovalCapability } from "openclaw/plugin-sdk/channel-cont
 import { normalizeMessageChannel } from "openclaw/plugin-sdk/routing";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { listSlackAccountIds } from "./accounts.js";
-import { formatSlackApprovalTarget } from "./approval-target.js";
 import { getSlackApprovalApprovers, isSlackApprovalAuthorizedSender } from "./approval-auth.js";
 import {
   hasSlackPluginApprovers,
@@ -28,6 +27,7 @@ import {
   type SlackNativeApprovalRequest,
   type SlackOriginTarget,
 } from "./approval-native-gates.js";
+import { formatSlackApprovalTarget } from "./approval-target.js";
 import {
   getSlackExecApprovalApprovers,
   isSlackExecApprovalAuthorizedSender,
