@@ -59,9 +59,7 @@ describe("cron edit trigger preservation", () => {
         sqlitePath: string;
       }>(status.stdout);
       expect(statusJson).toMatchObject({ enabled: true, storage: "sqlite" });
-      expect(statusJson.sqlitePath).toBe(
-        path.join(instance.stateDir, "state", "openclaw.sqlite"),
-      );
+      expect(statusJson.sqlitePath).toBe(path.join(instance.stateDir, "state", "openclaw.sqlite"));
 
       const added = await instance.cli([
         "cron",

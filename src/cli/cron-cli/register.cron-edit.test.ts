@@ -113,15 +113,12 @@ describe("cron edit command", () => {
     ["whitespace", "   ", undefined],
     ["empty with --clear-trigger", "", "--clear-trigger"],
     ["whitespace with --clear-trigger", "   ", "--clear-trigger"],
-  ])(
-    "rejects %s --trigger-script before Gateway access",
-    async (_label, value, clearFlag) => {
-      await expectCronEditRejection(
-        ["--trigger-script", value, ...(clearFlag ? [clearFlag] : [])],
-        "--trigger-script must not be blank",
-      );
-    },
-  );
+  ])("rejects %s --trigger-script before Gateway access", async (_label, value, clearFlag) => {
+    await expectCronEditRejection(
+      ["--trigger-script", value, ...(clearFlag ? [clearFlag] : [])],
+      "--trigger-script must not be blank",
+    );
+  });
 
   it("validates trigger script files before Gateway access", async () => {
     const fixtureDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cron-edit-invalid-"));
