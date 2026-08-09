@@ -17,7 +17,10 @@ type CloudDraftAdvanceResult =
   | { status: "cleanup-rejected"; error: string; messageId?: string }
   | { status: "dispatch-rejected"; error: string }
   | { status: "cancelled"; cleanupError?: string; recoveryPersisted: boolean }
+  | { status: "interrupted" }
   | { status: "ownership-lost" };
+
+export type CloudRecoveryRetirement = "resolved" | "interrupted";
 
 export async function advanceCloudDraftSession(params: {
   client: Pick<GatewayBrowserClient, "request">;
@@ -34,7 +37,7 @@ export async function advanceCloudDraftSession(params: {
   recovering: boolean;
   isCurrent: () => boolean;
   ownsRecovery: () => boolean;
-  clearRecovery: () => void;
+  clearRecovery: (retirement: CloudRecoveryRetirement) => void;
   setRecoveryPhase: (phase: CloudSessionRecovery["phase"]) => void;
 }): Promise<CloudDraftAdvanceResult> {
   const persistRecovery = params.persistRecovery !== false;
@@ -63,7 +66,7 @@ export async function advanceCloudDraftSession(params: {
       ? await deleteRecoveredCloudDraftSession(params.client, params.key, params.agentId)
       : await deleteCloudDraftSession(params.client, params.key, params.agentId);
     if (!cleanupError) {
-      params.clearRecovery();
+      params.clearRecovery("resolved");
     }
     return {
       status: "cancelled",
@@ -88,7 +91,7 @@ export async function advanceCloudDraftSession(params: {
       ? await deleteRecoveredCloudDraftSession(params.client, params.key, params.agentId)
       : await deleteCloudDraftSession(params.client, params.key, params.agentId);
     if (!cleanupError) {
-      params.clearRecovery();
+      params.clearRecovery("resolved");
     }
     return { status: "cancelled", cleanupError, recoveryPersisted };
   }
@@ -124,7 +127,7 @@ export async function advanceCloudDraftSession(params: {
   if (cloudStart.status === "cancelled") {
     const cleanupError = await deleteCloudDraftSession(params.client, params.key, params.agentId);
     if (!cleanupError) {
-      params.clearRecovery();
+      params.clearRecovery("resolved");
     }
     return { status: "cancelled", cleanupError, recoveryPersisted: persistRecovery };
   }
@@ -134,25 +137,25 @@ export async function advanceCloudDraftSession(params: {
   if (cloudStart.status === "send-not-started") {
     const cleanupError = await deleteCloudDraftSession(params.client, params.key, params.agentId);
     if (!cleanupError) {
-      params.clearRecovery();
+      params.clearRecovery("resolved");
     }
     return { status: "dispatch-rejected", error: cleanupError || cloudStart.error };
   }
   if (cloudStart.status === "send-definitive-rejected") {
     const cleanupError = await deleteCloudDraftSession(params.client, params.key, params.agentId);
     if (!cleanupError) {
-      params.clearRecovery();
+      params.clearRecovery("resolved");
     }
     return { status: "dispatch-rejected", error: cleanupError || cloudStart.error };
   }
   if (cloudStart.status === "session-missing") {
-    params.clearRecovery();
+    params.clearRecovery("resolved");
     return { status: "dispatch-rejected", error: cloudStart.error };
   }
   if (cloudStart.status === "dispatch-rejected") {
     const cleanupError = await deleteCloudDraftSession(params.client, params.key, params.agentId);
     if (!cleanupError) {
-      params.clearRecovery();
+      params.clearRecovery("resolved");
     }
     return {
       status: "dispatch-rejected",
@@ -162,12 +165,18 @@ export async function advanceCloudDraftSession(params: {
   if (cloudStart.status === "send-rejected") {
     return cloudStart;
   }
-  if (!params.isCurrent() || !params.ownsRecovery()) {
+  if (!params.ownsRecovery()) {
     // Delivery completed, so retire only this submission's recovery record.
     // The callback's expected-key guard preserves any newer owner.
-    params.clearRecovery();
+    params.clearRecovery("resolved");
     return { status: "ownership-lost" };
   }
-  params.clearRecovery();
+  if (!params.isCurrent()) {
+    // The page recorded why its lifecycle changed before this accepted send returned.
+    // Retire the delivered recovery without relabeling that interruption as a takeover.
+    params.clearRecovery("interrupted");
+    return { status: "interrupted" };
+  }
+  params.clearRecovery("resolved");
   return cloudStart;
 }

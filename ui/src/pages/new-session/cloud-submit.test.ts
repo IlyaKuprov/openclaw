@@ -114,9 +114,20 @@ describe("cloud draft advancement", () => {
   });
 
   it.each([
-    { name: "the page is interrupted after accepted delivery", ownershipTaken: false },
-    { name: "a newer owner takes over", ownershipTaken: true },
-  ])("retires only the completed submission when $name", async ({ ownershipTaken }) => {
+    {
+      name: "the page is interrupted after accepted delivery",
+      ownershipTaken: false,
+      status: "interrupted",
+      retirement: "interrupted",
+    },
+    {
+      name: "a newer owner takes over",
+      ownershipTaken: true,
+      status: "ownership-lost",
+      retirement: "resolved",
+    },
+  ] as const)("retires only the completed submission when $name", async (testCase) => {
+    const { ownershipTaken, retirement, status } = testCase;
     const gatewayUrl = "ws://gateway.example";
     const recoveryScope = "principal-a";
     const sessionKey = "agent:cloud:stale";
@@ -169,8 +180,8 @@ describe("cloud draft advancement", () => {
         clearRecovery,
         setRecoveryPhase: vi.fn(),
       }),
-    ).resolves.toEqual({ status: "ownership-lost" });
-    expect(clearRecovery).toHaveBeenCalledOnce();
+    ).resolves.toEqual({ status });
+    expect(clearRecovery).toHaveBeenCalledWith(retirement);
     expect(readCloudSessionRecovery(gatewayUrl, recoveryScope)).toEqual(
       ownershipTaken ? newerRecovery : null,
     );

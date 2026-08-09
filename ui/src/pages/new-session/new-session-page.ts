@@ -45,7 +45,7 @@ import {
   resolveScope,
   type SubmissionOutcomeReason,
 } from "./cloud-recovery-state.ts";
-import { advanceCloudDraftSession } from "./cloud-submit.ts";
+import { advanceCloudDraftSession, type CloudRecoveryRetirement } from "./cloud-submit.ts";
 import {
   NewSessionComposerTextareaController,
   renderDraftError,
@@ -840,10 +840,13 @@ class NewSessionPage extends OpenClawLightDomElement {
     gatewayUrl: string,
     recoveryScope: string,
     sessionKey: string,
+    retirement: CloudRecoveryRetirement,
   ) {
+    const submissionOutcome = this.submissionOutcomeUnknown;
     this.pendingCloud.clearFor(gatewayUrl, recoveryScope, sessionKey);
     if (!this.pendingCloud.sessionKey) {
-      this.submissionOutcomeUnknown = null;
+      this.submissionOutcomeUnknown =
+        retirement === "interrupted" ? (submissionOutcome ?? "cloud-interrupted") : null;
     }
   }
 
@@ -1280,11 +1283,12 @@ class NewSessionPage extends OpenClawLightDomElement {
           recovering: pendingCloud,
           isCurrent: isSubmissionCurrent,
           ownsRecovery: ownsSubmissionRecovery,
-          clearRecovery: () =>
+          clearRecovery: (retirement) =>
             this.clearPendingCloudRecoveryFor(
               submissionGatewayUrl,
               submissionRecoveryScope,
               result.key,
+              retirement,
             ),
           setRecoveryPhase: (phase) => {
             if (ownsSubmissionRecovery()) {
@@ -1327,6 +1331,9 @@ class NewSessionPage extends OpenClawLightDomElement {
           this.error = t("newSession.cloudStartFailed", {
             error: cloudStart.error || t("newSession.createFailed"),
           });
+          return;
+        }
+        if (cloudStart.status === "interrupted") {
           return;
         }
         if (cloudStart.status === "ownership-lost") {
