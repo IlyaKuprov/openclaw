@@ -67,6 +67,7 @@ export {
   WORKER_TRANSCRIPT_MAX_JSON_DEPTH,
   WORKER_TRANSCRIPT_COMMIT_PROTOCOL_FEATURE,
   EnvironmentStatusSchema,
+  EnvironmentTrustSchema,
   WorkerEnvironmentStateSchema,
   WorkerTunnelStatusSchema,
   WorkerEnvironmentMetadataSchema,

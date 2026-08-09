@@ -170,7 +170,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("environment gateway methods", () => {
-  it("keeps the existing gateway and node projection unchanged without a worker service", async () => {
+  it("enriches gateway and node projections without a worker service", async () => {
     const [ok, payload] = await callEnvironmentMethod("environments.list", {});
 
     expect(ok).toBe(true);
@@ -181,6 +181,8 @@ describe("environment gateway methods", () => {
           type: "local",
           label: "Gateway local",
           status: "available",
+          trust: "persistent",
+          sessionHost: true,
           capabilities: ["agent.run", "sessions", "tools", "workspace"],
         },
         {
@@ -188,6 +190,9 @@ describe("environment gateway methods", () => {
           type: "node",
           label: "Live Node",
           status: "available",
+          trust: "persistent",
+          sessionHost: false,
+          platform: "ios",
           capabilities: ["camera", "system.run"],
         },
         {
@@ -195,6 +200,8 @@ describe("environment gateway methods", () => {
           type: "node",
           label: "Offline Node",
           status: "unavailable",
+          trust: "persistent",
+          sessionHost: false,
           capabilities: ["camera.snap", "screen"],
         },
       ],
@@ -216,8 +223,18 @@ describe("environment gateway methods", () => {
     expect(ok).toBe(true);
     expect(payload).toMatchObject({
       profiles: [
-        { id: "aws", providerId: "crabbox" },
-        { id: "zeta", providerId: "static-ssh" },
+        {
+          id: "aws",
+          providerId: "crabbox",
+          trust: "disposable",
+          sessionHost: true,
+        },
+        {
+          id: "zeta",
+          providerId: "static-ssh",
+          trust: "disposable",
+          sessionHost: true,
+        },
       ],
       environments: [
         { id: "gateway", type: "local" },
@@ -227,6 +244,8 @@ describe("environment gateway methods", () => {
           id: "worker-1",
           type: "worker",
           status: "available",
+          trust: "disposable",
+          sessionHost: true,
           worker: {
             providerId: "static-ssh",
             leaseId: "lease-1",
@@ -269,6 +288,9 @@ describe("environment gateway methods", () => {
       type: "node",
       label: "Live Node",
       status: "available",
+      trust: "persistent",
+      sessionHost: false,
+      platform: "ios",
       capabilities: ["camera", "system.run"],
     });
   });

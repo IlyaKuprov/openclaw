@@ -6,6 +6,7 @@ import * as worktrees from "./worktrees.js";
 
 export const AgentControlProtocolSchemas = {
   EnvironmentStatus: environments.EnvironmentStatusSchema,
+  EnvironmentTrust: environments.EnvironmentTrustSchema,
   WorkerEnvironmentState: environments.WorkerEnvironmentStateSchema,
   WorkerTunnelStatus: environments.WorkerTunnelStatusSchema,
   WorkerEnvironmentMetadata: environments.WorkerEnvironmentMetadataSchema,

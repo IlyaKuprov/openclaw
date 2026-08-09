@@ -33,6 +33,8 @@ function workerSummary(
     type: "worker",
     label: "Development worker",
     status,
+    trust: "disposable" as const,
+    sessionHost: true,
     worker: {
       providerId: "static-ssh",
       state,
@@ -100,13 +102,39 @@ describe("worker environment protocol schemas", () => {
     expect(
       Value.Check(EnvironmentsListResultSchema, {
         environments: [],
-        profiles: [{ id: "aws", providerId: "crabbox" }],
+        profiles: [{ id: "legacy", providerId: "static-ssh" }],
       }),
     ).toBe(true);
     expect(
       Value.Check(EnvironmentsListResultSchema, {
         environments: [],
-        profiles: [{ id: "aws", providerId: "crabbox", settings: { token: "hidden" } }],
+        profiles: [{ id: "aws", providerId: "crabbox", trust: "disposable", sessionHost: true }],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(EnvironmentsListResultSchema, {
+        environments: [],
+        profiles: [
+          {
+            id: "aws",
+            providerId: "crabbox",
+            trust: "disposable",
+            sessionHost: true,
+            settings: { token: "hidden" },
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(EnvironmentsListResultSchema, {
+        environments: [],
+        profiles: [{ id: "aws", providerId: "crabbox", trust: "unknown" }],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(EnvironmentsListResultSchema, {
+        environments: [],
+        profiles: [{ id: "aws", providerId: "crabbox", sessionHost: "yes" }],
       }),
     ).toBe(false);
   });
@@ -117,8 +145,28 @@ describe("worker environment protocol schemas", () => {
         id: "gateway",
         type: "local",
         status: "available",
+        trust: "persistent",
+        sessionHost: true,
       }),
     ).toBe(true);
+    expect(
+      Value.Check(EnvironmentSummarySchema, {
+        id: "node:mac",
+        type: "node",
+        status: "available",
+        trust: "persistent",
+        sessionHost: false,
+        platform: "darwin",
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(EnvironmentSummarySchema, {
+        id: "gateway",
+        type: "local",
+        status: "available",
+        trust: "unknown",
+      }),
+    ).toBe(false);
     expect(
       Value.Check(EnvironmentSummarySchema, {
         ...workerSummary("ready", "available"),

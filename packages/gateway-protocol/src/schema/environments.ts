@@ -14,6 +14,12 @@ export const EnvironmentStatusSchema = Type.String({
   enum: ["available", "unavailable", "starting", "stopping", "error"],
 });
 
+/** Whether a runner is expected to persist between sessions. */
+export const EnvironmentTrustSchema = Type.Union([
+  Type.Literal("persistent"),
+  Type.Literal("disposable"),
+]);
+
 /** Durable lifecycle states for plugin-provisioned worker environments. */
 export const WorkerEnvironmentStateSchema = Type.Union([
   Type.Literal("requested"),
@@ -54,6 +60,9 @@ function createEnvironmentSummarySchema() {
     type: NonEmptyString,
     label: Type.Optional(NonEmptyString),
     status: EnvironmentStatusSchema,
+    trust: Type.Optional(EnvironmentTrustSchema),
+    sessionHost: Type.Optional(Type.Boolean()),
+    platform: Type.Optional(NonEmptyString),
     capabilities: Type.Optional(Type.Array(NonEmptyString)),
     worker: Type.Optional(WorkerEnvironmentMetadataSchema),
   });
@@ -69,6 +78,8 @@ export const EnvironmentsListParamsSchema = closedObject({});
 const WorkerEnvironmentProfileSummarySchema = closedObject({
   id: NonEmptyString,
   providerId: NonEmptyString,
+  trust: Type.Optional(EnvironmentTrustSchema),
+  sessionHost: Type.Optional(Type.Boolean()),
 });
 
 /** List response containing all gateway-visible environment summaries. */
@@ -102,6 +113,7 @@ export const EnvironmentsDestroyParamsSchema = closedObject({
 export const EnvironmentsDestroyResultSchema = createEnvironmentSummarySchema();
 
 export type EnvironmentStatus = Static<typeof EnvironmentStatusSchema>;
+export type EnvironmentTrust = Static<typeof EnvironmentTrustSchema>;
 export type WorkerEnvironmentState = Static<typeof WorkerEnvironmentStateSchema>;
 export type WorkerTunnelStatus = Static<typeof WorkerTunnelStatusSchema>;
 export type WorkerEnvironmentMetadata = Static<typeof WorkerEnvironmentMetadataSchema>;
