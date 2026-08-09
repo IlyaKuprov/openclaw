@@ -14,6 +14,7 @@ import {
   type StartupSmokeFailure,
   type StateMigrationResult,
 } from "./doctor-config-preflight.state-migration.test-helpers.js";
+import "./doctor-config-preflight.catalog-detection.test-mock.js";
 
 const autoMigrateLegacyStateDir = vi.hoisted(() =>
   vi.fn(
@@ -340,6 +341,8 @@ describe("runDoctorConfigPreflight state migration", () => {
       "doctor.config-preflight.pristine-state-plan-import",
       "doctor.config-preflight.pristine-state-plan",
       "doctor.config-preflight.config-snapshot",
+      "doctor.config-preflight.legacy-plugin-model-catalog-detection-import",
+      "doctor.config-preflight.legacy-plugin-model-catalog-detection",
       "doctor.config-preflight.plugin-plan-import",
       "doctor.config-preflight.plugin-plan",
       "doctor.config-preflight.plugin-payload-verification-import",

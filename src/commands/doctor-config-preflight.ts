@@ -670,6 +670,22 @@ export async function runDoctorConfigPreflight(
           );
         }
       }
+      if (snapshot.valid) {
+        const { detectLegacyPluginModelCatalogs, formatLegacyPluginModelCatalogStartupRefusal } =
+          await measurePreflightStep(
+            "legacy-plugin-model-catalog-detection-import",
+            () => import("./doctor-plugin-model-catalog-detection.js"),
+          );
+        const legacyPluginModelCatalogs = await measurePreflightStep(
+          "legacy-plugin-model-catalog-detection",
+          () => detectLegacyPluginModelCatalogs({ cfg: baseConfig, env: process.env }),
+        );
+        if (legacyPluginModelCatalogs.detected.length > 0) {
+          throwStartupMigrationRefusal(
+            formatLegacyPluginModelCatalogStartupRefusal(legacyPluginModelCatalogs.detected),
+          );
+        }
+      }
       // This state is established before the first Gateway plugin load and remains
       // fixed for the boot. Refresh it on every process start because migration
       // checkpoints do not persist plugin availability or quarantine state.

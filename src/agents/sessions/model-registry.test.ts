@@ -325,34 +325,6 @@ describe("ModelRegistry models.json auth", () => {
     expect(registry.getAvailable().map((model) => model.id)).toEqual(["example-model"]);
   });
 
-  it("ignores released sidecars until Doctor migrates them", () => {
-    const modelsPath = writeModelsJson({ providers: {} });
-    const agentDir = dirname(modelsPath);
-    const catalogPath = join(agentDir, "plugins", "zai", PLUGIN_MODEL_CATALOG_FILE);
-    const contents = JSON.stringify({
-      generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
-      providers: {
-        zai: {
-          baseUrl: "https://api.z.ai/api/paas/v4",
-          api: "openai-completions",
-          apiKey: "released-zai-provider-test-key",
-          models: [{ id: "glm-5.1", name: "GLM 5.1" }],
-        },
-      },
-    });
-    mkdirSync(dirname(catalogPath), { recursive: true });
-    writeFileSync(catalogPath, contents, "utf8");
-
-    const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsPath, {
-      pluginMetadataSnapshot: pluginOwnerSnapshot("zai", "zai"),
-    });
-
-    expect(registry.getError()).toBeUndefined();
-    expect(registry.find("zai", "glm-5.1")).toBeUndefined();
-    expect(listPersistedPluginModelCatalogs(agentDir)).toEqual([]);
-    expect(existsSync(catalogPath)).toBe(true);
-  });
-
   it("loads provider models from the SQLite-backed generated plugin catalog", () => {
     const modelsPath = writeModelsJsonWithPluginCatalog({
       root: { providers: {} },
