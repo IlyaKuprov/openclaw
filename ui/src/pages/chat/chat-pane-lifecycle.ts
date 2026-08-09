@@ -29,8 +29,13 @@ import { invalidateChatAvatarCache, refreshChatAvatar } from "./chat-avatar.ts";
 import { clearChatHistory } from "./chat-history.ts";
 import { ChatPaneBoard } from "./chat-pane-board.ts";
 import {
+  type BrowserAnnotationGatewayOwner,
+  discardStateBrowserAnnotations,
+  focusBrowserAnnotationComposerAfterUpdate,
+  preparePaneBrowserAnnotations as prepareAnnotations,
   receiveBrowserAnnotation as admitBrowserAnnotation,
-  releasePaneBrowserAnnotations,
+  replacePaneBrowserAnnotationGatewayOwner,
+  restorePaneBrowserAnnotations,
 } from "./chat-pane-browser-annotation.ts";
 import {
   CHAT_COMPOSER_TEXTAREA_SELECTOR,
@@ -63,6 +68,26 @@ const COMPOSER_PREFILL_ATTENTION_DURATION_MS = 1_200;
 const COMPOSER_PREFILL_ATTENTION_CLASS = "agent-chat__input--prefill-attention";
 
 export abstract class ChatPaneLifecycle extends ChatPaneBoard {
+  private browserAnnotationGatewayOwner: BrowserAnnotationGatewayOwner = null;
+
+  public discardBrowserAnnotations(): void {
+    discardStateBrowserAnnotations(this.state);
+  }
+
+  protected browserAnnotationOwner(): NonNullable<BrowserAnnotationGatewayOwner> | undefined {
+    return this.browserAnnotationGatewayOwner ?? undefined;
+  }
+
+  protected replaceBrowserAnnotationGatewayOwner(nextOwner: BrowserAnnotationGatewayOwner): void {
+    this.browserAnnotationGatewayOwner = replacePaneBrowserAnnotationGatewayOwner(
+      this.context,
+      this.paneId,
+      this.state,
+      this.browserAnnotationGatewayOwner,
+      nextOwner,
+    );
+  }
+
   private clearComposerPrefillAttention(): void {
     if (this.composerPrefillAttentionTimer !== null) {
       window.clearTimeout(this.composerPrefillAttentionTimer);
@@ -319,11 +344,9 @@ export abstract class ChatPaneLifecycle extends ChatPaneBoard {
     if (!accepted) {
       return;
     }
-    void this.updateComplete.then(() => {
-      this.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR)?.focus({
-        preventScroll: true,
-      });
-    });
+    // A null mount binds only when its first annotation ownership begins.
+    this.browserAnnotationGatewayOwner ??= this.context.gateway.snapshot.client;
+    focusBrowserAnnotationComposerAfterUpdate(this);
   }
 
   protected sendPendingSkillWorkshopRevision(expectedSessionKey: string) {
@@ -443,6 +466,8 @@ export abstract class ChatPaneLifecycle extends ChatPaneBoard {
   override connectedCallback() {
     this.boardProviderLifecycleConnected = true;
     super.connectedCallback();
+    const mountGatewayOwner = this.context.gateway.snapshot.client;
+    this.browserAnnotationGatewayOwner = mountGatewayOwner;
     this.requestUpdate();
     if (typeof ResizeObserver === "function") {
       this.paneResizeObserver = new ResizeObserver((entries) => {
@@ -511,6 +536,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneBoard {
     }
     chatState.attach(pageState);
     chatState.restoreComposer({ preserveCurrent: true });
+    restorePaneBrowserAnnotations(this.context, this.paneId, pageState, mountGatewayOwner);
     chatState.startComposerPersistence();
     if (this.draft !== undefined) {
       this.state.handleChatDraftChange(this.draft);
@@ -682,8 +708,9 @@ export abstract class ChatPaneLifecycle extends ChatPaneBoard {
 
   override disconnectedCallback() {
     if (this.state) {
-      releasePaneBrowserAnnotations(this.state);
+      prepareAnnotations(this.context, this.paneId, this.state, this.browserAnnotationGatewayOwner);
     }
+    this.browserAnnotationGatewayOwner = null;
     this.clearComposerPrefillAttention();
     this.retainedBoardSessionKey = "";
     this.boardProviderLifecycleConnected = false;

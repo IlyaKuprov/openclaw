@@ -10,15 +10,10 @@ import type {
 } from "../../../../packages/gateway-protocol/src/index.js";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
+import { createBrowserAnnotationHandoff } from "../../app/browser-annotation-handoff.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { createInitialUserMessageHandoff } from "../../app/initial-user-message-handoff.ts";
-import type { BrowserAnnotationDraft } from "../../components/browser/browser-annotation.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
-import {
-  getChatAttachmentDataUrl,
-  registerChatAttachmentPayload,
-  releaseChatAttachmentPayload,
-} from "./attachment-payload-store.ts";
 import { createTestChatPane, type TestChatPane } from "./chat-pane.test-support.ts";
 import { applySelectedChatAgent } from "./chat-session.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
@@ -31,137 +26,6 @@ import { prepareInitialUserMessageHandoff } from "./initial-turn-handoff.ts";
 
 const SKIP_REWIND_CONFIRM_PREFERENCE = "openclaw:skip-rewind-confirm";
 const confirmationOwners = new Set<HTMLElement>();
-
-describe("browser annotation composer adoption", () => {
-  it("releases annotation payloads before pane state is discarded on disconnect", () => {
-    const { pane, state } = createTestChatPane({
-      client: {} as GatewayBrowserClient,
-      sessions: {} as SessionCapability,
-    });
-    const stored = (id: string, browserAnnotation: boolean) =>
-      registerChatAttachmentPayload({
-        attachment: {
-          id,
-          mimeType: "image/png",
-          ...(browserAnnotation
-            ? {
-                browserAnnotation: {
-                  modelContext: "Context",
-                  title: "Page",
-                  displayUrl: "example.com",
-                  markedRegionCount: 1,
-                  inspectedElement: false,
-                },
-              }
-            : {}),
-        },
-        dataUrl: `data:image/png;base64,${id}`,
-        file: new File([id], `${id}.png`, { type: "image/png" }),
-      });
-    const shared = stored("shared-annotation", true);
-    const fallback = stored("fallback-annotation", true);
-    const ordinary = stored("ordinary", false);
-    state.chatAttachments = [shared, ordinary];
-    state.chatComposerFallbackByScope = {
-      fallback: {
-        attachments: [shared, fallback, ordinary],
-        message: "",
-        sequence: 1,
-        storageFailed: false,
-      },
-    };
-
-    pane.disconnectedCallback();
-
-    expect(getChatAttachmentDataUrl(shared)).toBeNull();
-    expect(getChatAttachmentDataUrl(fallback)).toBeNull();
-    expect(getChatAttachmentDataUrl(ordinary)).not.toBeNull();
-    releaseChatAttachmentPayload(ordinary.id);
-  });
-
-  it("keeps generated context on the attachment and leaves the user's draft unchanged", () => {
-    const { pane, state } = createTestChatPane({
-      client: {} as GatewayBrowserClient,
-      sessions: {} as SessionCapability,
-    });
-    pane.active = true;
-    state.chatMessage = "Keep my question exactly.";
-    state.chatAttachments = [];
-    state.handleChatDraftChange = vi.fn();
-    const detail: BrowserAnnotationDraft = {
-      modelContext: "Generated page context",
-      dataUrl: "data:image/png;base64,aGVsbG8=",
-      fileName: "annotated-page.png",
-      card: {
-        title: "Example Domain",
-        displayUrl: "example.com",
-        markedRegionCount: 2,
-        inspectedElement: true,
-      },
-    };
-    const event = new CustomEvent<BrowserAnnotationDraft>("openclaw:browser-annotation", {
-      detail,
-      cancelable: true,
-    });
-
-    (
-      pane as TestChatPane & { receiveBrowserAnnotation: (candidate: Event) => void }
-    ).receiveBrowserAnnotation(event);
-
-    expect(event.defaultPrevented).toBe(true);
-    expect(state.chatMessage).toBe("Keep my question exactly.");
-    expect(state.handleChatDraftChange).not.toHaveBeenCalled();
-    expect(state.chatAttachments).toHaveLength(1);
-    expect(state.chatAttachments[0]?.browserAnnotation).toEqual({
-      modelContext: "Generated page context",
-      title: "Example Domain",
-      displayUrl: "example.com",
-      markedRegionCount: 2,
-      inspectedElement: true,
-    });
-  });
-
-  it("lets only the active pane consume a shared annotation event", () => {
-    const first = createTestChatPane({
-      client: {} as GatewayBrowserClient,
-      sessions: {} as SessionCapability,
-    });
-    const second = createTestChatPane({
-      client: {} as GatewayBrowserClient,
-      sessions: {} as SessionCapability,
-    });
-    first.pane.active = false;
-    second.pane.active = true;
-    first.state.chatAttachments = [];
-    second.state.chatAttachments = [];
-    const event = new CustomEvent<BrowserAnnotationDraft>("openclaw:browser-annotation", {
-      detail: {
-        modelContext: "Context",
-        dataUrl: "data:image/png;base64,aGVsbG8=",
-        fileName: "annotated-page.png",
-        card: {
-          title: "",
-          displayUrl: "example.com",
-          markedRegionCount: 1,
-          inspectedElement: false,
-        },
-      },
-      cancelable: true,
-    });
-
-    const receive = (pane: TestChatPane) =>
-      (
-        pane as TestChatPane & { receiveBrowserAnnotation: (candidate: Event) => void }
-      ).receiveBrowserAnnotation(event);
-    receive(first.pane);
-    receive(second.pane);
-    receive(first.pane);
-
-    expect(first.state.chatAttachments).toEqual([]);
-    expect(second.state.chatAttachments).toHaveLength(1);
-    expect(event.defaultPrevented).toBe(true);
-  });
-});
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -257,6 +121,7 @@ describe("chat pane first-turn attachment lifecycle", () => {
       agentSelection: { state: { selectedId: "main" } },
       agents: { state: { agentsList: null } },
       initialUserMessage: createInitialUserMessageHandoff(),
+      browserAnnotationHandoff: createBrowserAnnotationHandoff(),
       sessions: {},
     } as unknown as ApplicationContext;
     prepareInitialUserMessageHandoff(
