@@ -4,13 +4,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runAndroidSigningCommandSync } from "../../scripts/lib/android-release-signing-process.mts";
+import { runAndroidSigningCommandSync } from "../../scripts/lib/android-release-signing-process.mjs";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "android-release-signing.mjs");
 const MATCH_PASSWORD = "test-match-password";
 const STORE_PASSWORD = "store_secret_value";
 const KEY_PASSWORD = "key_secret_value";
 const APK_CERTIFICATE_SHA256 = "80dbc62315ea216dd6e8a7060735a866ddc464a48ed50fef29ff0550468b9a63";
+const ZERO_INSTALL_FILES = [
+  "scripts/android-release-signing.mjs",
+  "scripts/lib/android-release-signing-process.mjs",
+  "scripts/lib/arg-utils.runtime.mjs",
+  "scripts/lib/repo-root.mjs",
+  "apps/android/Config/ReleaseSigning.json",
+] as const;
 
 const tempRoots: string[] = [];
 
@@ -134,6 +141,36 @@ afterEach(() => {
 });
 
 describe("scripts/android-release-signing.mjs", () => {
+  it("runs from an isolated copy without node_modules", () => {
+    const isolatedRoot = makeTempRoot();
+    for (const relativePath of ZERO_INSTALL_FILES) {
+      const sourcePath = path.join(process.cwd(), relativePath);
+      const destinationPath = path.join(isolatedRoot, relativePath);
+      fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+      fs.copyFileSync(sourcePath, destinationPath);
+    }
+    fs.writeFileSync(path.join(isolatedRoot, "package.json"), "{}\n");
+    fs.writeFileSync(path.join(isolatedRoot, "pnpm-workspace.yaml"), "packages: []\n");
+
+    expect(fs.existsSync(path.join(isolatedRoot, "node_modules"))).toBe(false);
+    const stdout = execFileSync(
+      process.execPath,
+      [path.join(isolatedRoot, "scripts", "android-release-signing.mjs"), "--mode", "plan"],
+      {
+        cwd: isolatedRoot,
+        encoding: "utf8",
+        env: Object.fromEntries(
+          ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR"]
+            .map((name) => [name, process.env[name]])
+            .filter((entry): entry is [string, string] => entry[1] !== undefined),
+        ),
+      },
+    );
+
+    expect(stdout).toContain("Android release signing plan");
+    expect(stdout).toContain("Materialized output: apps/android/build/release-signing");
+  });
+
   it("terminates a hung signing command at its deadline", () => {
     const timeoutMs = 100;
     const startedAt = Date.now();
