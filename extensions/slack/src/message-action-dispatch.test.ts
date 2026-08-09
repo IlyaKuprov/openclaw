@@ -806,6 +806,53 @@ describe("handleSlackMessageAction", () => {
     expectNoForwardedToolContext(invoke);
   });
 
+  it("maps an upload-file caption to the upload's initial comment", async () => {
+    const invoke = createInvokeSpy();
+    const cfg = slackConfig();
+
+    await handleSlackMessageAction({
+      providerId: "slack",
+      ctx: {
+        action: "upload-file",
+        cfg,
+        params: {
+          channelId: "C1",
+          media: "/tmp/chart.png",
+          caption: "chart attached",
+        },
+      } as never,
+      invoke: invoke as never,
+    });
+
+    const action = firstAction(invoke);
+    expect(action.action).toBe("uploadFile");
+    expect(action.filePath).toBe("/tmp/chart.png");
+    expect(action.initialComment).toBe("chart attached");
+  });
+
+  it("prefers an explicit upload-file initial comment over message and caption", async () => {
+    const invoke = createInvokeSpy();
+    const cfg = slackConfig();
+
+    await handleSlackMessageAction({
+      providerId: "slack",
+      ctx: {
+        action: "upload-file",
+        cfg,
+        params: {
+          channelId: "C1",
+          media: "/tmp/chart.png",
+          initialComment: "",
+          message: "message text",
+          caption: "caption text",
+        },
+      } as never,
+      invoke: invoke as never,
+    });
+
+    expect(firstAction(invoke).initialComment).toBe("");
+  });
+
   it("maps upload-file path alias to filePath", async () => {
     const invoke = createInvokeSpy();
     const cfg = slackConfig();
