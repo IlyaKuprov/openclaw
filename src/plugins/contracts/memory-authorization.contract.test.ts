@@ -16,10 +16,12 @@ import {
   type AuthorizedMemoryRuntime,
   type AuthorizedMemorySearchResult,
   type AuthorizedResourceHandle,
+  type MemoryAuthorizationCapabilities,
   type MemoryAuthorizationConformanceAdapter,
   type MemoryAuthorizationConformanceDecision,
 } from "../../plugin-sdk/memory-authorization.js";
 import * as memoryAuthorizationSdk from "../../plugin-sdk/memory-authorization.js";
+import type { MemoryPluginRuntime } from "../registry-contribution-types.js";
 
 function createSerializableContext(): MemoryAccessContext {
   return {
@@ -58,6 +60,23 @@ function createSerializableContext(): MemoryAccessContext {
     verifiedMemberships: [],
     operation: "read",
     hostFactsRevision: "host-facts-revision-1",
+  };
+}
+
+function createAllowedHandleAdapter(
+  transformHandle: (handle: AuthorizedResourceHandle) => unknown,
+): MemoryAuthorizationConformanceAdapter {
+  return {
+    evaluate: (params) => {
+      const decision = evaluateMemoryAuthorizationConformanceScenario(params);
+      return decision.allowed
+        ? ({
+            ...decision,
+            handle: transformHandle(decision.handle),
+          } as unknown as MemoryAuthorizationConformanceDecision)
+        : decision;
+    },
+    prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
   };
 }
 
@@ -124,6 +143,55 @@ describe("memory authorization SDK contract", () => {
     expectTypeOf<SearchResult>().toEqualTypeOf<AuthorizedMemorySearchResult>();
     expectTypeOf<SearchResult["resourceHandle"]>().toEqualTypeOf<AuthorizedResourceHandle>();
     expectTypeOf<SearchResult["resourceHandle"]>().toEqualTypeOf<ReadHandle>();
+    expectTypeOf<
+      Extract<MemoryAuthorizationConformanceDecision, { allowed: true }>["handle"]
+    >().toEqualTypeOf<AuthorizedResourceHandle>();
+  });
+
+  it("extends the selected memory runtime with the versioned authorized surface", () => {
+    type SelectedAuthorizationMembers =
+      | "authorization"
+      | "authorize"
+      | "searchAuthorized"
+      | "readAuthorized"
+      | "writeAuthorized"
+      | "importAuthorized"
+      | "syncAuthorized"
+      | "exportAuthorized"
+      | "statusAuthorized";
+    type MissingSelectedAuthorizationMembers = Exclude<
+      SelectedAuthorizationMembers,
+      keyof MemoryPluginRuntime
+    >;
+
+    expectTypeOf<MissingSelectedAuthorizationMembers>().toEqualTypeOf<never>();
+    expectTypeOf<
+      NonNullable<MemoryPluginRuntime["authorization"]>
+    >().toEqualTypeOf<MemoryAuthorizationCapabilities>();
+    expectTypeOf<NonNullable<MemoryPluginRuntime["authorize"]>>().toEqualTypeOf<
+      AuthorizedMemoryRuntime["authorize"]
+    >();
+    expectTypeOf<NonNullable<MemoryPluginRuntime["searchAuthorized"]>>().toEqualTypeOf<
+      AuthorizedMemoryRuntime["searchAuthorized"]
+    >();
+    expectTypeOf<NonNullable<MemoryPluginRuntime["readAuthorized"]>>().toEqualTypeOf<
+      AuthorizedMemoryRuntime["readAuthorized"]
+    >();
+    expectTypeOf<NonNullable<MemoryPluginRuntime["writeAuthorized"]>>().toEqualTypeOf<
+      AuthorizedMemoryRuntime["writeAuthorized"]
+    >();
+    expectTypeOf<NonNullable<MemoryPluginRuntime["importAuthorized"]>>().toEqualTypeOf<
+      AuthorizedMemoryRuntime["importAuthorized"]
+    >();
+    expectTypeOf<NonNullable<MemoryPluginRuntime["syncAuthorized"]>>().toEqualTypeOf<
+      AuthorizedMemoryRuntime["syncAuthorized"]
+    >();
+    expectTypeOf<NonNullable<MemoryPluginRuntime["exportAuthorized"]>>().toEqualTypeOf<
+      AuthorizedMemoryRuntime["exportAuthorized"]
+    >();
+    expectTypeOf<NonNullable<MemoryPluginRuntime["statusAuthorized"]>>().toEqualTypeOf<
+      AuthorizedMemoryRuntime["statusAuthorized"]
+    >();
   });
 
   it("keeps placement selection inside the authorized plan", () => {
@@ -177,6 +245,8 @@ describe("memory authorization conformance suite", () => {
       "plan-session-binding",
       "plan-expiry",
       "plan-expiry-missing",
+      "plan-id-missing",
+      "plan-id-empty",
       "plan-host-facts-revision",
       "delivery-audience-intersection",
       "delegation-intersection",
@@ -235,6 +305,8 @@ describe("memory authorization conformance suite", () => {
       "plan-session-binding": { allowed: false, reasonCode: "session-rebound" },
       "plan-expiry": { allowed: false, reasonCode: "plan-expired" },
       "plan-expiry-missing": { allowed: false, reasonCode: "plan-expired" },
+      "plan-id-missing": { allowed: false, reasonCode: "invalid-context" },
+      "plan-id-empty": { allowed: false, reasonCode: "invalid-context" },
       "plan-host-facts-revision": { allowed: false, reasonCode: "revision-stale" },
       "delivery-audience-intersection": { allowed: false, reasonCode: "outside-view" },
       "delegation-intersection": { allowed: false, reasonCode: "default-deny" },
@@ -300,11 +372,12 @@ describe("memory authorization conformance suite", () => {
 
   it("rejects a context-free allow-all adapter", async () => {
     const adapter: MemoryAuthorizationConformanceAdapter = {
-      evaluate: ({ resource }) => ({
-        allowed: true,
-        reasonCode: "allowed",
-        handle: `raw:${resource.resourceId}`,
-      }),
+      evaluate: ({ resource }) =>
+        ({
+          allowed: true,
+          reasonCode: "allowed",
+          handle: `raw:${resource.resourceId}`,
+        }) as unknown as MemoryAuthorizationConformanceDecision,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -448,30 +521,66 @@ describe("memory authorization conformance suite", () => {
     }
   });
 
-  it("accepts backend-issued opaque handles without prescribing their encoding", async () => {
-    const adapter: MemoryAuthorizationConformanceAdapter = {
-      evaluate: (params) => {
-        const decision = evaluateMemoryAuthorizationConformanceScenario(params);
-        return decision.allowed ? { ...decision, handle: "backend-issued-handle" } : decision;
-      },
-      prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
-    };
-
+  it("accepts structured backend-issued handles without prescribing opaque ID encoding", async () => {
+    const adapter = createAllowedHandleAdapter((handle) => ({
+      ...handle,
+      handleId: "backend-issued-handle",
+      expiresAt: "2026-07-29T12:04:00.000Z",
+    }));
     await expect(runMemoryAuthorizationConformanceSuite(adapter)).resolves.toEqual({
       ok: true,
       failures: [],
     });
   });
 
-  it("rejects an empty allowed-handle token", async () => {
-    const adapter: MemoryAuthorizationConformanceAdapter = {
-      evaluate: (params) => {
-        const decision = evaluateMemoryAuthorizationConformanceScenario(params);
-        return decision.allowed ? { ...decision, handle: "" } : decision;
-      },
-      prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
-    };
+  it("rejects raw-string, path, and bearer-like handle substitutions", async () => {
+    for (const substitute of [
+      "backend-issued-handle",
+      "/virtual/user/principal-owner.md",
+      "Bearer backend-issued-handle",
+    ]) {
+      const report = await runMemoryAuthorizationConformanceSuite(
+        createAllowedHandleAdapter(() => substitute),
+      );
+      expect(report.failures).toContainEqual(
+        expect.objectContaining({ invariant: "authorized-handle" }),
+      );
+    }
+  });
 
+  it("rejects allowed handles with missing or stale authorization bindings", async () => {
+    const transforms: Array<(handle: AuthorizedResourceHandle) => unknown> = [
+      (handle) => {
+        const malformed = { ...handle } as Record<string, unknown>;
+        Reflect.deleteProperty(malformed, "planId");
+        return malformed;
+      },
+      (handle) => ({ ...handle, version: 2 }),
+      (handle) => ({ ...handle, planId: "plan-2" }),
+      (handle) => ({ ...handle, contextFingerprint: "context-revision-2" }),
+      (handle) => ({ ...handle, resourceRevision: "resource-revision-2" }),
+      (handle) => ({ ...handle, policyRevision: "policy-revision-2" }),
+      (handle) => {
+        const malformed = { ...handle } as Record<string, unknown>;
+        Reflect.deleteProperty(malformed, "expiresAt");
+        return malformed;
+      },
+      (handle) => ({ ...handle, expiresAt: "2026-07-29T11:59:59.000Z" }),
+      (handle) => ({ ...handle, expiresAt: "not-a-date" }),
+      (handle) => ({ ...handle, expiresAt: "2026-07-29T12:10:00.000Z" }),
+    ];
+    for (const transformHandle of transforms) {
+      const report = await runMemoryAuthorizationConformanceSuite(
+        createAllowedHandleAdapter(transformHandle),
+      );
+      expect(report.failures).toContainEqual(
+        expect.objectContaining({ invariant: "authorized-handle" }),
+      );
+    }
+  });
+
+  it("rejects an empty opaque handle ID", async () => {
+    const adapter = createAllowedHandleAdapter((handle) => ({ ...handle, handleId: "" }));
     const report = await runMemoryAuthorizationConformanceSuite(adapter);
     expect(report.failures).toContainEqual(
       expect.objectContaining({ invariant: "authorized-handle" }),

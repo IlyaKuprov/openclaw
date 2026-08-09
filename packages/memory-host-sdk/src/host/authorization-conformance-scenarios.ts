@@ -72,6 +72,7 @@ function baseScenario(
     viewStoreIds: ["store-a"],
     context,
     plan: {
+      planId: "plan-1",
       contextFingerprint: context.contextFingerprint,
       runId: context.runId,
       agentId: context.agentId,
@@ -93,6 +94,13 @@ function baseScenario(
 function withoutConformanceExpiry<T extends object>(value: T): T {
   const copy = { ...value };
   Reflect.deleteProperty(copy, "expiresAt");
+  return copy;
+}
+
+/** Produces malformed runtime input so conformance cases prove plan bindings fail closed. */
+function withoutConformancePlanId<T extends object>(value: T): T {
+  const copy = { ...value };
+  Reflect.deleteProperty(copy, "planId");
   return copy;
 }
 
@@ -403,6 +411,18 @@ export function createMemoryAuthorizationConformanceScenarios(): MemoryAuthoriza
   cases.push({
     ...missingPlanExpiry,
     plan: withoutConformanceExpiry(missingPlanExpiry.plan),
+  });
+
+  const missingPlanId = baseScenario("plan-id-missing");
+  cases.push({
+    ...missingPlanId,
+    plan: withoutConformancePlanId(missingPlanId.plan),
+  });
+
+  const emptyPlanId = baseScenario("plan-id-empty");
+  cases.push({
+    ...emptyPlanId,
+    plan: { ...emptyPlanId.plan, planId: "" },
   });
 
   const staleHostFacts = baseScenario("plan-host-facts-revision");

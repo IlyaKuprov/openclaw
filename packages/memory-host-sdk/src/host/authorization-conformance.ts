@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   hasCurrentConformanceEvidenceExpiry,
   isConformanceEvidenceExpired,
@@ -5,10 +6,12 @@ import {
   resolveActiveConformancePrincipalIds,
 } from "./authorization-conformance-evidence.js";
 import { createMemoryAuthorizationConformanceScenarios } from "./authorization-conformance-scenarios.js";
-import type {
-  AudienceRef,
-  MemoryAuthorizationReasonCode,
-  MemoryOperation,
+import {
+  MEMORY_AUTHORIZATION_CONTRACT_VERSION,
+  type AuthorizedResourceHandle,
+  type AudienceRef,
+  type MemoryAuthorizationReasonCode,
+  type MemoryOperation,
 } from "./authorization.js";
 
 export type MemoryAuthorizationConformancePrincipal =
@@ -94,6 +97,7 @@ export type MemoryAuthorizationConformancePolicyEntry = Readonly<{
 }>;
 
 export type MemoryAuthorizationConformancePlanBinding = Readonly<{
+  planId: string;
   contextFingerprint: string;
   runId: string;
   agentId: string;
@@ -143,7 +147,7 @@ export type MemoryAuthorizationConformanceDecision =
   | Readonly<{
       allowed: true;
       reasonCode: "allowed";
-      handle: string;
+      handle: AuthorizedResourceHandle;
     }>
   | Readonly<{
       allowed: false;
@@ -222,6 +226,9 @@ function planBindingFailure(
   const { context, plan } = scenario;
   if (!hasCurrentConformanceEvidenceExpiry(plan.expiresAt, scenario.now)) {
     return "plan-expired";
+  }
+  if (!isNonEmptyText(plan.planId)) {
+    return "invalid-context";
   }
   if (plan.contextFingerprint !== context.contextFingerprint) {
     return "invalid-context";
@@ -356,7 +363,15 @@ export function evaluateMemoryAuthorizationConformanceScenario(params: {
   return {
     allowed: true,
     reasonCode: "allowed",
-    handle: "reference-issued-handle",
+    handle: {
+      version: MEMORY_AUTHORIZATION_CONTRACT_VERSION,
+      handleId: "reference-issued-handle",
+      planId: scenario.plan.planId,
+      contextFingerprint: scenario.plan.contextFingerprint,
+      resourceRevision: resource.revision,
+      policyRevision: scenario.plan.policyRevision,
+      expiresAt: scenario.plan.expiresAt,
+    },
   };
 }
 
@@ -390,8 +405,47 @@ function decisionsMatch(
   return true;
 }
 
-function hasOpaqueAuthorizedHandle(decision: MemoryAuthorizationConformanceDecision): boolean {
-  return decision.allowed && typeof decision.handle === "string" && decision.handle.length > 0;
+function isNonEmptyText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function expiresNoLaterThan(expiresAt: string, maximumExpiresAt: string): boolean {
+  const expiresAtMs = Date.parse(expiresAt);
+  const maximumExpiresAtMs = Date.parse(maximumExpiresAt);
+  // A handle can be narrower than its plan, but never survive the plan that issued it.
+  return (
+    Number.isFinite(expiresAtMs) &&
+    Number.isFinite(maximumExpiresAtMs) &&
+    expiresAtMs <= maximumExpiresAtMs
+  );
+}
+
+function hasAuthorizedResourceHandle(params: {
+  decision: MemoryAuthorizationConformanceDecision;
+  scenario: MemoryAuthorizationConformanceScenario;
+  resource: MemoryAuthorizationConformanceResource;
+}): boolean {
+  const { decision, resource, scenario } = params;
+  if (!decision.allowed || !isRecord(decision.handle)) {
+    return false;
+  }
+  const handle = decision.handle;
+  // The opaque ID has no prescribed encoding; its surrounding facts prevent it becoming a bearer grant.
+  return (
+    handle.version === MEMORY_AUTHORIZATION_CONTRACT_VERSION &&
+    isNonEmptyText(handle.handleId) &&
+    isNonEmptyText(handle.planId) &&
+    isNonEmptyText(handle.contextFingerprint) &&
+    isNonEmptyText(handle.resourceRevision) &&
+    isNonEmptyText(handle.policyRevision) &&
+    isNonEmptyText(handle.expiresAt) &&
+    handle.planId === scenario.plan.planId &&
+    handle.contextFingerprint === scenario.plan.contextFingerprint &&
+    handle.resourceRevision === resource.revision &&
+    handle.policyRevision === scenario.plan.policyRevision &&
+    hasCurrentConformanceEvidenceExpiry(handle.expiresAt, scenario.now) &&
+    expiresNoLaterThan(handle.expiresAt, scenario.plan.expiresAt)
+  );
 }
 
 function isSafeDeniedDecision(decision: MemoryAuthorizationConformanceDecision): boolean {
@@ -425,7 +479,10 @@ export async function runMemoryAuthorizationConformanceSuite(
       if (!expected || !decisionsMatch(decision, expected)) {
         failures.push({ caseId: testCase.id, invariant: "decision" });
       }
-      if (decision.allowed && !hasOpaqueAuthorizedHandle(decision)) {
+      if (
+        decision.allowed &&
+        !hasAuthorizedResourceHandle({ decision, scenario: testCase.scenario, resource })
+      ) {
         failures.push({ caseId: testCase.id, invariant: "authorized-handle" });
       }
       if (!decision.allowed && !isSafeDeniedDecision(decision)) {
