@@ -163,8 +163,9 @@ export async function advanceCloudDraftSession(params: {
     return cloudStart;
   }
   if (!params.isCurrent() || !params.ownsRecovery()) {
-    // The worker is active, but ownership changed after the helper's final
-    // check. Keep recovery durable instead of orphaning it.
+    // Delivery completed, so retire only this submission's recovery record.
+    // The callback's expected-key guard preserves any newer owner.
+    params.clearRecovery();
     return { status: "ownership-lost" };
   }
   params.clearRecovery();

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
+import {
+  clearCloudSessionRecovery,
+  readCloudSessionRecovery,
+  writeCloudSessionRecovery,
+} from "./cloud-recovery.ts";
 import { advanceCloudDraftSession } from "./cloud-submit.ts";
 
 function clientWith(request: ReturnType<typeof vi.fn>): Pick<GatewayBrowserClient, "request"> {
@@ -106,6 +111,69 @@ describe("cloud draft advancement", () => {
       ),
     ).toMatchObject({ sessionKey: "agent:cloud:newer" });
     expect(clearRecovery).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { name: "the page is interrupted after accepted delivery", ownershipTaken: false },
+    { name: "a newer owner takes over", ownershipTaken: true },
+  ])("retires only the completed submission when $name", async ({ ownershipTaken }) => {
+    const gatewayUrl = "ws://gateway.example";
+    const recoveryScope = "principal-a";
+    const sessionKey = "agent:cloud:stale";
+    const newerRecovery = {
+      sessionKey: "agent:cloud:newer",
+      messageId: "message-newer",
+      message: "newer task",
+      profileId: "aws",
+      agentId: "cloud",
+      gatewayUrl,
+      recoveryScope,
+      phase: "dispatching" as const,
+    };
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ placement: { state: "active", environmentId: "environment-1" } })
+      .mockImplementationOnce(async () => {
+        if (ownershipTaken) {
+          expect(writeCloudSessionRecovery(newerRecovery)).toBe(true);
+        }
+        return { runId: "run-stale", status: "started" };
+      });
+    let currentChecks = 0;
+    const clearRecovery = vi.fn(() =>
+      clearCloudSessionRecovery(gatewayUrl, recoveryScope, sessionKey),
+    );
+
+    await expect(
+      advanceCloudDraftSession({
+        client: clientWith(request),
+        key: sessionKey,
+        agentId: "cloud",
+        profileId: "aws",
+        message: "interrupted task",
+        messageId: "message-interrupted",
+        gatewayUrl,
+        recoveryScope,
+        recoveryPhase: "dispatching",
+        recovering: false,
+        isCurrent: () => {
+          if (ownershipTaken) {
+            return true;
+          }
+          currentChecks += 1;
+          // The send helper accepts delivery on check five; its caller observes
+          // the tab invalidation immediately afterward.
+          return currentChecks < 6;
+        },
+        ownsRecovery: () => !ownershipTaken,
+        clearRecovery,
+        setRecoveryPhase: vi.fn(),
+      }),
+    ).resolves.toEqual({ status: "ownership-lost" });
+    expect(clearRecovery).toHaveBeenCalledOnce();
+    expect(readCloudSessionRecovery(gatewayUrl, recoveryScope)).toEqual(
+      ownershipTaken ? newerRecovery : null,
+    );
   });
 
   it("does not persist volatile incognito recovery when submission is cancelled", async () => {

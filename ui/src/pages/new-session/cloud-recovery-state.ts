@@ -9,6 +9,17 @@ import {
   writeCloudSessionRecovery,
 } from "./cloud-recovery.ts";
 
+export type SubmissionOutcomeReason = "gateway-changed" | "cloud-interrupted";
+
+export function resolveSubmissionOutcomeReason(params: {
+  gatewayIdentityChanged: boolean;
+  cloudDraftOwned: boolean;
+}): SubmissionOutcomeReason {
+  return params.gatewayIdentityChanged || !params.cloudDraftOwned
+    ? "gateway-changed"
+    : "cloud-interrupted";
+}
+
 export function resolveScope(
   snapshot: {
     client: { recoveryScope?: string; recoveryScopeReady?: boolean } | null;
