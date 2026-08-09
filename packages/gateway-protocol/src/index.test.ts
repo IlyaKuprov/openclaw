@@ -48,6 +48,7 @@ import type {
   ConfigSchemaLookupParams,
   ModelsListParams,
   SessionsCatalogListParams,
+  SessionsCatalogStartTerminalParams,
   TalkEvent,
 } from "./index.js";
 import * as schemaExportRegistry from "./schema-export-registry.js";
@@ -121,6 +122,7 @@ describe("protocol export registries", () => {
     expectTypeOf<ConfigSchemaLookupParams>().toEqualTypeOf<Schema.ConfigSchemaLookupParams>();
     expectTypeOf<ModelsListParams>().toEqualTypeOf<Schema.ModelsListParams>();
     expectTypeOf<SessionsCatalogListParams>().toEqualTypeOf<Schema.SessionsCatalogListParams>();
+    expectTypeOf<SessionsCatalogStartTerminalParams>().toEqualTypeOf<Schema.SessionsCatalogStartTerminalParams>();
     expectTypeOf<TalkEvent>().toEqualTypeOf<Schema.TalkEvent>();
   });
 
