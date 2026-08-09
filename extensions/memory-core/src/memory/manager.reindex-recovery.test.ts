@@ -26,6 +26,8 @@ type ReindexHarness = {
   sessionsDirty: boolean;
   sessionsFullRetryDirty: boolean;
   sessionsDirtyFiles: Set<string>;
+  shouldFallbackOnError: (err: unknown) => boolean;
+  activateFallbackProvider: (reason: string) => Promise<boolean>;
 };
 
 describe("memory manager reindex recovery", () => {
@@ -291,6 +293,35 @@ describe("memory manager reindex recovery", () => {
 
     expect(reindexCalls).toHaveLength(1);
     expect(reindexCalls[0]).toMatchObject({ reason: "test" });
+  });
+
+  it("rebuilds after a fallback provider is activated during an unforced sync", async () => {
+    const memoryManager = await openManager(
+      createCfg({
+        provider: "none",
+        sources: ["memory"],
+      }),
+    );
+    // Build a healthy index first, so this sync is not a full reindex already.
+    await memoryManager.sync({ reason: "test", force: true });
+
+    const harness = memoryManager as unknown as ReindexHarness;
+    const reindexCalls: Array<{ reason?: string; force?: boolean }> = [];
+    harness.shouldFallbackOnError = () => true;
+    harness.activateFallbackProvider = async () => true;
+    harness.syncMemoryFiles = async () => {
+      throw new Error("embedding provider failed mid-sync");
+    };
+    harness.runInPlaceReindex = async (params) => {
+      reindexCalls.push(params);
+    };
+    harness.dirty = true;
+
+    await harness.sync({ reason: "search" });
+
+    // The activated fallback owns a different index identity, so leaving the
+    // old index in place would make every later search report itself paused.
+    expect(reindexCalls).toEqual([expect.objectContaining({ force: true })]);
   });
 
   it("forces source-wide memory sync when retrying a failed full reindex", async () => {

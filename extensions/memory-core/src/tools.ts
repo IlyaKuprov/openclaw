@@ -656,25 +656,14 @@ export function createMemorySearchTool(options: {
                     await activeMemory.manager.sync?.({ reason: retrySyncReason, force: false });
                   });
                   rawResults = await searchActiveMemory();
+                  // A provider switch during that sync is recovered by the sync
+                  // owner itself, so an identity that is still mismatched here
+                  // is a real paused index rather than a transient one.
                   pausedIndexIdentityReason = resolvePausedMemoryIndexIdentityReason(
                     activeMemory.manager.status(),
                   );
                   if (pausedIndexIdentityReason) {
-                    // The identity was valid before this sync, so the index has
-                    // just been orphaned by a provider switch — an embedding
-                    // failure can activate a fallback provider mid-sync. Nothing
-                    // but a rebuild recovers that, and it is bounded to the case
-                    // where the identity actually broke.
-                    await runWithDefaultDeadline(async () => {
-                      await activeMemory.manager.sync?.({ reason: retrySyncReason, force: true });
-                    });
-                    rawResults = await searchActiveMemory();
-                    pausedIndexIdentityReason = resolvePausedMemoryIndexIdentityReason(
-                      activeMemory.manager.status(),
-                    );
-                    if (pausedIndexIdentityReason) {
-                      return;
-                    }
+                    return;
                   }
                 }
                 rawResults = await runWithDefaultDeadline(

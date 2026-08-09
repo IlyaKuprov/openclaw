@@ -597,32 +597,19 @@ describe("memory_search unavailable payloads", () => {
     expect(getMemorySyncMockParams()).toEqual([{ reason: "cli", force: false }]);
   });
 
-  it("rebuilds when the retry sync orphans the index under a fallback provider", async () => {
+  it("leaves fallback-provider recovery to the sync owner", async () => {
     let searchCalls = 0;
     setMemorySearchImpl(async () => {
       searchCalls += 1;
-      if (searchCalls < 3) {
-        return [];
-      }
-      return [
-        {
-          path: "MEMORY.md",
-          startLine: 1,
-          endLine: 1,
-          score: 0.9,
-          snippet: "Thread-hidden codename: ORBIT-22.",
-          source: "memory" as const,
-        },
-      ];
+      return [];
     });
-    // The identity is valid up front and breaks during the unforced sync, as it
-    // does when an embedding failure activates a configured fallback provider.
-    setMemorySyncImpl(async (params) => {
-      setMemoryCustomStatus(
-        params?.force
-          ? undefined
-          : { indexIdentity: { status: "mismatched", reason: "embedding provider changed" } },
-      );
+    // The sync owner rebuilds when it activates a fallback, so an identity that
+    // is still mismatched afterwards is a genuinely paused index: the tool must
+    // report it rather than launching a second, forced sync of its own.
+    setMemorySyncImpl(async () => {
+      setMemoryCustomStatus({
+        indexIdentity: { status: "mismatched", reason: "embedding provider changed" },
+      });
     });
 
     const tool = createMemorySearchToolOrThrow({
@@ -631,15 +618,11 @@ describe("memory_search unavailable payloads", () => {
         memory: { citations: "off" },
       },
     });
-    const result = await tool.execute("fallback-rebuild", { query: "hidden thread codename" });
+    const result = await tool.execute("paused-after-sync", { query: "hidden thread codename" });
 
-    expect(getMemorySyncMockParams()).toEqual([
-      { reason: "search", force: false },
-      { reason: "search", force: true },
-    ]);
-    expect((result.details as { results?: Array<{ path: string }> }).results?.[0]?.path).toBe(
-      "MEMORY.md",
-    );
+    expect(getMemorySyncMockParams()).toEqual([{ reason: "search", force: false }]);
+    expect(searchCalls).toBe(2);
+    expect(result.details).toMatchObject({ unavailable: true });
   });
 
   it("qualifies empty results when the index remains dirty after retry", async () => {

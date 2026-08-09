@@ -351,7 +351,12 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
       }
       const activated = shouldFallback && (await this.activateFallbackProvider(reason));
       if (activated) {
-        if (needsFullReindex && !hasTargetArchiveFiles) {
+        // Activating a fallback changes the index identity, so whatever is on
+        // disk now belongs to a provider that is no longer in use. Rebuild
+        // regardless of whether this sync had already asked for a full reindex:
+        // otherwise an ordinary watch, interval, session or search sync leaves
+        // an orphaned index behind, and every later search reports itself paused.
+        if (!hasTargetArchiveFiles) {
           this.beginSyncProviderGeneration();
           await this.runInPlaceReindex({
             reason: params?.reason ?? "fallback",
