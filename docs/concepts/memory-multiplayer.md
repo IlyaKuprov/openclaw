@@ -963,35 +963,69 @@ type MemoryAuthorizationCapabilities = Readonly<{
   exactReadByAuthorizedHandle: true;
   scopedSync: true;
   scopedWrite: true;
+  scopedImport: true;
   scopedExport: true;
   scopedStatus: true;
   exposureReceipts: true;
   egressReceipts: true;
 }>;
 
+type MemoryContentAccessOperation = "read" | "derive";
+
+type MemoryContentAccessContext<Operation extends MemoryContentAccessOperation> =
+  MemoryAccessContext & { operation: Operation };
+
+type AuthorizedMemoryContentPlan<Operation extends MemoryContentAccessOperation> =
+  AuthorizedMemoryPlan & { operation: Operation };
+
+type AuthorizedMemorySearchResult = MemorySearchResult & {
+  resourceHandle: AuthorizedResourceHandle;
+};
+
+type AuthorizedMemorySearchParams<Operation extends MemoryContentAccessOperation> = {
+  context: MemoryContentAccessContext<Operation>;
+  plan: AuthorizedMemoryContentPlan<Operation>;
+  query: string;
+  subjectHandles?: readonly string[];
+  sources?: readonly ("memory" | "sessions")[];
+  limit: number;
+  signal?: AbortSignal;
+};
+
+type AuthorizedMemoryReadParams<Operation extends MemoryContentAccessOperation> = {
+  context: MemoryContentAccessContext<Operation>;
+  plan: AuthorizedMemoryContentPlan<Operation>;
+  handle: AuthorizedResourceHandle;
+  from?: number;
+  lines?: number;
+};
+
 interface AuthorizedMemoryRuntime {
   authorization: MemoryAuthorizationCapabilities;
-  authorize(context: MemoryAccessContext): Promise<AuthorizedMemoryPlan>;
-  searchAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    query: string;
-    subjectHandles?: readonly string[];
-    sources?: readonly ("memory" | "sessions")[];
-    limit: number;
-    signal?: AbortSignal;
-  }): Promise<AuthorizedMemoryResultEnvelope<MemorySearchResult>>;
-  readAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    handle: AuthorizedResourceHandle;
-    from?: number;
-    lines?: number;
-  }): Promise<AuthorizedMemoryResultEnvelope<MemoryReadResult>>;
+  authorize<Operation extends MemoryOperation>(
+    context: MemoryAccessContext & { operation: Operation },
+  ): Promise<AuthorizedMemoryPlan & { operation: Operation }>;
+  searchAuthorized(
+    params: AuthorizedMemorySearchParams<"read">,
+  ): Promise<AuthorizedMemoryResultEnvelope<readonly AuthorizedMemorySearchResult[]>>;
+  searchAuthorized(
+    params: AuthorizedMemorySearchParams<"derive">,
+  ): Promise<AuthorizedMemoryResultEnvelope<readonly AuthorizedMemorySearchResult[]>>;
+  readAuthorized(
+    params: AuthorizedMemoryReadParams<"read">,
+  ): Promise<AuthorizedMemoryResultEnvelope<MemoryReadResult>>;
+  readAuthorized(
+    params: AuthorizedMemoryReadParams<"derive">,
+  ): Promise<AuthorizedMemoryResultEnvelope<MemoryReadResult>>;
   writeAuthorized(params: {
     context: MemoryAccessContext;
     plan: AuthorizedMemoryPlan;
     mutation: AuthorizedMemoryMutation;
+  }): Promise<MemoryWriteResult>;
+  importAuthorized(params: {
+    context: MemoryAccessContext;
+    plan: AuthorizedMemoryPlan;
+    mutation: Extract<AuthorizedMemoryMutation, { kind: "import" }>;
   }): Promise<MemoryWriteResult>;
   syncAuthorized(params: {
     context: MemoryAccessContext;
@@ -1008,6 +1042,11 @@ interface AuthorizedMemoryRuntime {
   }): Promise<AuthorizedMemoryResultEnvelope<MemoryProviderStatus>>;
 }
 ```
+
+There is intentionally no `retrieve` overload for content-bearing search or
+exact read. It may select candidates only inside the broker; `read` and
+`derive` carry the matching context and plan operation before content can cross
+that boundary.
 
 The plan is plugin-issued and bound to the context fingerprint, session and
 subject revisions, operation, mounts, policy revision, delivery revision,

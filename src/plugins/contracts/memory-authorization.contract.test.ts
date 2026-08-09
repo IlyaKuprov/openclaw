@@ -13,9 +13,12 @@ import {
   runMemoryAuthorizationConformanceSuite,
   type MemoryAccessContext,
   type AuthorizedMemoryMutation,
+  type AuthorizedMemoryContentPlan,
+  type AuthorizedMemoryPlan,
   type AuthorizedMemoryRuntime,
   type AuthorizedMemorySearchResult,
   type AuthorizedResourceHandle,
+  type MemoryContentAccessContext,
   type MemoryAuthorizationCapabilities,
   type MemoryAuthorizationConformanceAdapter,
   type MemoryAuthorizationConformanceDecision,
@@ -76,8 +79,13 @@ function createAllowedHandleAdapter(
           } as unknown as MemoryAuthorizationConformanceDecision)
         : decision;
     },
+    observeSearchDisclosure: observeNoExternalSearchDisclosure,
     prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
   };
+}
+
+function observeNoExternalSearchDisclosure(): undefined {
+  return undefined;
 }
 
 describe("memory authorization SDK contract", () => {
@@ -174,6 +182,73 @@ describe("memory authorization SDK contract", () => {
     >().toEqualTypeOf<AuthorizedResourceHandle>();
   });
 
+  it("limits content-bearing search and exact reads to read or derive", () => {
+    const assertContentOperationContract = (
+      runtime: AuthorizedMemoryRuntime,
+      readContext: MemoryContentAccessContext<"read">,
+      readPlan: AuthorizedMemoryContentPlan<"read">,
+      deriveContext: MemoryContentAccessContext<"derive">,
+      derivePlan: AuthorizedMemoryContentPlan<"derive">,
+      retrieveContext: MemoryAccessContext & Readonly<{ operation: "retrieve" }>,
+      retrievePlan: AuthorizedMemoryPlan & Readonly<{ operation: "retrieve" }>,
+      handle: AuthorizedResourceHandle,
+    ) => {
+      void runtime.searchAuthorized({
+        context: readContext,
+        plan: readPlan,
+        query: "query",
+        limit: 1,
+      });
+      void runtime.searchAuthorized({
+        context: deriveContext,
+        plan: derivePlan,
+        query: "query",
+        limit: 1,
+      });
+      void runtime.readAuthorized({ context: readContext, plan: readPlan, handle });
+      void runtime.readAuthorized({ context: deriveContext, plan: derivePlan, handle });
+
+      const readPlanFromAuthorize = runtime.authorize(readContext);
+      const derivePlanFromAuthorize = runtime.authorize(deriveContext);
+      void readPlanFromAuthorize.then((plan) =>
+        runtime.searchAuthorized({ context: readContext, plan, query: "query", limit: 1 }),
+      );
+      void derivePlanFromAuthorize.then((plan) =>
+        runtime.readAuthorized({ context: deriveContext, plan, handle }),
+      );
+
+      // @ts-expect-error retrieve only permits broker-internal candidate selection.
+      void runtime.searchAuthorized({
+        context: retrieveContext,
+        plan: retrievePlan,
+        query: "query",
+        limit: 1,
+      });
+      // @ts-expect-error retrieve only permits broker-internal candidate selection.
+      void runtime.readAuthorized({ context: retrieveContext, plan: retrievePlan, handle });
+      // @ts-expect-error the context and plan must name the same content operation.
+      void runtime.searchAuthorized({
+        context: readContext,
+        plan: derivePlan,
+        query: "query",
+        limit: 1,
+      });
+
+      const retrievePlanFromAuthorize = runtime.authorize(retrieveContext);
+      void retrievePlanFromAuthorize.then((plan) => {
+        // @ts-expect-error retrieve only permits broker-internal candidate selection.
+        return runtime.searchAuthorized({
+          context: retrieveContext,
+          plan,
+          query: "query",
+          limit: 1,
+        });
+      });
+    };
+
+    expectTypeOf(assertContentOperationContract).toBeFunction();
+  });
+
   it("extends the selected memory runtime with the versioned authorized surface", () => {
     type SelectedAuthorizationMembers =
       | "authorization"
@@ -246,6 +321,14 @@ describe("memory authorization conformance suite", () => {
       "deny-precedence",
       "permission-implication",
       "permission-complete",
+      "retrieve-permission-complete",
+      "derive-permission-complete",
+      "derive-permission-missing-retrieve",
+      "derive-permission-missing-read",
+      "derive-permission-missing-derive",
+      "replace-permission-complete",
+      "replace-permission-missing-append",
+      "replace-permission-missing-replace",
       "principal-revoked-retains-context-ref",
       "principal-expired",
       "principal-expiry-missing",
@@ -266,9 +349,20 @@ describe("memory authorization conformance suite", () => {
       "membership-required-principal-not-directly-verified",
       "membership-unrelated-stale-is-harmless",
       "cross-agent-cell",
-      "plan-context-revision",
+      "plan-context-fingerprint",
+      "plan-subject-revision",
       "plan-run-binding",
       "plan-session-binding",
+      "plan-agent-binding",
+      "plan-session-identity-revision",
+      "plan-operation-binding",
+      "plan-mount-binding",
+      "plan-mount-capabilities",
+      "plan-mount-agent-binding",
+      "plan-mount-audience-revision",
+      "plan-egress-audience-binding",
+      "plan-policy-revision",
+      "plan-delivery-revision",
       "plan-expiry",
       "plan-expiry-missing",
       "plan-id-missing",
@@ -285,6 +379,14 @@ describe("memory authorization conformance suite", () => {
       "deny-precedence": { allowed: false, reasonCode: "explicit-deny" },
       "permission-implication": { allowed: false, reasonCode: "default-deny" },
       "permission-complete": { allowed: true, reasonCode: "allowed" },
+      "retrieve-permission-complete": { allowed: true, reasonCode: "allowed" },
+      "derive-permission-complete": { allowed: true, reasonCode: "allowed" },
+      "derive-permission-missing-retrieve": { allowed: false, reasonCode: "default-deny" },
+      "derive-permission-missing-read": { allowed: false, reasonCode: "default-deny" },
+      "derive-permission-missing-derive": { allowed: false, reasonCode: "default-deny" },
+      "replace-permission-complete": { allowed: true, reasonCode: "allowed" },
+      "replace-permission-missing-append": { allowed: false, reasonCode: "default-deny" },
+      "replace-permission-missing-replace": { allowed: false, reasonCode: "default-deny" },
       "principal-revoked-retains-context-ref": {
         allowed: false,
         reasonCode: "identity-revoked",
@@ -326,9 +428,20 @@ describe("memory authorization conformance suite", () => {
       },
       "membership-unrelated-stale-is-harmless": { allowed: true, reasonCode: "allowed" },
       "cross-agent-cell": { allowed: false, reasonCode: "outside-view" },
-      "plan-context-revision": { allowed: false, reasonCode: "revision-stale" },
+      "plan-context-fingerprint": { allowed: false, reasonCode: "invalid-context" },
+      "plan-subject-revision": { allowed: false, reasonCode: "revision-stale" },
       "plan-run-binding": { allowed: false, reasonCode: "invalid-context" },
       "plan-session-binding": { allowed: false, reasonCode: "session-rebound" },
+      "plan-agent-binding": { allowed: false, reasonCode: "outside-view" },
+      "plan-session-identity-revision": { allowed: false, reasonCode: "revision-stale" },
+      "plan-operation-binding": { allowed: false, reasonCode: "outside-view" },
+      "plan-mount-binding": { allowed: false, reasonCode: "outside-view" },
+      "plan-mount-capabilities": { allowed: false, reasonCode: "outside-view" },
+      "plan-mount-agent-binding": { allowed: false, reasonCode: "outside-view" },
+      "plan-mount-audience-revision": { allowed: false, reasonCode: "outside-view" },
+      "plan-egress-audience-binding": { allowed: false, reasonCode: "outside-view" },
+      "plan-policy-revision": { allowed: false, reasonCode: "revision-stale" },
+      "plan-delivery-revision": { allowed: false, reasonCode: "delivery-rebound" },
       "plan-expiry": { allowed: false, reasonCode: "plan-expired" },
       "plan-expiry-missing": { allowed: false, reasonCode: "plan-expired" },
       "plan-id-missing": { allowed: false, reasonCode: "invalid-context" },
@@ -404,6 +517,7 @@ describe("memory authorization conformance suite", () => {
           reasonCode: "allowed",
           handle: `raw:${resource.resourceId}`,
         }) as unknown as MemoryAuthorizationConformanceDecision,
+      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -428,6 +542,7 @@ describe("memory authorization conformance suite", () => {
             })),
           },
         }),
+      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -460,6 +575,7 @@ describe("memory authorization conformance suite", () => {
             }),
           },
         }),
+      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -533,6 +649,7 @@ describe("memory authorization conformance suite", () => {
           },
         });
       },
+      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -613,6 +730,32 @@ describe("memory authorization conformance suite", () => {
     );
   });
 
+  it("rejects content-bearing search metadata released for retrieve", async () => {
+    const adapter: MemoryAuthorizationConformanceAdapter = {
+      evaluate: evaluateMemoryAuthorizationConformanceScenario,
+      observeSearchDisclosure: (scenario) =>
+        scenario.context.operation === "retrieve"
+          ? {
+              count: 1,
+              score: 0.99,
+              path: "private/other-user.md",
+              title: "private",
+              snippet: "private memory",
+              citation: "private/other-user.md#L1",
+            }
+          : undefined,
+      prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
+    };
+
+    const report = await runMemoryAuthorizationConformanceSuite(adapter);
+    expect(report.failures).toContainEqual(
+      expect.objectContaining({
+        caseId: "retrieve-permission-complete",
+        invariant: "retrieve-non-disclosure",
+      }),
+    );
+  });
+
   it("rejects denial metadata that reveals counts, scores, paths, or citations", async () => {
     const adapter: MemoryAuthorizationConformanceAdapter = {
       evaluate: (params) => {
@@ -632,6 +775,7 @@ describe("memory authorization conformance suite", () => {
           handle: "unauthorized-handle",
         } as unknown as MemoryAuthorizationConformanceDecision;
       },
+      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -671,6 +815,7 @@ describe("memory authorization conformance suite", () => {
           const decision = evaluateMemoryAuthorizationConformanceScenario(params);
           return decision.allowed ? decision : decorate(decision);
         },
+        observeSearchDisclosure: observeNoExternalSearchDisclosure,
         prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
       };
 
@@ -692,6 +837,7 @@ describe("memory authorization conformance suite", () => {
               decision,
             ) as MemoryAuthorizationConformanceDecision);
       },
+      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -704,10 +850,12 @@ describe("memory authorization conformance suite", () => {
   it("rejects prefilter false negatives and duplicate candidates", async () => {
     const falseNegative: MemoryAuthorizationConformanceAdapter = {
       evaluate: evaluateMemoryAuthorizationConformanceScenario,
+      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: () => [],
     };
     const duplicate: MemoryAuthorizationConformanceAdapter = {
       evaluate: evaluateMemoryAuthorizationConformanceScenario,
+      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => {
         const ids = scenario.resources.map((resource) => resource.resourceId);
         return [...ids, ...(ids[0] ? [ids[0]] : [])];

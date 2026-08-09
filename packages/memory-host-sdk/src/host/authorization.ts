@@ -152,6 +152,17 @@ export type MemoryAccessContext = DeepReadonly<{
   hostFactsRevision: string;
 }>;
 
+/** Operations allowed to receive content-bearing search or exact-read results. */
+export type MemoryContentAccessOperation = Extract<MemoryOperation, "read" | "derive">;
+
+/** A context narrowed to an operation that may receive content-bearing search or exact-read results. */
+export type MemoryContentAccessContext<
+  Operation extends MemoryContentAccessOperation = MemoryContentAccessOperation,
+> = MemoryAccessContext &
+  Readonly<{
+    operation: Operation;
+  }>;
+
 export const MEMORY_AUTHORIZATION_CAPABILITY_NAMES = [
   "scopedCandidates",
   "exactReadByAuthorizedHandle",
@@ -282,7 +293,7 @@ export type AuthorizedResourceHandle = DeepReadonly<{
   expiresAt: string;
 }>;
 
-/** Search hit whose exact-read continuation is bound to the current plan and revision. */
+/** Content-bearing search hit whose exact-read continuation is bound to the current plan and revision. */
 export type AuthorizedMemorySearchResult = DeepReadonly<
   MemorySearchResult & {
     resourceHandle: AuthorizedResourceHandle;
@@ -305,6 +316,33 @@ export type AuthorizedMemoryPlan = DeepReadonly<{
   bootstrapResourceHandles: readonly AuthorizedResourceHandle[];
   allowedEgressAudiences: readonly AudienceRef[];
   expiresAt: string;
+}>;
+
+/** A plan narrowed to an operation that may receive content-bearing search or exact-read results. */
+export type AuthorizedMemoryContentPlan<
+  Operation extends MemoryContentAccessOperation = MemoryContentAccessOperation,
+> = AuthorizedMemoryPlan &
+  Readonly<{
+    operation: Operation;
+  }>;
+
+export type AuthorizedMemorySearchParams<Operation extends MemoryContentAccessOperation> =
+  Readonly<{
+    context: MemoryContentAccessContext<Operation>;
+    plan: AuthorizedMemoryContentPlan<Operation>;
+    query: string;
+    subjectHandles?: readonly string[];
+    sources?: readonly MemorySource[];
+    limit: number;
+    signal?: AbortSignal;
+  }>;
+
+export type AuthorizedMemoryReadParams<Operation extends MemoryContentAccessOperation> = Readonly<{
+  context: MemoryContentAccessContext<Operation>;
+  plan: AuthorizedMemoryContentPlan<Operation>;
+  handle: AuthorizedResourceHandle;
+  from?: number;
+  lines?: number;
 }>;
 
 type AuthorizedMemoryContentMutation = Readonly<{
@@ -403,23 +441,21 @@ export type MemoryExportResult = DeepReadonly<{
 
 export interface AuthorizedMemoryRuntime {
   readonly authorization: MemoryAuthorizationCapabilities;
-  authorize(context: MemoryAccessContext): Promise<AuthorizedMemoryPlan>;
-  searchAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    query: string;
-    subjectHandles?: readonly string[];
-    sources?: readonly MemorySource[];
-    limit: number;
-    signal?: AbortSignal;
-  }): Promise<AuthorizedMemoryResultEnvelope<readonly AuthorizedMemorySearchResult[]>>;
-  readAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    handle: AuthorizedResourceHandle;
-    from?: number;
-    lines?: number;
-  }): Promise<AuthorizedMemoryResultEnvelope<MemoryReadResult>>;
+  authorize<Operation extends MemoryOperation>(
+    context: MemoryAccessContext & Readonly<{ operation: Operation }>,
+  ): Promise<AuthorizedMemoryPlan & Readonly<{ operation: Operation }>>;
+  searchAuthorized(
+    params: AuthorizedMemorySearchParams<"read">,
+  ): Promise<AuthorizedMemoryResultEnvelope<readonly AuthorizedMemorySearchResult[]>>;
+  searchAuthorized(
+    params: AuthorizedMemorySearchParams<"derive">,
+  ): Promise<AuthorizedMemoryResultEnvelope<readonly AuthorizedMemorySearchResult[]>>;
+  readAuthorized(
+    params: AuthorizedMemoryReadParams<"read">,
+  ): Promise<AuthorizedMemoryResultEnvelope<MemoryReadResult>>;
+  readAuthorized(
+    params: AuthorizedMemoryReadParams<"derive">,
+  ): Promise<AuthorizedMemoryResultEnvelope<MemoryReadResult>>;
   writeAuthorized(params: {
     context: MemoryAccessContext;
     plan: AuthorizedMemoryPlan;

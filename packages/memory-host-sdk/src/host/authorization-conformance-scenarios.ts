@@ -1,4 +1,5 @@
 import type { MemoryAuthorizationConformanceScenario } from "./authorization-conformance.js";
+import type { MemoryOperation } from "./authorization.js";
 
 function baseScenario(
   id: string,
@@ -27,6 +28,14 @@ function baseScenario(
     deliveryAudiences: [userAudience],
     lineagePolicySetIds: ["lineage-1"],
   };
+  const viewMounts = [
+    {
+      storeId: "store-a",
+      agentId: context.agentId,
+      capabilities: ["retrieve", "read"] as const,
+      audienceRevision: "audience-revision-1",
+    },
+  ];
   const scenario: MemoryAuthorizationConformanceScenario = {
     id,
     now,
@@ -69,7 +78,7 @@ function baseScenario(
         operation: "read",
       },
     ],
-    viewStoreIds: ["store-a"],
+    viewMounts,
     context,
     plan: {
       planId: "plan-1",
@@ -83,6 +92,8 @@ function baseScenario(
       policyRevision: context.policyRevision,
       hostFactsRevision: context.hostFactsRevision,
       operation: context.operation,
+      mounts: viewMounts,
+      allowedEgressAudiences: context.deliveryAudiences,
       expiresAt: "2026-07-29T12:05:00.000Z",
     },
     ...overrides,
@@ -104,6 +115,32 @@ function withoutConformancePlanId<T extends object>(value: T): T {
   return copy;
 }
 
+function operationScenario(params: {
+  id: string;
+  operation: MemoryOperation;
+  requiredOperations: readonly MemoryOperation[];
+}): MemoryAuthorizationConformanceScenario {
+  const { id, operation, requiredOperations } = params;
+  const scenario = baseScenario(id);
+  const context = { ...scenario.context, operation };
+  const viewMounts = scenario.viewMounts.map((mount) => ({
+    ...mount,
+    capabilities: requiredOperations,
+  }));
+  return {
+    ...scenario,
+    context,
+    viewMounts,
+    plan: { ...scenario.plan, operation, mounts: viewMounts },
+    policyEntries: requiredOperations.map((requiredOperation) => ({
+      effect: "allow",
+      principalId: "principal-owner",
+      resourceId: "resource-a",
+      operation: requiredOperation,
+    })),
+  };
+}
+
 /** Deterministic scenarios spanning every Phase 0 policy invariant. */
 export function createMemoryAuthorizationConformanceScenarios(): MemoryAuthorizationConformanceScenario[] {
   const cases: MemoryAuthorizationConformanceScenario[] = [];
@@ -122,7 +159,11 @@ export function createMemoryAuthorizationConformanceScenarios(): MemoryAuthoriza
     ],
   });
 
-  const permissionImplication = baseScenario("permission-implication");
+  const permissionImplication = operationScenario({
+    id: "permission-implication",
+    operation: "read",
+    requiredOperations: ["retrieve", "read"],
+  });
   cases.push({
     ...permissionImplication,
     policyEntries: permissionImplication.policyEntries.filter(
@@ -130,7 +171,53 @@ export function createMemoryAuthorizationConformanceScenarios(): MemoryAuthoriza
     ),
   });
 
-  cases.push(baseScenario("permission-complete"));
+  cases.push(
+    operationScenario({
+      id: "permission-complete",
+      operation: "read",
+      requiredOperations: ["retrieve", "read"],
+    }),
+  );
+
+  cases.push(
+    operationScenario({
+      id: "retrieve-permission-complete",
+      operation: "retrieve",
+      requiredOperations: ["retrieve"],
+    }),
+  );
+
+  const derivePermission = operationScenario({
+    id: "derive-permission-complete",
+    operation: "derive",
+    requiredOperations: ["retrieve", "read", "derive"],
+  });
+  cases.push(derivePermission);
+  for (const requiredOperation of ["retrieve", "read", "derive"] as const) {
+    cases.push({
+      ...derivePermission,
+      id: `derive-permission-missing-${requiredOperation}`,
+      policyEntries: derivePermission.policyEntries.filter(
+        (entry) => entry.operation !== requiredOperation,
+      ),
+    });
+  }
+
+  const replacePermission = operationScenario({
+    id: "replace-permission-complete",
+    operation: "replace",
+    requiredOperations: ["append", "replace"],
+  });
+  cases.push(replacePermission);
+  for (const requiredOperation of ["append", "replace"] as const) {
+    cases.push({
+      ...replacePermission,
+      id: `replace-permission-missing-${requiredOperation}`,
+      policyEntries: replacePermission.policyEntries.filter(
+        (entry) => entry.operation !== requiredOperation,
+      ),
+    });
+  }
 
   const revokedPrincipal = baseScenario("principal-revoked-retains-context-ref");
   cases.push({
@@ -383,7 +470,13 @@ export function createMemoryAuthorizationConformanceScenarios(): MemoryAuthoriza
     ),
   });
 
-  const staleContext = baseScenario("plan-context-revision");
+  const staleContextFingerprint = baseScenario("plan-context-fingerprint");
+  cases.push({
+    ...staleContextFingerprint,
+    plan: { ...staleContextFingerprint.plan, contextFingerprint: "context-revision-2" },
+  });
+
+  const staleContext = baseScenario("plan-subject-revision");
   cases.push({
     ...staleContext,
     context: { ...staleContext.context, subjectRevision: "subject-revision-2" },
@@ -399,6 +492,93 @@ export function createMemoryAuthorizationConformanceScenarios(): MemoryAuthoriza
   cases.push({
     ...staleSession,
     context: { ...staleSession.context, sessionId: "session-2" },
+  });
+
+  const staleAgent = baseScenario("plan-agent-binding");
+  cases.push({
+    ...staleAgent,
+    plan: { ...staleAgent.plan, agentId: "agent-b" },
+  });
+
+  const staleSessionIdentity = baseScenario("plan-session-identity-revision");
+  cases.push({
+    ...staleSessionIdentity,
+    plan: {
+      ...staleSessionIdentity.plan,
+      sessionIdentityRevision: "session-revision-2",
+    },
+  });
+
+  const staleOperation = baseScenario("plan-operation-binding");
+  cases.push({
+    ...staleOperation,
+    plan: { ...staleOperation.plan, operation: "retrieve" },
+  });
+
+  const staleMount = baseScenario("plan-mount-binding");
+  cases.push({
+    ...staleMount,
+    plan: {
+      ...staleMount.plan,
+      mounts: staleMount.plan.mounts.map((mount) => ({ ...mount, storeId: "store-b" })),
+    },
+  });
+
+  const staleMountCapabilities = baseScenario("plan-mount-capabilities");
+  cases.push({
+    ...staleMountCapabilities,
+    plan: {
+      ...staleMountCapabilities.plan,
+      mounts: staleMountCapabilities.plan.mounts.map((mount) => ({
+        ...mount,
+        capabilities: ["retrieve"],
+      })),
+    },
+  });
+
+  const staleMountAgent = baseScenario("plan-mount-agent-binding");
+  cases.push({
+    ...staleMountAgent,
+    plan: {
+      ...staleMountAgent.plan,
+      mounts: staleMountAgent.plan.mounts.map((mount) => ({ ...mount, agentId: "agent-b" })),
+    },
+  });
+
+  const staleMountAudience = baseScenario("plan-mount-audience-revision");
+  cases.push({
+    ...staleMountAudience,
+    plan: {
+      ...staleMountAudience.plan,
+      mounts: staleMountAudience.plan.mounts.map((mount) => ({
+        ...mount,
+        audienceRevision: "audience-revision-2",
+      })),
+    },
+  });
+
+  const staleEgressAudience = baseScenario("plan-egress-audience-binding");
+  cases.push({
+    ...staleEgressAudience,
+    plan: {
+      ...staleEgressAudience.plan,
+      allowedEgressAudiences: [
+        ...staleEgressAudience.plan.allowedEgressAudiences,
+        { kind: "conversation", id: "conversation-extra" },
+      ],
+    },
+  });
+
+  const stalePolicy = baseScenario("plan-policy-revision");
+  cases.push({
+    ...stalePolicy,
+    plan: { ...stalePolicy.plan, policyRevision: "policy-revision-2" },
+  });
+
+  const staleDelivery = baseScenario("plan-delivery-revision");
+  cases.push({
+    ...staleDelivery,
+    plan: { ...staleDelivery.plan, deliveryRevision: "delivery-revision-2" },
   });
 
   const expiredPlan = baseScenario("plan-expiry");

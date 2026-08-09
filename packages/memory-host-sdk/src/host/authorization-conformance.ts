@@ -96,6 +96,17 @@ export type MemoryAuthorizationConformancePolicyEntry = Readonly<{
   expiresAt?: string;
 }>;
 
+/**
+ * Fixture-only representation of a plan mount. Real plans retain opaque mount handles;
+ * conformance names the backing store so it can prove the plan matches the computed view.
+ */
+export type MemoryAuthorizationConformanceMount = Readonly<{
+  storeId: string;
+  agentId: string;
+  capabilities: readonly MemoryOperation[];
+  audienceRevision: string;
+}>;
+
 export type MemoryAuthorizationConformancePlanBinding = Readonly<{
   planId: string;
   contextFingerprint: string;
@@ -108,6 +119,8 @@ export type MemoryAuthorizationConformancePlanBinding = Readonly<{
   policyRevision: string;
   hostFactsRevision: string;
   operation: MemoryOperation;
+  mounts: readonly MemoryAuthorizationConformanceMount[];
+  allowedEgressAudiences: readonly AudienceRef[];
   expiresAt: string;
 }>;
 
@@ -119,7 +132,8 @@ export type MemoryAuthorizationConformanceScenario = Readonly<{
   stores: readonly MemoryAuthorizationConformanceStore[];
   resources: readonly MemoryAuthorizationConformanceResource[];
   policyEntries: readonly MemoryAuthorizationConformancePolicyEntry[];
-  viewStoreIds: readonly string[];
+  /** The current plugin-computed view that the issued plan must reproduce exactly. */
+  viewMounts: readonly MemoryAuthorizationConformanceMount[];
   context: Readonly<{
     contextFingerprint: string;
     runId: string;
@@ -159,6 +173,13 @@ export type MemoryAuthorizationConformanceAdapter = Readonly<{
     scenario: MemoryAuthorizationConformanceScenario;
     resource: MemoryAuthorizationConformanceResource;
   }): MemoryAuthorizationConformanceDecision | Promise<MemoryAuthorizationConformanceDecision>;
+  /**
+   * Conformance-only observation of the value a backend would release after internal search.
+   * Retrieve stays inside the broker, so it must report no externally visible value or metadata.
+   */
+  observeSearchDisclosure(
+    scenario: MemoryAuthorizationConformanceScenario,
+  ): unknown | Promise<unknown>;
   prefilter(
     scenario: MemoryAuthorizationConformanceScenario,
   ): readonly string[] | Promise<readonly string[]>;
@@ -178,6 +199,7 @@ export type MemoryAuthorizationConformanceReport = Readonly<{
       | "decision"
       | "authorized-handle"
       | "denial-non-disclosure"
+      | "retrieve-non-disclosure"
       | "prefilter-superset"
       | "duplicate-prefilter-candidate";
   }>[];
@@ -202,6 +224,32 @@ const OPERATION_REQUIREMENTS: Readonly<Record<MemoryOperation, readonly MemoryOp
 
 function audienceKey(audience: AudienceRef): string {
   return `${audience.kind}\0${audience.id}`;
+}
+
+function hasExactlyTheSameUniqueSet<T>(
+  actual: readonly T[],
+  expected: readonly T[],
+  key: (value: T) => string,
+): boolean {
+  const actualKeys = actual.map(key);
+  const expectedKeys = expected.map(key);
+  const actualSet = new Set(actualKeys);
+  const expectedSet = new Set(expectedKeys);
+  return (
+    actualKeys.length === actualSet.size &&
+    expectedKeys.length === expectedSet.size &&
+    actualSet.size === expectedSet.size &&
+    [...actualSet].every((key) => expectedSet.has(key))
+  );
+}
+
+function mountKey(mount: MemoryAuthorizationConformanceMount): string {
+  return JSON.stringify([
+    mount.storeId,
+    mount.agentId,
+    mount.audienceRevision,
+    [...mount.capabilities].sort(),
+  ]);
 }
 
 function policyEntryMatches(params: {
@@ -243,6 +291,26 @@ function planBindingFailure(
     return "outside-view";
   }
   if (
+    !hasExactlyTheSameUniqueSet(plan.mounts, scenario.viewMounts, mountKey) ||
+    plan.mounts.some(
+      (mount) => new Set(mount.capabilities).size !== mount.capabilities.length,
+    )
+  ) {
+    return "outside-view";
+  }
+  if (plan.mounts.some((mount) => mount.agentId !== context.agentId)) {
+    return "outside-view";
+  }
+  if (
+    !hasExactlyTheSameUniqueSet(
+      plan.allowedEgressAudiences,
+      context.deliveryAudiences,
+      audienceKey,
+    )
+  ) {
+    return "outside-view";
+  }
+  if (
     plan.sessionIdentityRevision !== context.sessionIdentityRevision ||
     plan.subjectRevision !== context.subjectRevision ||
     plan.policyRevision !== context.policyRevision
@@ -275,11 +343,16 @@ export function evaluateMemoryAuthorizationConformanceScenario(params: {
   }
 
   const store = scenario.stores.find((entry) => entry.storeId === resource.storeId);
+  const mount = scenario.plan.mounts.find((entry) => entry.storeId === resource.storeId);
   if (
     !store ||
+    !mount ||
     store.agentId !== scenario.context.agentId ||
     resource.agentId !== scenario.context.agentId ||
-    !scenario.viewStoreIds.includes(resource.storeId)
+    mount.agentId !== scenario.context.agentId ||
+    !OPERATION_REQUIREMENTS[scenario.context.operation].every((operation) =>
+      mount.capabilities.includes(operation),
+    )
   ) {
     return { allowed: false, reasonCode: "outside-view" };
   }
@@ -467,10 +540,17 @@ export async function runMemoryAuthorizationConformanceSuite(
   const failures: Array<MemoryAuthorizationConformanceReport["failures"][number]> = [];
   for (const testCase of createMemoryAuthorizationConformanceCases()) {
     const prefilter = [...(await adapter.prefilter(testCase.scenario))];
+    const searchDisclosure = await adapter.observeSearchDisclosure(testCase.scenario);
     if (new Set(prefilter).size !== prefilter.length) {
       failures.push({
         caseId: testCase.id,
         invariant: "duplicate-prefilter-candidate",
+      });
+    }
+    if (testCase.scenario.context.operation === "retrieve" && searchDisclosure !== undefined) {
+      failures.push({
+        caseId: testCase.id,
+        invariant: "retrieve-non-disclosure",
       });
     }
     for (const resource of testCase.scenario.resources) {
@@ -502,5 +582,6 @@ export async function runMemoryAuthorizationConformanceSuite(
 export const referenceMemoryAuthorizationConformanceAdapter: MemoryAuthorizationConformanceAdapter =
   Object.freeze({
     evaluate: evaluateMemoryAuthorizationConformanceScenario,
+    observeSearchDisclosure: () => undefined,
     prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
   });
