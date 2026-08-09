@@ -21,6 +21,7 @@ describe("shared/tailscale-status", () => {
   it.each([
     ["NeedsLogin", "login-required"],
     ["NeedsMachineAuth", "login-required"],
+    ["NoState", "stopped"],
     ["Stopped", "stopped"],
     ["Starting", "starting"],
   ] as const)("maps BackendState %s to %s", async (backendState, status) => {
@@ -63,10 +64,187 @@ describe("shared/tailscale-status", () => {
       status: "running",
       backendState: "Running",
       host: "private.tail.ts.net",
-      serve: { status: "ready", urls: ["wss://private.tail.ts.net"] },
-      funnel: { status: "ready", urls: ["wss://public.tail.ts.net:8443"] },
+      serve: {
+        status: "route-configured",
+        readiness: "not-verified",
+        urls: ["wss://private.tail.ts.net"],
+      },
+      funnel: { status: "route-configured", urls: ["wss://public.tail.ts.net:8443"] },
     });
     expect(run.mock.calls[0]?.[1]?.env?.TERM).toBeTruthy();
+  });
+
+  it.each([
+    ["missing", {}, { status: "missing" }],
+    [
+      "unrelated",
+      {
+        TCP: { "443": { HTTPS: true } },
+        Web: {
+          "other.tail.ts.net:443": {
+            Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+          },
+        },
+      },
+      { status: "unrelated" },
+    ],
+    [
+      "conflicting-root",
+      {
+        TCP: { "443": { HTTPS: true } },
+        Web: {
+          "node.tail.ts.net:443": {
+            Handlers: { "/": { Proxy: "127.0.0.1:9999" } },
+          },
+        },
+      },
+      { status: "conflicting-root" },
+    ],
+    [
+      "conflicting-root",
+      {
+        TCP: { "443": { HTTPS: true } },
+        Web: {
+          "node.tail.ts.net:443": {
+            Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+          },
+        },
+        AllowFunnel: { "node.tail.ts.net:443": true },
+      },
+      { status: "conflicting-root" },
+    ],
+  ])("classifies persistent Serve state as %s", async (_name, serveConfig, expected) => {
+    const run = vi.fn(async (argv: string[]) => ({
+      code: 0,
+      stdout: argv.includes("serve")
+        ? JSON.stringify(serveConfig)
+        : JSON.stringify({ BackendState: "Running", Self: { DNSName: "node.tail.ts.net." } }),
+    }));
+
+    const inspected = await inspectTailscaleConnectivityWithRunner(18789, run);
+    expect(inspected).toMatchObject({ status: "running", serve: expected });
+  });
+
+  it("reports unreadable persistent Serve state without using diagnostics", async () => {
+    const run = vi.fn(async (argv: string[]) =>
+      argv.includes("serve")
+        ? { code: 1, stdout: "", stderr: "AuthURL=https://secret.example.test" }
+        : {
+            code: 0,
+            stdout: JSON.stringify({
+              BackendState: "Running",
+              Self: { DNSName: "node.tail.ts.net." },
+            }),
+          },
+    );
+
+    const inspected = await inspectTailscaleConnectivityWithRunner(18789, run);
+    expect(inspected).toMatchObject({
+      status: "running",
+      serve: { status: "unreadable" },
+      funnel: { status: "unreadable" },
+    });
+    expect(JSON.stringify(inspected)).not.toMatch(/AuthURL|secret|stderr|stdout/);
+  });
+
+  it.each([
+    [undefined, "unknown"],
+    [{}, "required"],
+    [{ "service-host": [{ "svc:openclaw": ["100.100.100.100"] }] }, "approved"],
+    [{ "service-host": [{ "svc:other": ["100.100.100.101"] }] }, "required"],
+  ] as const)("projects named-Service approval as %s", async (capMap, serviceApproval) => {
+    const run = vi.fn(async (argv: string[]) => ({
+      code: 0,
+      stdout: argv.includes("serve")
+        ? JSON.stringify({
+            Services: {
+              "svc:openclaw": {
+                TCP: { "443": { HTTPS: true } },
+                Web: {
+                  "openclaw.tail.ts.net:443": {
+                    Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+                  },
+                },
+              },
+            },
+          })
+        : JSON.stringify({
+            BackendState: "Running",
+            Self: {
+              DNSName: "node.tail.ts.net.",
+              ...(capMap === undefined ? {} : { CapMap: capMap }),
+            },
+          }),
+    }));
+
+    const inspected = await inspectTailscaleConnectivityWithRunner(18789, run, "svc:openclaw");
+    expect(inspected).toMatchObject({
+      status: "running",
+      serviceApproval,
+      serve: {
+        status: "route-configured",
+        readiness: "not-verified",
+        urls: ["wss://openclaw.tail.ts.net"],
+      },
+    });
+  });
+
+  it("tries supported Linux, Homebrew, and macOS CLI paths without mutating host state", async () => {
+    const allowed = new Set(["status --json", "serve status --json"]);
+    const run = vi.fn(async (argv: string[]) => {
+      expect(allowed.has(argv.slice(1).join(" "))).toBe(true);
+      if (argv[0] !== "/Applications/Tailscale.app/Contents/MacOS/Tailscale") {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+      return {
+        code: 0,
+        stdout: argv.includes("serve")
+          ? "{}"
+          : JSON.stringify({ BackendState: "Running", Self: { DNSName: "node.tail.ts.net." } }),
+      };
+    });
+
+    await expect(inspectTailscaleConnectivityWithRunner(18789, run)).resolves.toMatchObject({
+      status: "running",
+      serve: { status: "missing" },
+    });
+    expect(run.mock.calls.map(([argv]) => argv[0])).toEqual([
+      "tailscale",
+      "/usr/local/bin/tailscale",
+      "/opt/homebrew/bin/tailscale",
+      "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+      "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ]);
+  });
+
+  it("sorts and bounds exact persistent routes after parsing the full structured payload", async () => {
+    const hosts = Array.from(
+      { length: 10 },
+      (_, index) => `node.tail.ts.net:${String(8443 + index)}`,
+    ).toReversed();
+    const run = vi.fn(async (argv: string[]) => ({
+      code: 0,
+      stdout: argv.includes("serve")
+        ? JSON.stringify({
+            TCP: Object.fromEntries(hosts.map((host) => [host.split(":").at(-1), { HTTPS: true }])),
+            Web: Object.fromEntries(
+              hosts.map((host) => [host, { Handlers: { "/": { Proxy: "127.0.0.1:18789" } } }]),
+            ),
+          })
+        : JSON.stringify({ BackendState: "Running", Self: { DNSName: "node.tail.ts.net." } }),
+    }));
+
+    const inspected = await inspectTailscaleConnectivityWithRunner(18789, run);
+    expect(
+      inspected.status === "running" && inspected.serve.status === "route-configured"
+        ? inspected.serve.urls
+        : [],
+    ).toEqual(
+      hosts
+        .map((host) => `wss://${host}`)
+        .toSorted()
+        .slice(0, 8),
+    );
   });
 
   it("does not infer login state from command diagnostics", async () => {
@@ -105,14 +283,10 @@ describe("shared/tailscale-status", () => {
     });
 
     await expect(resolveTailnetHostWithRunner(run)).resolves.toBe("100.64.0.9");
-    expect(run).toHaveBeenNthCalledWith(
-      2,
-      ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "status", "--json"],
-      {
-        timeoutMs: 5000,
-        maxOutputBytes: 1024 * 1024,
-      },
-    );
+    expect(run).toHaveBeenNthCalledWith(2, ["/usr/local/bin/tailscale", "status", "--json"], {
+      timeoutMs: 5000,
+      maxOutputBytes: 1024 * 1024,
+    });
   });
 
   it("falls back to the first tailscale ip when DNSName is blank", async () => {

@@ -17,6 +17,8 @@ export type TailscaleStatusCommandRunner = (
 
 const TAILSCALE_STATUS_COMMAND_CANDIDATES = [
   "tailscale",
+  "/usr/local/bin/tailscale",
+  "/opt/homebrew/bin/tailscale",
   "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
 ];
 const TAILSCALE_STATUS_MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -25,8 +27,9 @@ const TailscaleStatusSchema = z.object({
   BackendState: z.string().optional(),
   Self: z
     .object({
-      DNSName: z.string().optional(),
-      TailscaleIPs: z.array(z.string()).optional(),
+      DNSName: z.string().max(253).optional(),
+      TailscaleIPs: z.array(z.string().max(45)).max(16).optional(),
+      CapMap: z.record(z.string().max(128), z.array(z.unknown()).max(32)).optional(),
     })
     .optional(),
 });
@@ -41,8 +44,13 @@ export type TailscaleConnectivityInspection =
       status: "running";
       backendState: "Running";
       host?: string;
-      serve: { status: "ready"; urls: string[] } | { status: "not-configured" | "error" };
-      funnel: { status: "ready"; urls: string[] } | { status: "not-configured" | "error" };
+      serviceApproval?: "required" | "approved" | "unknown";
+      serve:
+        | { status: "route-configured"; readiness: "not-verified"; urls: string[] }
+        | { status: "missing" | "unrelated" | "conflicting-root" | "unreadable" };
+      funnel:
+        | { status: "route-configured"; urls: string[] }
+        | { status: "not-configured" | "unreadable" };
     };
 
 const TailscaleServeTcpHandlerSchema = z.object({
@@ -53,7 +61,7 @@ const TailscaleServeWebServerSchema = z.object({
   Handlers: z.record(
     z.string(),
     z.object({
-      Proxy: z.string().optional(),
+      Proxy: z.string().max(2048).optional(),
     }),
   ),
 });
@@ -61,6 +69,7 @@ const TailscaleServeWebServerSchema = z.object({
 const TailscaleServeServiceSchema = z.object({
   TCP: z.record(z.string(), TailscaleServeTcpHandlerSchema).optional(),
   Web: z.record(z.string(), TailscaleServeWebServerSchema).optional(),
+  Tun: z.boolean().optional(),
 });
 
 const TailscaleServeConfigSchema = TailscaleServeServiceSchema.extend({
@@ -110,6 +119,7 @@ function collectServeGatewayUrls(
   config: z.infer<typeof TailscaleServeServiceSchema>,
   gatewayPort: number,
   acceptsHostPort: (hostPort: string) => boolean,
+  expectedHost?: string,
 ): string[] {
   const urls: string[] = [];
   for (const [hostPort, webServer] of Object.entries(config.Web ?? {})) {
@@ -123,6 +133,9 @@ function collectServeGatewayUrls(
     }
     try {
       const endpoint = new URL(`https://${hostPort}`);
+      if (expectedHost && endpoint.hostname !== expectedHost) {
+        continue;
+      }
       const port = endpoint.port || "443";
       if (config.TCP?.[port]?.HTTPS !== true) {
         continue;
@@ -135,11 +148,86 @@ function collectServeGatewayUrls(
   return projectPairingConnectivityUrls(urls);
 }
 
+function normalizeServiceName(serviceName: string | undefined): string | undefined {
+  const trimmed = serviceName?.trim();
+  return trimmed ? (trimmed.startsWith("svc:") ? trimmed : `svc:${trimmed}`) : undefined;
+}
+
+function hasPublishedConfig(config: z.infer<typeof TailscaleServeConfigSchema>): boolean {
+  return (
+    config.Tun === true ||
+    Object.keys(config.TCP ?? {}).length > 0 ||
+    Object.keys(config.Web ?? {}).length > 0 ||
+    Object.keys(config.Services ?? {}).length > 0 ||
+    Object.values(config.AllowFunnel ?? {}).some((enabled) => enabled)
+  );
+}
+
+function hasConflictingRoot(params: {
+  config: z.infer<typeof TailscaleServeServiceSchema>;
+  gatewayPort: number;
+  acceptsHostPort: (hostPort: string) => boolean;
+  expectedHost?: string;
+}): boolean {
+  if (params.config.Tun === true) {
+    return true;
+  }
+  for (const [hostPort, webServer] of Object.entries(params.config.Web ?? {})) {
+    let endpoint: URL;
+    try {
+      endpoint = new URL(`https://${hostPort}`);
+    } catch {
+      continue;
+    }
+    if (params.expectedHost && endpoint.hostname !== params.expectedHost) {
+      continue;
+    }
+    const root = webServer.Handlers["/"];
+    if (!root) {
+      continue;
+    }
+    const port = endpoint.port || "443";
+    return (
+      !params.acceptsHostPort(hostPort) ||
+      params.config.TCP?.[port]?.HTTPS !== true ||
+      !root.Proxy ||
+      parseLoopbackProxyPort(root.Proxy) !== params.gatewayPort
+    );
+  }
+  return false;
+}
+
+function resolveServiceApproval(
+  parsedStatus: z.infer<typeof TailscaleStatusSchema> | null,
+  serviceName: string | undefined,
+): "required" | "approved" | "unknown" | undefined {
+  const normalized = normalizeServiceName(serviceName);
+  if (!normalized) {
+    return undefined;
+  }
+  const capMap = parsedStatus?.Self?.CapMap;
+  if (!capMap) {
+    return "unknown";
+  }
+  for (const entry of capMap["service-host"] ?? []) {
+    if (isRecord(entry) && Array.isArray(entry[normalized]) && entry[normalized].length > 0) {
+      return "approved";
+    }
+  }
+  return "required";
+}
+
 function extractPublishedGatewayUrls(
   raw: string,
   gatewayPort: number,
+  host?: string,
   serviceName?: string,
-): { serve: string[]; funnel: string[] } | null {
+): {
+  serve:
+    | { status: "route-configured"; readiness: "not-verified"; urls: string[] }
+    | { status: "missing" | "unrelated" | "conflicting-root" };
+  funnel: { status: "route-configured"; urls: string[] } | { status: "not-configured" };
+} | null {
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start === -1 || end <= start) {
@@ -149,27 +237,57 @@ function extractPublishedGatewayUrls(
   if (!parsed) {
     return null;
   }
-  const normalizedServiceName = serviceName?.trim();
+  const normalizedServiceName = normalizeServiceName(serviceName);
+  const expectedHost = normalizedServiceName
+    ? (resolveTailscalePublishedHost({
+        tailscaleMode: "serve",
+        tailnetHost: host ?? null,
+        serviceName: normalizedServiceName,
+      }) ?? undefined)
+    : host;
+  const funnelHosts = parsed.AllowFunnel ?? {};
+  const selected = normalizedServiceName ? parsed.Services?.[normalizedServiceName] : parsed;
+  const acceptsServeHostPort = normalizedServiceName
+    ? () => true
+    : (hostPort: string) => funnelHosts[hostPort] !== true;
+  const serveUrls = selected
+    ? collectServeGatewayUrls(selected, gatewayPort, acceptsServeHostPort, expectedHost)
+    : [];
+  const serve = serveUrls.length
+    ? ({ status: "route-configured", readiness: "not-verified", urls: serveUrls } as const)
+    : selected &&
+        hasConflictingRoot({
+          config: selected,
+          gatewayPort,
+          acceptsHostPort: acceptsServeHostPort,
+          ...(expectedHost ? { expectedHost } : {}),
+        })
+      ? ({ status: "conflicting-root" } as const)
+      : hasPublishedConfig(parsed)
+        ? ({ status: "unrelated" } as const)
+        : ({ status: "missing" } as const);
   if (normalizedServiceName) {
-    const service = parsed.Services?.[normalizedServiceName];
     return {
-      serve: service ? collectServeGatewayUrls(service, gatewayPort, () => true) : [],
-      funnel: [],
+      serve,
+      funnel: { status: "not-configured" },
     };
   }
-  const funnelHosts = parsed.AllowFunnel ?? {};
+  const funnelUrls = collectServeGatewayUrls(
+    parsed,
+    gatewayPort,
+    (hostPort) => funnelHosts[hostPort] === true,
+  );
   return {
-    serve: collectServeGatewayUrls(parsed, gatewayPort, (hostPort) => !funnelHosts[hostPort]),
-    funnel: collectServeGatewayUrls(
-      parsed,
-      gatewayPort,
-      (hostPort) => funnelHosts[hostPort] === true,
-    ),
+    serve,
+    funnel: funnelUrls.length
+      ? { status: "route-configured", urls: funnelUrls }
+      : { status: "not-configured" },
   };
 }
 
 function extractServeGatewayUrls(raw: string, gatewayPort: number): string[] {
-  return extractPublishedGatewayUrls(raw, gatewayPort)?.serve ?? [];
+  const published = extractPublishedGatewayUrls(raw, gatewayPort);
+  return published?.serve.status === "route-configured" ? published.serve.urls : [];
 }
 
 function tailscaleCommandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -238,6 +356,7 @@ export async function inspectTailscaleConnectivityWithRunner(
       return { status: "error" };
     }
     const host = extractTailnetHostFromStatusJson(statusResult.stdout);
+    const serviceApproval = resolveServiceApproval(parsed, serviceName);
     let serveResult: TailscaleStatusCommandResult;
     try {
       serveResult = await runTailscaleCandidate(
@@ -250,28 +369,27 @@ export async function inspectTailscaleConnectivityWithRunner(
         status: "running",
         backendState,
         ...(host ? { host } : {}),
-        serve: { status: "error" },
-        funnel: { status: "error" },
+        ...(serviceApproval ? { serviceApproval } : {}),
+        serve: { status: "unreadable" },
+        funnel: { status: "unreadable" },
       };
     }
     const published =
       serveResult.code === 0
-        ? extractPublishedGatewayUrls(serveResult.stdout, gatewayPort, serviceName)
+        ? extractPublishedGatewayUrls(
+            serveResult.stdout,
+            gatewayPort,
+            host ?? undefined,
+            serviceName,
+          )
         : null;
     return {
       status: "running",
       backendState,
       ...(host ? { host } : {}),
-      serve: published
-        ? published.serve.length > 0
-          ? { status: "ready", urls: published.serve }
-          : { status: "not-configured" }
-        : { status: "error" },
-      funnel: published
-        ? published.funnel.length > 0
-          ? { status: "ready", urls: published.funnel }
-          : { status: "not-configured" }
-        : { status: "error" },
+      ...(serviceApproval ? { serviceApproval } : {}),
+      serve: published?.serve ?? { status: "unreadable" },
+      funnel: published?.funnel ?? { status: "unreadable" },
     };
   }
   return sawNonMissingFailure ? { status: "error" } : { status: "unavailable" };
@@ -297,7 +415,7 @@ export function selectTailscaleGatewayUrls(
     return [];
   }
   const route = mode === "serve" ? inspection.serve : inspection.funnel;
-  return route.status === "ready" ? route.urls : [];
+  return route.status === "route-configured" ? route.urls : [];
 }
 
 /** Resolves the host published to clients for tailnet or Tailscale Serve gateway modes. */

@@ -103,6 +103,9 @@ const PairingConnectivityBlockerSchema = Type.Union([
   Type.Literal("tailscale-starting"),
   Type.Literal("tailscale-status-error"),
   Type.Literal("tailscale-serve-required"),
+  Type.Literal("tailscale-serve-conflict"),
+  Type.Literal("tailscale-service-approval-required"),
+  Type.Literal("tailscale-service-approval-unknown"),
   Type.Literal("public-url-required"),
   Type.Literal("public-url-invalid"),
   Type.Literal("public-url-insecure"),
@@ -124,11 +127,8 @@ const PairingConnectivityExposureSchema = Type.Union([
   Type.Literal("public-internet"),
 ]);
 const PairingConnectivityChangesSchema = Type.Array(
-  Type.Union([
-    Type.Literal("expose-gateway-on-local-network"),
-    Type.Literal("enable-tailscale-serve"),
-  ]),
-  { maxItems: 2, uniqueItems: true },
+  Type.Literal("expose-gateway-on-local-network"),
+  { maxItems: 1, uniqueItems: true },
 );
 const PairingConnectivityConfigHashSchema = Type.String({ minLength: 1, maxLength: 128 });
 const PairingConnectivityConfigStateSchema = Type.Union([
@@ -137,12 +137,33 @@ const PairingConnectivityConfigStateSchema = Type.Union([
   Type.Literal("unknown"),
 ]);
 
-const TailscalePublishedRouteSchema = Type.Union([
-  closedObject({ status: Type.Literal("ready"), urls: PairingConnectivityUrlsSchema }),
+const TailscaleServeRouteSchema = Type.Union([
   closedObject({
-    status: Type.Union([Type.Literal("not-configured"), Type.Literal("error")]),
+    status: Type.Literal("route-configured"),
+    readiness: Type.Literal("not-verified"),
+    urls: PairingConnectivityUrlsSchema,
+  }),
+  closedObject({
+    status: Type.Union([
+      Type.Literal("missing"),
+      Type.Literal("unrelated"),
+      Type.Literal("conflicting-root"),
+      Type.Literal("unreadable"),
+    ]),
   }),
 ]);
+const TailscaleFunnelRouteSchema = Type.Union([
+  closedObject({ status: Type.Literal("route-configured"), urls: PairingConnectivityUrlsSchema }),
+  closedObject({
+    status: Type.Union([Type.Literal("not-configured"), Type.Literal("unreadable")]),
+  }),
+]);
+const PairingConnectivityActionSchema = closedObject({
+  kind: Type.Literal("retry"),
+  target: Type.Literal("gateway-host"),
+  execution: Type.Literal("manual"),
+  resumable: Type.Literal(true),
+});
 
 const TailscaleConnectivityInspectionSchema = Type.Union([
   closedObject({ status: Type.Literal("unavailable") }),
@@ -160,8 +181,11 @@ const TailscaleConnectivityInspectionSchema = Type.Union([
     status: Type.Literal("running"),
     backendState: Type.Literal("Running"),
     host: Type.Optional(Type.String({ minLength: 1, maxLength: 253 })),
-    serve: TailscalePublishedRouteSchema,
-    funnel: TailscalePublishedRouteSchema,
+    serviceApproval: Type.Optional(
+      Type.Union([Type.Literal("required"), Type.Literal("approved"), Type.Literal("unknown")]),
+    ),
+    serve: TailscaleServeRouteSchema,
+    funnel: TailscaleFunnelRouteSchema,
   }),
 ]);
 
@@ -220,6 +244,7 @@ export const DevicePairConnectivityPlanResultSchema = Type.Union([
     auth: PairingConnectivityAuthSchema,
     blocker: PairingConnectivityBlockerSchema,
     changes: PairingConnectivityChangesSchema,
+    action: Type.Optional(PairingConnectivityActionSchema),
   }),
   closedObject({
     status: Type.Literal("confirmation-required"),

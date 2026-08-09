@@ -85,4 +85,65 @@ describe("device pairing connectivity schemas", () => {
       expect(validateInspect.Check({ ...result, [field]: "redacted" })).toBe(false);
     }
   });
+
+  it("accepts bounded manual Tailscale recovery and rejects executable or diagnostic fields", () => {
+    const validatePlan = Compile(DevicePairConnectivityPlanResultSchema);
+    const plan = {
+      status: "blocked",
+      mode: "tailscale",
+      configState: "applied",
+      auth: "token",
+      blocker: "tailscale-serve-required",
+      changes: [],
+      action: { kind: "retry", target: "gateway-host", execution: "manual", resumable: true },
+    };
+    expect(validatePlan.Check(plan)).toBe(true);
+    for (const field of ["href", "argv", "stdout", "stderr", "AuthURL", "rawConfig"]) {
+      expect(validatePlan.Check({ ...plan, action: { ...plan.action, [field]: "redacted" } })).toBe(
+        false,
+      );
+    }
+    expect(validatePlan.Check({ ...plan, changes: ["enable-tailscale-serve"] })).toBe(false);
+  });
+
+  it("accepts typed persistent Tailscale route and service-approval states", () => {
+    const validateInspect = Compile(DevicePairConnectivityInspectResultSchema);
+    const base = {
+      configState: "applied",
+      auth: "token",
+      current: { status: "blocked", blocker: "route-unavailable" },
+      lan: { status: "unavailable" },
+      publicUrl: { status: "not-configured" },
+    };
+    expect(
+      validateInspect.Check({
+        ...base,
+        tailscale: {
+          status: "running",
+          backendState: "Running",
+          host: "node.tail.ts.net",
+          serviceApproval: "unknown",
+          serve: { status: "unreadable" },
+          funnel: { status: "unreadable" },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      validateInspect.Check({
+        ...base,
+        tailscale: {
+          status: "running",
+          backendState: "Running",
+          host: "node.tail.ts.net",
+          serviceApproval: "approved",
+          serve: {
+            status: "route-configured",
+            readiness: "not-verified",
+            urls: ["wss://node.tail.ts.net"],
+          },
+          funnel: { status: "not-configured" },
+        },
+      }),
+    ).toBe(true);
+  });
 });

@@ -53,10 +53,19 @@ type PairingConnectivityBlocker =
   | "tailscale-starting"
   | "tailscale-status-error"
   | "tailscale-serve-required"
+  | "tailscale-serve-conflict"
+  | "tailscale-service-approval-required"
+  | "tailscale-service-approval-unknown"
   | "public-url-required"
   | "public-url-invalid"
   | "public-url-insecure";
-type PairingConnectivityChange = "expose-gateway-on-local-network" | "enable-tailscale-serve";
+type PairingConnectivityChange = "expose-gateway-on-local-network";
+type PairingConnectivityAction = {
+  kind: "retry";
+  target: "gateway-host";
+  execution: "manual";
+  resumable: true;
+};
 type PairingConnectivityExposure = "same-host" | "local-network" | "tailnet" | "public-internet";
 type PairingConnectivitySource =
   | "manual"
@@ -113,6 +122,7 @@ type PairingConnectivityPlan =
       auth: PairingConnectivityAuth;
       blocker: PairingConnectivityBlocker;
       changes: PairingConnectivityChange[];
+      action?: PairingConnectivityAction;
     }
   | {
       status: "confirmation-required";
@@ -561,6 +571,7 @@ function blockedPlan(
   mode: PairingConnectivityMode,
   blocker: PairingConnectivityBlocker,
   changes: PairingConnectivityChange[] = [],
+  action?: PairingConnectivityAction,
 ): PairingConnectivityPlan {
   return {
     status: "blocked",
@@ -570,7 +581,22 @@ function blockedPlan(
     auth: inspect.auth,
     blocker,
     changes,
+    ...(action ? { action } : {}),
   };
+}
+
+const TAILSCALE_MANUAL_RETRY: PairingConnectivityAction = {
+  kind: "retry",
+  target: "gateway-host",
+  execution: "manual",
+  resumable: true,
+};
+
+function blockedTailscalePlan(
+  inspect: PairingConnectivityInspection,
+  blocker: PairingConnectivityBlocker,
+): PairingConnectivityPlan {
+  return blockedPlan(inspect, "tailscale", blocker, [], TAILSCALE_MANUAL_RETRY);
 }
 
 export function planPairingConnectivity(
@@ -605,25 +631,35 @@ export function planPairingConnectivity(
   } else if (request.mode === "tailscale") {
     const tailscale = inspect.tailscale;
     if (tailscale.status === "unavailable") {
-      return blockedPlan(inspect, request.mode, "tailscale-unavailable");
+      return blockedTailscalePlan(inspect, "tailscale-unavailable");
     }
     if (tailscale.status === "login-required") {
-      return blockedPlan(inspect, request.mode, "tailscale-login-required");
+      return blockedTailscalePlan(inspect, "tailscale-login-required");
     }
     if (tailscale.status === "stopped") {
-      return blockedPlan(inspect, request.mode, "tailscale-not-running");
+      return blockedTailscalePlan(inspect, "tailscale-not-running");
     }
     if (tailscale.status === "starting") {
-      return blockedPlan(inspect, request.mode, "tailscale-starting");
+      return blockedTailscalePlan(inspect, "tailscale-starting");
     }
     if (tailscale.status === "error") {
-      return blockedPlan(inspect, request.mode, "tailscale-status-error");
+      return blockedTailscalePlan(inspect, "tailscale-status-error");
+    }
+    if (tailscale.serve.status === "unreadable") {
+      return blockedTailscalePlan(inspect, "tailscale-status-error");
+    }
+    if (tailscale.serve.status === "conflicting-root") {
+      return blockedTailscalePlan(inspect, "tailscale-serve-conflict");
     }
     const tailscaleUrls = selectTailscaleGatewayUrls(tailscale, "serve");
     if (tailscaleUrls.length === 0) {
-      return blockedPlan(inspect, request.mode, "tailscale-serve-required", [
-        "enable-tailscale-serve",
-      ]);
+      return blockedTailscalePlan(inspect, "tailscale-serve-required");
+    }
+    if (tailscale.serviceApproval === "required") {
+      return blockedTailscalePlan(inspect, "tailscale-service-approval-required");
+    }
+    if (tailscale.serviceApproval === "unknown") {
+      return blockedTailscalePlan(inspect, "tailscale-service-approval-unknown");
     }
     urls = projectPairingConnectivityUrls(tailscaleUrls);
     exposure = "tailnet";

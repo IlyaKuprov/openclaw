@@ -102,7 +102,11 @@ describe("pairing connectivity", () => {
     );
     expect(inspect.tailscale).toMatchObject({
       status: "running",
-      serve: { status: "ready", urls: expect.any(Array) },
+      serve: {
+        status: "route-configured",
+        readiness: "not-verified",
+        urls: expect.any(Array),
+      },
     });
     expect(plan).toMatchObject({ status: "confirmation-required" });
     expect(validateDevicePairConnectivityInspectResult(inspect)).toBe(true);
@@ -184,6 +188,8 @@ describe("pairing connectivity", () => {
     expect(planPairingConnectivity(inspect, { mode: "tailscale" })).toMatchObject({
       status: "blocked",
       blocker: "tailscale-serve-required",
+      changes: [],
+      action: { kind: "retry", target: "gateway-host", execution: "manual", resumable: true },
     });
   });
 
@@ -242,6 +248,15 @@ describe("pairing connectivity", () => {
     });
 
     expect(inspect.tailscale).toEqual({ status: "unavailable" });
+    expect(planPairingConnectivity(inspect, { mode: "tailscale" })).toEqual({
+      status: "blocked",
+      mode: "tailscale",
+      configState: "unknown",
+      auth: "token",
+      blocker: "tailscale-unavailable",
+      changes: [],
+      action: { kind: "retry", target: "gateway-host", execution: "manual", resumable: true },
+    });
     expect(planPairingConnectivity(inspect, { mode: "lan" })).toMatchObject({
       status: "confirmation-required",
       mode: "lan",
@@ -252,6 +267,64 @@ describe("pairing connectivity", () => {
         publicUrl: "wss://gateway.example.com",
       }),
     ).toMatchObject({ status: "confirmation-required", mode: "public" });
+  });
+
+  it.each([
+    [undefined, "tailscale-service-approval-unknown"],
+    [{}, "tailscale-service-approval-required"],
+  ] as const)("keeps named-Service approval %s typed and resumable", async (capMap, blocker) => {
+    const runCommandWithTimeout = vi.fn(async (argv: string[]) => ({
+      code: 0,
+      stdout: argv.includes("serve")
+        ? JSON.stringify({
+            Services: {
+              "svc:openclaw": {
+                TCP: { "443": { HTTPS: true } },
+                Web: {
+                  "openclaw.tail.ts.net:443": {
+                    Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+                  },
+                },
+              },
+            },
+          })
+        : JSON.stringify({
+            BackendState: "Running",
+            Self: {
+              DNSName: "node.tail.ts.net.",
+              ...(capMap === undefined ? {} : { CapMap: capMap }),
+            },
+          }),
+    }));
+    const inspect = await inspectPairingConnectivity(
+      {
+        gateway: {
+          tailscale: { mode: "serve", serviceName: "svc:openclaw" },
+          auth: { mode: "token", token: "token" },
+        },
+      },
+      { runCommandWithTimeout, networkInterfaces: () => ({}) },
+    );
+
+    expect(planPairingConnectivity(inspect, { mode: "tailscale" })).toMatchObject({
+      status: "blocked",
+      blocker,
+      changes: [],
+      action: { kind: "retry", target: "gateway-host", execution: "manual", resumable: true },
+    });
+  });
+
+  it("keeps the Tailscale recovery plan free of host mutation instructions and raw diagnostics", async () => {
+    const inspect = await inspectPairingConnectivity(tokenConfig, {
+      networkInterfaces: () => ({}),
+      runCommandWithTimeout: vi.fn(async () => ({ code: 1, stdout: "", stderr: "sensitive" })),
+    });
+    const tailscalePlan = planPairingConnectivity(inspect, { mode: "tailscale" });
+    const serialized = JSON.stringify(tailscalePlan);
+
+    expect(serialized).not.toMatch(
+      /enable-tailscale-serve|href|https?:\/\/|argv|sudo|--bg|--service|reset|\boff\b|clear|AuthURL|stdout|stderr|sensitive/,
+    );
   });
 
   it("reports ambiguous configured auth without exposing either credential", async () => {
