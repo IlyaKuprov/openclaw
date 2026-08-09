@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "../../lib/string-coerce.ts";
 import type { DraftNode } from "./discovery.ts";
+import { folderDisplayName } from "./path.ts";
 
 type RecentPlaceSource = {
   execCwd?: unknown;
@@ -34,7 +35,7 @@ export function recentPlaces(
     ) {
       continue;
     }
-    const key = `${execNode}\0${folder}`;
+    const key = folderDisplayName(folder).toLowerCase();
     if (seen.has(key)) {
       continue;
     }

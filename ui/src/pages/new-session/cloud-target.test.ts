@@ -608,7 +608,7 @@ describe("cloud target menu", () => {
     const container = document.createElement("div");
     render(
       renderCloudProfileMenuItems({
-        profiles: [{ id: "aws", providerId: "crabbox" }],
+        profiles: [{ id: "aws", providerId: "crabbox", trust: "disposable", sessionHost: true }],
         selectedId: "",
         submitting: false,
         disabled: true,

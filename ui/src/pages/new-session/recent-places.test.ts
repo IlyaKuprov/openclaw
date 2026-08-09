@@ -3,16 +3,17 @@ import { describe, expect, it } from "vitest";
 import { recentPlaces } from "./recent-places.ts";
 
 describe("recentPlaces", () => {
-  it("deduplicates, caps, skips the workspace and unknown nodes, and prefers exec cwd", () => {
+  it("groups basenames, caps, skips the workspace and unknown nodes, and prefers exec cwd", () => {
     expect(
       recentPlaces(
         [
           { execCwd: "/workspace" },
           { execCwd: "/node/repo", execNode: "macbook" },
           { execCwd: "/node/repo", execNode: "macbook" },
+          { execCwd: "/gateway/repo" },
           { execCwd: "/gone/repo", execNode: "retired" },
           {
-            execCwd: "/preferred/repo",
+            execCwd: "/preferred/selected",
             worktree: { repoRoot: "/ignored/worktree" },
           },
           { worktree: { repoRoot: "/worktree/one" } },
@@ -26,7 +27,7 @@ describe("recentPlaces", () => {
       ),
     ).toEqual([
       { folder: "/node/repo", execNode: "macbook" },
-      { folder: "/preferred/repo", execNode: "" },
+      { folder: "/preferred/selected", execNode: "" },
       { folder: "/worktree/one", execNode: "" },
       { folder: "/cwd/two", execNode: "" },
     ]);

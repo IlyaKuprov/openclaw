@@ -8,8 +8,8 @@ import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { generateUUID } from "../../lib/uuid.ts";
-import type { DraftCloudProfile } from "./discovery.ts";
-import { readDraftCloudProfiles } from "./discovery.ts";
+import type { DraftCloudProfile, DraftEnvironment } from "./discovery.ts";
+import { readDraftCloudProfiles, readDraftEnvironments } from "./discovery.ts";
 
 type CloudStartOutcome =
   | { status: "started"; messageId: string; messageSeq?: number }
@@ -273,11 +273,14 @@ export async function deleteRecoveredCloudDraftSession(
   return deleteCloudDraftSession(client, key, agentId);
 }
 
-export async function requestCloudProfiles(
+export async function requestPlaceCatalog(
   client: Pick<GatewayBrowserClient, "request">,
-): Promise<DraftCloudProfile[]> {
+): Promise<{ profiles: DraftCloudProfile[]; environments: DraftEnvironment[] }> {
   const result = await client.request<EnvironmentsListResult>("environments.list", {});
-  return readDraftCloudProfiles(result?.profiles);
+  return {
+    profiles: readDraftCloudProfiles(result?.profiles),
+    environments: readDraftEnvironments(result?.environments),
+  };
 }
 
 export async function startCloudInitialTurn(
@@ -453,6 +456,7 @@ type SessionMenuItemOptions = {
   disabled?: boolean;
   title?: string;
   keepOpen?: boolean;
+  checkAtEnd?: boolean;
   onSelect: () => void;
 };
 
@@ -468,14 +472,20 @@ export function renderSessionMenuItem(params: SessionMenuItemOptions, submitting
       ?disabled=${submitting || (params.disabled ?? false)}
       @click=${params.onSelect}
     >
-      <span class="session-menu__check" aria-hidden="true"
-        >${params.checked ? icons.check : nothing}</span
-      >
+      ${params.checkAtEnd
+        ? nothing
+        : html`<span class="session-menu__check" aria-hidden="true"
+            >${params.checked ? icons.check : nothing}</span
+          >`}
       ${params.icon
         ? html`<span class="session-menu__icon" aria-hidden="true">${params.icon}</span>`
         : nothing}
       <span class="session-menu__text">${params.label}</span>
-      ${params.sub ? html`<span class="session-menu__sub">${params.sub}</span>` : nothing}
+      ${params.checkAtEnd && params.checked
+        ? html`<span class="session-menu__check" aria-hidden="true">${icons.check}</span>`
+        : params.sub
+          ? html`<span class="session-menu__sub">${params.sub}</span>`
+          : nothing}
     </button>
   `;
 }
@@ -487,6 +497,7 @@ export function renderCloudProfileMenuItems(params: {
   icon?: unknown;
   disabled?: boolean;
   disabledReason?: string;
+  checkAtEnd?: boolean;
   onSelect: (profileId: string) => void;
 }) {
   return params.profiles.map((profile) =>
@@ -496,6 +507,7 @@ export function renderCloudProfileMenuItems(params: {
         label: t("newSession.cloudWorker", { profile: profile.id }),
         icon: params.icon,
         checked: params.selectedId === profile.id,
+        checkAtEnd: params.checkAtEnd,
         disabled: params.disabled,
         title:
           params.disabled && params.disabledReason

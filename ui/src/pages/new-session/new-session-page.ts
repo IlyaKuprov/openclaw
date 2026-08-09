@@ -36,7 +36,7 @@ import { NewSessionAttachmentDraft } from "./attachment-draft.ts";
 import * as catalog from "./catalog-target.ts";
 import {
   CLOUD_PROFILE_RETRY_DELAYS_MS,
-  discoverCloudProfiles,
+  discoverPlaceCatalog,
   selectProfiles,
 } from "./cloud-profile-discovery.ts";
 import { PendingCloudRecoveryState, resolveScope } from "./cloud-recovery-state.ts";
@@ -55,6 +55,7 @@ import {
 import {
   type BrowserTarget,
   type DraftCloudProfile,
+  type DraftEnvironment,
   type DraftNode,
   type DraftRepositoryState,
   readDraftNodes,
@@ -92,6 +93,7 @@ class NewSessionPage extends OpenClawLightDomElement {
   @state() private gatewayName = "";
   @state() private execNode = "";
   @state() private cloudProfiles: DraftCloudProfile[] = [];
+  @state() private environments: DraftEnvironment[] | null = null;
   @state() private cloudProfilesReady = false;
   @state() private cloudProfileId = "";
   @state() private message = "";
@@ -194,13 +196,15 @@ class NewSessionPage extends OpenClawLightDomElement {
         this.gatewayRecoveryScope,
       ] as const,
     task: ([client, _connectionEpoch, admin]) =>
-      client ? discoverCloudProfiles(client, admin) : initialState,
-    onComplete: (profiles) => {
+      client ? discoverPlaceCatalog(client, admin) : initialState,
+    onComplete: (placeCatalog) => {
       this.resetCloudProfileRetry();
-      this.applyCloudProfiles(profiles);
+      this.environments = placeCatalog.environments;
+      this.applyCloudProfiles(placeCatalog.profiles);
       this.cloudProfilesReady = true;
     },
     onError: () => {
+      // Keep environment facts, but Cloud profiles fail closed until this owner answers again.
       this.cloudProfiles = [];
       this.cloudProfilesReady = false;
       this.scheduleCloudProfileRetry();
@@ -258,8 +262,9 @@ class NewSessionPage extends OpenClawLightDomElement {
     const connected = snapshot.phase === "connected";
     const firstBind = this.gatewaySource === null;
     const gatewayUrlChanged = !firstBind && this.gatewayUrl !== gateway.connection.gatewayUrl;
+    const gatewaySourceChanged = !firstBind && this.gatewaySource !== gateway;
     const identityChanged =
-      !firstBind && (this.gatewaySource !== gateway || this.gatewayClient !== snapshot.client);
+      !firstBind && (gatewaySourceChanged || this.gatewayClient !== snapshot.client);
     const connectionChanged = !firstBind && this.gatewayConnected !== connected;
     const becameConnected = connected && (identityChanged || !this.gatewayConnected);
     const recoveryScopeBecameReady =
@@ -279,7 +284,8 @@ class NewSessionPage extends OpenClawLightDomElement {
       this.visibility = "normal";
     }
     if (gatewayUrlChanged || identityChanged || connectionChanged || recoveryScope.changed) {
-      this.invalidateGatewayDiscovery(gatewayUrlChanged || recoveryScope.changed);
+      const ownerChanged = gatewaySourceChanged || gatewayUrlChanged || recoveryScope.changed;
+      this.invalidateGatewayDiscovery(ownerChanged, ownerChanged);
     }
     if (
       firstBind ||
@@ -308,12 +314,15 @@ class NewSessionPage extends OpenClawLightDomElement {
     }
   }
 
-  private invalidateGatewayDiscovery(resetHostSelection: boolean) {
+  private invalidateGatewayDiscovery(resetHostSelection: boolean, resetEnvironments: boolean) {
     this.nodesRequestToken += 1;
     this.nodesHydrated = false;
     this.gatewayName = "";
     this.cloudProfiles = [];
     this.cloudProfilesReady = false;
+    if (resetEnvironments) {
+      this.environments = null;
+    }
     this.resetCloudProfileRetry();
     this.branchesRequestToken += 1;
     this.repository = { kind: "idle" };
@@ -446,7 +455,7 @@ class NewSessionPage extends OpenClawLightDomElement {
     this.subscriptions.clear();
     // This invalidates submitRequestToken before payload release below, so a
     // late sessions.create result cannot navigate with attachments we no longer own.
-    this.invalidateGatewayDiscovery(true);
+    this.invalidateGatewayDiscovery(true, true);
     this.gatewaySource = null;
     this.gatewayClient = null;
     this.gatewayConnected = false;
@@ -1657,6 +1666,7 @@ class NewSessionPage extends OpenClawLightDomElement {
       workspace: this.workspacePath(),
       sessions: this.context?.sessions.state.result?.sessions ?? [],
       execNodes: this.isAdmin() ? execNodes : [],
+      environments: this.isAdmin() ? this.environments : [],
       gatewayName: this.gatewayName,
       cloudProfiles: this.isAdmin() ? cloudProfiles : [],
       cloudProfileId: this.cloudProfileId,
