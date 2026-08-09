@@ -16,6 +16,7 @@ import {
   consumeSystemEventEntries,
   drainSystemEventEntries,
   enqueueSystemEvent,
+  enqueueSystemEventWithReceipt,
   hasSystemEvents,
   isSystemEventContextChanged,
   peekSystemEventEntries,
@@ -44,6 +45,8 @@ async function importSystemEventOwnershipModule(
 
 const cfg = {} as unknown as OpenClawConfig;
 const mainKey = resolveMainSessionKey(cfg);
+
+afterEach(() => vi.restoreAllMocks());
 
 async function drainFormattedEvents(
   sessionKey: string,
@@ -218,6 +221,42 @@ describe("system events (session routing)", () => {
     expect(peekSystemEvents(key)).toEqual(["second"]);
   });
 
+  it("removes an exact receipt once while preserving its sibling", () => {
+    const options = { sessionKey: " agent:main:test-receipt ", contextKey: "exec:first" };
+    const receipt = enqueueSystemEventWithReceipt("first", options);
+    expect(receipt).not.toBeNull();
+    enqueueSystemEvent("sibling", { ...options, contextKey: "exec:sibling" });
+    expect(enqueueSystemEventWithReceipt("first", options)).toBeNull();
+
+    expect(receipt?.()).toBe(true);
+    expect(peekSystemEvents("agent:main:test-receipt")).toEqual(["sibling"]);
+    expect(receipt?.()).toBe(false);
+  });
+
+  it("keeps identical receipt-owned entries distinct and removes by queue identity", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const key = "agent:main:test-identical-receipts";
+    const options = {
+      sessionKey: key,
+      contextKey: "exec:reused-slug",
+      deliveryContext: { channel: "telegram", to: "123" },
+    };
+    const first = enqueueSystemEventWithReceipt("completed", options, { allowDuplicate: true });
+    enqueueSystemEvent("unrelated", { sessionKey: key, contextKey: "marker" });
+    const second = enqueueSystemEventWithReceipt("completed", options, { allowDuplicate: true });
+
+    expect(peekSystemEventEntries(key)).toEqual([
+      expect.objectContaining({ text: "completed", ts: 1_800_000_000_000 }),
+      expect.objectContaining({ text: "unrelated", ts: 1_800_000_000_000 }),
+      expect.objectContaining({ text: "completed", ts: 1_800_000_000_000 }),
+    ]);
+    expect(second?.()).toBe(true);
+    expect(peekSystemEvents(key)).toEqual(["completed", "unrelated"]);
+    expect(second?.()).toBe(false);
+    expect(first?.()).toBe(true);
+    expect(peekSystemEvents(key)).toEqual(["unrelated"]);
+  });
+
   it("matches consumed delivery contexts through normalized route identity", () => {
     const key = "agent:main:test-consume-route-context";
     enqueueSystemEvent("first", {
@@ -228,11 +267,16 @@ describe("system events (session routing)", () => {
         threadId: 42.9,
       },
     });
-    const inspected = peekSystemEventEntries(key);
-    expectDefined(
-      expectDefined(inspected[0], "inspected event").deliveryContext,
-      "inspected delivery context",
-    ).threadId = "42";
+    const peeked = expectDefined(peekSystemEventEntries(key)[0], "peeked event");
+    const inspected = [
+      {
+        ...peeked,
+        deliveryContext: {
+          ...expectDefined(peeked.deliveryContext, "peeked delivery context"),
+          threadId: "42",
+        },
+      },
+    ];
 
     expect(consumeSystemEventEntries(key, inspected).map((entry) => entry.text)).toEqual(["first"]);
     expect(peekSystemEvents(key)).toStrictEqual([]);
@@ -297,7 +341,35 @@ describe("system events (session routing)", () => {
     expect(entries[0]?.text).toBe("Node connected");
     expect(entries[0]?.contextKey).toBe("build:123");
     expect(first.isSystemEventContextChanged(key, "build:123")).toBe(false);
-    expect(first.drainSystemEvents(key)).toEqual(["Node connected"]);
+    expect(
+      second.consumeSelectedSystemEventEntries(key, entries).map((event) => event.text),
+    ).toEqual(["Node connected"]);
+    expect(first.peekSystemEventEntries(key)).toEqual([]);
+
+    first.resetSystemEventsForTest();
+  });
+
+  it("preserves stale receipt identity across duplicate module instances", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const first = await importSystemEventsModule("receipt-first");
+    const second = await importSystemEventsModule("receipt-second");
+    const key = "agent:main:test-duplicate-module-receipt";
+    const options = { sessionKey: key, contextKey: "exec:reused-slug" };
+
+    first.resetSystemEventsForTest();
+    const original = first.enqueueSystemEventWithReceipt("completed", options, {
+      allowDuplicate: true,
+    });
+    const staleSnapshot = second.peekSystemEventEntries(key);
+    expect(original?.()).toBe(true);
+    const successor = second.enqueueSystemEventWithReceipt("completed", options, {
+      allowDuplicate: true,
+    });
+
+    expect(first.consumeSelectedSystemEventEntries(key, staleSnapshot)).toEqual([]);
+    expect(second.peekSystemEventEntries(key)).toHaveLength(1);
+    expect(successor?.()).toBe(true);
+    expect(first.peekSystemEventEntries(key)).toEqual([]);
 
     first.resetSystemEventsForTest();
   });

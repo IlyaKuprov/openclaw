@@ -125,6 +125,7 @@ interface FinishedSession {
 
 const runningSessions = new Map<string, ProcessSession>();
 const finishedSessions = new Map<string, FinishedSession>();
+let finishedSessionsByProcess = new WeakMap<ProcessSession, FinishedSession>();
 const activeBackgroundExecSessionIds = new Set<string>();
 let finishedSessionOutputChars = 0;
 
@@ -155,6 +156,11 @@ export function getSession(id: string) {
 /** Returns a retained finished background session by id. */
 export function getFinishedSession(id: string) {
   return finishedSessions.get(id);
+}
+
+/** Returns the terminal snapshot owned by the original live session. */
+export function getFinishedSessionForProcess(session: ProcessSession) {
+  return finishedSessionsByProcess.get(session);
 }
 
 function deleteFinishedSession(id: string): boolean {
@@ -270,7 +276,7 @@ export function markBackgrounded(session: ProcessSession) {
 /** Records that a terminal process poll consumed the process result. */
 export function markTerminalPollObserved(session: ProcessSession): void {
   session.terminalPollObserved = true;
-  const finished = finishedSessions.get(session.id);
+  const finished = finishedSessionsByProcess.get(session);
   if (finished) {
     finished.terminalPollObserved = true;
   }
@@ -286,7 +292,7 @@ export function recordNotifyOnExitRemoval(
     return;
   }
   session.notifyOnExitRemoval = remove;
-  const finished = finishedSessions.get(session.id);
+  const finished = finishedSessionsByProcess.get(session);
   if (finished) {
     finished.notifyOnExitRemoval = remove;
   }
@@ -349,7 +355,7 @@ function moveToFinished(session: ProcessSession, status: ProcessStatus) {
   // Keep full completed logs; evict older records rather than silently
   // truncating the process poll/log contract or dropping the newest result.
   deleteFinishedSession(session.id);
-  finishedSessions.set(session.id, {
+  const finished: FinishedSession = {
     id: session.id,
     command: session.command,
     scopeKey: session.scopeKey,
@@ -369,7 +375,9 @@ function moveToFinished(session: ProcessSession, status: ProcessStatus) {
     totalOutputChars: session.totalOutputChars,
     ...(session.terminalPollObserved ? { terminalPollObserved: true } : {}),
     ...(session.notifyOnExitRemoval ? { notifyOnExitRemoval: session.notifyOnExitRemoval } : {}),
-  });
+  };
+  finishedSessionsByProcess.set(session, finished);
+  finishedSessions.set(session.id, finished);
   finishedSessionOutputChars += session.aggregated.length;
   while (
     finishedSessions.size > MAX_FINISHED_SESSION_COUNT ||
@@ -454,6 +462,7 @@ export function listFinishedSessions() {
 function resetProcessRegistryForTests() {
   runningSessions.clear();
   finishedSessions.clear();
+  finishedSessionsByProcess = new WeakMap();
   finishedSessionOutputChars = 0;
   activeBackgroundExecSessionIds.clear();
   stopSweeper();

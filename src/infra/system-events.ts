@@ -8,7 +8,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { channelRouteDedupeKey } from "../plugin-sdk/channel-route.js";
-import { resolveGlobalMap } from "../shared/global-singleton.js";
+import { resolveGlobalMap, resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
   mergeDeliveryContext,
   normalizeDeliveryContext,
@@ -36,8 +36,13 @@ type SessionQueue = {
 };
 
 const SYSTEM_EVENT_QUEUES_KEY = Symbol.for("openclaw.systemEvents.queues");
+const SYSTEM_EVENT_IDENTITIES_KEY = Symbol.for("openclaw.systemEvents.identities");
 
 const queues = resolveGlobalMap<string, SessionQueue>(SYSTEM_EVENT_QUEUES_KEY, "close-and-restart");
+const queueEntriesByClone = resolveGlobalSingleton(
+  SYSTEM_EVENT_IDENTITIES_KEY,
+  () => new WeakMap<SystemEvent, SystemEvent>(),
+);
 
 type SystemEventOptions = {
   sessionKey: string;
@@ -45,6 +50,13 @@ type SystemEventOptions = {
   deliveryContext?: DeliveryContext;
   /** Replace the pending event for this context and delivery route. Requires contextKey. */
   replace?: boolean;
+};
+
+type SystemEventReceipt = () => boolean;
+
+type ReceiptOptions = {
+  /** Receipt-owned producers may need distinct, structurally identical queue entries. */
+  allowDuplicate?: boolean;
 };
 
 function requireSessionKey(key?: string | null): string {
@@ -83,6 +95,7 @@ function cloneSystemEvent(event: SystemEvent): SystemEvent {
     ...(event.deliveryContext ? { deliveryContext: { ...event.deliveryContext } } : {}),
   };
   cloneSystemEventOwner(event, clone);
+  queueEntriesByClone.set(clone, queueEntriesByClone.get(event) ?? event);
   return clone;
 }
 
@@ -110,16 +123,10 @@ function findDuplicateInQueue(
   return queue.some((event) => isDuplicateSystemEvent(event, incoming));
 }
 
-export function enqueueSystemEventEntry(
+function enqueueSystemEventQueueEntry(
   text: string,
   options: SystemEventOptions,
-): SystemEvent | null {
-  return enqueueOwnedSystemEventEntry(text, options);
-}
-
-function enqueueOwnedSystemEventEntry(
-  text: string,
-  options: SystemEventOptions,
+  receiptOptions?: ReceiptOptions,
 ): SystemEvent | null {
   if (options.replace) {
     return replaceSystemEventEntry(text, options);
@@ -134,6 +141,7 @@ function enqueueOwnedSystemEventEntry(
   const normalizedDeliveryContext = normalizeDeliveryContext(options.deliveryContext);
   const normalizedOwnerAgentId = resolveSystemEventOptionsOwnerAgentId(options);
   if (
+    receiptOptions?.allowDuplicate !== true &&
     findDuplicateInQueue(
       entry.queue,
       cleaned,
@@ -158,11 +166,42 @@ function enqueueOwnedSystemEventEntry(
   if (entry.queue.length > MAX_EVENTS) {
     entry.queue.shift();
   }
-  return cloneSystemEvent(event);
+  return event;
+}
+
+export function enqueueSystemEventEntry(
+  text: string,
+  options: SystemEventOptions,
+): SystemEvent | null {
+  const event = enqueueSystemEventQueueEntry(text, options);
+  return event ? cloneSystemEvent(event) : null;
 }
 
 export function enqueueSystemEvent(text: string, options: SystemEventOptions) {
   return enqueueSystemEventEntry(text, options) !== null;
+}
+
+/** Enqueues an event and returns one-use removal ownership for that exact queue entry. */
+export function enqueueSystemEventWithReceipt(
+  text: string,
+  options: SystemEventOptions,
+  receiptOptions?: ReceiptOptions,
+): SystemEventReceipt | null {
+  const event = enqueueSystemEventQueueEntry(text, options, receiptOptions);
+  if (!event) {
+    return null;
+  }
+  const sessionKey = requireSessionKey(options.sessionKey);
+  return () => {
+    const entry = getSessionQueue(sessionKey);
+    const index = entry?.queue.indexOf(event) ?? -1;
+    if (!entry || index === -1) {
+      return false;
+    }
+    entry.queue.splice(index, 1);
+    resetQueueState(sessionKey, entry);
+    return true;
+  };
 }
 
 export function drainSystemEventEntries(sessionKey: string): SystemEvent[] {
@@ -231,7 +270,7 @@ function replaceSystemEventEntry(text: string, options: SystemEventOptions): Sys
     entry.queue.shift();
   }
   entry.lastContextKey = normalizedContextKey;
-  return cloneSystemEvent(event);
+  return event;
 }
 
 function isDuplicateSystemEvent(
@@ -256,6 +295,13 @@ function areSystemEventsEqual(left: SystemEvent, right: SystemEvent): boolean {
     resolveSystemEventOwnerAgentId(left) === resolveSystemEventOwnerAgentId(right) &&
     areDeliveryContextsEqual(left.deliveryContext, right.deliveryContext)
   );
+}
+
+function isConsumedSystemEvent(queued: SystemEvent, consumed: SystemEvent): boolean {
+  const queueEntry = queueEntriesByClone.get(consumed);
+  // Snapshot clones carry private queue identity so a stale snapshot cannot consume
+  // a structurally identical successor. Hand-constructed callers retain structural matching.
+  return queueEntry ? queued === queueEntry : areSystemEventsEqual(queued, consumed);
 }
 
 function resetQueueState(key: string, entry: SessionQueue) {
@@ -286,7 +332,7 @@ export function consumeSystemEventEntries(
   if (
     consumedEntries.length > entry.queue.length ||
     !consumedEntries.every((event, index) =>
-      areSystemEventsEqual(expectDefined(entry.queue[index], "queue entry at index"), event),
+      isConsumedSystemEvent(expectDefined(entry.queue[index], "queue entry at index"), event),
     )
   ) {
     // A keyed replacement may remove one inspected entry while a prompt is in flight.
@@ -310,7 +356,7 @@ export function consumeSelectedSystemEventEntries(
   }
   const removed: SystemEvent[] = [];
   for (const consumed of consumedEntries) {
-    const index = entry.queue.findIndex((event) => areSystemEventsEqual(event, consumed));
+    const index = entry.queue.findIndex((event) => isConsumedSystemEvent(event, consumed));
     if (index === -1) {
       continue;
     }
