@@ -174,6 +174,7 @@ artifact when package or Docker-facing stages need it.
 | Cross-OS                    | **Job:** `cross_os_release_checks`<br />**Backing workflow:** `OpenClaw Cross-OS Release Checks (Reusable)`<br />**Tests:** fresh and upgrade lanes on Linux, Windows, and macOS for the selected provider and mode, using the candidate tarball plus a baseline package.<br />**Rerun:** `rerun_group=cross-os`.                                                                                                                                                                                                                                                                                      |
 | Windows-node prerelease E2E | **Job:** `windows_node_prerelease_e2e`<br />**Backing workflow:** `openclaw/openclaw-windows-node` release-candidate E2E<br />**Tests:** resolves the current Windows-node production prerelease, carries its exact name and SHA-256 through the reusable boundary, binds the OpenClaw candidate to its producer run, and proves setup, tray connection, Windows-node capability registration, and MCP execution against the exact OpenClaw tarball.<br />**Runs:** every full release validation (`rerun_group=all`) or focused Windows validation (`rerun_group=windows-node`); success is required. |
 | Windows-node stable E2E     | **Job:** `windows_node_stable_e2e`<br />**Backing workflow:** `openclaw/openclaw-windows-node` release-candidate E2E<br />**Tests:** runs the same producer-run-bound E2E against the exact selected published stable Windows-node artifact. A failure passes only when its evidence contains the gateway's explicit `PROTOCOL_MISMATCH` code; install, network, pairing, auth, and all other failures remain blocking.<br />**Runs:** every full release validation (`rerun_group=all`) or focused Windows validation (`rerun_group=windows-node`).                                                   |
+| Windows-node main E2E       | **Job:** `windows_node_main_e2e`<br />**Backing workflow:** `openclaw/openclaw-windows-node` release-candidate E2E<br />**Tests:** resolves `openclaw/openclaw-windows-node` `main` to a full commit SHA, checks out that exact source separately from the pinned reusable-workflow revision, builds exactly one x64 Tray executable, and runs the same candidate Gateway setup, connection, capability, and MCP E2E. Main source never substitutes for a release artifact.<br />**Runs:** every full release validation (`rerun_group=all`) or focused Windows validation (`rerun_group=windows-node`); success is required. |
 | Repo and live E2E           | **Job:** `Run repo/live E2E validation`<br />**Backing workflow:** `OpenClaw Live And E2E Checks (Reusable)`<br />**Tests:** repository E2E, live cache, OpenAI websocket streaming, native live provider and plugin shards, and Docker-backed live model/backend/gateway harnesses selected by `release_profile`.<br />**Runs:** `run_release_soak=true`, `release_profile=full`, or focused `rerun_group=live-e2e`.<br />**Rerun:** `rerun_group=live-e2e`, optionally with `live_suite_filter`.                                                                                                     |
 | Docker release path         | **Job:** `Run Docker release-path validation`<br />**Backing workflow:** `OpenClaw Live And E2E Checks (Reusable)`<br />**Tests:** release-path Docker chunks against the shared package artifact.<br />**Runs:** `run_release_soak=true`, `release_profile=full`, or focused `rerun_group=live-e2e`.<br />**Rerun:** `rerun_group=live-e2e`.                                                                                                                                                                                                                                                          |
 | Package Acceptance          | **Job:** `Run package acceptance`<br />**Backing workflow:** `Package Acceptance`<br />**Tests:** offline plugin package fixtures, plugin update, the canonical mock-OpenAI Telegram package E2E, and published-upgrade survivor checks against the same tarball. Blocking release checks use the default latest published baseline; soak checks (`run_release_soak=true`) expand to the last 4 stable npm releases plus 3 pinned historical versions (`2026.4.23`, `2026.5.2`, `2026.4.15`), run against reported-issue upgrade fixtures.<br />**Rerun:** `rerun_group=package`.                      |
@@ -191,8 +192,8 @@ artifact when package or Docker-facing stages need it.
 
 ## Windows-node release channel selection
 
-`Resolve Windows-node release artifacts` picks the two artifacts the Windows-node
-E2E lanes install. It selects by the canonical release-tag convention documented
+`Resolve Windows-node release artifacts` picks the two release artifacts the
+Windows-node release E2E lanes install. It selects by the canonical release-tag convention documented
 in `openclaw/openclaw-windows-node` (`docs/RELEASING.md` "Release channel policy"
 and `docs/VERSIONING.md` "Canonical release tags"), not by ad-hoc name
 exclusions:
@@ -224,6 +225,13 @@ The resolver then fails closed instead of degrading to a weaker artifact:
 
 The job summary records both selected tags, asset names, and publish timestamps
 so the artifacts behind a green lane stay auditable.
+
+`Resolve Windows-node main source` independently resolves `main` to a full commit
+SHA. The reusable workflow binds its own pinned revision through GitHub OIDC,
+checks out that separate source SHA, builds the x64 Tray from it, and refuses to
+run unless exactly one executable is produced. This source lane continues to run
+when the production prerelease resolver fails closed; it adds current-development
+coverage without weakening the stable or prerelease release-artifact gates.
 
 ## Docker release-path chunks
 
@@ -291,7 +299,7 @@ Use `rerun_group` to avoid repeating unrelated release boxes:
 | `release-checks`    | All OpenClaw Release Checks stages.                                                             |
 | `install-smoke`     | Install Smoke through release checks.                                                           |
 | `cross-os`          | Cross-OS release checks.                                                                        |
-| `windows-node`      | Windows-node stable and prerelease release-candidate E2E.                                       |
+| `windows-node`      | Windows-node stable, prerelease, and immutable-main release-candidate E2E.                     |
 | `live-e2e`          | Repo/live E2E and Docker release-path validation.                                               |
 | `package`           | Package Acceptance.                                                                             |
 | `qa`                | QA parity plus QA live lanes.                                                                   |

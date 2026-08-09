@@ -921,6 +921,7 @@ function runReleaseChecksSummary(params: {
   telegramSelected?: boolean;
   windowsSelected?: boolean;
   windowsPrereleaseResult?: "cancelled" | "failure" | "skipped" | "success";
+  windowsMainResult?: "cancelled" | "failure" | "skipped" | "success";
   windowsStableResult?: "cancelled" | "failure" | "skipped" | "success";
   validatedStatuses?: Array<{ job: string; status: string; variant: string }>;
   workflowRef?: string;
@@ -971,6 +972,7 @@ function runReleaseChecksSummary(params: {
       RUNTIME_TOOL_COVERAGE_RELEASE_CHECKS_RESULT: "skipped",
       VALIDATE_ADVISORY_STATUSES_OUTCOME: "success",
       WINDOWS_NODE_PRERELEASE_E2E_RESULT: params.windowsPrereleaseResult ?? "skipped",
+      WINDOWS_NODE_MAIN_E2E_RESULT: params.windowsMainResult ?? "skipped",
       WINDOWS_NODE_SELECTED: String(params.windowsSelected ?? false),
       WINDOWS_NODE_STABLE_E2E_RESULT: params.windowsStableResult ?? "skipped",
       WORKFLOW_REF: params.workflowRef ?? "refs/heads/release/2026.7.1",
@@ -3701,14 +3703,17 @@ describe("package artifact reuse", () => {
     }
   });
 
-  it("binds both Windows-node release E2E calls to the resolved asset tuple", () => {
+  it("binds Windows-node release and main E2E calls to immutable source tuples", () => {
     const workflow = readFileSync(RELEASE_CHECKS_WORKFLOW, "utf8");
     const resolver = workflowJob(RELEASE_CHECKS_WORKFLOW, "resolve_windows_node_release_artifacts");
+    const mainResolver = workflowJob(RELEASE_CHECKS_WORKFLOW, "resolve_windows_node_main_source");
     const prerelease = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_prerelease_e2e");
     const stable = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_stable_e2e");
+    const main = workflowJob(RELEASE_CHECKS_WORKFLOW, "windows_node_main_e2e");
     const resolverScript = resolver.steps?.find((step) => step.id === "resolve")?.run ?? "";
+    const mainResolverScript = mainResolver.steps?.find((step) => step.id === "resolve")?.run ?? "";
     const reusableWorkflow =
-      "openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@520f8051c19a608f702ca305142b4ae8a65229d3";
+      "openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@c92fa583dcdb0ce9d63ba2965a7579a95992d7a4";
 
     expect(resolver.outputs).toMatchObject({
       stable_asset_name: "${{ steps.resolve.outputs.stable_asset_name }}",
@@ -3716,6 +3721,13 @@ describe("package artifact reuse", () => {
       prerelease_asset_name: "${{ steps.resolve.outputs.prerelease_asset_name }}",
       prerelease_asset_sha256: "${{ steps.resolve.outputs.prerelease_asset_sha256 }}",
     });
+    expect(mainResolver.outputs).toMatchObject({
+      main_source_sha: "${{ steps.resolve.outputs.main_source_sha }}",
+    });
+    expect(mainResolverScript).toContain(
+      "repos/openclaw/openclaw-windows-node/git/ref/heads/main",
+    );
+    expect(mainResolverScript).toContain("Windows-node main must resolve to an immutable commit.");
     expect(workflow).toContain('release_sha="$(resolve_tag_sha "$tag")"');
     expect(workflow).toContain('echo "${channel}_release_sha=${release_sha}" >> "$GITHUB_OUTPUT"');
     expect(workflow).not.toContain(
@@ -3757,7 +3769,10 @@ describe("package artifact reuse", () => {
         "${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_name }}",
       windows_node_release_asset_sha256:
         "${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_sha256 }}",
-      windows_node_sha: "520f8051c19a608f702ca305142b4ae8a65229d3",
+      windows_node_source: "release",
+      windows_node_source_sha:
+        "${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_release_sha }}",
+      windows_node_workflow_sha: "c92fa583dcdb0ce9d63ba2965a7579a95992d7a4",
     });
     expect(stable.uses).toBe(reusableWorkflow);
     expect(stable.with).toMatchObject({
@@ -3767,7 +3782,25 @@ describe("package artifact reuse", () => {
         "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_name }}",
       windows_node_release_asset_sha256:
         "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}",
-      windows_node_sha: "520f8051c19a608f702ca305142b4ae8a65229d3",
+      windows_node_source: "release",
+      windows_node_source_sha:
+        "${{ needs.resolve_windows_node_release_artifacts.outputs.stable_release_sha }}",
+      windows_node_workflow_sha: "c92fa583dcdb0ce9d63ba2965a7579a95992d7a4",
+    });
+    expect(main.uses).toBe(reusableWorkflow);
+    expect(main.needs).toEqual([
+      "resolve_target",
+      "prepare_release_package",
+      "resolve_windows_node_main_source",
+    ]);
+    expect(main.with).toMatchObject({
+      candidate_artifact_name: "${{ needs.prepare_release_package.outputs.artifact_name }}",
+      candidate_artifact_run_id: "${{ needs.prepare_release_package.outputs.artifact_run_id }}",
+      windows_node_source: "main",
+      windows_node_source_sha:
+        "${{ needs.resolve_windows_node_main_source.outputs.main_source_sha }}",
+      windows_node_workflow_sha: "c92fa583dcdb0ce9d63ba2965a7579a95992d7a4",
+      allow_protocol_mismatch: false,
     });
   });
 
@@ -5350,13 +5383,14 @@ describe("package artifact reuse", () => {
   it.each([
     {
       expected: [] as string[],
-      name: "accepts both successful selected Windows-node E2E children",
+      name: "accepts all successful selected Windows-node E2E children",
       params: {
         currentAttempt: "2",
         currentResult: "skipped" as const,
         telegramSelected: false,
         windowsSelected: true,
         windowsPrereleaseResult: "success" as const,
+        windowsMainResult: "success" as const,
         windowsStableResult: "success" as const,
       },
       status: 0,
@@ -5370,6 +5404,7 @@ describe("package artifact reuse", () => {
         telegramSelected: false,
         windowsSelected: true,
         windowsPrereleaseResult: "skipped" as const,
+        windowsMainResult: "success" as const,
         windowsStableResult: "success" as const,
       },
       status: 1,
@@ -5383,7 +5418,22 @@ describe("package artifact reuse", () => {
         telegramSelected: false,
         windowsSelected: true,
         windowsPrereleaseResult: "success" as const,
+        windowsMainResult: "success" as const,
         windowsStableResult: "failure" as const,
+      },
+      status: 1,
+    },
+    {
+      expected: ["::error::windows_node_main_e2e ended with skipped"],
+      name: "rejects a skipped selected Windows-node main E2E child",
+      params: {
+        currentAttempt: "2",
+        currentResult: "skipped" as const,
+        telegramSelected: false,
+        windowsSelected: true,
+        windowsPrereleaseResult: "success" as const,
+        windowsMainResult: "skipped" as const,
+        windowsStableResult: "success" as const,
       },
       status: 1,
     },
@@ -5396,6 +5446,7 @@ describe("package artifact reuse", () => {
         telegramSelected: false,
         windowsSelected: false,
         windowsPrereleaseResult: "skipped" as const,
+        windowsMainResult: "skipped" as const,
         windowsStableResult: "skipped" as const,
       },
       status: 0,

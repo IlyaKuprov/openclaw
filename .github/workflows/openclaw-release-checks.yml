@@ -1085,6 +1085,39 @@ jobs:
             echo "- Prerelease: \`$(jq -r .tag <<< "$prerelease")\` / \`$(jq -r .asset_name <<< "$prerelease")\` (published $(jq -r .published_at <<< "$prerelease"))"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  resolve_windows_node_main_source:
+    name: Resolve Windows-node main source
+    needs: [resolve_target]
+    if: contains(fromJSON('["all","windows-node"]'), needs.resolve_target.outputs.rerun_group)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      main_source_sha: ${{ steps.resolve.outputs.main_source_sha }}
+    steps:
+      - name: Resolve immutable Windows-node main revision
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="$(gh api repos/openclaw/openclaw-windows-node/git/ref/heads/main)"
+          object_type="$(jq -r '.object.type' <<< "$ref")"
+          source_sha="$(jq -r '.object.sha' <<< "$ref")"
+          [[ "$object_type" == "commit" && "$source_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Windows-node main must resolve to an immutable commit." >&2
+            exit 1
+          }
+
+          echo "main_source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Windows-node main source"
+            echo
+            echo "- Resolved main commit: \`${source_sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   install_smoke_release_checks:
     needs: [resolve_target]
     if: contains(fromJSON('["all","install-smoke"]'), needs.resolve_target.outputs.rerun_group)
@@ -1139,18 +1172,19 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@520f8051c19a608f702ca305142b4ae8a65229d3
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@c92fa583dcdb0ce9d63ba2965a7579a95992d7a4
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_artifact_run_id: ${{ needs.prepare_release_package.outputs.artifact_run_id }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
       candidate_version: ${{ needs.prepare_release_package.outputs.package_version }}
+      windows_node_source: release
+      windows_node_source_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_release_sha }}
+      windows_node_workflow_sha: c92fa583dcdb0ce9d63ba2965a7579a95992d7a4
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_tag }}
-      windows_node_release_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_release_sha }}
       windows_node_release_asset_name: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_name }}
       windows_node_release_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.prerelease_asset_sha256 }}
       allow_protocol_mismatch: false
-      windows_node_sha: 520f8051c19a608f702ca305142b4ae8a65229d3
 
   windows_node_stable_e2e:
     name: Run Windows-node stable E2E
@@ -1160,18 +1194,38 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@520f8051c19a608f702ca305142b4ae8a65229d3
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@c92fa583dcdb0ce9d63ba2965a7579a95992d7a4
     with:
       candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
       candidate_artifact_run_id: ${{ needs.prepare_release_package.outputs.artifact_run_id }}
       candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
       candidate_version: ${{ needs.prepare_release_package.outputs.package_version }}
+      windows_node_source: release
+      windows_node_source_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_release_sha }}
+      windows_node_workflow_sha: c92fa583dcdb0ce9d63ba2965a7579a95992d7a4
       windows_node_release_tag: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_tag }}
-      windows_node_release_sha: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_release_sha }}
       windows_node_release_asset_name: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_name }}
       windows_node_release_asset_sha256: ${{ needs.resolve_windows_node_release_artifacts.outputs.stable_asset_sha256 }}
       allow_protocol_mismatch: true
-      windows_node_sha: 520f8051c19a608f702ca305142b4ae8a65229d3
+
+  windows_node_main_e2e:
+    name: Run Windows-node main E2E
+    needs: [resolve_target, prepare_release_package, resolve_windows_node_main_source]
+    if: contains(fromJSON('["all","windows-node"]'), needs.resolve_target.outputs.rerun_group)
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: openclaw/openclaw-windows-node/.github/workflows/release-candidate-e2e.yml@c92fa583dcdb0ce9d63ba2965a7579a95992d7a4
+    with:
+      candidate_artifact_name: ${{ needs.prepare_release_package.outputs.artifact_name }}
+      candidate_artifact_run_id: ${{ needs.prepare_release_package.outputs.artifact_run_id }}
+      candidate_sha256: ${{ needs.prepare_release_package.outputs.package_sha256 }}
+      candidate_version: ${{ needs.prepare_release_package.outputs.package_version }}
+      windows_node_source: main
+      windows_node_source_sha: ${{ needs.resolve_windows_node_main_source.outputs.main_source_sha }}
+      windows_node_workflow_sha: c92fa583dcdb0ce9d63ba2965a7579a95992d7a4
+      allow_protocol_mismatch: false
 
   live_repo_e2e_release_checks:
     name: Run repo/live E2E validation
@@ -2579,10 +2633,12 @@ jobs:
       - resolve_target
       - prepare_release_package
       - resolve_windows_node_release_artifacts
+      - resolve_windows_node_main_source
       - install_smoke_release_checks
       - cross_os_release_checks
       - windows_node_prerelease_e2e
       - windows_node_stable_e2e
+      - windows_node_main_e2e
       - live_repo_e2e_release_checks
       - docker_e2e_release_checks
       - package_acceptance_release_checks
@@ -2706,10 +2762,12 @@ jobs:
           RESOLVE_TARGET_RESULT: ${{ needs.resolve_target.result }}
           PREPARE_RELEASE_PACKAGE_RESULT: ${{ needs.prepare_release_package.result }}
           RESOLVE_WINDOWS_NODE_RELEASE_ARTIFACTS_RESULT: ${{ needs.resolve_windows_node_release_artifacts.result }}
+          RESOLVE_WINDOWS_NODE_MAIN_SOURCE_RESULT: ${{ needs.resolve_windows_node_main_source.result }}
           INSTALL_SMOKE_RELEASE_CHECKS_RESULT: ${{ needs.install_smoke_release_checks.result }}
           CROSS_OS_RELEASE_CHECKS_RESULT: ${{ needs.cross_os_release_checks.result }}
           WINDOWS_NODE_PRERELEASE_E2E_RESULT: ${{ needs.windows_node_prerelease_e2e.result }}
           WINDOWS_NODE_STABLE_E2E_RESULT: ${{ needs.windows_node_stable_e2e.result }}
+          WINDOWS_NODE_MAIN_E2E_RESULT: ${{ needs.windows_node_main_e2e.result }}
           LIVE_REPO_E2E_RELEASE_CHECKS_RESULT: ${{ needs.live_repo_e2e_release_checks.result }}
           DOCKER_E2E_RELEASE_CHECKS_RESULT: ${{ needs.docker_e2e_release_checks.result }}
           PACKAGE_ACCEPTANCE_RELEASE_CHECKS_RESULT: ${{ needs.package_acceptance_release_checks.result }}
@@ -2737,10 +2795,12 @@ jobs:
             "resolve_target=${RESOLVE_TARGET_RESULT}"
             "prepare_release_package=${PREPARE_RELEASE_PACKAGE_RESULT}"
             "resolve_windows_node_release_artifacts=${RESOLVE_WINDOWS_NODE_RELEASE_ARTIFACTS_RESULT:-skipped}"
+            "resolve_windows_node_main_source=${RESOLVE_WINDOWS_NODE_MAIN_SOURCE_RESULT:-skipped}"
             "install_smoke_release_checks=${INSTALL_SMOKE_RELEASE_CHECKS_RESULT}"
             "cross_os_release_checks=${CROSS_OS_RELEASE_CHECKS_RESULT}"
             "windows_node_prerelease_e2e=${WINDOWS_NODE_PRERELEASE_E2E_RESULT:-skipped}"
             "windows_node_stable_e2e=${WINDOWS_NODE_STABLE_E2E_RESULT:-skipped}"
+            "windows_node_main_e2e=${WINDOWS_NODE_MAIN_E2E_RESULT:-skipped}"
             "live_repo_e2e_release_checks=${LIVE_REPO_E2E_RELEASE_CHECKS_RESULT}"
             "docker_e2e_release_checks=${DOCKER_E2E_RELEASE_CHECKS_RESULT}"
             "package_acceptance_release_checks=${PACKAGE_ACCEPTANCE_RELEASE_CHECKS_RESULT}"
@@ -2860,7 +2920,8 @@ jobs:
             # A selected Windows-node release E2E lane must actually run; a
             # skipped tuple job would otherwise silently pass this gate.
             if [[ ( "$name" == "windows_node_prerelease_e2e" ||
-                    "$name" == "windows_node_stable_e2e" ) &&
+                    "$name" == "windows_node_stable_e2e" ||
+                    "$name" == "windows_node_main_e2e" ) &&
                   "$WINDOWS_NODE_SELECTED" == "true" ]]; then
               require_success=true
             fi
