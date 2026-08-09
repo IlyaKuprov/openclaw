@@ -528,9 +528,9 @@ type MemoryAccessContext = DeepReadonly<{
   hostFactsRevision: string;
 }>;
 
-type MemoryMount = DeepReadonly<{
+type AuthorizedMemoryMount = DeepReadonly<{
+  version: 1;
   agentId: string;
-  storeId: string;
   mountHandle: string;
   capabilities: readonly MemoryOperation[];
   audienceRevision: string;
@@ -546,7 +546,7 @@ type AuthorizedMemoryPlan = DeepReadonly<{
   memoryPolicyRevision: string;
   deliveryRevision: string;
   operation: MemoryOperation;
-  mounts: readonly MemoryMount[];
+  mounts: readonly AuthorizedMemoryMount[];
   bootstrapResourceHandles: readonly string[];
   allowedEgressAudiences: readonly AudienceRef[];
   expiresAt: string;
@@ -964,6 +964,7 @@ type MemoryAuthorizationCapabilities = Readonly<{
   scopedSync: true;
   scopedWrite: true;
   scopedExport: true;
+  scopedStatus: true;
   exposureReceipts: true;
   egressReceipts: true;
 }>;
@@ -1001,6 +1002,10 @@ interface AuthorizedMemoryRuntime {
     plan: AuthorizedMemoryPlan;
     handles: readonly AuthorizedResourceHandle[];
   }): Promise<AuthorizedMemoryResultEnvelope<MemoryExportResult>>;
+  statusAuthorized(params: {
+    context: MemoryAccessContext;
+    plan: AuthorizedMemoryPlan;
+  }): Promise<AuthorizedMemoryResultEnvelope<MemoryProviderStatus>>;
 }
 ```
 
