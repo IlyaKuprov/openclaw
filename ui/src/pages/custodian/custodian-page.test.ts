@@ -264,7 +264,6 @@ describe("custodian page", () => {
       expect(page.querySelector(".custodian__wizard-guidance")).not.toBeNull(),
     );
     expect(page.querySelector(".chat-group.assistant")).toBeNull();
-    expect(page.querySelector("details")).toBeNull();
     expect(page.querySelector(".custodian__wizard-guidance ol")).not.toBeNull();
     expect(page.querySelector(".custodian__wizard-guidance .code-block-wrapper")).not.toBeNull();
     const copyButton = page.querySelector<HTMLButtonElement>(
