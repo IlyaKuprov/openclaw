@@ -88,7 +88,11 @@ export type WorkerLease = {
 
 /** Authoritative inspection result for an already-known worker lease. */
 export type WorkerLeaseStatus =
-  | { status: "active" }
+  | {
+      status: "active";
+      /** Explicit provider fact used to reconcile leases persisted before this metadata existed. */
+      sharedHost?: boolean;
+    }
   | { status: "destroyed" }
   | { status: "unknown" };
 

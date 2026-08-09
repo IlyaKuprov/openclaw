@@ -153,6 +153,7 @@ describe("QA Lab static-SSH worker provider", () => {
       provider.inspect({ leaseId: "static-ssh:operation-123", profile: PROFILE }),
     ).resolves.toStrictEqual({
       status: "active",
+      sharedHost: true,
     });
     await expect(
       provider.inspect({ leaseId: "static-ssh:", profile: PROFILE }),

@@ -58,7 +58,7 @@ import {
 import type { WorkerLiveEventApplicationResult, WorkerLiveEventReceiver } from "./live-events.js";
 import {
   boundedWorkerError as boundedError,
-  inspectionStatus,
+  requireWorkerLeaseStatus,
   requireWorkerLease,
 } from "./service-validation.js";
 import type { WorkerEnvironmentState } from "./state.js";
@@ -794,17 +794,18 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       }
       return;
     }
-    const status = await callProvider(record.environmentId, () =>
+    const inspection = await callProvider(record.environmentId, () =>
       provider.inspect(lifecycleLease(record, leaseId)),
     )
-      .then(inspectionStatus)
+      .then(requireWorkerLeaseStatus)
       .catch((error: unknown) => {
         saveError(record, error);
         return undefined;
       });
-    if (!status) {
+    if (!inspection) {
       return;
     }
+    const { status } = inspection;
     const teardownExpected = record.destroyRequestedAtMs !== null || record.state === "destroying";
     if (status === "destroyed" || (status === "unknown" && teardownExpected)) {
       const requested =
@@ -824,6 +825,14 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       await tunnels?.stop(record.environmentId);
       move(draining, "orphaned", { lastError: ORPHANED_LEASE_ERROR });
       return;
+    }
+    if (inspection.sharedHost !== undefined) {
+      record = store.reconcileSharedHost({
+        environmentId: record.environmentId,
+        state: record.state,
+        leaseId,
+        sharedHost: inspection.sharedHost,
+      });
     }
     if (record.destroyRequestedAtMs !== null) {
       await finishDestroy(record, provider).catch(() => undefined);

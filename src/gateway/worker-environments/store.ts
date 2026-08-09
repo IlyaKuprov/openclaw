@@ -751,6 +751,30 @@ export function createWorkerEnvironmentStore(
       findCredentialByHash(read(), normalizeCredentialHash(credentialHash)),
     list: (): WorkerEnvironmentRecord[] => listRows(read(), false),
     listForReconcile: (): WorkerEnvironmentRecord[] => listRows(read(), true),
+    reconcileSharedHost(input: {
+      environmentId: string;
+      state: WorkerEnvironmentState;
+      leaseId: string;
+      sharedHost: boolean;
+    }): WorkerEnvironmentRecord {
+      const environmentId = required(input.environmentId, "id");
+      const leaseId = required(input.leaseId, "lease id");
+      return write((db) => {
+        const current = getRequired(db, environmentId);
+        if (current.state !== input.state || current.leaseId !== leaseId) {
+          throw new Error(`Worker environment ${environmentId} lease changed during inspection`);
+        }
+        if (current.sharedHost === input.sharedHost) {
+          return current;
+        }
+        // Provider inspection owns facts that may predate their durable column. Persist an
+        // explicit value before tunnel startup so upgraded leases cannot keep stale isolation.
+        return update(db, environmentId, current.state, {
+          shared_host: input.sharedHost ? 1 : 0,
+          updated_at_ms: now(),
+        });
+      });
+    },
     requestDestroy(input: {
       environmentId: string;
       state: WorkerEnvironmentState;

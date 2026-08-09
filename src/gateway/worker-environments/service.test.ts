@@ -2034,20 +2034,22 @@ describe("worker environment service", () => {
     expect(store.get("worker-destroyed-unknown")).toMatchObject({ state: "destroyed" });
   });
 
-  it.each([null, { status: "future" }])(
-    "retains retryable state for malformed inspection result %#",
-    async (inspection) => {
-      seedReady("worker-malformed");
-      const provider = createProvider({ inspect: async () => inspection as never });
+  it.each([
+    null,
+    { status: "future" },
+    { status: "active", sharedHost: "yes" },
+    { status: "unknown", sharedHost: true },
+  ])("retains retryable state for malformed inspection result %#", async (inspection) => {
+    seedReady("worker-malformed");
+    const provider = createProvider({ inspect: async () => inspection as never });
 
-      await createService(provider).reconcileOnce();
+    await createService(provider).reconcileOnce();
 
-      expect(store.get("worker-malformed")).toMatchObject({
-        state: "ready",
-        lastError: expect.stringContaining("invalid inspection"),
-      });
-    },
-  );
+    expect(store.get("worker-malformed")).toMatchObject({
+      state: "ready",
+      lastError: expect.stringContaining("invalid inspection"),
+    });
+  });
 
   it("adopts provider-proven teardown through legal terminal transitions", async () => {
     seedReady("worker-destroyed-ready");
@@ -2219,6 +2221,36 @@ describe("worker environment service", () => {
       state: "destroyed",
       tunnelStatus: "stopped",
     });
+  });
+
+  it("reconciles shared-host isolation for a persisted lease before tunnel startup", async () => {
+    seedReady("worker-legacy-shared");
+    closeOpenClawStateDatabaseForTest();
+    database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
+    store = createWorkerEnvironmentStore({ database, now: () => nowMs });
+    const tunnelManager = {
+      status: () => "stopped" as const,
+      start: vi.fn(async (request: Parameters<WorkerTunnelManager["start"]>[0]) => ({
+        environmentId: request.environmentId,
+        ownerEpoch: request.ownerEpoch,
+        remoteSocketPath: "/tmp/worker/gateway.sock",
+        runWorkspaceCommand: vi.fn(),
+        syncWorkspace: vi.fn(),
+        stop: async () => {},
+      })),
+      stop: vi.fn(async () => {}),
+      stopAll: vi.fn(async () => {}),
+    } as unknown as WorkerTunnelManager;
+    const provider = createProvider({
+      inspect: async () => ({ status: "active", sharedHost: true }),
+    });
+    const workerService = createService(provider, { tunnelManager });
+
+    expect(store.get("worker-legacy-shared")?.sharedHost).toBe(false);
+    await workerService.reconcileOnce();
+    expect(store.get("worker-legacy-shared")?.sharedHost).toBe(true);
+    await workerService.startTunnel({ environmentId: "worker-legacy-shared", ownerEpoch: 1 });
+    expect(tunnelManager.start).toHaveBeenCalledWith(expect.objectContaining({ sharedHost: true }));
   });
 
   it("fences a draining tunnel before reporting an unavailable provider", async () => {
