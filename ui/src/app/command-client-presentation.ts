@@ -21,7 +21,7 @@ export async function dispatchCommandClientPresentation(
       return context.overlays.openDevicePairSetup();
     }
     default: {
-      action satisfies never;
+      action.kind satisfies never;
       return false;
     }
   }

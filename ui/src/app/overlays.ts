@@ -686,10 +686,9 @@ export function createApplicationOverlays(
       return devicePairSetupState.devicePairSetupOpen;
     },
     async refreshDevicePairSetup() {
-      if (disposed || !readGatewayOperatorAccess(gateway.snapshot).canAdmin) {
-        return;
+      if (!disposed && readGatewayOperatorAccess(gateway.snapshot).canAdmin) {
+        await publishDevicePairSetupOperation(refreshDevicePairSetupState(devicePairSetupState));
       }
-      await publishDevicePairSetupOperation(refreshDevicePairSetupState(devicePairSetupState));
     },
     async setDevicePairSetupAccess(access) {
       if (disposed || !readGatewayOperatorAccess(gateway.snapshot).canAdmin) {

@@ -259,6 +259,7 @@ export async function handleSendChat(
       parsed?.args === "" &&
       clientPresentation?.when === "no-arguments" &&
       !hasAttachments &&
+      host.chatReplyTarget == null &&
       dispatchClientPresentation
     ) {
       const submitKey = chatSubmitKey(host, "local", message, []);
