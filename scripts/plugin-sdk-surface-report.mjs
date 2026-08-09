@@ -234,7 +234,10 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +3: channel streaming config reader re-exports and session-agent scope resolver.
       // +45: multiplayer-memory authorization shapes, runtime contract, and conformance types.
       // +4: current principal and selected-membership evidence references and facts.
-      4893,
+      // +6: MemoryAuthorizationConformanceMount, MemoryContentAccessOperation,
+      //     MemoryContentAccessContext, AuthorizedMemoryContentPlan,
+      //     AuthorizedMemorySearchParams, and AuthorizedMemoryReadParams.
+      4899,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
