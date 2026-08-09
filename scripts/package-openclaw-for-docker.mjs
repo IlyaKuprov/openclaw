@@ -26,6 +26,7 @@ const DEFAULT_CAPTURED_STDOUT_MAX_BYTES = 1024 * 1024;
 const MAX_TIMER_TIMEOUT_MS = 2_147_000_000;
 const AI_RUNTIME_PACKAGE = "@openclaw/ai";
 const AI_RUNTIME_BACKUP_DIR = ".openclaw-ai-package-backup";
+const BUNDLED_WORKSPACE_DEV_DEPENDENCIES = ["@openclaw/session-url-contract"];
 const ACTIVE_CHILD_KILLERS = new Set();
 const PACKAGE_BUILD_PLUGIN_SELECTION_ENV_NAMES = [
   "OPENCLAW_EXTENSIONS",
@@ -660,6 +661,11 @@ export async function prepareBundledAiRuntimePackage(
     await fs.writeFile(stagedPackageJsonPath, `${JSON.stringify(stagedPackageJson, null, 2)}\n`);
 
     packageJson.dependencies[AI_RUNTIME_PACKAGE] = stagedPackageJson.version;
+    // Source builds need these workspace links, while tsdown internalizes their runtime code.
+    // Omit them from the published manifest so package consumers never see private specs.
+    for (const dependency of BUNDLED_WORKSPACE_DEV_DEPENDENCIES) {
+      delete packageJson.devDependencies?.[dependency];
+    }
     const bundleDependencies = packageJson.bundleDependencies ?? [];
     if (!Array.isArray(bundleDependencies)) {
       throw new Error("root package.json bundleDependencies must be an array when present");
