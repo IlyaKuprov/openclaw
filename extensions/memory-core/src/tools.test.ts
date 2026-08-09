@@ -13,6 +13,7 @@ import {
   setMemoryCloseImpl,
   setMemoryCustomStatus,
   setMemorySearchImpl,
+  setMemorySyncImpl,
   setMemorySearchManagerImpl,
   setMemoryStatusDirty,
 } from "./memory-tool-manager.test-mocks.js";
@@ -572,6 +573,73 @@ describe("memory_search unavailable payloads", () => {
     // A query that matched nothing is not evidence that the index is wrong, so
     // the retry must not request a full rebuild of an already valid index.
     expect(getMemorySyncMockParams()).toEqual([{ reason: "search", force: false }]);
+  });
+
+  it("asks a one-shot CLI manager for session catch-up before declaring zero hits", async () => {
+    let searchCalls = 0;
+    setMemorySearchImpl(async () => {
+      searchCalls += 1;
+      return [];
+    });
+
+    const tool = createMemorySearchToolOrThrow({
+      config: {
+        agents: { list: [{ id: "main", default: true }] },
+        memory: { citations: "off" },
+      },
+      oneShotCliRun: true,
+    });
+    await tool.execute("cli-zero-hit-retry", { query: "hidden thread codename" });
+
+    expect(searchCalls).toBe(2);
+    // A transient CLI manager runs no watcher and no startup catch-up, so only
+    // the "cli" reason discovers transcripts changed since the persisted index.
+    expect(getMemorySyncMockParams()).toEqual([{ reason: "cli", force: false }]);
+  });
+
+  it("rebuilds when the retry sync orphans the index under a fallback provider", async () => {
+    let searchCalls = 0;
+    setMemorySearchImpl(async () => {
+      searchCalls += 1;
+      if (searchCalls < 3) {
+        return [];
+      }
+      return [
+        {
+          path: "MEMORY.md",
+          startLine: 1,
+          endLine: 1,
+          score: 0.9,
+          snippet: "Thread-hidden codename: ORBIT-22.",
+          source: "memory" as const,
+        },
+      ];
+    });
+    // The identity is valid up front and breaks during the unforced sync, as it
+    // does when an embedding failure activates a configured fallback provider.
+    setMemorySyncImpl(async (params) => {
+      setMemoryCustomStatus(
+        params?.force
+          ? undefined
+          : { indexIdentity: { status: "mismatched", reason: "embedding provider changed" } },
+      );
+    });
+
+    const tool = createMemorySearchToolOrThrow({
+      config: {
+        agents: { list: [{ id: "main", default: true }] },
+        memory: { citations: "off" },
+      },
+    });
+    const result = await tool.execute("fallback-rebuild", { query: "hidden thread codename" });
+
+    expect(getMemorySyncMockParams()).toEqual([
+      { reason: "search", force: false },
+      { reason: "search", force: true },
+    ]);
+    expect((result.details as { results?: Array<{ path: string }> }).results?.[0]?.path).toBe(
+      "MEMORY.md",
+    );
   });
 
   it("qualifies empty results when the index remains dirty after retry", async () => {

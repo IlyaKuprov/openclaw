@@ -641,6 +641,11 @@ export function createMemorySearchTool(options: {
                   !runtimeDebug.some((entry) => entry.embeddingBootstrap) &&
                   activeMemory.manager.sync
                 ) {
+                  // A transient one-shot manager runs no watcher and no startup
+                  // catch-up, so only the "cli" reason discovers session
+                  // transcripts that changed since the persisted index was
+                  // written. A long-lived manager already tracks them.
+                  const retrySyncReason = memoryManagerPurpose === "cli" ? "cli" : "search";
                   await runWithDefaultDeadline(async () => {
                     // Sync may join shared/background manager maintenance and has
                     // no request-cancellation contract. Bound only this tool's wait.
@@ -648,14 +653,28 @@ export function createMemorySearchTool(options: {
                     // ordinary query that simply matched nothing must not trigger.
                     // An unbuilt, missing-identity or dirty index still rebuilds or
                     // catches up here, which is all this retry needs.
-                    await activeMemory.manager.sync?.({ reason: "search", force: false });
+                    await activeMemory.manager.sync?.({ reason: retrySyncReason, force: false });
                   });
                   rawResults = await searchActiveMemory();
                   pausedIndexIdentityReason = resolvePausedMemoryIndexIdentityReason(
                     activeMemory.manager.status(),
                   );
                   if (pausedIndexIdentityReason) {
-                    return;
+                    // The identity was valid before this sync, so the index has
+                    // just been orphaned by a provider switch — an embedding
+                    // failure can activate a fallback provider mid-sync. Nothing
+                    // but a rebuild recovers that, and it is bounded to the case
+                    // where the identity actually broke.
+                    await runWithDefaultDeadline(async () => {
+                      await activeMemory.manager.sync?.({ reason: retrySyncReason, force: true });
+                    });
+                    rawResults = await searchActiveMemory();
+                    pausedIndexIdentityReason = resolvePausedMemoryIndexIdentityReason(
+                      activeMemory.manager.status(),
+                    );
+                    if (pausedIndexIdentityReason) {
+                      return;
+                    }
                   }
                 }
                 rawResults = await runWithDefaultDeadline(

@@ -51,6 +51,9 @@ let readFileImpl: (params: MemoryReadParams) => Promise<MemoryReadResult> = asyn
   lines: params.lines ?? 120,
 });
 
+type SyncParams = { reason?: string; force?: boolean };
+let syncImpl: (params?: SyncParams) => Promise<void> = async () => {};
+
 const stubManager = {
   search: vi.fn(async (_query: string, opts?: Parameters<SearchImpl>[0]) => await searchImpl(opts)),
   readFile: vi.fn(async (params: MemoryReadParams) => await readFileImpl(params)),
@@ -68,7 +71,7 @@ const stubManager = {
     sourceCounts: [{ source: "memory" as const, files: 1, chunks: 1 }],
     custom: customStatus,
   }),
-  sync: vi.fn(),
+  sync: vi.fn(async (params?: SyncParams) => await syncImpl(params)),
   probeVectorAvailability: vi.fn(async () => true),
   close: vi.fn(async () => await closeImpl()),
 };
@@ -106,6 +109,10 @@ export function setMemoryCloseImpl(next: () => Promise<void>): void {
   closeImpl = next;
 }
 
+export function setMemorySyncImpl(next: (params?: SyncParams) => Promise<void>): void {
+  syncImpl = next;
+}
+
 export function setMemorySearchManagerImpl(
   next: (params: MemoryManagerParams) => Promise<{
     manager?: unknown;
@@ -132,6 +139,7 @@ export function resetMemoryToolMockState(overrides?: {
   getManagerImpl = undefined;
   searchImpl = overrides?.searchImpl ?? (async () => []);
   closeImpl = async () => {};
+  syncImpl = async () => {};
   readFileImpl =
     overrides?.readFileImpl ??
     (async (params: MemoryReadParams) => ({
