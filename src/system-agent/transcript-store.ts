@@ -1,11 +1,14 @@
 // Durable rolling transcript for the machine-wide OpenClaw conversation.
 import { randomUUID } from "node:crypto";
+import type { SystemAgentChatHistoryWizardAction } from "../../packages/gateway-protocol/src/index.js";
 import { createSqliteAuditRecordStore } from "../infra/sqlite-audit-record-store.js";
 
 type SystemAgentTranscriptEntry = {
   role: "user" | "assistant" | "reset";
   text: string;
   at: number;
+  sessionId?: string;
+  wizardAction?: SystemAgentChatHistoryWizardAction;
 };
 
 type SystemAgentTranscriptTurn = Omit<SystemAgentTranscriptEntry, "role"> & {

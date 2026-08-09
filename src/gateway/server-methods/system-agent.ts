@@ -36,11 +36,7 @@ import { isSystemAgentInferenceUnavailableError } from "../../system-agent/infer
 import { buildNewAgentWelcome } from "../../system-agent/new-agent-welcome.js";
 import { buildOnboardingWelcome } from "../../system-agent/onboarding-welcome.js";
 import { describeSystemAgentPersistentOperation } from "../../system-agent/operations.js";
-import {
-  appendTranscriptReset,
-  appendTranscriptTurn,
-  readTranscriptTail,
-} from "../../system-agent/transcript-store.js";
+import { appendTranscriptReset, readTranscriptTail } from "../../system-agent/transcript-store.js";
 import { resolveUserPath } from "../../utils.js";
 import { WizardSession } from "../../wizard/session.js";
 import {
@@ -49,6 +45,8 @@ import {
   listVisiblePendingApprovalRequests,
 } from "./approval-shared.js";
 import {
+  captureSystemAgentWizardAction,
+  persistSystemAgentEngineHistory,
   resolveSystemAgentSessionOwnerKey,
   systemAgentChatHistoryHandler,
 } from "./system-agent-chat-history.js";
@@ -149,15 +147,6 @@ async function evictOldestSession(
       context.systemAgentApprovalManager?.expire(oldest.pendingApproval.id, "session-evicted");
     }
     await oldest.engine.dispose();
-  }
-}
-
-function persistEngineHistory(engine: SystemAgentChatSession["engine"], startIndex: number): void {
-  const at = Date.now();
-  for (const turn of engine.historySince(startIndex)) {
-    // Engine history is authoritative here: sensitive user text has already
-    // been replaced by the mask marker before it crosses this boundary.
-    appendTranscriptTurn({ ...turn, at });
   }
 }
 
@@ -600,7 +589,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
             respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, error.message));
             return;
           }
-          persistEngineHistory(engine, welcomeHistoryStart);
+          persistSystemAgentEngineHistory(engine, welcomeHistoryStart, { sessionId });
           await evictOldestSession(sessions, context);
           session = {
             engine,
@@ -649,6 +638,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
           return;
         }
         const historyStart = session.engine.historyLength();
+        const wizardAction = await captureSystemAgentWizardAction(session.engine, params);
         let reply: Awaited<ReturnType<SystemAgentChatEngine["handle"]>>;
         try {
           const turnReply = await runSystemAgentChatInput({
@@ -665,7 +655,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
           }
           reply = turnReply;
         } catch (error) {
-          persistEngineHistory(session.engine, historyStart);
+          persistSystemAgentEngineHistory(session.engine, historyStart, { sessionId });
           if (error instanceof SystemAgentWizardAnswerError) {
             respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, error.message));
             return;
@@ -694,7 +684,10 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
           );
           return;
         }
-        persistEngineHistory(session.engine, historyStart);
+        persistSystemAgentEngineHistory(session.engine, historyStart, {
+          sessionId,
+          wizardAction,
+        });
         const delegation = params.delegation;
         let proposalId: string | undefined;
         if (delegation) {
