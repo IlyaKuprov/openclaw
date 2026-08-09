@@ -1,6 +1,7 @@
 import { isSilentReplyText } from "../../auto-reply/tokens.js";
 import { normalizeAgentRunAttemptTerminal } from "../agent-run-terminal-outcome.js";
 import { resolveFinalAssistantVisibleText } from "../embedded-agent-runner/run/helpers.js";
+import { EmptySettledTurnFinalizationError } from "./settled-turn-finalization-outcome.js";
 import type {
   AgentHarnessAttemptResult,
   AgentHarnessSettledTurnFinalizationResult,
@@ -14,14 +15,6 @@ const ALLOWED_SETTLED_FINALIZATION_RESULT_KEYS = new Set([
   "assistantMessageIndex",
   "diagnosticTrace",
 ]);
-
-/** A normally stopped finalizer exhausted its visible answer without failing or using tools. */
-export class EmptySettledTurnFinalizationError extends Error {
-  constructor(readonly result: AgentHarnessSettledTurnFinalizationResult) {
-    super("Settled-turn finalization completed without a visible answer");
-    this.name = "EmptySettledTurnFinalizationError";
-  }
-}
 
 function assistantContainsToolCall(
   assistant: AgentHarnessSettledTurnFinalizationResult["assistant"],

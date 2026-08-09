@@ -3,7 +3,6 @@ import type { AssistantMessage } from "../../llm/types.js";
 import type { EmbeddedRunAttemptResult } from "../embedded-agent-runner/run/types.js";
 import {
   assertSettledTurnFinalizationResult,
-  EmptySettledTurnFinalizationError,
   projectSettledTurnFinalizationAttemptResult,
 } from "./settled-turn-finalization-result.js";
 import type { AgentHarnessSettledTurnFinalizationResult } from "./types.js";
@@ -83,7 +82,7 @@ describe("assertSettledTurnFinalizationResult", () => {
       assertSettledTurnFinalizationResult({
         assistant: assistantMessage([{ type: "text", text: "  " }]),
       }),
-    ).toThrow(EmptySettledTurnFinalizationError);
+    ).toThrow("completed without a visible answer");
   });
 
   it("rejects an intentionally silent answer", () => {
@@ -141,7 +140,7 @@ describe("assertSettledTurnFinalizationResult", () => {
           currentAttemptCompletedAssistant: assistant,
         }),
       ),
-    ).toThrow(EmptySettledTurnFinalizationError);
+    ).toThrow("completed without a visible answer");
   });
 
   it("rejects a failed full attempt even when it contains visible assistant text", () => {

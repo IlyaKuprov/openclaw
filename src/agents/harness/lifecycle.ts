@@ -32,10 +32,8 @@ import {
 import type { EmbeddedRunAttemptResult } from "../embedded-agent-runner/run/types.js";
 import { recordAgentHarnessPreflightOwner } from "./errors.js";
 import { applyAgentHarnessResultClassification } from "./result-classification.js";
-import {
-  assertSettledTurnFinalizationResult,
-  EmptySettledTurnFinalizationError,
-} from "./settled-turn-finalization-result.js";
+import { EmptySettledTurnFinalizationError } from "./settled-turn-finalization-outcome.js";
+import { assertSettledTurnFinalizationResult } from "./settled-turn-finalization-result.js";
 import type {
   AgentHarness,
   AgentHarnessAttemptParams,
