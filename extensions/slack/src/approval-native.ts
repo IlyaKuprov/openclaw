@@ -9,7 +9,7 @@ import {
 import type { ChannelApprovalCapability } from "openclaw/plugin-sdk/channel-contract";
 import { normalizeMessageChannel } from "openclaw/plugin-sdk/routing";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { listSlackAccountIds } from "./accounts.js";
+import { listSlackAccountIds, resolveSlackAccount } from "./accounts.js";
 import { getSlackApprovalApprovers, isSlackApprovalAuthorizedSender } from "./approval-auth.js";
 import {
   hasSlackPluginApprovers,
@@ -32,6 +32,7 @@ import {
   isSlackExecApprovalClientEnabled,
   resolveSlackExecApprovalTarget,
 } from "./exec-approvals.js";
+import { formatSlackTarget, parseSlackTarget } from "./target-parsing.js";
 
 type ApprovalRequest = SlackNativeApprovalRequest;
 type ApprovalKind = SlackApprovalKind;
@@ -105,7 +106,16 @@ function resolveSlackApproverDmTargets(params: {
     params.approvalKind === "plugin"
       ? getSlackApprovalApprovers(params)
       : getSlackExecApprovalApprovers(params);
-  return approvers.map((approver) => ({ to: `user:${approver}` }));
+  const originTarget = resolveSlackOriginTarget(params);
+  const teamId = originTarget
+    ? parseSlackTarget(originTarget.to, { defaultKind: "channel" })?.teamId
+    : undefined;
+  if (resolveSlackAccount(params).config.enterpriseOrgInstall === true && !teamId) {
+    return [];
+  }
+  return approvers.map((approver) => ({
+    to: teamId ? formatSlackTarget({ teamId, kind: "user", id: approver }) : `user:${approver}`,
+  }));
 }
 
 const shouldSuppressSlackForwardingFallback =

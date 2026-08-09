@@ -3,25 +3,27 @@ import type {
   ApprovalActionView,
   ApprovalMetadataView,
 } from "openclaw/plugin-sdk/approval-handler-runtime";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeSlackApprovalAction } from "./approval-actions.js";
 import { slackApprovalNativeRuntime } from "./approval-handler.runtime.js";
-import { countSlackTextUtf8Bytes } from "./truncate.js";
+
+const { sendMessageSlackMock, updateMessageSlackMock } = vi.hoisted(() => ({
+  sendMessageSlackMock: vi.fn(),
+  updateMessageSlackMock: vi.fn(),
+}));
+
+vi.mock("./send.js", () => ({
+  sendMessageSlack: sendMessageSlackMock,
+  updateMessageSlack: updateMessageSlackMock,
+}));
 
 type SlackPayload = {
   text: string;
   blocks?: unknown;
 };
-type ChatUpdatePayload = {
-  channel?: string;
-  ts?: string;
-  text?: string;
-  blocks?: unknown;
-};
 type SlackUpdateEntryParams = Parameters<
   NonNullable<typeof slackApprovalNativeRuntime.transport.updateEntry>
 >[0];
-const SLACK_CHAT_UPDATE_TEXT_MAX_BYTES = 4000;
 const APPROVAL_TIMING = {
   createdAtMs: 0,
   expiresAtMs: 60_000,
@@ -220,21 +222,6 @@ function decodeSlackApprovalElements(block: { elements?: unknown[] } | undefined
   );
 }
 
-function readChatUpdatePayload(
-  chatUpdate: { mock: { calls: unknown[][] } },
-  index: number,
-): ChatUpdatePayload {
-  const call = chatUpdate.mock.calls[index];
-  if (!call) {
-    throw new Error(`Expected Slack chat.update call #${index + 1}`);
-  }
-  const [payload] = call;
-  if (!payload || typeof payload !== "object") {
-    throw new Error(`Expected Slack chat.update payload #${index + 1}`);
-  }
-  return payload as ChatUpdatePayload;
-}
-
 async function updateSlackApprovalEntry(
   context: SlackUpdateEntryParams["context"],
   payload: SlackUpdateEntryParams["payload"],
@@ -242,7 +229,7 @@ async function updateSlackApprovalEntry(
   await slackApprovalNativeRuntime.transport.updateEntry?.({
     ...APPROVAL_CONTEXT,
     context,
-    entry: { channelId: "C123", messageTs: "1712345678.999999" },
+    entry: { channelId: "C123", messageTs: "1712345678.999999", teamId: "T123" },
     payload,
     phase: "resolved",
   });
@@ -300,8 +287,71 @@ function findApprovalMrkdwn(payload: SlackPayload, prefix: string): string {
 }
 
 describe("slackApprovalNativeRuntime", () => {
+  beforeEach(() => {
+    sendMessageSlackMock.mockReset();
+    updateMessageSlackMock.mockReset();
+  });
+
   it("subscribes to plugin approval events", () => {
     expect(slackApprovalNativeRuntime.eventKinds).toEqual(["exec", "plugin"]);
+  });
+
+  it("carries a qualified target workspace into the pending approval receipt", async () => {
+    const request = {
+      id: "req-grid",
+      request: { command: "echo hi" },
+      ...APPROVAL_TIMING,
+    };
+    const pendingPayload = { text: "Approval required", blocks: [] };
+    const prepared = await slackApprovalNativeRuntime.transport.prepareTarget({
+      ...APPROVAL_CONTEXT,
+      plannedTarget: {
+        surface: "origin",
+        reason: "preferred",
+        target: { to: "team:T123:channel:C123", threadId: "1712345678.100000" },
+      },
+      request,
+      approvalKind: "exec",
+      view: {} as never,
+      pendingPayload,
+    });
+    if (!prepared) {
+      throw new Error("expected prepared Slack approval target");
+    }
+    sendMessageSlackMock.mockResolvedValueOnce({
+      channelId: "C123",
+      messageId: "1712345678.200000",
+    });
+
+    const entry = await slackApprovalNativeRuntime.transport.deliverPending({
+      ...APPROVAL_CONTEXT,
+      plannedTarget: {
+        surface: "origin",
+        reason: "preferred",
+        target: { to: "team:T123:channel:C123", threadId: "1712345678.100000" },
+      },
+      preparedTarget: prepared.target,
+      request,
+      approvalKind: "exec",
+      view: {} as never,
+      pendingPayload,
+    });
+
+    expect(prepared.target).toEqual({
+      to: "team:T123:channel:C123",
+      threadTs: "1712345678.100000",
+      teamId: "T123",
+    });
+    expect(sendMessageSlackMock).toHaveBeenCalledWith(
+      "team:T123:channel:C123",
+      "Approval required",
+      expect.objectContaining({ accountId: "default", threadTs: "1712345678.100000" }),
+    );
+    expect(entry).toEqual({
+      channelId: "C123",
+      messageTs: "1712345678.200000",
+      teamId: "T123",
+    });
   });
 
   it("does not leave dangling surrogates when truncating exec approval command mrkdwn", async () => {
@@ -434,7 +484,7 @@ describe("slackApprovalNativeRuntime", () => {
     ).toBe(false);
   });
 
-  it("caps resolved update fallback text to Slack chat.update limits while preserving blocks", async () => {
+  it("updates a delivered approval through its persisted workspace scope", async () => {
     const blocks = [
       {
         type: "section",
@@ -444,36 +494,22 @@ describe("slackApprovalNativeRuntime", () => {
         },
       },
     ];
-    const chatUpdate = vi.fn(async (_payload: { text: string; blocks: typeof blocks }) => ({}));
     const context = {
-      app: {
-        client: {
-          chat: {
-            update: chatUpdate,
-          },
-        },
-      },
+      app: {},
       config: {},
     } as never;
 
-    await updateSlackApprovalEntry(context, {
-      text: "a".repeat(SLACK_CHAT_UPDATE_TEXT_MAX_BYTES),
+    await updateSlackApprovalEntry(context, { text: "Resolved", blocks });
+
+    expect(updateMessageSlackMock).toHaveBeenCalledWith({
+      cfg: APPROVAL_CONTEXT.cfg,
+      accountId: "default",
+      teamId: "T123",
+      channelId: "C123",
+      messageTs: "1712345678.999999",
+      text: "Resolved",
       blocks,
     });
-
-    await updateSlackApprovalEntry(context, { text: "a".repeat(5000), blocks });
-
-    const firstUpdate = readChatUpdatePayload(chatUpdate, 0);
-    const secondUpdate = readChatUpdatePayload(chatUpdate, 1);
-    expect(firstUpdate.channel).toBe("C123");
-    expect(firstUpdate.ts).toBe("1712345678.999999");
-    expect(firstUpdate.text).toBe("a".repeat(SLACK_CHAT_UPDATE_TEXT_MAX_BYTES));
-    expect(firstUpdate.blocks).toBe(blocks);
-    expect(secondUpdate.channel).toBe("C123");
-    expect(secondUpdate.ts).toBe("1712345678.999999");
-    expect(secondUpdate.text).toMatch(/…$/);
-    expect(secondUpdate.blocks).toBe(blocks);
-    expect(countSlackTextUtf8Bytes(secondUpdate.text ?? "")).toBe(SLACK_CHAT_UPDATE_TEXT_MAX_BYTES);
   });
 
   it("keeps pending metadata context within Slack Block Kit limits", async () => {

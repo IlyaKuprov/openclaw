@@ -242,11 +242,12 @@ bot identity for loop prevention.
 
 Enterprise support accepts direct Socket Mode or HTTP `message` and
 `app_mention` events plus workspace-qualified outbound messages. Relay mode,
-slash commands, interactions, App Home, reaction event listeners, pins,
-Slack-native approvals, and bindings remain unavailable for an enterprise
-account. Slack action tools remain unavailable except for file uploads and
-adding or removing emoji reactions. Outbound acknowledgment, typing, and
-status reactions are supported and require `reactions:write`; inbound reaction
+slash commands, general interactions, App Home, reaction event listeners,
+pins, and bindings remain unavailable for an enterprise account. Slack-native
+approval buttons are supported and stay scoped to the workspace that originated
+the approval. Slack action tools remain unavailable except for file uploads and
+adding or removing emoji reactions. Outbound acknowledgment, typing, and status
+reactions are supported and require `reactions:write`; inbound reaction
 notifications remain unavailable.
 
 OpenClaw records Enterprise Grid destinations as
@@ -1738,6 +1739,7 @@ Slack can act as a native approval client with interactive buttons and interacti
 - Plugin approvals use Slack-native buttons when Slack is enabled as a native approval client for the originating session, or when `approvals.plugin` routes to the originating Slack session or a Slack target.
 - Plugin approval DMs use Slack plugin approvers from `channels.slack.allowFrom`, named-account `allowFrom`, or the account default route.
 - Approver authorization is still enforced: exec-only approvers cannot approve plugin requests unless they are also plugin approvers.
+- Enterprise Grid org installs derive the workspace from the qualified Slack origin target. Approval prompts, approver DMs, button callbacks, and final message updates stay in that workspace.
 
 This uses the same shared approval button surface as other channels. When `interactivity` is enabled in your Slack app settings, approval prompts render as Block Kit buttons directly in the conversation.
 When those buttons are present, they are the primary approval UX; OpenClaw

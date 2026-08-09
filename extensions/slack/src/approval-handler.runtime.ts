@@ -25,15 +25,15 @@ import {
   shouldHandleSlackNativeApprovalRequest,
 } from "./approval-native-gates.js";
 import { normalizeSlackApproverId } from "./exec-approvals.js";
-import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
 import { resolveSlackReplyBlocks } from "./reply-blocks.js";
-import { sendMessageSlack } from "./send.js";
-import { truncateSlackTextByUtf8Bytes } from "./truncate.js";
+import { sendMessageSlack, updateMessageSlack } from "./send.js";
+import { parseSlackTarget } from "./target-parsing.js";
 
 type SlackBlock = Block | KnownBlock;
 type SlackPendingApproval = {
   channelId: string;
   messageTs: string;
+  teamId?: string;
 };
 type SlackPendingDelivery = {
   text: string;
@@ -407,28 +407,9 @@ function buildSlackExpiredBlocks(view: ExpiredApprovalView): SlackBlock[] {
     : buildSlackExecExpiredBlocks(view);
 }
 
-async function updateMessage(params: {
-  app: App;
-  channelId: string;
-  messageTs: string;
-  text: string;
-  blocks: SlackBlock[];
-}): Promise<void> {
-  try {
-    await params.app.client.chat.update({
-      channel: params.channelId,
-      ts: params.messageTs,
-      text: truncateSlackTextByUtf8Bytes(params.text, SLACK_EDIT_TEXT_MAX_BYTES),
-      blocks: params.blocks,
-    });
-  } catch (err) {
-    logError(`slack approvals: failed to update message: ${String(err)}`);
-  }
-}
-
 export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdapter<
   SlackPendingDelivery,
-  { to: string; threadTs?: string },
+  { to: string; threadTs?: string; teamId?: string },
   SlackPendingApproval,
   never,
   SlackPendingDelivery
@@ -478,14 +459,20 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
     }),
   },
   transport: {
-    prepareTarget: ({ plannedTarget }) => ({
-      dedupeKey: buildChannelApprovalNativeTargetKey(plannedTarget.target),
-      target: {
-        to: plannedTarget.target.to,
-        threadTs:
-          plannedTarget.target.threadId != null ? String(plannedTarget.target.threadId) : undefined,
-      },
-    }),
+    prepareTarget: ({ plannedTarget }) => {
+      const teamId = parseSlackTarget(plannedTarget.target.to, { defaultKind: "channel" })?.teamId;
+      return {
+        dedupeKey: buildChannelApprovalNativeTargetKey(plannedTarget.target),
+        target: {
+          to: plannedTarget.target.to,
+          threadTs:
+            plannedTarget.target.threadId != null
+              ? String(plannedTarget.target.threadId)
+              : undefined,
+          ...(teamId ? { teamId } : {}),
+        },
+      };
+    },
     deliverPending: async ({ cfg, accountId, context, preparedTarget, pendingPayload }) => {
       const resolved = resolveHandlerContext({ cfg, accountId, context });
       if (!resolved) {
@@ -501,6 +488,7 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
       return {
         channelId: message.channelId,
         messageTs: message.messageId,
+        ...(preparedTarget.teamId ? { teamId: preparedTarget.teamId } : {}),
       };
     },
     updateEntry: async ({ cfg, accountId, context, entry, payload }) => {
@@ -509,13 +497,19 @@ export const slackApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdap
         return;
       }
       const nextPayload = payload;
-      await updateMessage({
-        app: resolved.context.app,
-        channelId: entry.channelId,
-        messageTs: entry.messageTs,
-        text: nextPayload.text,
-        blocks: nextPayload.blocks,
-      });
+      try {
+        await updateMessageSlack({
+          cfg,
+          accountId: resolved.accountId,
+          teamId: entry.teamId,
+          channelId: entry.channelId,
+          messageTs: entry.messageTs,
+          text: nextPayload.text,
+          blocks: nextPayload.blocks,
+        });
+      } catch (err) {
+        logError(`slack approvals: failed to update message: ${String(err)}`);
+      }
     },
   },
   observe: {

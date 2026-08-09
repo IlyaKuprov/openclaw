@@ -71,6 +71,7 @@ const resolveQuestionOverGatewayMock = vi.hoisted(() =>
 );
 
 let registerSlackInteractionEvents: typeof import("./interactions.js").registerSlackInteractionEvents;
+let registerSlackApprovalInteractionEvents: typeof import("./interactions.js").registerSlackApprovalInteractionEvents;
 
 vi.mock("openclaw/plugin-sdk/system-event-runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/system-event-runtime")>();
@@ -214,6 +215,7 @@ vi.mock("../conversation.runtime.js", () => {
 type RegisteredHandler = (args: {
   ack: () => Promise<void>;
   body: {
+    api_app_id?: string;
     user: { id: string };
     team?: { id?: string };
     trigger_id?: string;
@@ -221,6 +223,16 @@ type RegisteredHandler = (args: {
     channel?: { id?: string };
     container?: { channel_id?: string; message_ts?: string; thread_ts?: string };
     message?: { ts?: string; thread_ts?: string; text?: string; blocks?: unknown[] };
+  };
+  context?: {
+    isEnterpriseInstall?: boolean;
+    enterpriseId?: string;
+    teamId?: string;
+  };
+  client?: {
+    chat: {
+      update: ReturnType<typeof vi.fn>;
+    };
   };
   action: Record<string, unknown>;
   respond?: (payload: { text: string; response_type: string }) => Promise<void>;
@@ -269,6 +281,9 @@ function createContext(overrides?: {
     name?: string;
     type?: "im" | "mpim" | "channel" | "group";
   }>;
+  installationIdentity?:
+    | { kind: "workspace"; teamId: string }
+    | { kind: "enterprise"; enterpriseId: string; apiAppId?: string };
 }) {
   let handler: RegisteredHandler | null = null;
   let actionMatcher: RegExp | null = null;
@@ -276,6 +291,7 @@ function createContext(overrides?: {
   let viewClosedHandler: RegisteredViewHandler | null = null;
   let shortcutHandler: RegisteredShortcutHandler | null = null;
   const app = {
+    webClientOptions: {},
     action: vi.fn((matcher: RegExp, next: RegisteredHandler) => {
       actionMatcher = matcher;
       handler = next;
@@ -328,6 +344,10 @@ function createContext(overrides?: {
   const ctx = {
     app,
     accountId: "default",
+    installationIdentity: overrides?.installationIdentity ?? {
+      kind: "workspace",
+      teamId: "T9",
+    },
     cfg: overrides?.cfg ?? {
       channels: {
         slack: {
@@ -508,7 +528,8 @@ function inputByActionId(
 
 describe("registerSlackInteractionEvents", () => {
   beforeAll(async () => {
-    ({ registerSlackInteractionEvents } = await import("./interactions.js"));
+    ({ registerSlackApprovalInteractionEvents, registerSlackInteractionEvents } =
+      await import("./interactions.js"));
   });
 
   beforeEach(() => {
@@ -1512,6 +1533,70 @@ describe("registerSlackInteractionEvents", () => {
       ],
     });
     expect(respond).not.toHaveBeenCalled();
+  });
+
+  it("uses the listener-owned workspace client for Enterprise Grid approval buttons", async () => {
+    const { ctx, app, getActionMatcher, getHandler } = createContext({
+      installationIdentity: { kind: "enterprise", enterpriseId: "E123", apiAppId: "A123" },
+      cfg: {
+        channels: {
+          slack: {
+            enterpriseOrgInstall: true,
+            execApprovals: {
+              enabled: true,
+              approvers: ["U123"],
+              target: "both",
+            },
+          },
+        },
+      },
+    });
+    registerSlackApprovalInteractionEvents({ ctx: ctx as never });
+    const workspaceClient = {
+      chat: { update: vi.fn().mockResolvedValue(undefined) },
+    };
+
+    expect(getActionMatcher().test("openclaw:approval_button:1:1")).toBe(true);
+    expect(getActionMatcher().test("openclaw:reply_button")).toBe(false);
+
+    await getHandler()({
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: {
+        api_app_id: "A123",
+        user: { id: "U123" },
+        team: { id: "T123" },
+        channel: { id: "C123" },
+        container: { channel_id: "C123", message_ts: "100.200" },
+        message: { ts: "100.200", text: "Exec approval required", blocks: [] },
+      },
+      context: {
+        isEnterpriseInstall: true,
+        enterpriseId: "E123",
+        teamId: "T123",
+      },
+      client: workspaceClient,
+      action: {
+        type: "button",
+        action_id: "openclaw:approval_button:1:1",
+        block_id: "exec_actions",
+        value:
+          'openclaw:approval:v1:{"approvalId":"req-grid","approvalKind":"exec","decision":"allow-once"}',
+        text: { type: "plain_text", text: "Allow once" },
+      },
+    });
+
+    expect(resolveApprovalOverGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalId: "req-grid",
+        approvalKind: "exec",
+        decision: "allow-once",
+        senderId: "U123",
+      }),
+    );
+    expect(workspaceClient.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "C123", ts: "100.200" }),
+    );
+    expect(app.client.chat.update).not.toHaveBeenCalled();
   });
 
   it("resolves typed question buttons without enqueueing an agent interaction", async () => {

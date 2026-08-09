@@ -175,6 +175,32 @@ describe("slack native approval adapter", () => {
     });
   });
 
+  it("enables native approval delivery for Enterprise Grid origins", () => {
+    const cfg = buildConfig({ enterpriseOrgInstall: true });
+    const request = {
+      ...createExecApprovalRequest(),
+      request: {
+        ...createExecApprovalRequest().request,
+        turnSourceTo: "team:T123:channel:C123",
+      },
+    };
+
+    expect(
+      slackApprovalCapability.native?.describeDeliveryCapabilities({
+        cfg,
+        accountId: "default",
+        approvalKind: "exec",
+        request,
+      }).enabled,
+    ).toBe(true);
+    expect(
+      slackApprovalCapability.nativeRuntime?.availability.isConfigured({
+        cfg,
+        accountId: "default",
+      }),
+    ).toBe(true);
+  });
+
   it("describes the correct Slack exec-approval setup path", () => {
     const text = slackApprovalCapability.describeExecApprovalSetup?.({
       channel: "slack",
@@ -233,6 +259,40 @@ describe("slack native approval adapter", () => {
     });
 
     expect(targets).toEqual([{ to: "user:U123APPROVER" }]);
+  });
+
+  it("qualifies Enterprise Grid approver DMs with the originating workspace", async () => {
+    const request = createExecApprovalRequest();
+    const targets = await slackApprovalCapability.native?.resolveApproverDmTargets?.({
+      cfg: buildConfig({ enterpriseOrgInstall: true }),
+      accountId: "default",
+      approvalKind: "exec",
+      request: {
+        ...request,
+        request: {
+          ...request.request,
+          turnSourceTo: "team:T123:channel:C123",
+        },
+      },
+    });
+
+    expect(targets).toEqual([{ to: "team:T123:user:U123APPROVER" }]);
+  });
+
+  it("fails closed when an Enterprise Grid approver DM has no workspace origin", async () => {
+    const targets = await slackApprovalCapability.native?.resolveApproverDmTargets?.({
+      cfg: buildConfig({ enterpriseOrgInstall: true }),
+      accountId: "default",
+      approvalKind: "exec",
+      request: {
+        id: "req-1",
+        request: { command: "echo hi" },
+        createdAtMs: 0,
+        expiresAtMs: 1000,
+      },
+    });
+
+    expect(targets).toEqual([]);
   });
 
   it("routes plugin approval dm targets to plugin approvers", async () => {

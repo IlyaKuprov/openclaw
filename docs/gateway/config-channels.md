@@ -480,11 +480,13 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
   `allowFrom: ["*"]`. Channel and user policies must use stable Slack IDs;
   mutable names and unsupported channel prefixes fail startup. V1 handles only
   direct Socket Mode or HTTP `message` and `app_mention` events with immediate
-  replies; relay, commands, interactions, App Home, reaction event listeners,
-  pins, action tools, native approvals, bindings, deferred delivery, and
-  proactive sends are unavailable. Listener-owned acknowledgment, typing, and
-  status reactions remain available with `reactions:write`; inbound reaction
-  notifications and reaction action tools are unavailable. See
+  replies; relay, commands, general interactions, App Home, reaction event
+  listeners, pins, action tools, bindings, deferred delivery, and proactive
+  sends are unavailable. Slack-native approval buttons remain available and
+  use the originating workspace for delivery and updates. Listener-owned
+  acknowledgment, typing, and status reactions remain available with
+  `reactions:write`; inbound reaction notifications and reaction action tools
+  are unavailable. See
   [Enterprise Grid org-wide installs](/channels/slack#enterprise-grid-org-wide-installs)
   for the least-privilege manifest, setup workflow, and complete restrictions.
 - `botToken`, `appToken`, `signingSecret`, and `userToken` accept plaintext
