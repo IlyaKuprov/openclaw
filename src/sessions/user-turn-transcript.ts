@@ -6,9 +6,11 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { AgentMessage } from "../../packages/agent-core/src/types.js";
 import {
   persistSessionTranscriptTurn,
+  readActiveTranscriptEntryAnchor,
   type TranscriptEntryAnchor,
   type SessionTranscriptTurnPersistOptions,
 } from "../config/sessions/session-accessor.js";
+import { waitForSessionTranscriptProjection } from "../config/sessions/session-transcript-reconcile.js";
 import { readPersistedMediaFacts, type MediaFact } from "../media/media-facts.js";
 import { applyInputProvenanceToUserMessage, normalizeInputProvenance } from "./input-provenance.js";
 import { resolveUserTurnTranscriptAdmission } from "./user-turn-transcript-admission.js";
@@ -410,7 +412,7 @@ async function persistUserTurnTranscript(
       ],
     },
   );
-  const appended = turn.messages[0] as
+  let appended = turn.messages[0] as
     | {
         anchor?: Omit<UserTurnTranscriptAdmissionReceipt, "logicalTurnId" | "role">;
         appended: boolean;
@@ -418,6 +420,24 @@ async function persistUserTurnTranscript(
         message: PersistedUserTurnMessage;
       }
     | undefined;
+  if (appended && !appended.anchor && appended.message.role === "user") {
+    await waitForSessionTranscriptProjection({
+      agentId: params.agentId,
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+      ...(params.storePath ? { storePath: params.storePath } : {}),
+    });
+    const anchor = readActiveTranscriptEntryAnchor({
+      agentId: params.agentId,
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+      ...(params.storePath ? { storePath: params.storePath } : {}),
+      entryId: appended.messageId,
+    });
+    if (anchor) {
+      appended = { ...appended, anchor };
+    }
+  }
   if (!appended?.anchor || appended.message.role !== "user") {
     return undefined;
   }

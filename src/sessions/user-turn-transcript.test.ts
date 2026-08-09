@@ -5,7 +5,11 @@ import path from "node:path";
 import { castAgentMessage } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it } from "vitest";
 import { formatSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
-import { loadTranscriptEvents } from "../config/sessions/session-accessor.js";
+import {
+  loadTranscriptEvents,
+  persistSessionTranscriptTurn,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import {
   buildLateMediaAttachedProjection,
   createUserTurnTranscriptRecorder,
@@ -549,6 +553,48 @@ describe("user turn transcript persistence", () => {
         idempotencyKey: "receipt:user",
         logicalTurnId: expect.any(String),
         role: "user",
+      });
+    });
+
+    it("waits for a deferred projection rebuild before returning admission identity", async () => {
+      const dir = createTempDir("openclaw-user-turn-recorder-projection-");
+      const target = createSqliteTranscriptTarget({ dir });
+      await replaceSessionEntry(
+        { storePath: target.storePath, sessionKey: target.sessionKey },
+        {
+          sessionId: target.sessionId,
+          sessionFile: target.sqliteMarker,
+          updatedAt: 1,
+        },
+      );
+      await persistSessionTranscriptTurn(target, {
+        messages: [
+          { eventId: "root", parentId: null, message: { role: "user", content: "root" } },
+          {
+            eventId: "inactive",
+            parentId: "root",
+            message: { role: "assistant", content: "inactive" },
+          },
+          {
+            eventId: "active",
+            parentId: "root",
+            message: { role: "assistant", content: "active" },
+          },
+        ],
+        touchSessionEntry: false,
+      });
+      const recorder = createUserTurnTranscriptRecorder({
+        input: { text: "admit after rebuild", idempotencyKey: "projection:user" },
+        target,
+      });
+
+      const persisted = await recorder.persistApproved({ expectedSessionId: target.sessionId });
+
+      expect(persisted).toBeDefined();
+      expect(persisted?.admission).toMatchObject({
+        entryId: persisted?.messageId,
+        sessionId: target.sessionId,
+        idempotencyKey: "projection:user",
       });
     });
 
