@@ -40,13 +40,13 @@ existing behavior to a primary M4/M5 scorecard surface; it does not prove the
 issue, identify a complete fix, approve a backport, or block a release by
 itself.
 
-For each closed labelled issue whose fixing PR or commit intersects the scan
-range, link that fix to its commit-ledger row and require an ordinary
-`backport`, `already-covered`, `not-affected`, `blocked`, or `skip` decision.
-Do not omit a commit merely because its linked issue was closed, and do not add
-one merely because the issue has this label. For each open P0/P1 labelled
-issue, add a release-readiness disposition: fixed by the candidate, not
-affected on the release baseline, explicitly deferred by a maintainer, or
+For each labelled issue, whether open or closed, whose fixing PR or commit
+actually landed in the scan range, link that fix to its commit-ledger row and
+require an ordinary `backport`, `already-covered`, `not-affected`, `blocked`,
+or `skip` decision. Do not omit a commit based on its linked issue's state, and
+do not add one merely because the issue has this label. For each open P0/P1
+labelled issue, add a release-readiness disposition: fixed by the candidate,
+not affected on the release baseline, explicitly deferred by a maintainer, or
 blocked because no proven fix exists. Open issues without a merged fix are not
 backport candidates.
 
