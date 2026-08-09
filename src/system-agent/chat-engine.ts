@@ -271,6 +271,7 @@ async function defaultChannelSetupWizardRunner(
     run: async ({ baseConfig, runtime }) => ({
       nextConfig: await setupChannels(baseConfig, runtime, prompter, {
         initialSelection: [channel],
+        finishAfterInitialSelection: true,
         forceAllowFromChannels: [channel],
         allowIMessageInstall: true,
         allowSignalInstall: true,
