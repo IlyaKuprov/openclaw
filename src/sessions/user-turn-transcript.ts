@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { mimeTypeFromFilePath } from "@openclaw/media-core/mime";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { AgentMessage } from "../../packages/agent-core/src/types.js";
 import {
   persistSessionTranscriptTurn,
   readActiveTranscriptEntryAnchor,
@@ -11,9 +10,10 @@ import {
   type SessionTranscriptTurnPersistOptions,
 } from "../config/sessions/session-accessor.js";
 import { waitForSessionTranscriptProjection } from "../config/sessions/session-transcript-reconcile.js";
-import { readPersistedMediaFacts, type MediaFact } from "../media/media-facts.js";
+import { readPersistedMediaFacts } from "../media/media-facts.js";
 import { applyInputProvenanceToUserMessage, normalizeInputProvenance } from "./input-provenance.js";
 import { resolveUserTurnTranscriptAdmission } from "./user-turn-transcript-admission.js";
+import { readOpenClawMessageMeta } from "./user-turn-transcript-runtime-projection.js";
 import {
   normalizeStructuredMediaEntryForTranscript,
   resolveTranscriptMediaPath,
@@ -33,6 +33,11 @@ import type {
   UserTurnTranscriptUpdateMode,
 } from "./user-turn-transcript.types.js";
 
+export {
+  buildLateMediaAttachedProjection,
+  mergePreparedUserTurnMessageForRuntime,
+  restorePreparedUserTurnOperationalMetaForRuntime,
+} from "./user-turn-transcript-runtime-projection.js";
 export type {
   PersistedUserTurnMessage,
   UserTurnInput,
@@ -108,21 +113,6 @@ export function buildPersistedUserTurnMediaInputsFromFields(
   return normalizedMedia.some((entry) => entry.path || entry.url) ? normalizedMedia : [];
 }
 
-export function buildLateMediaAttachedProjection(message: AgentMessage): {
-  text?: string;
-  media: MediaFact[];
-} {
-  const isLateMedia = readOpenClawMessageMeta(message)?.lateMedia === true;
-  const media = isLateMedia ? (readPersistedMediaFacts(message) ?? []) : [];
-  const text = media
-    .flatMap((fact) => {
-      const mediaRef = fact.path ?? fact.url;
-      return mediaRef ? [`[media attached: ${mediaRef}]`] : [];
-    })
-    .join("\n");
-  return { ...(text ? { text } : {}), media };
-}
-
 function buildUserTurnSenderMeta(
   sender: UserTurnInput["sender"],
 ): Record<string, string> | undefined {
@@ -137,10 +127,6 @@ function buildUserTurnSenderMeta(
     ...(senderName ? { senderName } : {}),
     ...(senderUsername ? { senderUsername } : {}),
   };
-}
-
-function readOpenClawMessageMeta(message: AgentMessage): Record<string, unknown> | undefined {
-  return asOptionalRecord((message as unknown as Record<string, unknown>)["__openclaw"]);
 }
 
 export function buildPersistedUserTurnMessage(params: UserTurnInput): PersistedUserTurnMessage {
@@ -200,10 +186,6 @@ function resolvePersistedUserTurnMessage(
   return buildPersistedUserTurnMessage(params.input);
 }
 
-function isUserMessage(message: AgentMessage): message is PersistedUserTurnMessage {
-  return (message as { role?: unknown }).role === "user";
-}
-
 function buildLateResolvedMediaMessage(params: {
   admittedMessage?: PersistedUserTurnMessage;
   resolvedMessage: PersistedUserTurnMessage;
@@ -239,71 +221,6 @@ function buildLateResolvedMediaMessage(params: {
     idempotencyKey,
     __openclaw: { ...readOpenClawMessageMeta(params.resolvedMessage), lateMedia: true },
   } as unknown as PersistedUserTurnMessage;
-}
-
-function isBeforeAgentRunBlockedMessage(message: AgentMessage): boolean {
-  const marker = (message as { __openclaw?: { beforeAgentRunBlocked?: unknown } })["__openclaw"]
-    ?.beforeAgentRunBlocked;
-  return marker !== undefined;
-}
-
-function userMessageHasImageContent(message: AgentMessage): boolean {
-  return (
-    isUserMessage(message) &&
-    Array.isArray(message.content) &&
-    message.content.some(
-      (block) =>
-        typeof block === "object" &&
-        block !== null &&
-        (block as { type?: unknown }).type === "image",
-    )
-  );
-}
-
-// Runtime messages may lack transcript metadata because channel adapters prepare
-// display text separately. Merge only safe user messages, never block markers.
-export function mergePreparedUserTurnMessageForRuntime(params: {
-  runtimeMessage: AgentMessage;
-  preparedMessage?: PersistedUserTurnMessage;
-}): AgentMessage {
-  if (
-    !params.preparedMessage ||
-    !isUserMessage(params.runtimeMessage) ||
-    isBeforeAgentRunBlockedMessage(params.runtimeMessage)
-  ) {
-    return params.runtimeMessage;
-  }
-  const runtimeMessage = params.runtimeMessage as unknown as Record<string, unknown>;
-  const preparedMessage = params.preparedMessage as unknown as Record<string, unknown>;
-  const runtimeMeta = readOpenClawMessageMeta(params.runtimeMessage);
-  const preparedMeta = readOpenClawMessageMeta(params.preparedMessage);
-  return {
-    ...runtimeMessage,
-    ...preparedMessage,
-    ...(preparedMeta ? { __openclaw: { ...runtimeMeta, ...preparedMeta } } : {}),
-    ...(userMessageHasImageContent(params.runtimeMessage)
-      ? { content: params.runtimeMessage.content }
-      : {}),
-  } as unknown as AgentMessage;
-}
-
-/** Restores only auth state that write hooks must not be able to forge or erase. */
-export function restorePreparedUserTurnOperationalMetaForRuntime(params: {
-  runtimeMessage: AgentMessage;
-  preparedMessage?: PersistedUserTurnMessage;
-}): AgentMessage {
-  if (!params.preparedMessage || !isUserMessage(params.runtimeMessage)) {
-    return params.runtimeMessage;
-  }
-  const preparedMeta = readOpenClawMessageMeta(params.preparedMessage);
-  const senderIsOwner = preparedMeta?.senderIsOwner;
-  if (typeof senderIsOwner !== "boolean") {
-    return params.runtimeMessage;
-  }
-  return {
-    ...(params.runtimeMessage as unknown as Record<string, unknown>),
-    __openclaw: { ...readOpenClawMessageMeta(params.runtimeMessage), senderIsOwner },
-  } as unknown as AgentMessage;
 }
 
 /** Applies before-message hooks while preserving user-turn transcript metadata. */
