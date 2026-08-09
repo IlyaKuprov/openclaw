@@ -8,6 +8,7 @@ import {
   getMemorySearchManagerMockConfigs,
   getMemorySearchManagerMockParams,
   getMemorySyncMockCalls,
+  getMemorySyncMockParams,
   resetMemoryToolMockState,
   setMemoryCloseImpl,
   setMemoryCustomStatus,
@@ -537,7 +538,7 @@ describe("memory_search unavailable payloads", () => {
     expect(getMemoryCloseMockCalls()).toBe(1);
   });
 
-  it("forces a sync and retries once when the first search has zero hits", async () => {
+  it("syncs without a full reindex and retries once when the first search has zero hits", async () => {
     let searchCalls = 0;
     setMemorySearchImpl(async () => {
       searchCalls += 1;
@@ -568,6 +569,9 @@ describe("memory_search unavailable payloads", () => {
       "MEMORY.md",
     );
     expect(searchCalls).toBe(2);
+    // A query that matched nothing is not evidence that the index is wrong, so
+    // the retry must not request a full rebuild of an already valid index.
+    expect(getMemorySyncMockParams()).toEqual([{ reason: "search", force: false }]);
   });
 
   it("qualifies empty results when the index remains dirty after retry", async () => {

@@ -644,7 +644,11 @@ export function createMemorySearchTool(options: {
                   await runWithDefaultDeadline(async () => {
                     // Sync may join shared/background manager maintenance and has
                     // no request-cancellation contract. Bound only this tool's wait.
-                    await activeMemory.manager.sync?.({ reason: "search", force: true });
+                    // Not forced: `force` means "rebuild the whole index", which an
+                    // ordinary query that simply matched nothing must not trigger.
+                    // An unbuilt, missing-identity or dirty index still rebuilds or
+                    // catches up here, which is all this retry needs.
+                    await activeMemory.manager.sync?.({ reason: "search", force: false });
                   });
                   rawResults = await searchActiveMemory();
                   pausedIndexIdentityReason = resolvePausedMemoryIndexIdentityReason(
