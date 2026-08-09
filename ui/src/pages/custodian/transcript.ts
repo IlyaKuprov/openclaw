@@ -6,6 +6,7 @@ import { html, nothing } from "lit";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { WizardStep } from "../../api/types.ts";
 import { icons } from "../../components/icons.ts";
+import { handleMarkdownCodeBlockCopy } from "../../components/markdown-code-blocks.ts";
 import { renderWizardStepControls } from "../../components/wizard-step-controls.ts";
 import { t } from "../../i18n/index.ts";
 import type { MessageGroup } from "../../lib/chat/chat-types.ts";
@@ -374,7 +375,7 @@ export function renderCustodianTranscriptEntry(params: {
             ? html`<strong class="custodian__wizard-title">${step.title}</strong>`
             : nothing}
           ${guidance
-            ? html`<div class="custodian__wizard-guidance">
+            ? html`<div class="custodian__wizard-guidance" @click=${handleMarkdownCodeBlockCopy}>
                 ${renderMarkdownText(guidance, false, { jsonCodeBlockCollapse: "never" })}
               </div>`
             : nothing}

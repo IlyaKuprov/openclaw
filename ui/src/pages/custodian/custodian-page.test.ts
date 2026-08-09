@@ -264,7 +264,12 @@ describe("custodian page", () => {
     expect(page.querySelector("details")).toBeNull();
     expect(page.querySelector(".custodian__wizard-guidance ol")).not.toBeNull();
     expect(page.querySelector(".custodian__wizard-guidance .code-block-wrapper")).not.toBeNull();
-    expect(page.querySelector(".custodian__wizard-guidance .code-block-copy")).not.toBeNull();
+    const copyButton = page.querySelector<HTMLButtonElement>(
+      ".custodian__wizard-guidance .code-block-copy",
+    );
+    expect(copyButton).not.toBeNull();
+    copyButton?.click();
+    await waitForFast(() => expect(copyButton?.getAttribute("aria-label")).not.toBe("Copy code"));
     expect(page.querySelector(".custodian__wizard-guidance")?.textContent).toContain(
       "Slack socket mode tokens",
     );
