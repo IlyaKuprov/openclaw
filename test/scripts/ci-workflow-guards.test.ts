@@ -2483,15 +2483,26 @@ NODE
     for (const { jobName, stepWith } of stickyConsumers) {
       const stickyCondition = stepWith["sticky-disk"];
       const cacheCondition = stepWith["use-actions-cache"];
-      expect(stickyCondition, jobName).toContain("github.event_name != 'workflow_dispatch'");
+      if (jobName === "checks-ui-e2e") {
+        expect(stickyCondition, jobName).toContain(
+          "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)",
+        );
+        expect(stickyCondition, jobName).toContain("&& 'false' ||");
+        expect(cacheCondition, jobName).toContain(
+          "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)",
+        );
+        expect(cacheCondition, jobName).toContain("&& 'true' ||");
+      } else {
+        expect(stickyCondition, jobName).toContain("github.event_name != 'workflow_dispatch'");
+        expect(cacheCondition, jobName).toContain("github.event_name != 'workflow_dispatch'");
+        expect(cacheCondition, jobName).toContain("&& 'false' || 'true'");
+      }
       expect(stickyCondition, jobName).toContain(
         "github.event.pull_request.head.repo.full_name == 'openclaw/openclaw'",
       );
-      expect(cacheCondition, jobName).toContain("github.event_name != 'workflow_dispatch'");
       expect(cacheCondition, jobName).toContain(
         "github.event.pull_request.head.repo.full_name == 'openclaw/openclaw'",
       );
-      expect(cacheCondition, jobName).toContain("&& 'false' || 'true'");
     }
     // Required CI jobs only clone the snapshot. The disposable warmer below
     // owns commits so writer coalescing cannot cancel a required build job.
@@ -5029,16 +5040,19 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     });
     expect(workflow.jobs["ci-gate"].needs).toContain("checks-ui-e2e");
 
-    const uiSetup = expectDefined(
-      ui.steps.find((step: WorkflowStep) => step.name === "Setup Node environment"),
-      "Control UI Node setup",
-    );
     const uiE2eSetup = expectDefined(
       uiE2e.steps.find((step: WorkflowStep) => step.name === "Setup Node environment"),
       "Control UI E2E Node setup",
     );
     expect(uiE2eSetup.uses).toBe("./.github/actions/setup-node-env");
-    expect(uiE2eSetup.with).toEqual(uiSetup.with);
+    expect(uiE2eSetup.with).toEqual({
+      "node-version": "24.x",
+      "install-bun": "false",
+      "sticky-disk":
+        "${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'false' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false') }}",
+      "use-actions-cache":
+        "${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'true' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'false' || 'true') }}",
+    });
 
     const chromiumInstall = expectDefined(
       uiE2e.steps.find((step: WorkflowStep) => step.name === "Install Playwright Chromium"),
