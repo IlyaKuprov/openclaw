@@ -1,8 +1,8 @@
 // Covers doctor contract registry load paths for plugins.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { findLegacyConfigIssues } from "../config/legacy.js";
 import type { OpenClawConfig } from "../config/types.js";
 import {
@@ -12,15 +12,7 @@ import {
 } from "./doctor-contract-registry.js";
 import { clearPluginDoctorContractRegistryCache } from "./doctor-contract-registry.test-fixtures.js";
 
-const tempDirs: string[] = [];
-
-function makeTempDir(): string {
-  const dir = fs.mkdtempSync(
-    path.join(fs.realpathSync(os.tmpdir()), "openclaw-doctor-contract-load-paths-"),
-  );
-  tempDirs.push(dir);
-  return dir;
-}
+const tempDirs = createTempDirTracker();
 
 function makeHermeticDoctorEnv(stateDir: string): NodeJS.ProcessEnv {
   return {
@@ -224,15 +216,13 @@ beforeEach(() => {
 
 afterEach(() => {
   clearPluginDoctorContractRegistryCache();
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  tempDirs.cleanup();
 });
 
 describe("doctor contract registry load-path plugins", () => {
   it("discovers doctor warning rules from plugins.load.paths", () => {
-    const stateDir = makeTempDir();
-    const pluginRoot = makeTempDir();
+    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
+    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "load-path-doctor";
     writeDoctorPlugin(pluginRoot, pluginId);
     const config = createDoctorPluginConfig(pluginRoot, pluginId);
@@ -257,8 +247,8 @@ describe("doctor contract registry load-path plugins", () => {
   });
 
   it("discovers doctor warning rules from package dist contracts", () => {
-    const stateDir = makeTempDir();
-    const pluginRoot = makeTempDir();
+    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
+    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "dist-doctor";
     writeDistDoctorPlugin(pluginRoot, pluginId);
     const config = createDoctorPluginConfig(pluginRoot, pluginId);
@@ -277,8 +267,8 @@ describe("doctor contract registry load-path plugins", () => {
   });
 
   it("applies compatibility normalizers from plugins.load.paths", () => {
-    const stateDir = makeTempDir();
-    const pluginRoot = makeTempDir();
+    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
+    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "load-path-doctor";
     writeDoctorPlugin(pluginRoot, pluginId);
     const config = createDoctorPluginConfig(pluginRoot, pluginId);
@@ -298,8 +288,8 @@ describe("doctor contract registry load-path plugins", () => {
   });
 
   it("discovers session route-state owners from plugins.load.paths", () => {
-    const stateDir = makeTempDir();
-    const pluginRoot = makeTempDir();
+    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
+    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "load-path-session-owner";
     writeDoctorSessionOwnerPlugin(pluginRoot, pluginId);
     const config = createDoctorPluginConfig(pluginRoot, pluginId);
@@ -322,8 +312,8 @@ describe("doctor contract registry load-path plugins", () => {
   });
 
   it("keeps the deprecated module owner route for external load-path plugins", () => {
-    const stateDir = makeTempDir();
-    const pluginRoot = makeTempDir();
+    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
+    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "legacy-load-path-owner";
     writeLegacyDoctorSessionOwnerPlugin(pluginRoot, pluginId);
     const config = createDoctorPluginConfig(pluginRoot, pluginId);
