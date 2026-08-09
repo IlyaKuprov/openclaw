@@ -257,7 +257,7 @@ describe("opencode-go provider plugin", () => {
 
     expect(requireMapEntry(models, "kimi-k3")).toMatchObject({
       api: "openai-completions",
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       contextWindow: 1_048_576,
       maxTokens: 131_072,
       cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
@@ -267,7 +267,7 @@ describe("opencode-go provider plugin", () => {
     const kimi = requireMapEntry(models, "kimi-k2.6");
     expect(kimi.api).toBe("openai-completions");
     expect(kimi.baseUrl).toBe("https://opencode.ai/zen/go/v1");
-    expect(kimi.input).toEqual(["text", "image", "video"]);
+    expect(kimi.input).toEqual(["text", "image"]);
     expect(kimi.reasoning).toBe(true);
     expect(kimi.contextWindow).toBe(262_144);
     expect(kimi.maxTokens).toBe(65_536);
@@ -275,7 +275,7 @@ describe("opencode-go provider plugin", () => {
     const kimiCode = requireMapEntry(models, "kimi-k2.7-code");
     expect(kimiCode.api).toBe("openai-completions");
     expect(kimiCode.baseUrl).toBe("https://opencode.ai/zen/go/v1");
-    expect(kimiCode.input).toEqual(["text", "image", "video"]);
+    expect(kimiCode.input).toEqual(["text", "image"]);
     expect(kimiCode.contextWindow).toBe(262_144);
     expect(kimiCode.maxTokens).toBe(262_144);
     expect(kimiCode.cost).toEqual({
@@ -296,7 +296,7 @@ describe("opencode-go provider plugin", () => {
     expect(minimaxM3.api).toBe("anthropic-messages");
     expect(minimaxM3.baseUrl).toBe("https://opencode.ai/zen/go");
     expect(minimaxM3.reasoning).toBe(true);
-    expect(minimaxM3.input).toEqual(["text", "image", "video"]);
+    expect(minimaxM3.input).toEqual(["text", "image"]);
     expect(minimaxM3.contextWindow).toBe(1_000_000);
     expect(minimaxM3.maxTokens).toBe(131_072);
 
@@ -309,7 +309,7 @@ describe("opencode-go provider plugin", () => {
     expect(mimoPro.maxTokens).toBe(128_000);
 
     const mimo = requireMapEntry(models, "mimo-v2.5");
-    expect(mimo.input).toEqual(["text", "image", "audio", "video"]);
+    expect(mimo.input).toEqual(["text", "image"]);
     expect(mimo.reasoning).toBe(true);
     expect(mimo.contextWindow).toBe(1_000_000);
     expect(mimo.maxTokens).toBe(128_000);
@@ -332,7 +332,7 @@ describe("opencode-go provider plugin", () => {
     const qwen37Plus = requireMapEntry(models, "qwen3.7-plus");
     expect(qwen37Plus.api).toBe("anthropic-messages");
     expect(qwen37Plus.baseUrl).toBe("https://opencode.ai/zen/go");
-    expect(qwen37Plus.input).toEqual(["text", "image", "video"]);
+    expect(qwen37Plus.input).toEqual(["text", "image"]);
     expect(qwen37Plus.reasoning).toBe(true);
     expect(qwen37Plus.contextWindow).toBe(1_000_000);
     expect(qwen37Plus.maxTokens).toBe(65_536);

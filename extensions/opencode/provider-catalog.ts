@@ -31,7 +31,7 @@ type ZenModelCapabilities = {
   contextWindow: number;
   contextTokens?: number;
   maxTokens: number;
-  input: Readonly<NonNullable<ModelDefinitionConfig["input"]>>;
+  input: ReadonlyArray<"text" | "image">;
   reasoningEfforts?: readonly string[];
   status?: "deprecated";
   replacedBy?: string;
@@ -39,9 +39,6 @@ type ZenModelCapabilities = {
 
 const T = ["text"] as const;
 const TI = ["text", "image"] as const;
-const TIV = ["text", "image", "video"] as const;
-const TIVA = ["text", "image", "video", "audio"] as const;
-const TIAV = ["text", "image", "audio", "video"] as const;
 
 // The official machine catalog owns limits, representable modalities, and the
 // reasoning boolean. Pinned provider metadata/source owns exact effort enums.
@@ -85,7 +82,7 @@ type ZenModelCapabilityRow = readonly [
   id: string,
   contextWindow: number,
   maxTokens: number,
-  input: Readonly<NonNullable<ModelDefinitionConfig["input"]>>,
+  input: ReadonlyArray<"text" | "image">,
   reasoningEfforts?: readonly string[],
   metadata?: ZenModelMetadata,
 ];
@@ -102,11 +99,11 @@ const MODEL_CAPABILITY_ROWS = [
   ["claude-sonnet-4-5", 1000000, 64000, TI],
   ["claude-sonnet-4", 1000000, 64000, TI, undefined, DEPRECATED],
   ["claude-haiku-4-5", 200000, 64000, TI],
-  ["gemini-3.6-flash", 1048576, 65536, TIVA, E_MIN_LMH],
-  ["gemini-3.5-flash-lite", 1048576, 65536, TIVA, E_MIN_LMH],
-  ["gemini-3.5-flash", 1048576, 65536, TIVA, E_MIN_LMH],
-  ["gemini-3.1-pro", 1048576, 65536, TIVA, E_LMH],
-  ["gemini-3-flash", 1048576, 65536, TIVA, E_MIN_LMH],
+  ["gemini-3.6-flash", 1048576, 65536, TI, E_MIN_LMH],
+  ["gemini-3.5-flash-lite", 1048576, 65536, TI, E_MIN_LMH],
+  ["gemini-3.5-flash", 1048576, 65536, TI, E_MIN_LMH],
+  ["gemini-3.1-pro", 1048576, 65536, TI, E_LMH],
+  ["gemini-3-flash", 1048576, 65536, TI, E_MIN_LMH],
   ["gpt-5.6-sol", 1050000, 128000, TI, E_NONE_LMHXM, INPUT_922],
   ["gpt-5.6-terra", 1050000, 128000, TI, E_NONE_LMHXM, INPUT_922],
   ["gpt-5.6-luna", 1050000, 128000, TI, E_NONE_LMHXM, INPUT_922],
@@ -134,18 +131,18 @@ const MODEL_CAPABILITY_ROWS = [
   ["glm-5.2", 1000000, 131072, T, E_HIGH_MAX],
   ["glm-5.1", 204800, 131072, T],
   ["glm-5", 204800, 131072, T, undefined, DEPRECATED],
-  ["minimax-m3", 512000, 128000, TIV],
+  ["minimax-m3", 512000, 128000, TI],
   ["minimax-m2.7", 204800, 131072, T, undefined, DEPRECATED_BY_MINIMAX_M3],
   ["minimax-m2.5", 204800, 131072, T, undefined, DEPRECATED],
-  ["kimi-k3", 1048576, 131072, TIV, E_MAX],
-  ["kimi-k2.7-code", 262144, 262144, TIV],
-  ["kimi-k2.6", 262144, 65536, TIV],
-  ["kimi-k2.5", 262144, 65536, TIV, undefined, DEPRECATED],
-  ["qwen3.6-plus", 262144, 65536, TIV],
-  ["qwen3.5-plus", 262144, 65536, TIV],
+  ["kimi-k3", 1048576, 131072, TI, E_MAX],
+  ["kimi-k2.7-code", 262144, 262144, TI],
+  ["kimi-k2.6", 262144, 65536, TI],
+  ["kimi-k2.5", 262144, 65536, TI, undefined, DEPRECATED],
+  ["qwen3.6-plus", 262144, 65536, TI],
+  ["qwen3.5-plus", 262144, 65536, TI],
   ["big-pickle", 200000, 32000, T, undefined, INPUT_160],
   ["deepseek-v4-flash-free", 200000, 128000, T, E_LOW_HIGH_MAX],
-  ["mimo-v2.5-free", 200000, 32000, TIAV],
+  ["mimo-v2.5-free", 200000, 32000, TI],
   ["ling-3.0-flash-free", 262144, 32768, T, E_LMH, DEPRECATED],
   ["ling-3.0-tiny-free", 262144, 32768, T],
   ["nemotron-3-ultra-free", 1000000, 128000, T],
@@ -384,7 +381,7 @@ type OpencodeZenModelDefinition = ModelDefinitionConfig & {
   provider: typeof PROVIDER_ID;
   api: NonNullable<ModelDefinitionConfig["api"]>;
   baseUrl: string;
-  input: NonNullable<ModelDefinitionConfig["input"]>;
+  input: Array<"text" | "image">;
 };
 
 type FetchOpencodeZenLiveModelIdsParams = {
@@ -527,7 +524,7 @@ export async function buildOpencodeZenLiveProviderConfig(
 export function listOpencodeZenModelCatalogEntries(): ModelCatalogEntry[] {
   return OPENCODE_ZEN_RESOLVABLE_MODELS.map((model) => {
     const lifecycle = MODEL_CAPABILITIES[model.id];
-    return {
+    const entry: ModelCatalogEntry = {
       provider: model.provider,
       id: model.id,
       name: model.name,
@@ -538,9 +535,14 @@ export function listOpencodeZenModelCatalogEntries(): ModelCatalogEntry[] {
       contextWindow: model.contextWindow,
       contextTokens: model.contextTokens,
       compat: model.compat,
-      ...(lifecycle?.status ? { status: lifecycle.status } : {}),
-      ...(lifecycle?.replacedBy ? { replacedBy: lifecycle.replacedBy } : {}),
     };
+    if (lifecycle?.status) {
+      entry.status = lifecycle.status;
+    }
+    if (lifecycle?.replacedBy) {
+      entry.replacedBy = lifecycle.replacedBy;
+    }
+    return entry;
   });
 }
 

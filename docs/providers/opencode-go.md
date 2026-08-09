@@ -76,26 +76,26 @@ interactive onboarding or pass the shared OpenCode API key directly.
 Run `openclaw models list --provider opencode-go` for the current model list.
 Current active rows:
 
-| Model ref                       | Context   | Max output | Inputs                    | Transport |
-| ------------------------------- | --------- | ---------- | ------------------------- | --------- |
-| `opencode-go/deepseek-v4-flash` | 1M        | 384K       | Text                      | Chat      |
-| `opencode-go/deepseek-v4-pro`   | 1M        | 384K       | Text                      | Chat      |
-| `opencode-go/glm-5.1`           | 202,752   | 32,768     | Text                      | Chat      |
-| `opencode-go/glm-5.2`           | 1M        | 131,072    | Text                      | Chat      |
-| `opencode-go/gpt-5.6-luna`      | 1.05M     | 128,000    | Text, image               | Responses |
-| `opencode-go/grok-4.5`          | 500,000   | 500,000    | Text, image               | Chat      |
-| `opencode-go/hy3`               | 256,000   | 64,000     | Text                      | Chat      |
-| `opencode-go/kimi-k2.6`         | 262,144   | 65,536     | Text, image, video        | Chat      |
-| `opencode-go/kimi-k2.7-code`    | 262,144   | 262,144    | Text, image, video        | Chat      |
-| `opencode-go/kimi-k3`           | 1,048,576 | 131,072    | Text, image, video        | Chat      |
-| `opencode-go/mimo-v2.5`         | 1M        | 128,000    | Text, image, audio, video | Chat      |
-| `opencode-go/mimo-v2.5-pro`     | 1,048,576 | 128,000    | Text                      | Chat      |
-| `opencode-go/minimax-m2.7`      | 204,800   | 131,072    | Text                      | Messages  |
-| `opencode-go/minimax-m3`        | 1M        | 131,072    | Text, image, video        | Messages  |
-| `opencode-go/qwen3.6-plus`      | 1M        | 65,536     | Text, image, video        | Messages  |
-| `opencode-go/qwen3.7-max`       | 1M        | 65,536     | Text                      | Messages  |
-| `opencode-go/qwen3.7-plus`      | 1M        | 65,536     | Text, image, video        | Messages  |
-| `opencode-go/qwen3.8-max`       | 1M        | 131,072    | Text, image, video        | Messages  |
+| Model ref                       | Context   | Max output | Inputs      | Transport |
+| ------------------------------- | --------- | ---------- | ----------- | --------- |
+| `opencode-go/deepseek-v4-flash` | 1M        | 384K       | Text        | Chat      |
+| `opencode-go/deepseek-v4-pro`   | 1M        | 384K       | Text        | Chat      |
+| `opencode-go/glm-5.1`           | 202,752   | 32,768     | Text        | Chat      |
+| `opencode-go/glm-5.2`           | 1M        | 131,072    | Text        | Chat      |
+| `opencode-go/gpt-5.6-luna`      | 1.05M     | 128,000    | Text, image | Responses |
+| `opencode-go/grok-4.5`          | 500,000   | 500,000    | Text, image | Chat      |
+| `opencode-go/hy3`               | 256,000   | 64,000     | Text        | Chat      |
+| `opencode-go/kimi-k2.6`         | 262,144   | 65,536     | Text, image | Chat      |
+| `opencode-go/kimi-k2.7-code`    | 262,144   | 262,144    | Text, image | Chat      |
+| `opencode-go/kimi-k3`           | 1,048,576 | 131,072    | Text, image | Chat      |
+| `opencode-go/mimo-v2.5`         | 1M        | 128,000    | Text, image | Chat      |
+| `opencode-go/mimo-v2.5-pro`     | 1,048,576 | 128,000    | Text        | Chat      |
+| `opencode-go/minimax-m2.7`      | 204,800   | 131,072    | Text        | Messages  |
+| `opencode-go/minimax-m3`        | 1M        | 131,072    | Text, image | Messages  |
+| `opencode-go/qwen3.6-plus`      | 1M        | 65,536     | Text, image | Messages  |
+| `opencode-go/qwen3.7-max`       | 1M        | 65,536     | Text        | Messages  |
+| `opencode-go/qwen3.7-plus`      | 1M        | 65,536     | Text, image | Messages  |
+| `opencode-go/qwen3.8-max`       | 1M        | 131,072    | Text, image | Messages  |
 
 Deprecated and preview refs remain resolvable only for existing explicit
 configurations. They are not part of static or live recommendations.

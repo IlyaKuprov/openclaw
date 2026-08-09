@@ -42,7 +42,7 @@ type OpencodeGoModelDefinition = ModelDefinitionConfig & {
   provider: typeof PROVIDER_ID;
   api: NonNullable<ModelDefinitionConfig["api"]>;
   baseUrl: string;
-  input: NonNullable<ModelDefinitionConfig["input"]>;
+  input: Array<"text" | "image">;
 };
 
 const OPENCODE_GO_RESOLVABLE_MODELS = (
@@ -218,7 +218,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       name: "Kimi K2.5",
       ...OPENAI_COMPLETIONS_MODEL,
       reasoning: true,
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       cost: {
         input: 0.6,
         output: 3,
@@ -233,7 +233,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       name: "Kimi K2.6",
       ...OPENAI_COMPLETIONS_MODEL,
       reasoning: true,
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       cost: {
         input: 0.95,
         output: 4,
@@ -248,7 +248,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       name: "Kimi K2.7 Code",
       ...OPENAI_COMPLETIONS_MODEL,
       reasoning: true,
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       cost: {
         input: 0.95,
         output: 4,
@@ -263,7 +263,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       name: "Kimi K3",
       ...OPENAI_COMPLETIONS_MODEL,
       reasoning: true,
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
       contextWindow: 1_048_576,
       maxTokens: 131_072,
@@ -279,7 +279,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       name: "MiMo V2 Omni",
       ...OPENAI_COMPLETIONS_MODEL,
       reasoning: true,
-      input: ["text", "image", "audio"],
+      input: ["text", "image"],
       cost: { input: 0.4, output: 2, cacheRead: 0.08, cacheWrite: 0 },
       contextWindow: 262_144,
       maxTokens: 128_000,
@@ -308,7 +308,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       name: "MiMo V2.5",
       ...OPENAI_COMPLETIONS_MODEL,
       reasoning: true,
-      input: ["text", "image", "audio", "video"],
+      input: ["text", "image"],
       cost: {
         input: 0.14,
         output: 0.28,
@@ -368,7 +368,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       name: "MiniMax M3",
       ...ANTHROPIC_MESSAGES_MODEL,
       reasoning: true,
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       cost: {
         input: 0.3,
         output: 1.2,
@@ -388,7 +388,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       ...ANTHROPIC_MESSAGES_MODEL,
       compat: { thinkingFormat: "qwen" },
       reasoning: true,
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       cost: {
         input: 0.2,
         output: 1.2,
@@ -420,7 +420,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       ...ANTHROPIC_MESSAGES_MODEL,
       compat: { thinkingFormat: "qwen" },
       reasoning: true,
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       cost: {
         input: 0.4,
         output: 1.6,
@@ -440,7 +440,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       ...ANTHROPIC_MESSAGES_MODEL,
       compat: { thinkingFormat: "qwen" },
       reasoning: true,
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       cost: {
         input: 2,
         output: 6,
@@ -456,7 +456,7 @@ const OPENCODE_GO_RESOLVABLE_MODELS = (
       ...ANTHROPIC_MESSAGES_MODEL,
       compat: { thinkingFormat: "qwen" },
       reasoning: true,
-      input: ["text", "image", "video"],
+      input: ["text", "image"],
       cost: {
         input: 0.5,
         output: 3,
@@ -528,21 +528,25 @@ export async function buildOpencodeGoLiveProviderConfig(
 }
 
 export function listOpencodeGoModelCatalogEntries(): ModelCatalogEntry[] {
-  return OPENCODE_GO_RESOLVABLE_MODELS.map((model) => ({
-    provider: model.provider,
-    id: model.id,
-    name: model.name,
-    api: model.api,
-    baseUrl: model.baseUrl,
-    reasoning: model.reasoning,
-    input: model.input,
-    contextWindow: model.contextWindow,
-    contextTokens: model.contextTokens,
-    compat: model.compat,
-    ...(OPENCODE_GO_MODEL_STATUS.has(model.id)
-      ? { status: OPENCODE_GO_MODEL_STATUS.get(model.id)! }
-      : {}),
-  }));
+  return OPENCODE_GO_RESOLVABLE_MODELS.map((model) => {
+    const entry: ModelCatalogEntry = {
+      provider: model.provider,
+      id: model.id,
+      name: model.name,
+      api: model.api,
+      baseUrl: model.baseUrl,
+      reasoning: model.reasoning,
+      input: model.input,
+      contextWindow: model.contextWindow,
+      contextTokens: model.contextTokens,
+      compat: model.compat,
+    };
+    const status = OPENCODE_GO_MODEL_STATUS.get(model.id);
+    if (status) {
+      entry.status = status;
+    }
+    return entry;
+  });
 }
 
 export function resolveOpencodeGoModel(modelId: string): ProviderRuntimeModel | undefined {

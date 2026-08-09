@@ -1,8 +1,5 @@
 // Opencode plugin entrypoint registers its OpenClaw integration.
-import {
-  defineSingleProviderPluginEntry,
-  type ProviderWrapStreamFnContext,
-} from "openclaw/plugin-sdk/provider-entry";
+import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
 import {
   buildProviderReplayFamilyHooks,
   matchesExactOrPrefix,
@@ -52,23 +49,6 @@ function isModernOpencodeModel(modelId: string): boolean {
     return false;
   }
   return !matchesExactOrPrefix(lower, MINIMAX_MODERN_MODEL_MATCHERS);
-}
-
-function createOpencodeZenWrapper(
-  baseStreamFn: ProviderWrapStreamFnContext["streamFn"],
-  thinkingLevel: ProviderWrapStreamFnContext["thinkingLevel"],
-): ProviderWrapStreamFnContext["streamFn"] {
-  if (!baseStreamFn) {
-    return undefined;
-  }
-  const thinkingOff = createOpenAICompatibleCompletionsThinkingOffWrapper(
-    baseStreamFn,
-    thinkingLevel,
-  );
-  return (model, context, options) =>
-    model.provider === PROVIDER_ID && model.id === "kimi-k3"
-      ? thinkingOff(model, context, options)
-      : baseStreamFn(model, context, options);
 }
 
 export default defineSingleProviderPluginEntry({
@@ -148,7 +128,20 @@ export default defineSingleProviderPluginEntry({
     ...buildProviderReplayFamilyHooks({ family: "passthrough-gemini" }),
     isModernModelRef: ({ modelId }) => isModernOpencodeModel(modelId),
     resolveThinkingProfile: resolveOpencodeThinkingProfile,
-    wrapStreamFn: (ctx) => createOpencodeZenWrapper(ctx.streamFn, ctx.thinkingLevel),
+    wrapStreamFn: (ctx) => {
+      if (!ctx.streamFn) {
+        return undefined;
+      }
+      const baseStreamFn = ctx.streamFn;
+      const thinkingOff = createOpenAICompatibleCompletionsThinkingOffWrapper(
+        baseStreamFn,
+        ctx.thinkingLevel,
+      );
+      return (model, context, options) =>
+        model.provider === PROVIDER_ID && model.id === "kimi-k3"
+          ? thinkingOff(model, context, options)
+          : baseStreamFn(model, context, options);
+    },
   },
   register(api) {
     api.registerMediaUnderstandingProvider(opencodeMediaUnderstandingProvider);
