@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runAndroidSigningCommandSync } from "../../scripts/lib/android-release-signing-process.mjs";
+import { runAndroidSigningCommandSync } from "../../scripts/lib/android-release-signing-process.mts";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "android-release-signing.mjs");
 const MATCH_PASSWORD = "test-match-password";

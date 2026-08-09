@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { testing } from "../../scripts/check-cli-startup-memory.mjs";
+import { testing } from "../../scripts/check-cli-startup-memory.mts";
 
 const tempRoots: string[] = [];
 
@@ -57,7 +57,7 @@ afterEach(() => {
 describe("check-cli-startup-memory", () => {
   it("resolves the repository root from the script location", () => {
     const repoRoot = path.resolve(__dirname, "..", "..");
-    const scriptUrl = pathToFileURL(path.join(repoRoot, "scripts/check-cli-startup-memory.mjs"));
+    const scriptUrl = pathToFileURL(path.join(repoRoot, "scripts/check-cli-startup-memory.mts"));
     const result = spawnSync(
       process.execPath,
       [
@@ -193,26 +193,34 @@ describe("check-cli-startup-memory", () => {
     }
 
     const tempRoot = makeTempRoot();
-    const result = spawnSync(process.execPath, ["scripts/check-cli-startup-memory.mjs", "--json"], {
-      cwd: path.resolve(__dirname, "..", ".."),
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        TMPDIR: tempRoot,
-        TEMP: tempRoot,
-        TMP: tempRoot,
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/check-cli-startup-memory.mts", "--json"],
+      {
+        cwd: path.resolve(__dirname, "..", ".."),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          TMPDIR: tempRoot,
+          TEMP: tempRoot,
+          TMP: tempRoot,
+        },
       },
-    });
+    );
 
     expect(result.status).not.toBe(0);
     expect(readdirSync(tempRoot)).toEqual([]);
   });
 
   it("reports CLI argument errors without a Node stack trace", () => {
-    const result = spawnSync(process.execPath, ["scripts/check-cli-startup-memory.mjs", "--wat"], {
-      cwd: path.resolve(__dirname, "..", ".."),
-      encoding: "utf8",
-    });
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/check-cli-startup-memory.mts", "--wat"],
+      {
+        cwd: path.resolve(__dirname, "..", ".."),
+        encoding: "utf8",
+      },
+    );
 
     expect(result.status).toBe(1);
     expect(result.stdout).toBe("");

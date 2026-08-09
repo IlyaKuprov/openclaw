@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const repoRoot = process.cwd();
-const gateLockHelperPath = join(repoRoot, "scripts", "pr-gates-lock.mjs");
+const gateLockHelperPath = join(repoRoot, "scripts", "pr-gates-lock.mts");
 
 const tempDirs: string[] = [];
 const children: ChildProcess[] = [];
