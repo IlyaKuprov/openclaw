@@ -86,7 +86,11 @@ function evaluateWorkflowExpression(
   if (!match) {
     throw new Error(`invalid workflow expression: ${expression}`);
   }
-  return runInNewContext(match[1], {
+  const source = match[1];
+  if (source === undefined) {
+    throw new Error(`workflow expression has no body: ${expression}`);
+  }
+  return runInNewContext(source, {
     github: {
       event_name: context.eventName,
       repository: context.repository,
