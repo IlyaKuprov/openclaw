@@ -6,8 +6,6 @@ const DEFAULT_GRACE_MS = 3000;
 const MAX_GRACE_MS = 60_000;
 const TASKKILL_COMPLETION_TIMEOUT_MS = 3000;
 const PS_TIMEOUT_MS = 500;
-/** Long enough to cover the longest grace period, short enough to forget stale trees. */
-const TRACKED_DESCENDANT_TTL_MS = MAX_GRACE_MS * 2;
 
 export type KillProcessTreeOptions = {
   graceMs?: number;
@@ -55,7 +53,7 @@ export function killProcessTree(pid: number, opts?: KillProcessTreeOptions): voi
   }
 
   const graceMs = normalizeGraceMs(opts?.graceMs);
-  signalProcessTreeUnix(pid, "SIGTERM", useGroupKill);
+  const tracked = signalProcessTreeUnix(pid, "SIGTERM", useGroupKill);
   setTimeout(() => {
     if (useGroupKill) {
       if (isProcessAlive(-pid) || isProcessAlive(pid)) {
@@ -65,7 +63,7 @@ export function killProcessTree(pid: number, opts?: KillProcessTreeOptions): voi
     }
     // A descendant that ignored SIGTERM outlives a root that did not, so the
     // root's own liveness cannot decide whether the tree still needs killing.
-    const { tableAvailable, descendants, rootIdentity } = resolveTrackedUnixTree(pid);
+    const { tableAvailable, descendants, rootIdentity } = resolveUnixTree(pid, tracked);
     if (!tableAvailable) {
       // Nothing can be enumerated on this host; degrade to the direct-PID
       // escalation this function performed before descendants were tracked.
@@ -301,28 +299,19 @@ function collectDescendants(
 }
 
 /**
- * Descendants seen for a root PID during its termination sequence. SIGTERM can
- * end the root while a descendant ignores it; that descendant is reparented to
- * init and can no longer be found from the root, so the force phase would have
- * nothing to signal without this.
+ * What one termination sequence remembers about the tree it signaled. SIGTERM
+ * can end the root while a descendant ignores it; that descendant is reparented
+ * to init and can no longer be found from the root, so the force phase would
+ * have nothing to signal without this. It belongs to the sequence and dies with
+ * it: a PID the kernel hands to an unrelated process later carries no memory of
+ * the tree that used it before.
  */
-const trackedTreeDescendants = new Map<
-  number,
-  { rootStartToken: string; entries: Array<{ pid: number; startToken: string }>; atMs: number }
->();
-
-function pruneTrackedTreeDescendants(nowMs: number): void {
-  for (const [root, tracked] of trackedTreeDescendants) {
-    if (nowMs - tracked.atMs > TRACKED_DESCENDANT_TTL_MS) {
-      trackedTreeDescendants.delete(root);
-    }
-  }
-}
+type TrackedTree = { rootStartToken: string; entries: Array<{ pid: number; startToken: string }> };
 
 /**
  * Live descendants of a PID that does not lead its own process group: the ones
- * visible now, plus the ones seen earlier in this termination sequence that are
- * still provably the same process.
+ * visible now, plus the ones this sequence signaled earlier that are still
+ * provably the same process.
  *
  * `tableAvailable` distinguishes "this host cannot enumerate processes" from
  * "the tree is empty"; the caller must not read the latter into the former, or
@@ -332,18 +321,19 @@ function pruneTrackedTreeDescendants(nowMs: number): void {
  * and treating two empty tokens as a match would let a recycled PID inherit a
  * pending SIGKILL.
  */
-function resolveTrackedUnixTree(pid: number): {
+function resolveUnixTree(
+  pid: number,
+  tracked: TrackedTree | undefined,
+): {
   tableAvailable: boolean;
   descendants: number[];
   rootIdentity: "same" | "changed" | "unknown";
+  tracked: TrackedTree | undefined;
 } {
-  const nowMs = Date.now();
-  pruneTrackedTreeDescendants(nowMs);
   const table = readProcessTable();
   if (!table) {
-    return { tableAvailable: false, descendants: [], rootIdentity: "unknown" };
+    return { tableAvailable: false, descendants: [], rootIdentity: "unknown", tracked };
   }
-  const tracked = trackedTreeDescendants.get(pid);
   const rootStartToken = table.get(pid)?.startToken;
   const trackedRootToken = tracked?.rootStartToken ?? "";
   const rootIdentity: "same" | "changed" | "unknown" =
@@ -354,6 +344,8 @@ function resolveTrackedUnixTree(pid: number): {
         : trackedRootToken === rootStartToken
           ? "same"
           : "changed";
+  // A root that is no longer the process this sequence signaled must not have
+  // its tree traversed: those descendants belong to whoever holds the PID now.
   const discovered = rootIdentity === "changed" ? [] : collectDescendants(pid, table);
   const merged = new Map(discovered.map((entry) => [entry.pid, entry] as const));
   for (const entry of tracked?.entries ?? []) {
@@ -368,19 +360,17 @@ function resolveTrackedUnixTree(pid: number): {
     merged.set(entry.pid, entry);
   }
   const entries = [...merged.values()];
-  // Only identifiable entries are worth remembering: an unidentifiable one
-  // could not be safely signaled later anyway.
-  const retained = entries.filter((entry) => entry.startToken !== "");
-  if (retained.length > 0) {
-    trackedTreeDescendants.set(pid, {
+  return {
+    tableAvailable: true,
+    descendants: entries.map((entry) => entry.pid),
+    rootIdentity,
+    tracked: {
       rootStartToken: tracked?.rootStartToken || (rootStartToken ?? ""),
-      entries: retained,
-      atMs: nowMs,
-    });
-  } else {
-    trackedTreeDescendants.delete(pid);
-  }
-  return { tableAvailable: true, descendants: entries.map((entry) => entry.pid), rootIdentity };
+      // Only identifiable entries are worth remembering: an unidentifiable one
+      // could not be safely signaled later anyway.
+      entries: entries.filter((entry) => entry.startToken !== ""),
+    },
+  };
 }
 
 function signalUnixTargets(pid: number, signal: "SIGTERM" | "SIGKILL", targets: number[]): void {
@@ -399,15 +389,16 @@ function signalUnixTargets(pid: number, signal: "SIGTERM" | "SIGKILL", targets: 
   }
 }
 
+/** Returns what the caller must remember to escalate this same tree later. */
 function signalProcessTreeUnix(
   pid: number,
   signal: "SIGTERM" | "SIGKILL",
   useGroupKill: boolean,
-): void {
+): TrackedTree | undefined {
   if (useGroupKill) {
     try {
       process.kill(-pid, signal);
-      return;
+      return undefined;
     } catch {
       // Process group does not exist or we lack permission; try direct pid.
     }
@@ -417,7 +408,9 @@ function signalProcessTreeUnix(
   // the direct PID alone leaves everything the child forked running, reparented
   // to init with its output already closed, so a timed-out run keeps consuming
   // the machine and can never deliver a result.
-  signalUnixTargets(pid, signal, resolveTrackedUnixTree(pid).descendants);
+  const resolved = resolveUnixTree(pid, undefined);
+  signalUnixTargets(pid, signal, resolved.descendants);
+  return resolved.tracked;
 }
 
 function runTaskkill(args: string[], onExit?: (code: number | null) => void): Promise<void> {

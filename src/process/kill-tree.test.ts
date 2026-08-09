@@ -427,6 +427,51 @@ describe("killProcessTree", () => {
     });
   });
 
+  it("on Unix signals the descendants of a root whose PID a previous termination also used", async () => {
+    // The first tree leaves a TERM-resistant child behind, so its root PID is
+    // still remembered when an unrelated process reuses that PID. Reading the
+    // stale memory as "this tree is already known" would skip discovery and
+    // leak the new tree's own children, which is the bug this file exists for.
+    let reused = false;
+    const mockProcessTable = () => {
+      const table = reused
+        ? [
+            mockProcStat({ pid: 7031, ppid: 1, startToken: "200" }),
+            mockProcStat({ pid: 7030, ppid: 1, startToken: "555" }),
+            mockProcStat({ pid: 7032, ppid: 7030, startToken: "300" }),
+          ]
+        : [
+            mockProcStat({ pid: 7030, ppid: 1, startToken: "100" }),
+            mockProcStat({ pid: 7031, ppid: 7030, startToken: "200" }),
+          ];
+      readdirSyncMock.mockReturnValue(table.map((entry) => String(entry.pid)));
+      readFileSyncMock.mockImplementation((filePath: unknown) => {
+        const pid = Number(String(filePath).replace("/proc/", "").replace("/stat", ""));
+        const found = table.find((entry) => entry.pid === pid);
+        if (!found) {
+          throw new Error("proc unavailable");
+        }
+        return found.stat;
+      });
+    };
+    mockProcessTable();
+    killSpy.mockImplementation((() => true) as typeof process.kill);
+
+    await withMockedPlatform("linux", async () => {
+      killProcessTree(7030, { graceMs: 10, detached: false });
+      await vi.advanceTimersByTimeAsync(10);
+
+      reused = true;
+      mockProcessTable();
+      killSpy.mockClear();
+      killProcessTree(7030, { graceMs: 10, detached: false });
+
+      expect(killSpy).toHaveBeenCalledWith(7032, "SIGTERM");
+      await vi.advanceTimersByTimeAsync(10);
+      expect(killSpy).toHaveBeenCalledWith(7032, "SIGKILL");
+    });
+  });
+
   it("on Unix still force-kills a live root when process discovery is unavailable", async () => {
     // Neither procfs nor ps can enumerate here. Losing the escalation would
     // leave a child that ignored SIGTERM running for good.
