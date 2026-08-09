@@ -70,6 +70,7 @@ const resolveQuestionOverGatewayMock = vi.hoisted(() =>
 );
 
 let registerSlackInteractionEvents: typeof import("./interactions.js").registerSlackInteractionEvents;
+let registerSlackApprovalInteractionEvents: typeof import("./interactions.js").registerSlackApprovalInteractionEvents;
 
 vi.mock("openclaw/plugin-sdk/system-event-runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/system-event-runtime")>();
@@ -196,6 +197,7 @@ function createContext(overrides?: {
   channelsConfig?: Record<string, { users?: string[] }>;
   cfg?: Record<string, unknown>;
   shouldDropMismatchedSlackEvent?: (body: unknown) => boolean;
+  installationIdentity?: Record<string, unknown>;
   isChannelAllowed?: (params: {
     channelId?: string;
     channelName?: string;
@@ -277,6 +279,11 @@ function createContext(overrides?: {
       },
     },
     runtime: { log: runtimeLog },
+    installationIdentity: overrides?.installationIdentity ?? {
+      kind: "workspace",
+      teamId: "T1",
+      apiAppId: "A1",
+    },
     dmEnabled: overrides?.dmEnabled ?? true,
     dmPolicy: overrides?.dmPolicy ?? ("open" as const),
     allowFrom: overrides?.allowFrom ?? ["*"],
@@ -450,7 +457,8 @@ function inputByActionId(
 
 describe("registerSlackInteractionEvents", () => {
   beforeAll(async () => {
-    ({ registerSlackInteractionEvents } = await import("./interactions.js"));
+    ({ registerSlackApprovalInteractionEvents, registerSlackInteractionEvents } =
+      await import("./interactions.js"));
   });
 
   beforeEach(() => {
@@ -1622,6 +1630,85 @@ describe("registerSlackInteractionEvents", () => {
       text: "Approval resolved: Allowed once.",
       response_type: "ephemeral",
     });
+  });
+
+  it("uses the validated team listener client for Grid approval clicks only", async () => {
+    const { ctx, app, getHandler } = createContext({
+      installationIdentity: {
+        kind: "enterprise",
+        enterpriseId: "E123",
+        apiAppId: "A123",
+      },
+      cfg: {
+        channels: {
+          slack: {
+            enterpriseOrgInstall: true,
+            execApprovals: {
+              enabled: true,
+              approvers: ["U123"],
+              target: "both",
+            },
+          },
+        },
+      },
+    });
+    const eventUpdate = vi.fn().mockResolvedValue(undefined);
+    const eventClient = { chat: { update: eventUpdate } };
+    registerSlackApprovalInteractionEvents({ ctx: ctx as never });
+
+    await getHandler()({
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: {
+        api_app_id: "A123",
+        user: { id: "U123" },
+        team: { id: "T123" },
+        channel: { id: "C1" },
+        container: { channel_id: "C1", message_ts: "100.200" },
+        message: { ts: "100.200", text: "Exec approval required", blocks: [] },
+      },
+      context: {
+        isEnterpriseInstall: true,
+        enterpriseId: "E123",
+        teamId: "T123",
+      },
+      client: eventClient,
+      action: {
+        type: "button",
+        action_id: "openclaw:approval_button:1:1",
+        block_id: "exec_actions",
+        value:
+          'openclaw:approval:v1:{"approvalId":"req-123","approvalKind":"exec","decision":"allow-once"}',
+        text: { type: "plain_text", text: "Allow once" },
+      },
+    });
+
+    expect(resolveApprovalOverGatewayMock).toHaveBeenCalledTimes(1);
+    expect(eventUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "C1", ts: "100.200" }),
+    );
+    expect(app.client.chat.update).not.toHaveBeenCalled();
+
+    await getHandler()({
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: {
+        api_app_id: "A123",
+        user: { id: "U123" },
+        team: { id: "T123" },
+      },
+      context: {
+        isEnterpriseInstall: true,
+        enterpriseId: "E123",
+        teamId: "T123",
+      },
+      client: eventClient,
+      action: {
+        type: "button",
+        action_id: "openclaw:unrelated",
+        value: "ignored",
+      },
+    });
+
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
   });
 
   it("tells the clicker when a typed approval is no longer pending", async () => {

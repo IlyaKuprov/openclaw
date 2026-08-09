@@ -218,3 +218,15 @@ export function registerSlackInteractionEvents(params: {
     });
   }
 }
+
+export function registerSlackApprovalInteractionEvents(params: {
+  ctx: SlackMonitorContext;
+  trackEvent?: () => void;
+}) {
+  registerSlackBlockActionHandler({
+    ctx: params.ctx,
+    trackEvent: params.trackEvent,
+    formatSystemEvent: formatSlackInteractionSystemEvent,
+    approvalsOnly: true,
+  });
+}

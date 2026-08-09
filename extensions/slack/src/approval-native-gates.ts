@@ -34,7 +34,11 @@ import {
   getSlackExecApprovalApprovers,
   isSlackExecApprovalClientEnabled,
 } from "./exec-approvals.js";
-import { canonicalizeSlackApiTargetId, parseSlackTarget } from "./target-parsing.js";
+import {
+  formatSlackApprovalTarget,
+  parseSlackApprovalTarget,
+} from "./approval-target.js";
+import { canonicalizeSlackApiTargetId } from "./target-parsing.js";
 
 export type SlackApprovalKind = "exec" | "plugin";
 export type SlackNativeApprovalRequest = ExecApprovalRequest | PluginApprovalRequest;
@@ -70,7 +74,7 @@ function isSlackApprovalTransportEnabled(params: {
   accountId?: string | null;
 }): boolean {
   const account = resolveSlackAccount(params);
-  return account.config.enterpriseOrgInstall !== true && isSlackPluginAccountConfigured(account);
+  return isSlackPluginAccountConfigured(account);
 }
 
 function resolveSlackNativeApprovalConfig(params: {
@@ -124,14 +128,14 @@ export function resolveTurnSourceSlackOriginTarget(
     return null;
   }
   const sessionKind = extractSlackSessionKind(request.request.sessionKey ?? undefined);
-  const parsed = parseSlackTarget(turnSourceTo, {
+  const parsed = parseSlackApprovalTarget(turnSourceTo, {
     defaultKind: resolveSlackTurnSourceDefaultKind({ turnSourceTo, sessionKind }),
   });
   if (!parsed) {
     return null;
   }
   return {
-    to: `${parsed.kind}:${parsed.id}`,
+    to: formatSlackApprovalTarget(parsed),
     threadId: stringifyRouteThreadId(request.request.turnSourceThreadId),
   };
 }
@@ -157,14 +161,17 @@ export function resolveSlackFallbackOriginTarget(
   if (!sessionTarget) {
     return null;
   }
-  const parsed = parseSlackTarget(sessionTarget.id, {
+  const parsed = parseSlackApprovalTarget(sessionTarget.id, {
     defaultKind: "channel",
   });
   if (!parsed) {
     return null;
   }
   return {
-    to: `${parsed.kind}:${canonicalizeSlackApiTargetId(parsed.kind, parsed.id)}`,
+    to: formatSlackApprovalTarget({
+      ...parsed,
+      id: canonicalizeSlackApiTargetId(parsed.kind, parsed.id),
+    }),
     threadId: sessionTarget.threadId,
   };
 }
@@ -177,13 +184,16 @@ export function normalizeSlackOriginTarget(target: SlackOriginTarget): SlackOrig
 }
 
 function parseComparableSlackTarget(target: SlackOriginTarget) {
-  return parseSlackTarget(target.to, { defaultKind: "channel" });
+  return parseSlackApprovalTarget(target.to, { defaultKind: "channel" });
 }
 
 function isSlackDmChannelToUserRoutePair(a: SlackOriginTarget, b: SlackOriginTarget): boolean {
   const left = parseComparableSlackTarget(a);
   const right = parseComparableSlackTarget(b);
   if (!left || !right) {
+    return false;
+  }
+  if (left.teamId?.toLowerCase() !== right.teamId?.toLowerCase()) {
     return false;
   }
   return (
@@ -225,14 +235,14 @@ export function normalizeSlackForwardTarget(
   if (!to) {
     return null;
   }
-  const parsed = parseSlackTarget(to, {
+  const parsed = parseSlackApprovalTarget(to, {
     defaultKind: SLACK_USER_ID_RE.test(to) ? "user" : "channel",
   });
   if (!parsed) {
     return null;
   }
   return {
-    to: `${parsed.kind}:${parsed.id}`,
+    to: formatSlackApprovalTarget(parsed),
     accountId: normalizeOptionalString(target.accountId),
     threadId: stringifyRouteThreadId(target.threadId),
   };
@@ -408,6 +418,13 @@ export function shouldHandleSlackNativeApprovalRequest(params: {
   approvalKind?: SlackApprovalKind;
   request: SlackNativeApprovalRequest;
 }): boolean {
+  const account = resolveSlackAccount(params);
+  if (
+    account.config.enterpriseOrgInstall === true &&
+    !resolveEnterpriseApprovalTeamId(params.request)
+  ) {
+    return false;
+  }
   const approvalKind = params.approvalKind ?? resolveSlackApprovalKind(params.request);
   if (approvalKind === "plugin") {
     return (
@@ -439,4 +456,15 @@ export function shouldHandleSlackNativeApprovalRequest(params: {
     agentFilter: config?.agentFilter,
     sessionFilter: config?.sessionFilter,
   });
+}
+
+export function resolveEnterpriseApprovalTeamId(
+  request: SlackNativeApprovalRequest,
+): string | undefined {
+  try {
+    const target = resolveTurnSourceSlackOriginTarget(request);
+    return target ? parseSlackApprovalTarget(target.to)?.teamId : undefined;
+  } catch {
+    return undefined;
+  }
 }

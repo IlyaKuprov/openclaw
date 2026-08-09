@@ -23,6 +23,48 @@ function resolveReplyToModeWithConfig(params: {
 }
 
 describe("buildSlackThreadingToolContext", () => {
+  it("qualifies Enterprise Grid approval origins with the inbound team", () => {
+    const result = buildSlackThreadingToolContext({
+      cfg: {
+        channels: {
+          slack: {
+            enterpriseOrgInstall: true,
+            replyToMode: "off",
+          },
+        },
+      } as OpenClawConfig,
+      accountId: null,
+      context: {
+        ChatType: "channel",
+        To: "channel:C123",
+        GroupSpace: "T456",
+      },
+    });
+
+    expect(result.currentMessagingTarget).toBe("team:T456:channel:C123");
+    expect(result.currentChannelId).toBe("team:T456:channel:C123");
+  });
+
+  it("fails closed to an unqualified origin when a Grid event has no team", () => {
+    const result = buildSlackThreadingToolContext({
+      cfg: {
+        channels: {
+          slack: {
+            enterpriseOrgInstall: true,
+            replyToMode: "off",
+          },
+        },
+      } as OpenClawConfig,
+      accountId: null,
+      context: {
+        ChatType: "channel",
+        To: "channel:C123",
+      },
+    });
+
+    expect(result.currentMessagingTarget).toBe("channel:C123");
+  });
+
   it("uses top-level replyToMode by default", () => {
     const cfg = {
       channels: {

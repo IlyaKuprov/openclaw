@@ -243,8 +243,10 @@ bot identity for loop prevention.
 Enterprise support is intentionally limited to direct Socket Mode or HTTP
 `message` and `app_mention` events and their immediate replies. Relay mode,
 slash commands, interactions, App Home, reaction event listeners, pins, Slack
-action tools, Slack-native approvals, bindings, queued or scheduled delivery,
-and proactive sends are unavailable for an enterprise account. Outbound
+action tools, bindings, queued or scheduled delivery, and proactive sends are
+unavailable for an enterprise account. Slack-native approvals that originate
+from a delivered `message` or `app_mention` event are supported; approval
+buttons are the only interaction listener enabled for enterprise accounts. Outbound
 acknowledgment, typing, and status reactions are supported through the
 listener-owned Slack client and require `reactions:write`; inbound reaction
 notifications and reaction action tools remain unavailable.
@@ -1749,6 +1751,11 @@ Slack can act as a native approval client with interactive buttons and interacti
 - Plugin approvals use Slack-native buttons when Slack is enabled as a native approval client for the originating session, or when `approvals.plugin` routes to the originating Slack session or a Slack target.
 - Plugin approval DMs use Slack plugin approvers from `channels.slack.allowFrom`, named-account `allowFrom`, or the account default route.
 - Approver authorization is still enforced: exec-only approvers cannot approve plugin requests unless they are also plugin approvers.
+
+For Enterprise Grid org installs, the originating event's validated workspace
+is retained for the approval prompt, approver DM, button callback, and final
+message update. Approval delivery fails closed when an org-installed account
+does not have that event-owned workspace scope.
 
 This uses the same shared approval button surface as other channels. When `interactivity` is enabled in your Slack app settings, approval prompts render as Block Kit buttons directly in the conversation.
 When those buttons are present, they are the primary approval UX; OpenClaw

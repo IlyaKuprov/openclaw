@@ -10,6 +10,7 @@ import type { ChannelApprovalCapability } from "openclaw/plugin-sdk/channel-cont
 import { normalizeMessageChannel } from "openclaw/plugin-sdk/routing";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { listSlackAccountIds } from "./accounts.js";
+import { formatSlackApprovalTarget } from "./approval-target.js";
 import { getSlackApprovalApprovers, isSlackApprovalAuthorizedSender } from "./approval-auth.js";
 import {
   hasSlackPluginApprovers,
@@ -18,6 +19,7 @@ import {
   normalizeSlackOriginTarget,
   resolveSessionSlackOriginTarget,
   resolveSlackFallbackOriginTarget,
+  resolveEnterpriseApprovalTeamId,
   resolveTurnSourceSlackOriginTarget,
   shouldHandleSlackNativeApprovalRequest,
   shouldHandleSlackPluginViaForwardingSession,
@@ -105,7 +107,10 @@ function resolveSlackApproverDmTargets(params: {
     params.approvalKind === "plugin"
       ? getSlackApprovalApprovers(params)
       : getSlackExecApprovalApprovers(params);
-  return approvers.map((approver) => ({ to: `user:${approver}` }));
+  const teamId = resolveEnterpriseApprovalTeamId(params.request);
+  return approvers.map((approver) => ({
+    to: formatSlackApprovalTarget({ kind: "user", id: approver, teamId }),
+  }));
 }
 
 const shouldSuppressSlackForwardingFallback =
