@@ -1,6 +1,7 @@
 // Qa Channel tests cover gateway lifecycle behavior.
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createQaBusState, startQaBusServer } from "../../qa-lab/bus-api.js";
 import { startQaGatewayAccount } from "./gateway.js";
 import { handleQaInbound } from "./inbound.js";
 import type { ChannelGatewayContext } from "./runtime-api.js";
@@ -272,5 +273,121 @@ describe("qa-channel gateway", () => {
       } as unknown as ChannelGatewayContext<ResolvedQaChannelAccount>),
     ).rejects.toThrow("inbound failed");
     expect(handleQaInbound).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays fetched messages when dispatch fails before acknowledgement", async () => {
+    const state = createQaBusState();
+    const bus = await startQaBusServer({ state });
+    stops.push(bus["stop"]);
+    const messages = ["first", "second"].map((text) =>
+      state.addInboundMessage({
+        accountId: "default",
+        conversation: { id: "alice", kind: "direct" },
+        senderId: "alice",
+        text,
+      }),
+    );
+    let pollCount = 0;
+    bus.server.on("request", (request) => {
+      if (request.url === "/v1/poll") {
+        pollCount += 1;
+      }
+    });
+
+    let rejectFirst = (_error: Error) => {};
+    const firstAttempt = new Promise<void>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    let failFirst = true;
+    let restarting = false;
+    const recoveredMessageIds: string[] = [];
+    const restartedController = new AbortController();
+    vi.mocked(handleQaInbound).mockImplementation(async ({ message }) => {
+      if (message.id === messages[0]?.id && failFirst) {
+        failFirst = false;
+        await firstAttempt;
+      }
+      if (restarting) {
+        recoveredMessageIds.push(message.id);
+        if (recoveredMessageIds.length === messages.length) {
+          restartedController.abort();
+        }
+      }
+    });
+    const account: ResolvedQaChannelAccount = {
+      accountId: "default",
+      baseUrl: bus.baseUrl,
+      botDisplayName: "QA Bot",
+      botUserId: "qa-bot",
+      config: {},
+      configured: true,
+      enabled: true,
+      pollTimeoutMs: 10,
+    };
+    const firstGateway = startQaGatewayAccount("qa-channel", "QA Channel", {
+      abortSignal: new AbortController().signal,
+      account,
+      cfg: {},
+      setStatus: vi.fn(),
+    } as unknown as ChannelGatewayContext<ResolvedQaChannelAccount>);
+
+    await vi.waitFor(() => {
+      expect(pollCount).toBeGreaterThanOrEqual(2);
+      expect(handleQaInbound).toHaveBeenCalledOnce();
+    });
+    rejectFirst(new Error("inbound failed"));
+    await expect(firstGateway).rejects.toThrow("inbound failed");
+
+    restarting = true;
+    const restartedGateway = startQaGatewayAccount("qa-channel", "QA Channel", {
+      abortSignal: restartedController.signal,
+      account,
+      cfg: {},
+      setStatus: vi.fn(),
+    } as unknown as ChannelGatewayContext<ResolvedQaChannelAccount>);
+    try {
+      await vi.waitFor(() => {
+        expect(recoveredMessageIds).toEqual(messages.map((message) => message.id));
+      });
+    } finally {
+      restartedController.abort();
+      await restartedGateway.catch(() => undefined);
+    }
+  });
+
+  it("records a final successful dispatch before the gateway stops", async () => {
+    const state = createQaBusState();
+    const bus = await startQaBusServer({ state });
+    stops.push(bus["stop"]);
+    const message = state.addInboundMessage({
+      accountId: "default",
+      conversation: { id: "alice", kind: "direct" },
+      senderId: "alice",
+      text: "stop after delivery",
+    });
+    const controller = new AbortController();
+    vi.mocked(handleQaInbound).mockImplementation(async ({ message: inbound }) => {
+      if (inbound.id === message.id) {
+        controller.abort();
+      }
+    });
+
+    await startQaGatewayAccount("qa-channel", "QA Channel", {
+      abortSignal: controller.signal,
+      account: {
+        accountId: "default",
+        baseUrl: bus.baseUrl,
+        botDisplayName: "QA Bot",
+        botUserId: "qa-bot",
+        config: {},
+        configured: true,
+        enabled: true,
+        pollTimeoutMs: 10,
+      },
+      cfg: {},
+      setStatus: vi.fn(),
+    } as unknown as ChannelGatewayContext<ResolvedQaChannelAccount>);
+
+    expect(state.getAcknowledgedPollCursor("default")).toBe(1);
   });
 });
