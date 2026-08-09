@@ -1873,6 +1873,8 @@ export const en: TranslationMap = {
     start: "Start browser",
     empty: "No open tabs. Enter a URL above to browse.",
     noChatTarget: "Open a chat session first so the annotation has somewhere to go.",
+    annotationLimitReached:
+      "Remove a browser annotation before retrying (maximum 4 cards and 8,000 characters of generated context).",
     inspectUnavailable: "Element inspection is disabled (browser.evaluateEnabled=false).",
     annotationSent: "Annotation added to the chat composer.",
     errors: {
@@ -5031,6 +5033,8 @@ export const en: TranslationMap = {
       browserAnnotationRegions: "{count} marked regions",
       browserAnnotationInspectedElement: "Element inspected",
       browserAnnotationRemoved: "Browser annotation removed.",
+      browserAnnotationUndoUnavailable:
+        "Undo is unavailable because the browser annotation limit has been reached.",
       compactRecommendedContext: "Compact recommended session context",
       removeAttachment: "Remove attachment",
       removeBrowserAnnotation: "Remove browser annotation: {name}",

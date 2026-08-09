@@ -31,7 +31,9 @@ describe("dispatchCompositedBrowserAnnotation", () => {
     } satisfies BrowserPanelView;
     const strokes = [{ points: [{ x: 0.25, y: 0.5 }] }];
 
-    expect(dispatchCompositedBrowserAnnotation(view, undefined, strokes, null, null)).toBe(false);
+    expect(dispatchCompositedBrowserAnnotation(view, undefined, strokes, null, null)).toBe(
+      "unhandled",
+    );
     expect(drawImage).toHaveBeenCalledTimes(1);
     expect(toDataUrl).toHaveBeenCalledTimes(1);
 
@@ -42,7 +44,9 @@ describe("dispatchCompositedBrowserAnnotation", () => {
     };
     window.addEventListener(BROWSER_ANNOTATION_EVENT, consume);
     try {
-      expect(dispatchCompositedBrowserAnnotation(view, undefined, strokes, null, null)).toBe(true);
+      expect(dispatchCompositedBrowserAnnotation(view, undefined, strokes, null, null)).toBe(
+        "accepted",
+      );
     } finally {
       window.removeEventListener(BROWSER_ANNOTATION_EVENT, consume);
     }
@@ -61,5 +65,41 @@ describe("dispatchCompositedBrowserAnnotation", () => {
       fileName: "annotated-page.png",
     });
     expect(draft).not.toHaveProperty("text");
+  });
+
+  it("distinguishes a rejected capture from an unhandled one", () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(
+      "data:image/png;base64,annotated",
+    );
+    const reject = (event: Event) => {
+      (event as Event & { rejection?: "limit" }).rejection = "limit";
+    };
+    window.addEventListener(BROWSER_ANNOTATION_EVENT, reject);
+    try {
+      expect(
+        dispatchCompositedBrowserAnnotation(
+          {
+            targetId: "tab-1",
+            dataUrl: "data:image/png;base64,source",
+            image: { naturalWidth: 800, naturalHeight: 600 } as HTMLImageElement,
+            url: "https://example.com",
+            metrics: null,
+          },
+          undefined,
+          [{ points: [{ x: 0.25, y: 0.5 }] }],
+          null,
+          null,
+        ),
+      ).toBe("rejected");
+    } finally {
+      window.removeEventListener(BROWSER_ANNOTATION_EVENT, reject);
+    }
   });
 });

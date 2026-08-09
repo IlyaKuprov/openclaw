@@ -1,8 +1,10 @@
 import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
 import { showToast, type ToastOptions } from "../../lib/toast.ts";
 import { releaseChatAttachmentPayload } from "./attachment-payload-store.ts";
+import { canAdmitBrowserAnnotation } from "./browser-annotation-admission.ts";
 
 type BrowserAnnotationRemovalHost = {
+  getOwner: () => object | undefined;
   getSessionKey: () => string;
   getAttachments: () => ChatAttachment[];
   setAttachments: (attachments: ChatAttachment[]) => void;
@@ -20,12 +22,14 @@ type BrowserAnnotationRemovalDependencies = {
 export function removeBrowserAnnotationWithUndo(
   host: BrowserAnnotationRemovalHost,
   attachment: ChatAttachment,
-  labels: { removed: string; undo: string },
+  labels: { removed: string; undo: string; undoUnavailable: string },
   dependencies: BrowserAnnotationRemovalDependencies = {},
 ): boolean {
   if (!attachment.browserAnnotation) {
     return false;
   }
+  const modelContext = attachment.browserAnnotation.modelContext;
+  const sourceOwner = host.getOwner();
   const sourceSessionKey = host.getSessionKey();
   const current = host.getAttachments();
   const sourceIndex = current.findIndex((candidate) => candidate.id === attachment.id);
@@ -54,13 +58,18 @@ export function removeBrowserAnnotationWithUndo(
       if (settled) {
         return;
       }
-      if (host.getSessionKey() !== sourceSessionKey) {
+      if (host.getOwner() !== sourceOwner || host.getSessionKey() !== sourceSessionKey) {
         finalizeRemoval();
         return;
       }
       const latest = host.getAttachments();
       if (latest.some((candidate) => candidate.id === attachment.id)) {
         settled = true;
+        return;
+      }
+      if (!canAdmitBrowserAnnotation(latest, modelContext)) {
+        finalizeRemoval();
+        presentToast({ message: labels.undoUnavailable });
         return;
       }
       settled = true;

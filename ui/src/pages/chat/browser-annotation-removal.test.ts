@@ -3,6 +3,12 @@ import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
 import type { ToastOptions } from "../../lib/toast.ts";
 import { removeBrowserAnnotationWithUndo } from "./browser-annotation-removal.ts";
 
+const labels = {
+  removed: "Removed",
+  undo: "Undo",
+  undoUnavailable: "Remove another annotation before undoing",
+};
+
 function annotation(id: string): ChatAttachment {
   return {
     id,
@@ -18,10 +24,12 @@ function annotation(id: string): ChatAttachment {
 }
 
 function createHost(initial: ChatAttachment[]) {
+  let owner = {};
   let sessionKey = "agent:main";
   let attachments = initial;
   return {
     host: {
+      getOwner: () => owner,
       getSessionKey: () => sessionKey,
       getAttachments: () => attachments,
       setAttachments: (next: ChatAttachment[]) => {
@@ -34,6 +42,9 @@ function createHost(initial: ChatAttachment[]) {
     attachments: () => attachments,
     switchSession: (next: string) => {
       sessionKey = next;
+    },
+    replaceOwner: () => {
+      owner = {};
     },
   };
 }
@@ -48,18 +59,13 @@ describe("browser annotation removal", () => {
     const releasePayload = vi.fn();
 
     expect(
-      removeBrowserAnnotationWithUndo(
-        state.host,
-        first,
-        { removed: "Removed", undo: "Undo" },
-        {
-          presentToast: (options) => {
-            toast = options;
-            return true;
-          },
-          releasePayload,
+      removeBrowserAnnotationWithUndo(state.host, first, labels, {
+        presentToast: (options) => {
+          toast = options;
+          return true;
         },
-      ),
+        releasePayload,
+      }),
     ).toBe(true);
     expect(state.attachments()).toEqual([ordinary, second]);
 
@@ -79,18 +85,13 @@ describe("browser annotation removal", () => {
       const state = createHost([target]);
       let toast: ToastOptions | undefined;
       const releasePayload = vi.fn();
-      removeBrowserAnnotationWithUndo(
-        state.host,
-        target,
-        { removed: "Removed", undo: "Undo" },
-        {
-          presentToast: (options) => {
-            toast = options;
-            return true;
-          },
-          releasePayload,
+      removeBrowserAnnotationWithUndo(state.host, target, labels, {
+        presentToast: (options) => {
+          toast = options;
+          return true;
         },
-      );
+        releasePayload,
+      });
 
       toast?.onDismiss?.(reason);
       toast?.onDismiss?.(reason);
@@ -105,18 +106,13 @@ describe("browser annotation removal", () => {
     const state = createHost([target]);
     let toast: ToastOptions | undefined;
     const releasePayload = vi.fn();
-    removeBrowserAnnotationWithUndo(
-      state.host,
-      target,
-      { removed: "Removed", undo: "Undo" },
-      {
-        presentToast: (options) => {
-          toast = options;
-          return true;
-        },
-        releasePayload,
+    removeBrowserAnnotationWithUndo(state.host, target, labels, {
+      presentToast: (options) => {
+        toast = options;
+        return true;
       },
-    );
+      releasePayload,
+    });
     state.switchSession("agent:other");
 
     toast?.onDismiss?.("action");
@@ -127,20 +123,65 @@ describe("browser annotation removal", () => {
     expect(state.host.focusRestoredAnnotation).not.toHaveBeenCalled();
   });
 
+  it("never restores into a replacement composer owner", () => {
+    const target = annotation("target");
+    const state = createHost([target]);
+    let toast: ToastOptions | undefined;
+    const releasePayload = vi.fn();
+    removeBrowserAnnotationWithUndo(state.host, target, labels, {
+      presentToast: (options) => {
+        toast = options;
+        return true;
+      },
+      releasePayload,
+    });
+    state.replaceOwner();
+
+    toast?.onDismiss?.("action");
+    toast?.onAction?.();
+
+    expect(state.attachments()).toEqual([]);
+    expect(releasePayload).toHaveBeenCalledOnce();
+    expect(state.host.focusRestoredAnnotation).not.toHaveBeenCalled();
+  });
+
+  it("releases instead of exceeding the bound when Undo follows a replacement", () => {
+    const target = annotation("target");
+    const state = createHost([
+      target,
+      annotation("second"),
+      annotation("third"),
+      annotation("fourth"),
+    ]);
+    const toasts: ToastOptions[] = [];
+    const releasePayload = vi.fn();
+    removeBrowserAnnotationWithUndo(state.host, target, labels, {
+      presentToast: (options) => {
+        toasts.push(options);
+        return true;
+      },
+      releasePayload,
+    });
+    state.host.setAttachments([...state.attachments(), annotation("replacement")]);
+
+    toasts[0]?.onDismiss?.("action");
+    toasts[0]?.onAction?.();
+
+    expect(state.attachments()).toHaveLength(4);
+    expect(state.attachments()).not.toContain(target);
+    expect(releasePayload).toHaveBeenCalledOnce();
+    expect(toasts[1]?.message).toBe(labels.undoUnavailable);
+  });
+
   it("releases immediately when no toast host can present Undo", () => {
     const target = annotation("target");
     const state = createHost([target]);
     const releasePayload = vi.fn();
 
-    removeBrowserAnnotationWithUndo(
-      state.host,
-      target,
-      { removed: "Removed", undo: "Undo" },
-      {
-        presentToast: () => false,
-        releasePayload,
-      },
-    );
+    removeBrowserAnnotationWithUndo(state.host, target, labels, {
+      presentToast: () => false,
+      releasePayload,
+    });
 
     expect(releasePayload).toHaveBeenCalledOnce();
   });

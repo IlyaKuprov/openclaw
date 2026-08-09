@@ -12,10 +12,7 @@ import {
   handleQuestionPromptEvent,
 } from "../../app/question-prompt.ts";
 import { readPresenceEntries } from "../../app/user-profile.ts";
-import {
-  BROWSER_ANNOTATION_EVENT,
-  type BrowserAnnotationDraft,
-} from "../../components/browser/browser-annotation.ts";
+import { BROWSER_ANNOTATION_EVENT } from "../../components/browser/browser-annotation.ts";
 import { t } from "../../i18n/index.ts";
 import { resolveAsciiShortcutKey } from "../../lib/keyboard-shortcuts.ts";
 import { resolveChatPaneObserverRunId } from "../../lib/observer-digest.ts";
@@ -31,6 +28,10 @@ import {
 import { invalidateChatAvatarCache, refreshChatAvatar } from "./chat-avatar.ts";
 import { clearChatHistory } from "./chat-history.ts";
 import { ChatPaneBoard } from "./chat-pane-board.ts";
+import {
+  receiveBrowserAnnotation as admitBrowserAnnotation,
+  releasePaneBrowserAnnotations,
+} from "./chat-pane-browser-annotation.ts";
 import {
   CHAT_COMPOSER_TEXTAREA_SELECTOR,
   CHAT_MODAL_SELECTOR,
@@ -49,7 +50,6 @@ import { createPageState } from "./chat-state-page.ts";
 import { invalidateChatMetadataCache, refreshPageChat } from "./chat-state-refresh.ts";
 import { selectedChatSessionRow, canCreateChatSession } from "./chat-state-route.ts";
 import { resetChatViewState } from "./chat-view-state.ts";
-import { chatAttachmentFromDataUrl } from "./components/chat-attachments.ts";
 import { dismissConfirmedActionPopovers } from "./components/chat-message.ts";
 import { clearChatModelSearchOnEscape } from "./components/chat-model-picker.ts";
 import { toggleSessionWorkspace } from "./components/chat-session-workspace.ts";
@@ -315,40 +315,10 @@ export abstract class ChatPaneLifecycle extends ChatPaneBoard {
 
   /** Receives one complete browser annotation without mixing generated context into the user's draft. */
   protected receiveBrowserAnnotation(event: Event): void {
-    const state = this.state;
-    // Only the active pane consumes the annotation; defaultPrevented tells the
-    // browser panel it landed (and stops sibling panes from double-adding).
-    if (!state || !this.active || event.defaultPrevented || !(event instanceof CustomEvent)) {
+    const accepted = admitBrowserAnnotation(this.state, this.active, event);
+    if (!accepted) {
       return;
     }
-    const detail = event.detail as BrowserAnnotationDraft | null;
-    if (
-      !detail ||
-      typeof detail.modelContext !== "string" ||
-      typeof detail.dataUrl !== "string" ||
-      !detail.card
-    ) {
-      return;
-    }
-    const attachment = chatAttachmentFromDataUrl(detail.dataUrl, detail.fileName || "annotation");
-    if (!attachment) {
-      return;
-    }
-    event.preventDefault();
-    state.chatAttachments = [
-      ...state.chatAttachments,
-      {
-        ...attachment,
-        browserAnnotation: {
-          modelContext: detail.modelContext,
-          title: detail.card.title,
-          displayUrl: detail.card.displayUrl,
-          markedRegionCount: detail.card.markedRegionCount,
-          inspectedElement: detail.card.inspectedElement,
-        },
-      },
-    ];
-    state.requestUpdate?.();
     void this.updateComplete.then(() => {
       this.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR)?.focus({
         preventScroll: true,
@@ -711,6 +681,9 @@ export abstract class ChatPaneLifecycle extends ChatPaneBoard {
   }
 
   override disconnectedCallback() {
+    if (this.state) {
+      releasePaneBrowserAnnotations(this.state);
+    }
     this.clearComposerPrefillAttention();
     this.retainedBoardSessionKey = "";
     this.boardProviderLifecycleConnected = false;

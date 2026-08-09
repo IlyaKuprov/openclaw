@@ -86,6 +86,7 @@ export class ChatPane extends ChatPaneHeader {
     const sourceSessionKey = state.sessionKey;
     removeBrowserAnnotationWithUndo(
       {
+        getOwner: () => this.state,
         getSessionKey: () => this.state?.sessionKey ?? "",
         getAttachments: () => this.state?.chatAttachments ?? [],
         setAttachments: (attachments) => {
@@ -96,7 +97,7 @@ export class ChatPane extends ChatPaneHeader {
         requestUpdate: () => this.state?.requestUpdate?.(),
         focusComposer: () => {
           void this.updateComplete.then(() => {
-            if (this.state?.sessionKey !== sourceSessionKey) {
+            if (this.state !== state || this.state.sessionKey !== sourceSessionKey) {
               return;
             }
             this.querySelector<HTMLTextAreaElement>(CHAT_COMPOSER_TEXTAREA_SELECTOR)?.focus({
@@ -106,7 +107,7 @@ export class ChatPane extends ChatPaneHeader {
         },
         focusRestoredAnnotation: (attachmentId) => {
           void this.updateComplete.then(() => {
-            if (this.state?.sessionKey !== sourceSessionKey) {
+            if (this.state !== state || this.state.sessionKey !== sourceSessionKey) {
               return;
             }
             const card = [...this.querySelectorAll<HTMLElement>("[data-attachment-id]")].find(
@@ -117,7 +118,11 @@ export class ChatPane extends ChatPaneHeader {
         },
       },
       attachment,
-      { removed: t("chat.composer.browserAnnotationRemoved"), undo: t("common.undo") },
+      {
+        removed: t("chat.composer.browserAnnotationRemoved"),
+        undo: t("common.undo"),
+        undoUnavailable: t("chat.composer.browserAnnotationUndoUnavailable"),
+      },
     );
   };
 

@@ -14,6 +14,11 @@ import type { ApplicationContext } from "../../app/context.ts";
 import { createInitialUserMessageHandoff } from "../../app/initial-user-message-handoff.ts";
 import type { BrowserAnnotationDraft } from "../../components/browser/browser-annotation.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
+import {
+  getChatAttachmentDataUrl,
+  registerChatAttachmentPayload,
+  releaseChatAttachmentPayload,
+} from "./attachment-payload-store.ts";
 import { createTestChatPane, type TestChatPane } from "./chat-pane.test-support.ts";
 import { applySelectedChatAgent } from "./chat-session.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
@@ -27,7 +32,53 @@ import { prepareInitialUserMessageHandoff } from "./initial-turn-handoff.ts";
 const SKIP_REWIND_CONFIRM_PREFERENCE = "openclaw:skip-rewind-confirm";
 const confirmationOwners = new Set<HTMLElement>();
 
-describe("browser annotation composer handoff", () => {
+describe("browser annotation composer adoption", () => {
+  it("releases annotation payloads before pane state is discarded on disconnect", () => {
+    const { pane, state } = createTestChatPane({
+      client: {} as GatewayBrowserClient,
+      sessions: {} as SessionCapability,
+    });
+    const stored = (id: string, browserAnnotation: boolean) =>
+      registerChatAttachmentPayload({
+        attachment: {
+          id,
+          mimeType: "image/png",
+          ...(browserAnnotation
+            ? {
+                browserAnnotation: {
+                  modelContext: "Context",
+                  title: "Page",
+                  displayUrl: "example.com",
+                  markedRegionCount: 1,
+                  inspectedElement: false,
+                },
+              }
+            : {}),
+        },
+        dataUrl: `data:image/png;base64,${id}`,
+        file: new File([id], `${id}.png`, { type: "image/png" }),
+      });
+    const shared = stored("shared-annotation", true);
+    const fallback = stored("fallback-annotation", true);
+    const ordinary = stored("ordinary", false);
+    state.chatAttachments = [shared, ordinary];
+    state.chatComposerFallbackByScope = {
+      fallback: {
+        attachments: [shared, fallback, ordinary],
+        message: "",
+        sequence: 1,
+        storageFailed: false,
+      },
+    };
+
+    pane.disconnectedCallback();
+
+    expect(getChatAttachmentDataUrl(shared)).toBeNull();
+    expect(getChatAttachmentDataUrl(fallback)).toBeNull();
+    expect(getChatAttachmentDataUrl(ordinary)).not.toBeNull();
+    releaseChatAttachmentPayload(ordinary.id);
+  });
+
   it("keeps generated context on the attachment and leaves the user's draft unchanged", () => {
     const { pane, state } = createTestChatPane({
       client: {} as GatewayBrowserClient,

@@ -27,20 +27,27 @@ export type BrowserAnnotationDraft = {
   fileName: string;
 };
 
+export type BrowserAnnotationDispatchResult = "accepted" | "rejected" | "unhandled";
+export type BrowserAnnotationEvent = CustomEvent<BrowserAnnotationDraft> & {
+  /** Synchronous consumer rejection keeps capture state retryable in the browser panel. */
+  rejection?: "limit";
+};
+
 export const BROWSER_ANNOTATION_EVENT = "openclaw:browser-annotation";
 
 /**
- * Hands an annotation to whichever chat pane is active. Returns false when no
- * pane consumed it (chat not mounted), so the panel can surface a hint instead
- * of silently dropping the user's markup.
+ * Hands an annotation to whichever chat pane is active. The result distinguishes
+ * a retryable admission rejection from the absence of a mounted chat target.
  */
-export function dispatchBrowserAnnotation(draft: BrowserAnnotationDraft): boolean {
+export function dispatchBrowserAnnotation(
+  draft: BrowserAnnotationDraft,
+): BrowserAnnotationDispatchResult {
   const event = new CustomEvent<BrowserAnnotationDraft>(BROWSER_ANNOTATION_EVENT, {
     detail: draft,
     cancelable: true,
-  });
+  }) as BrowserAnnotationEvent;
   window.dispatchEvent(event);
-  return event.defaultPrevented;
+  return event.defaultPrevented ? "accepted" : event.rejection ? "rejected" : "unhandled";
 }
 
 function clamp01(value: number): number {

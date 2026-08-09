@@ -1,6 +1,7 @@
 import { t } from "../../i18n/index.ts";
 import {
   buildBrowserAnnotationContent,
+  type BrowserAnnotationDispatchResult,
   composeAnnotatedImage,
   dispatchBrowserAnnotation,
   paintAnnotations,
@@ -135,7 +136,7 @@ export function dispatchCompositedBrowserAnnotation(
   strokes: AnnotationStroke[],
   element: BrowserInspectedNode | null,
   highlight: AnnotationRegion | null,
-): boolean {
+): BrowserAnnotationDispatchResult {
   const url = view.metrics?.url || view.url || tab?.url || "";
   const title = view.metrics?.title || tab?.title || "";
   const content = buildBrowserAnnotationContent({ url, title, strokes, element });
