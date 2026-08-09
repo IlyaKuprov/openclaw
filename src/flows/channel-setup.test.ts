@@ -132,6 +132,7 @@ const collectChannelStatus = vi.hoisted(() =>
     statusLines: [],
   })),
 );
+const noteChannelPrimer = vi.hoisted(() => vi.fn(async () => undefined));
 const isChannelConfigured = vi.hoisted(() => vi.fn((_cfg?: unknown, _channel?: unknown) => true));
 
 vi.mock("../agents/agent-scope.js", () => ({
@@ -196,7 +197,7 @@ vi.mock("./channel-setup.status.js", () => ({
   collectChannelStatus: (params: Parameters<CollectChannelStatus>[0]) =>
     collectChannelStatus(params),
   findBundledSourceForCatalogChannel: vi.fn(() => undefined),
-  noteChannelPrimer: vi.fn(),
+  noteChannelPrimer,
   noteChannelStatus: vi.fn(),
   resolveCatalogChannelSelectionHint: vi.fn(() => "download from <npm>"),
   resolveChannelSelectionNoteLines: vi.fn(() => []),
@@ -866,7 +867,6 @@ describe("setupChannels workspace shadow exclusion", () => {
       promptOrder.push("channel picker");
       return "__done__";
     });
-
     const result = await setupChannels(
       {} as OpenClawConfig,
       {} as never,
@@ -885,6 +885,7 @@ describe("setupChannels workspace shadow exclusion", () => {
 
     expect(promptOrder).toEqual(["channel setup"]);
     expect(confirm).not.toHaveBeenCalled();
+    expect(noteChannelPrimer).not.toHaveBeenCalled();
     expect(configureInteractive).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       channels: { "external-chat": { token: "configured" } },

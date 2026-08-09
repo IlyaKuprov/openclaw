@@ -251,12 +251,14 @@ export async function setupChannels(
     return cfg;
   }
 
-  const primerChannels = resolveVisibleChannelEntries().entries.map((entry) => ({
-    id: entry.id,
-    label: entry.meta.label,
-    blurb: entry.meta.blurb,
-  }));
-  await noteChannelPrimer(prompter, primerChannels);
+  if (!targetedChannel) {
+    const primerChannels = resolveVisibleChannelEntries().entries.map((entry) => ({
+      id: entry.id,
+      label: entry.meta.label,
+      blurb: entry.meta.blurb,
+    }));
+    await noteChannelPrimer(prompter, primerChannels);
+  }
 
   const quickstartDefault =
     options?.initialSelection?.[0] ??
