@@ -276,6 +276,10 @@ export async function handleSendChat(
         if (!handled) {
           return "not-handled" as const;
         }
+        // The awaited action may outlive its submitted session; never mutate a newly selected one.
+        if (host.sessionKey !== submittedSessionKey) {
+          return "handled" as const;
+        }
         if (messageOverride == null) {
           clearSubmittedComposerState(host, previousDraft, attachmentsToSend);
           recordNonTranscriptInputHistory(host, message);
