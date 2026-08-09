@@ -65,10 +65,21 @@ export function killProcessTree(pid: number, opts?: KillProcessTreeOptions): voi
     }
     // A descendant that ignored SIGTERM outlives a root that did not, so the
     // root's own liveness cannot decide whether the tree still needs killing.
-    // The root is signaled again only when it is provably the same process, so
-    // a PID reused during the grace period is never force-killed.
-    const { descendants, rootIsSameProcess } = resolveTrackedUnixTree(pid);
-    if (descendants.length === 0 && !rootIsSameProcess) {
+    const { tableAvailable, descendants, rootIdentity } = resolveTrackedUnixTree(pid);
+    if (!tableAvailable) {
+      // Nothing can be enumerated on this host; degrade to the direct-PID
+      // escalation this function performed before descendants were tracked.
+      if (isProcessAlive(pid)) {
+        signalUnixTargets(pid, "SIGKILL", []);
+      }
+      return;
+    }
+    // The root is re-signaled only when it is provably the same process, or
+    // when no start time is available at all and liveness is the best evidence
+    // there is — never when its identity provably changed.
+    const shouldKillRoot =
+      rootIdentity === "same" || (rootIdentity === "unknown" && isProcessAlive(pid));
+    if (descendants.length === 0 && !shouldKillRoot) {
       return;
     }
     for (const target of descendants) {
@@ -78,7 +89,7 @@ export function killProcessTree(pid: number, opts?: KillProcessTreeOptions): voi
         // Already gone, or not ours to signal.
       }
     }
-    if (rootIsSameProcess) {
+    if (shouldKillRoot) {
       try {
         process.kill(pid, "SIGKILL");
       } catch {
@@ -311,48 +322,65 @@ function pruneTrackedTreeDescendants(nowMs: number): void {
 /**
  * Live descendants of a PID that does not lead its own process group: the ones
  * visible now, plus the ones seen earlier in this termination sequence that are
- * still the same process. A remembered PID whose start token changed has been
- * reused by something unrelated and is never signaled.
+ * still provably the same process.
+ *
+ * `tableAvailable` distinguishes "this host cannot enumerate processes" from
+ * "the tree is empty"; the caller must not read the latter into the former, or
+ * a child that ignored SIGTERM never gets its SIGKILL. Identity is carried by a
+ * start token, and a PID is only re-signaled across the grace window when that
+ * token is non-empty on both sides: some `ps` builds cannot report a start time,
+ * and treating two empty tokens as a match would let a recycled PID inherit a
+ * pending SIGKILL.
  */
 function resolveTrackedUnixTree(pid: number): {
+  tableAvailable: boolean;
   descendants: number[];
-  rootIsSameProcess: boolean;
+  rootIdentity: "same" | "changed" | "unknown";
 } {
   const nowMs = Date.now();
   pruneTrackedTreeDescendants(nowMs);
   const table = readProcessTable();
   if (!table) {
-    return { descendants: [], rootIsSameProcess: false };
+    return { tableAvailable: false, descendants: [], rootIdentity: "unknown" };
   }
   const tracked = trackedTreeDescendants.get(pid);
   const rootStartToken = table.get(pid)?.startToken;
-  const rootIsSameProcess =
-    rootStartToken !== undefined &&
-    (tracked === undefined || tracked.rootStartToken === rootStartToken);
-  const discovered = rootIsSameProcess ? collectDescendants(pid, table) : [];
+  const trackedRootToken = tracked?.rootStartToken ?? "";
+  const rootIdentity: "same" | "changed" | "unknown" =
+    rootStartToken === undefined
+      ? "changed"
+      : rootStartToken === "" || trackedRootToken === ""
+        ? "unknown"
+        : trackedRootToken === rootStartToken
+          ? "same"
+          : "changed";
+  const discovered = rootIdentity === "changed" ? [] : collectDescendants(pid, table);
   const merged = new Map(discovered.map((entry) => [entry.pid, entry] as const));
   for (const entry of tracked?.entries ?? []) {
     if (merged.has(entry.pid)) {
       continue;
     }
     const current = table.get(entry.pid);
-    if (!current || current.startToken !== entry.startToken) {
-      // The PID is gone, or now belongs to an unrelated process.
+    if (!current || !entry.startToken || current.startToken !== entry.startToken) {
+      // Gone, unidentifiable, or now an unrelated process.
       continue;
     }
     merged.set(entry.pid, entry);
   }
   const entries = [...merged.values()];
-  if (entries.length > 0) {
+  // Only identifiable entries are worth remembering: an unidentifiable one
+  // could not be safely signaled later anyway.
+  const retained = entries.filter((entry) => entry.startToken !== "");
+  if (retained.length > 0) {
     trackedTreeDescendants.set(pid, {
-      rootStartToken: tracked?.rootStartToken ?? rootStartToken ?? "",
-      entries,
+      rootStartToken: tracked?.rootStartToken || (rootStartToken ?? ""),
+      entries: retained,
       atMs: nowMs,
     });
   } else {
     trackedTreeDescendants.delete(pid);
   }
-  return { descendants: entries.map((entry) => entry.pid), rootIsSameProcess };
+  return { tableAvailable: true, descendants: entries.map((entry) => entry.pid), rootIdentity };
 }
 
 function signalUnixTargets(pid: number, signal: "SIGTERM" | "SIGKILL", targets: number[]): void {

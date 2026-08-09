@@ -427,6 +427,59 @@ describe("killProcessTree", () => {
     });
   });
 
+  it("on Unix still force-kills a live root when process discovery is unavailable", async () => {
+    // Neither procfs nor ps can enumerate here. Losing the escalation would
+    // leave a child that ignored SIGTERM running for good.
+    readdirSyncMock.mockImplementation(() => {
+      throw new Error("proc unavailable");
+    });
+    spawnSyncMock.mockReturnValue({ status: 1, stdout: "" });
+    killSpy.mockImplementation((() => true) as typeof process.kill);
+
+    await withMockedPlatform("linux", async () => {
+      killProcessTree(7040, { graceMs: 10, detached: false });
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(killSpy).toHaveBeenCalledWith(7040, "SIGTERM");
+      expect(killSpy).toHaveBeenCalledWith(7040, "SIGKILL");
+      expect(killSpy).not.toHaveBeenCalledWith(-7040, "SIGKILL");
+    });
+  });
+
+  it("on Unix never re-signals a remembered descendant that has no start time", async () => {
+    // `ps -eo pid=,ppid=` carries no start time. Two empty tokens must not
+    // compare equal, or a PID reused during the grace window inherits the kill.
+    let rootAlive = true;
+    spawnSyncMock.mockImplementation((command: string, args: string[]) => {
+      if (command !== "ps" || args[0] !== "-eo") {
+        return { status: 1, stdout: "" };
+      }
+      if (args[1] === "pid=,ppid=,lstart=") {
+        return { status: 1, stdout: "" };
+      }
+      return {
+        status: 0,
+        stdout: rootAlive ? "7050 1\n7051 7050\n" : "7051 1\n",
+      };
+    });
+    killSpy.mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0 && pid === 7050 && !rootAlive) {
+        throw new Error("ESRCH");
+      }
+      return true;
+    }) as typeof process.kill);
+
+    await withMockedPlatform("darwin", async () => {
+      killProcessTree(7050, { graceMs: 10, detached: false });
+      expect(killSpy).toHaveBeenCalledWith(7051, "SIGTERM");
+
+      rootAlive = false;
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(killSpy).not.toHaveBeenCalledWith(7051, "SIGKILL");
+    });
+  });
+
   it("on Unix bounds the ps descendant probe with a signal the target cannot ignore", async () => {
     spawnSyncMock.mockReturnValue({ status: 0, stdout: "" });
     killSpy.mockImplementation((() => true) as typeof process.kill);
