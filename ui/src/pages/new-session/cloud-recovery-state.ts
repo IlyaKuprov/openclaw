@@ -65,6 +65,8 @@ export class PendingCloudRecoveryState {
     }
   }
 
+  // Concurrent same-key replacement pages may double-clear recovery; that rare multi-tab flow is
+  // accepted in favor of ownership based only on gateway URL, recovery scope, and session key.
   owns(gatewayUrl: string, recoveryScope: string, sessionKey: string): boolean {
     return (
       this.gatewayUrl === gatewayUrl &&

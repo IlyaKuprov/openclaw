@@ -35,12 +35,15 @@ export async function advanceCloudDraftSession(params: {
   recoveryPhase: CloudSessionRecovery["phase"];
   persistRecovery?: boolean;
   recovering: boolean;
-  isCurrent: () => boolean;
+  isLifecycleCurrent: () => boolean;
   ownsRecovery: () => boolean;
   clearRecovery: (retirement: CloudRecoveryRetirement) => void;
   setRecoveryPhase: (phase: CloudSessionRecovery["phase"]) => void;
 }): Promise<CloudDraftAdvanceResult> {
   const persistRecovery = params.persistRecovery !== false;
+  // Dispatch and send require both fences. After accepted delivery, inspect
+  // them separately so lifecycle interruption is not reported as takeover.
+  const isCurrentOwner = () => params.isLifecycleCurrent() && params.ownsRecovery();
   const recovery = {
     sessionKey: params.key,
     messageId: params.messageId,
@@ -56,7 +59,7 @@ export async function advanceCloudDraftSession(params: {
     params.recovering && persistRecovery
       ? readCloudSessionRecovery(params.gatewayUrl, params.recoveryScope)
       : null;
-  if (!params.isCurrent()) {
+  if (!isCurrentOwner()) {
     const recoveryPersisted = persistRecovery
       ? params.recovering
         ? existingRecovery?.sessionKey === params.key
@@ -79,7 +82,7 @@ export async function advanceCloudDraftSession(params: {
       ? existingRecovery?.sessionKey === params.key
       : writeCloudSessionRecovery(recovery)
     : true;
-  if (!params.isCurrent() || !recoveryPersisted) {
+  if (!isCurrentOwner() || !recoveryPersisted) {
     if (params.recovering && !recoveryPersisted) {
       return {
         status: "cancelled",
@@ -108,7 +111,7 @@ export async function advanceCloudDraftSession(params: {
       recovering: params.recovering,
       retryTerminalPlacement: params.recovering && params.recoveryPhase === "sending",
     },
-    params.isCurrent,
+    isCurrentOwner,
     () => {
       if (params.recoveryPhase === "sending") {
         return true;
@@ -165,17 +168,17 @@ export async function advanceCloudDraftSession(params: {
   if (cloudStart.status === "send-rejected") {
     return cloudStart;
   }
+  if (!params.isLifecycleCurrent()) {
+    // The page recorded why its lifecycle changed before this accepted send returned.
+    // Retire the delivered recovery without relabeling that interruption as a takeover.
+    params.clearRecovery("interrupted");
+    return { status: "interrupted" };
+  }
   if (!params.ownsRecovery()) {
     // Delivery completed, so retire only this submission's recovery record.
     // The callback's expected-key guard preserves any newer owner.
     params.clearRecovery("resolved");
     return { status: "ownership-lost" };
-  }
-  if (!params.isCurrent()) {
-    // The page recorded why its lifecycle changed before this accepted send returned.
-    // Retire the delivered recovery without relabeling that interruption as a takeover.
-    params.clearRecovery("interrupted");
-    return { status: "interrupted" };
   }
   params.clearRecovery("resolved");
   return cloudStart;

@@ -1230,14 +1230,13 @@ class NewSessionPage extends OpenClawLightDomElement {
       let recoveryOwnerKey = submissionCloudRecovery?.sessionKey ?? "";
       const ownsSubmissionRecovery = () =>
         this.pendingCloud.owns(submissionGatewayUrl, submissionRecoveryScope, recoveryOwnerKey);
-      const isSubmissionCurrent = () =>
+      const isSubmissionLifecycleCurrent = () =>
         this.isConnected &&
         submissionClient.recoveryScopeReady &&
         requestId === this.submitRequestToken &&
         this.gatewayClient === submissionClient &&
         this.gatewayUrl === submissionGatewayUrl &&
-        this.gatewayRecoveryScope === submissionRecoveryScope &&
-        ownsSubmissionRecovery();
+        this.gatewayRecoveryScope === submissionRecoveryScope;
       const result =
         pendingCloud && this.pendingCloud.phase !== "creating"
           ? { key: this.pendingCloud.sessionKey, initialRun: { status: "idle" as const } }
@@ -1259,7 +1258,11 @@ class NewSessionPage extends OpenClawLightDomElement {
           submissionCloudRecovery.phase === "creating"
             ? "dispatching"
             : submissionCloudRecovery.phase;
-        if (submissionCloudRecovery.phase === "creating" && isSubmissionCurrent()) {
+        if (
+          submissionCloudRecovery.phase === "creating" &&
+          isSubmissionLifecycleCurrent() &&
+          ownsSubmissionRecovery()
+        ) {
           if (!this.pendingCloud.promoteToDispatching(result.key)) {
             this.error = t("newSession.cloudStartFailed", {
               error: "cloud recovery storage is unavailable",
@@ -1281,7 +1284,7 @@ class NewSessionPage extends OpenClawLightDomElement {
           recoveryPhase,
           persistRecovery: this.pendingCloud.persistent,
           recovering: pendingCloud,
-          isCurrent: isSubmissionCurrent,
+          isLifecycleCurrent: isSubmissionLifecycleCurrent,
           ownsRecovery: ownsSubmissionRecovery,
           clearRecovery: (retirement) =>
             this.clearPendingCloudRecoveryFor(
