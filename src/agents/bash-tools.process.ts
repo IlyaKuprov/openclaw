@@ -166,11 +166,14 @@ function finishedPollResult(
   resetPollRetrySuggestion(sessionId);
   acknowledgeNotifyOnExit(finished);
   const output = options?.incrementalOutput ?? finished.tail;
-  // Aggregate-cap loss is permanent; tail and pending-buffer omissions remain pageable.
+  // Aggregate-cap loss is permanent; omitted retained output is pageable only
+  // while the public id still owns this exact finished snapshot.
   const aggregateOutputNote = retentionCapNote(finished);
   const retainedOutputNote =
     options?.outputDropped === true
-      ? "\n\n[earlier output is omitted from this poll; use action=log with offset and limit to inspect retained output]"
+      ? getFinishedSession(sessionId) === finished
+        ? "\n\n[earlier output is omitted from this poll; use action=log with offset and limit to inspect retained output]"
+        : "\n\n[earlier output is omitted from this poll; omitted output is no longer available through action=log]"
       : !options && finished.tail.length < finished.aggregated.length
         ? "\n\n[earlier retained output is omitted; use action=log with offset and limit to page]"
         : "";

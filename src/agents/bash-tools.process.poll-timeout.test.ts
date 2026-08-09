@@ -224,6 +224,89 @@ test("waiting poll does not adopt a same-id successor after removal", async () =
   }
 });
 
+test("waiting poll does not offer successor logs for omitted original output", async () => {
+  vi.useFakeTimers();
+  try {
+    const sessionId = "sess-reused-after-omitted-output";
+    const { processTool, session } = createProcessSessionHarness(sessionId);
+    const originalRemove = vi.fn(() => true);
+    const successorRemove = vi.fn(() => true);
+    let expected: ReturnType<typeof appendOversizedPendingOutput> | undefined;
+
+    setTimeout(() => {
+      expected = appendOversizedPendingOutput(session);
+      markExited(session, 0, null, "completed");
+      recordNotifyOnExitRemoval(session, originalRemove);
+      deleteSession(sessionId);
+
+      const successor = createProcessSessionFixture({
+        id: sessionId,
+        command: "successor",
+        backgrounded: true,
+      });
+      addSession(successor);
+      appendOutput(successor, "stdout", "successor output\n");
+      markExited(successor, 7, null, "completed");
+      recordNotifyOnExitRemoval(successor, successorRemove);
+    }, 10);
+
+    const originalPoll = pollSession(processTool, "toolcall-original-omitted", sessionId, 2_000);
+    await vi.advanceTimersByTimeAsync(250);
+    const original = await originalPoll;
+    if (!expected) {
+      throw new Error("expected pending output to be appended");
+    }
+    const originalText = original.content[0]?.type === "text" ? original.content[0].text : "";
+
+    expect(original.details).toMatchObject({
+      status: "completed",
+      exitCode: 0,
+      aggregated: expected.aggregated,
+    });
+    expect(originalText).not.toContain(expected.earlierMarker);
+    expect(originalText).toContain(expected.latestMarker);
+    expect(originalText).not.toContain("successor output");
+    expect(originalText).not.toContain("use action=log");
+    expect(originalText).toContain("omitted output is no longer available through action=log");
+    expect(originalRemove).toHaveBeenCalledOnce();
+    expect(successorRemove).not.toHaveBeenCalled();
+
+    const successorLog = await processTool.execute("toolcall-successor-log", {
+      action: "log",
+      sessionId,
+    });
+    expect(successorLog.details).toMatchObject({ status: "completed", exitCode: 7 });
+    expect(successorLog.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("successor output"),
+    });
+    expect(successorLog.content[0]).not.toMatchObject({
+      type: "text",
+      text: expect.stringContaining(expected.latestMarker),
+    });
+    expect(successorRemove).not.toHaveBeenCalled();
+
+    const successorPoll = await pollSession(processTool, "toolcall-successor-poll", sessionId);
+    expect(successorPoll.details).toMatchObject({
+      status: "completed",
+      exitCode: 7,
+      aggregated: expect.stringContaining("successor output"),
+    });
+    expect(successorPoll.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("successor output"),
+    });
+    expect(successorPoll.content[0]).not.toMatchObject({
+      type: "text",
+      text: expect.stringContaining(expected.latestMarker),
+    });
+    expect(originalRemove).toHaveBeenCalledOnce();
+    expect(successorRemove).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("process poll accepts string timeout values", async () => {
   await expectCompletedPollWithTimeout({
     sessionId: "sess-2",
