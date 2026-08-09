@@ -3,6 +3,7 @@ import type { AssistantMessage } from "../../llm/types.js";
 import type { EmbeddedRunAttemptResult } from "../embedded-agent-runner/run/types.js";
 import {
   assertSettledTurnFinalizationResult,
+  EmptySettledTurnFinalizationError,
   projectSettledTurnFinalizationAttemptResult,
 } from "./settled-turn-finalization-result.js";
 import type { AgentHarnessSettledTurnFinalizationResult } from "./types.js";
@@ -77,12 +78,12 @@ describe("assertSettledTurnFinalizationResult", () => {
     ).toThrow("returned a tool call");
   });
 
-  it("rejects an empty answer", () => {
+  it("classifies a normally completed empty answer", () => {
     expect(() =>
       assertSettledTurnFinalizationResult({
         assistant: assistantMessage([{ type: "text", text: "  " }]),
       }),
-    ).toThrow("without a visible answer");
+    ).toThrow(EmptySettledTurnFinalizationError);
   });
 
   it("rejects an intentionally silent answer", () => {
@@ -126,6 +127,21 @@ describe("assertSettledTurnFinalizationResult", () => {
       assistant: attempt.currentAttemptCompletedAssistant,
       assistantMessageIndex: 2,
     });
+  });
+
+  it("projects a successful capability-free attempt that stopped without visible text", () => {
+    const assistant = assistantMessage([{ type: "text", text: "  " }]);
+
+    expect(() =>
+      projectSettledTurnFinalizationAttemptResult(
+        successfulAttempt({
+          assistantTexts: [],
+          lastAssistant: assistant,
+          currentAttemptAssistant: assistant,
+          currentAttemptCompletedAssistant: assistant,
+        }),
+      ),
+    ).toThrow(EmptySettledTurnFinalizationError);
   });
 
   it("rejects a failed full attempt even when it contains visible assistant text", () => {

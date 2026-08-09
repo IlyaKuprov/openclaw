@@ -50,6 +50,8 @@ const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
   "The previous attempt compacted the conversation context before producing a final user-visible answer. Continue from the compacted transcript and produce the final answer now. Do not restart from scratch, do not repeat completed work, and do not rerun tools unless the transcript clearly lacks required evidence.";
 const BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX =
   "Before accepting the previous final answer, apply this revision request and produce the revised final answer. Do not repeat completed work or rerun tools unless the request explicitly requires it.";
+const EMPTY_SETTLED_TURN_COMPLETION_TEXT =
+  "Tool work completed, but a final summary could not be generated. Please check the produced result.";
 
 type TerminalRunParams = RunEmbeddedAgentParams & {
   authProfileStateMode?: "read-write" | "read-only";
@@ -188,7 +190,7 @@ export async function resolveEmbeddedRunTerminal(input: {
   attemptAuthProfileStore: AuthProfileStore;
   apiKeyInfo: ResolvedProviderAuth | null;
   agentHarnessId: string;
-  settledTurnFinalizationAttempted: boolean;
+  settledTurnFinalizationOutcome: "not-attempted" | "answered" | "empty-answer" | "failed";
   pluginHarnessOwnsTransport: boolean;
   pluginHarnessOwnsAuthBootstrap: boolean;
   reportedModelRef: { provider: string; model: string };
@@ -210,17 +212,24 @@ export async function resolveEmbeddedRunTerminal(input: {
     timedOut: terminalTimedOut,
     attempt,
   });
-  const payloadsForTerminalPath = input.recoveredFinalAssistantPayloadsAfterPromptTimeout
+  const existingTerminalPayloads = input.recoveredFinalAssistantPayloadsAfterPromptTimeout
     ? input.recoveredFinalAssistantPayloadsAfterPromptTimeout
     : input.payloadsWithToolMedia?.length
       ? input.payloadsWithToolMedia
       : silentToolResultReplyPayload
         ? [silentToolResultReplyPayload]
         : input.payloadsWithToolMedia;
+  // A normally completed, capability-free finalizer can exhaust visible text.
+  // Preserve any authoritative tool presentation before synthesizing the degraded completion.
+  const payloadsForTerminalPath = existingTerminalPayloads?.length
+    ? existingTerminalPayloads
+    : input.settledTurnFinalizationOutcome === "empty-answer"
+      ? [{ text: EMPTY_SETTLED_TURN_COMPLETION_TEXT }]
+      : existingTerminalPayloads;
   const payloadCount = payloadsForTerminalPath?.length ?? 0;
   // A failed isolated finalization is terminal for this user turn. Do not let
   // its settled side effects cascade into any ordinary retry family.
-  const settledTurnFinalizationAttempted = input.settledTurnFinalizationAttempted;
+  const settledTurnFinalizationAttempted = input.settledTurnFinalizationOutcome !== "not-attempted";
   const emptyAssistantReplyIsSilent = shouldTreatEmptyAssistantReplyAsSilent({
     allowEmptyAssistantReplyAsSilent: runParams.allowEmptyAssistantReplyAsSilent,
     terminalReplyExpectation: runParams.terminalReplyExpectation,
@@ -306,16 +315,17 @@ export async function resolveEmbeddedRunTerminal(input: {
     );
     return { action: "retry" };
   }
-  const incompleteTurnText = emptyAssistantReplyIsSilent
-    ? null
-    : resolveIncompleteTurnPayloadText({
-        payloadCount,
-        aborted: terminalAborted,
-        externalAbort: externalAbort || signalOwnedInterruption,
-        timedOut: terminalTimedOut,
-        hadPotentialSideEffects: input.replayState.hadPotentialSideEffects,
-        attempt,
-      });
+  const incompleteTurnText =
+    emptyAssistantReplyIsSilent || input.settledTurnFinalizationOutcome === "empty-answer"
+      ? null
+      : resolveIncompleteTurnPayloadText({
+          payloadCount,
+          aborted: terminalAborted,
+          externalAbort: externalAbort || signalOwnedInterruption,
+          timedOut: terminalTimedOut,
+          hadPotentialSideEffects: input.replayState.hadPotentialSideEffects,
+          attempt,
+        });
   const incompleteTurnFallbackSafe = Boolean(
     incompleteTurnText &&
     !terminalInterrupted &&

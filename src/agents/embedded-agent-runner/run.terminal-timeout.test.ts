@@ -97,14 +97,34 @@ describe("resolveEmbeddedRunTerminalTimeout", () => {
     });
   });
 
-  it("suppresses the generic timeout payload after messaging-tool delivery", () => {
-    const attempt = makeTimedOutAttempt({
-      didSendViaMessagingTool: true,
-      messagingToolSentTexts: ["already delivered"],
-    });
+  it.each([
+    { label: "marked progress", sourceReplyFinal: false, expectsTimeout: true },
+    { label: "marked final delivery", sourceReplyFinal: true, expectsTimeout: false },
+    { label: "legacy delivery", sourceReplyFinal: undefined, expectsTimeout: false },
+  ])(
+    "$label determines whether messaging-tool delivery suppresses the timeout payload",
+    ({ sourceReplyFinal, expectsTimeout }) => {
+      const attempt = makeTimedOutAttempt({
+        didSendViaMessagingTool: true,
+        messagingToolSentTexts: ["already delivered"],
+        messagingToolSentTargets: [
+          {
+            text: "already delivered",
+            ...(sourceReplyFinal === undefined ? {} : { sourceReplyFinal }),
+          },
+        ],
+      });
 
-    expect(resolveEmbeddedRunTerminalTimeout(makeTimeoutInput(attempt))).toBeUndefined();
-  });
+      const result = resolveEmbeddedRunTerminalTimeout(makeTimeoutInput(attempt));
+      if (expectsTimeout) {
+        expect(result?.payloads).toEqual([
+          { text: expect.stringContaining("timed out"), isError: true },
+        ]);
+      } else {
+        expect(result).toBeUndefined();
+      }
+    },
+  );
 
   it("replaces a partial assistant fragment with the timeout error", () => {
     const partialPayload = { text: "# Current Tasks\n\nLast updated:" };

@@ -86,13 +86,33 @@ export function hasCompletedSourceReplyDeliveryEvidence(
   );
 }
 
+/** Returns whether messaging-tool evidence completes the current source reply. */
+export function hasCompletedMessagingToolDeliveryEvidence(
+  result: AgentDeliveryEvidence & SourceReplyDeliveryEvidence & ExplicitFinalSourceReplyEvidence,
+): boolean {
+  return (
+    resolveExplicitFinalSourceReplyDeliveryEvidence(result) ??
+    hasMessagingToolDeliveryEvidence(result)
+  );
+}
+
+/** Preserves committed-only recovery policy while honoring explicit progress markers. */
+export function hasCompletedCommittedMessagingToolDeliveryEvidence(
+  result: AgentDeliveryEvidence & ExplicitFinalSourceReplyEvidence,
+): boolean {
+  return (
+    resolveExplicitFinalSourceReplyDeliveryEvidence(result) ??
+    hasCommittedMessagingToolDeliveryEvidence(result)
+  );
+}
+
 /** Returns whether delivery evidence completes the current interactive turn. */
 export function hasCompletedTerminalDeliveryEvidence(
   result: AgentDeliveryEvidence & SourceReplyDeliveryEvidence & ExplicitFinalSourceReplyEvidence,
 ): boolean {
   const explicitFinal = resolveExplicitFinalSourceReplyDeliveryEvidence(result);
   return (
-    hasCompletedSourceReplyDeliveryEvidence(result) ||
+    hasCompletedMessagingToolDeliveryEvidence(result) ||
     (explicitFinal === undefined && hasVisibleOutboundDeliveryEvidence(result)) ||
     result.didSendDeterministicApprovalPrompt === true
   );

@@ -4,6 +4,7 @@ import {
   collectAutomaticDeliveredMediaUrls,
   collectDeliveredMediaUrls,
   hasCompleteAutomaticMediaDeliveryOutcomeEvidence,
+  hasCompletedMessagingToolDeliveryEvidence,
   hasCompletedSourceReplyDeliveryEvidence,
   hasPayloadOutcomeSendEvidence,
   hasUnaccountedMessagingToolAggregateEvidence,
@@ -51,6 +52,27 @@ describe("explicit final source-reply delivery evidence", () => {
       }),
     ).toBe(true);
   });
+
+  it.each([
+    { sourceReplyFinal: false, expected: false },
+    { sourceReplyFinal: true, expected: true },
+    { sourceReplyFinal: undefined, expected: true },
+  ])(
+    "classifies marked and legacy visible delivery as terminal ($sourceReplyFinal)",
+    ({ sourceReplyFinal, expected }) => {
+      expect(
+        hasCompletedMessagingToolDeliveryEvidence({
+          didSendViaMessagingTool: true,
+          messagingToolSentTargets: [
+            {
+              text: "status",
+              ...(sourceReplyFinal === undefined ? {} : { sourceReplyFinal }),
+            },
+          ],
+        }),
+      ).toBe(expected);
+    },
+  );
 });
 
 describe("visible messaging-tool delivery evidence", () => {

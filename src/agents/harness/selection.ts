@@ -52,12 +52,7 @@ import {
   resolveAgentHarnessPreparedAuthSupport,
   resolveAgentHarnessPreparedRouteSupport,
 } from "./support.js";
-import type {
-  AgentHarness,
-  AgentHarnessSettledTurnFinalizationResult,
-  AgentHarnessSupport,
-  AgentHarnessSupportContext,
-} from "./types.js";
+import type { AgentHarness, AgentHarnessSupport, AgentHarnessSupportContext } from "./types.js";
 
 const log = createSubsystemLogger("agents/harness");
 export { resolveAgentHarnessPolicy } from "./policy.js";
@@ -472,7 +467,7 @@ export async function runAgentHarnessSettledTurnFinalization(
   params: EmbeddedRunAttemptParams,
   settledAttempt: EmbeddedRunAttemptResult,
   harness: AgentHarness,
-): Promise<AgentHarnessSettledTurnFinalizationResult> {
+) {
   const internalParams = params as EmbeddedRunAttemptParams & {
     systemAgentTool?: SystemAgentToolOptions;
   };

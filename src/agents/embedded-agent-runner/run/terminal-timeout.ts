@@ -1,5 +1,5 @@
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
-import { hasMessagingToolDeliveryEvidence } from "../delivery-evidence.js";
+import { hasCompletedMessagingToolDeliveryEvidence } from "../delivery-evidence.js";
 import type { EmbeddedAgentMeta, EmbeddedAgentRunResult } from "../types.js";
 import { resolveRunLivenessState } from "./incomplete-turn.js";
 import {
@@ -31,7 +31,8 @@ export function resolveEmbeddedRunTerminalTimeout(input: {
   if (
     !input.timedOutDuringPrompt ||
     input.hasSuccessfulFinalAssistantAfterPromptTimeout ||
-    (!input.shouldSurfaceCodexCompletionTimeout && hasMessagingToolDeliveryEvidence(input.attempt))
+    (!input.shouldSurfaceCodexCompletionTimeout &&
+      hasCompletedMessagingToolDeliveryEvidence(input.attempt))
   ) {
     return undefined;
   }

@@ -20,6 +20,8 @@ import { hasOnlyAssistantReasoningContent } from "../../replay-turn-classificati
 import type { AgentMessage } from "../../runtime/index.js";
 import {
   hasCommittedMessagingToolDeliveryEvidence,
+  hasCompletedCommittedMessagingToolDeliveryEvidence,
+  hasCompletedMessagingToolDeliveryEvidence,
   hasMessagingToolDeliveryEvidence,
 } from "../delivery-evidence.js";
 import { isZeroUsageEmptyStopAssistantTurn } from "../empty-assistant-turn.js";
@@ -259,7 +261,7 @@ export function resolveIncompleteTurnPayloadText(params: {
     return null;
   }
 
-  if (hasCommittedMessagingToolDeliveryEvidence(params.attempt)) {
+  if (hasCompletedCommittedMessagingToolDeliveryEvidence(params.attempt)) {
     return null;
   }
 
@@ -327,7 +329,7 @@ export function shouldRetryMissingAssistantTurn(params: {
     return false;
   }
 
-  if (hasCommittedMessagingToolDeliveryEvidence(params.attempt)) {
+  if (hasCompletedCommittedMessagingToolDeliveryEvidence(params.attempt)) {
     return false;
   }
 
@@ -689,7 +691,7 @@ export function shouldTreatEmptyAssistantReplyAsSilent(params: {
   ) {
     return false;
   }
-  if (hasCommittedMessagingToolDeliveryEvidence(params.attempt)) {
+  if (hasCompletedCommittedMessagingToolDeliveryEvidence(params.attempt)) {
     return false;
   }
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
@@ -864,7 +866,7 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
   ) {
     return null;
   }
-  if (hasMessagingToolDeliveryEvidence(params.attempt)) {
+  if (hasCompletedMessagingToolDeliveryEvidence(params.attempt)) {
     return null;
   }
   if (
