@@ -70,7 +70,7 @@ export function receiveBrowserAnnotation(
 }
 
 /** Releases only annotation-owned payloads when a pane's state is discarded. */
-export function releasePaneBrowserAnnotations(
+function releasePaneBrowserAnnotations(
   state: ChatPageHost,
   releasePayload = releaseChatAttachmentPayload,
   released = new Set<string>(),

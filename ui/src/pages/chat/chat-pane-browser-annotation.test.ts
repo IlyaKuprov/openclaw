@@ -17,9 +17,9 @@ import {
 import { canAdmitBrowserAnnotation } from "./browser-annotation-admission.ts";
 import {
   closePaneBrowserAnnotations,
+  discardStateBrowserAnnotations,
   preparePaneBrowserAnnotations,
   receiveBrowserAnnotation,
-  releasePaneBrowserAnnotations,
   restorePaneBrowserAnnotations,
 } from "./chat-pane-browser-annotation.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
@@ -147,13 +147,13 @@ describe("browser annotation pane teardown", () => {
       },
     } as unknown as ChatPageHost;
 
-    const releasePayload = vi.fn((id: string) => releaseChatAttachmentPayload(id));
-    releasePaneBrowserAnnotations(state, releasePayload);
+    discardStateBrowserAnnotations(state);
 
-    expect(releasePayload.mock.calls.map(([id]) => id)).toEqual(["shared", "fallback"]);
     expect(getChatAttachmentDataUrl(shared)).toBeNull();
     expect(getChatAttachmentDataUrl(fallback)).toBeNull();
     expect(getChatAttachmentDataUrl(ordinary)).not.toBeNull();
+    expect(state.chatAttachments).toEqual([ordinary]);
+    expect(state.chatComposerFallbackByScope.fallback?.attachments).toEqual([ordinary]);
     releaseChatAttachmentPayload(ordinary.id);
   });
 
