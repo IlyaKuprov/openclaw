@@ -25,12 +25,22 @@ function spawnTransaction(argv: string[], env: NodeJS.ProcessEnv) {
     signal,
     stderr,
   }));
-  return { exited };
+  return { child, exited };
+}
+
+function parseReceiverOwner(name: string) {
+  const match = /^owner\.receiver\.[a-f0-9]{32}\.([1-9][0-9]*)\.([1-9][0-9]*)\.[a-f0-9]{32}$/u.exec(
+    name,
+  );
+  if (!match) {
+    throw new Error(`invalid receiver lock owner: ${name}`);
+  }
+  return { receiverPid: Number(match[1]), controllerPid: Number(match[2]) };
 }
 
 describe("remote workspace mutation receiver script", () => {
   it.skipIf(process.platform === "win32")(
-    "keeps receiver ownership while an internal receiver process can still mutate",
+    "keeps receiver ownership after its controller dies while a descendant can still mutate",
     async () => {
       const root = tempDirs.make("openclaw-workspace-receiver-lock-");
       let home = path.join(root, "home");
@@ -94,19 +104,23 @@ process.kill = function(pid, signal) {
         ],
         env,
       );
+      let receiverGateReady = false;
       let gateReleased = false;
+      let reset: ReturnType<typeof runCommandWithTimeout> | undefined;
       try {
         await waitForFile(receiverMarker, 10_000);
+        receiverGateReady = true;
         const workspaceKey = createHash("sha256").update(workspace).digest("hex");
         const lock = path.join(path.dirname(workspace), `.openclaw-accepted-lock-${workspaceKey}`);
         const [ownerName] = await fs.readdir(lock);
-        const receiverPid = Number(
-          /^owner\.receiver\.[a-f0-9]{32}\.([1-9][0-9]*)\./u.exec(ownerName!)?.[1],
-        );
+        const { receiverPid, controllerPid } = parseReceiverOwner(ownerName!);
         expect(Number.isSafeInteger(receiverPid)).toBe(true);
+        expect(controllerPid).toBe(receiver.child.pid);
         await waitForDead(receiverPid, 10_000);
+        expect(receiver.child.kill("SIGKILL")).toBe(true);
+        expect(await receiver.exited).toMatchObject({ code: null, signal: "SIGKILL", stderr: "" });
 
-        const reset = runCommandWithTimeout(
+        reset = runCommandWithTimeout(
           [
             process.execPath,
             "--require",
@@ -129,7 +143,6 @@ process.kill = function(pid, signal) {
         await gateWriter.write("release\n");
         await gateWriter.close();
         gateReleased = true;
-        expect(await receiver.exited).toMatchObject({ code: 0, signal: null, stderr: "" });
         expect(await reset).toMatchObject({ code: 0, stdout: `reset ${resetNonce}\n`, stderr: "" });
         await expect(fs.access(path.join(workspace, "late.txt"))).rejects.toThrow();
         await expect(fs.readFile(path.join(workspace, "node_modules/cache"), "utf8")).resolves.toBe(
@@ -141,11 +154,176 @@ process.kill = function(pid, signal) {
           ),
         ).toEqual([]);
       } finally {
-        if (!gateReleased) {
+        if (!gateReleased && receiverGateReady) {
           const gateWriter = await fs.open(gate, "w");
           await gateWriter.write("cleanup\n");
           await gateWriter.close();
-          await receiver.exited.catch(() => undefined);
+        } else if (!gateReleased) {
+          receiver.child.kill("SIGKILL");
+        }
+        await receiver.exited.catch(() => undefined);
+        await reset?.catch(() => undefined);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps receiver ownership while its live controller is releasing a dead receiver group",
+    async () => {
+      const root = tempDirs.make("openclaw-workspace-receiver-controller-lock-");
+      let home = path.join(root, "home");
+      const bin = path.join(root, "bin");
+      const releaseGate = path.join(root, "release-gate");
+      const releaseMarker = path.join(root, "release-marker");
+      const contenderMarker = path.join(root, "contender-marker");
+      const preload = path.join(root, "release-preload.cjs");
+      const relative = ".openclaw-worker/workspaces/env/session/1";
+      await Promise.all([fs.mkdir(home), fs.mkdir(bin)]);
+      home = await fs.realpath(home);
+      const workspace = path.join(home, relative);
+      await fs.mkdir(path.join(workspace, "node_modules"), { recursive: true });
+      await Promise.all([
+        fs.writeFile(path.join(workspace, "current.txt"), "current\n"),
+        fs.writeFile(path.join(workspace, "node_modules/cache"), "keep\n"),
+        fs.writeFile(path.join(bin, "rsync"), "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
+      ]);
+      const fifo = await runCommandWithTimeout(["mkfifo", releaseGate], { timeoutMs: 10_000 });
+      expect(fifo.code).toBe(0);
+      await fs.writeFile(
+        preload,
+        String.raw`const fs = require("node:fs");
+const renameSync = fs.renameSync.bind(fs);
+fs.renameSync = function(source, destination) {
+  if (
+    process.argv[4] === process.env.OPENCLAW_TEST_RECEIVER_NONCE &&
+    destination.includes(".released.")
+  ) {
+    fs.writeFileSync(process.env.OPENCLAW_TEST_RELEASE_MARKER, "");
+    if (fs.readFileSync(process.env.OPENCLAW_TEST_RELEASE_GATE, "utf8").trim() !== "release") {
+      throw new Error("invalid receiver controller release gate");
+    }
+  }
+  return renameSync(source, destination);
+};
+const kill = process.kill.bind(process);
+process.kill = function(pid, signal) {
+  const result = kill(pid, signal);
+  if (
+    signal === 0 &&
+    process.argv[4] === process.env.OPENCLAW_TEST_RESET_NONCE &&
+    pid === Number(process.env.OPENCLAW_TEST_CONTROLLER_PID)
+  ) {
+    fs.writeFileSync(process.env.OPENCLAW_TEST_CONTENDER_MARKER, "");
+  }
+  return result;
+};
+`,
+      );
+      const receiverNonce = "d".repeat(32);
+      const resetNonce = "e".repeat(32);
+      const env = {
+        ...process.env,
+        HOME: home,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        OPENCLAW_TEST_RECEIVER_NONCE: receiverNonce,
+        OPENCLAW_TEST_RESET_NONCE: resetNonce,
+        OPENCLAW_TEST_RELEASE_GATE: releaseGate,
+        OPENCLAW_TEST_RELEASE_MARKER: releaseMarker,
+        OPENCLAW_TEST_CONTENDER_MARKER: contenderMarker,
+      };
+      const receiver = spawnTransaction(
+        [
+          "--require",
+          preload,
+          "-e",
+          REMOTE_WORKSPACE_RSYNC_RECEIVER_JS,
+          workspace,
+          home,
+          relative,
+          receiverNonce,
+          workspace,
+          "--server",
+          ".",
+          `${workspace}/`,
+        ],
+        env,
+      );
+      let receiverPid: number | undefined;
+      let releaseGateOpened = false;
+      let reset: ReturnType<typeof runCommandWithTimeout> | undefined;
+      try {
+        await waitForFile(releaseMarker, 10_000);
+        const workspaceKey = createHash("sha256").update(workspace).digest("hex");
+        const lock = path.join(path.dirname(workspace), `.openclaw-accepted-lock-${workspaceKey}`);
+        const [ownerName] = await fs.readdir(lock);
+        const owner = parseReceiverOwner(ownerName!);
+        receiverPid = owner.receiverPid;
+        expect(owner.controllerPid).toBe(receiver.child.pid);
+        await waitForDead(owner.receiverPid, 10_000);
+
+        let resetSettled = false;
+        reset = runCommandWithTimeout(
+          [
+            process.execPath,
+            "--require",
+            preload,
+            "-e",
+            REMOTE_GIT_WORKSPACE_RETRY_RESET_JS,
+            workspace,
+            home,
+            relative,
+            resetNonce,
+          ],
+          {
+            timeoutMs: 10_000,
+            baseEnv: { ...env, OPENCLAW_TEST_CONTROLLER_PID: String(owner.controllerPid) },
+          },
+        );
+        void reset.then(
+          () => {
+            resetSettled = true;
+          },
+          () => {
+            resetSettled = true;
+          },
+        );
+        await waitForFile(contenderMarker, 10_000);
+        expect(resetSettled).toBe(false);
+        await expect(fs.readFile(path.join(workspace, "current.txt"), "utf8")).resolves.toBe(
+          "current\n",
+        );
+        await expect(fs.readdir(lock)).resolves.toEqual([ownerName]);
+
+        const releaseWriter = await fs.open(releaseGate, "w");
+        await releaseWriter.write("release\n");
+        await releaseWriter.close();
+        releaseGateOpened = true;
+        expect(await receiver.exited).toMatchObject({ code: 0, signal: null, stderr: "" });
+        expect(await reset).toMatchObject({ code: 0, stdout: `reset ${resetNonce}\n`, stderr: "" });
+        await expect(fs.access(path.join(workspace, "current.txt"))).rejects.toThrow();
+        await expect(fs.readFile(path.join(workspace, "node_modules/cache"), "utf8")).resolves.toBe(
+          "keep\n",
+        );
+        expect(
+          (await fs.readdir(path.dirname(workspace))).filter((name) =>
+            name.startsWith(".openclaw-accepted-"),
+          ),
+        ).toEqual([]);
+      } finally {
+        if (!releaseGateOpened) {
+          try {
+            await fs.access(releaseMarker);
+            const releaseWriter = await fs.open(releaseGate, "w");
+            await releaseWriter.write("release\n");
+            await releaseWriter.close();
+          } catch {
+            receiver.child.kill("SIGKILL");
+          }
+        }
+        await receiver.exited.catch(() => undefined);
+        await reset?.catch(() => undefined);
+        if (receiverPid !== undefined) {
+          await waitForDead(receiverPid, 1_000).catch(() => undefined);
         }
       }
     },
