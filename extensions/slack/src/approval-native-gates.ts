@@ -74,8 +74,7 @@ function isSlackApprovalTransportEnabled(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
 }): boolean {
-  const account = resolveSlackAccount(params);
-  return account.config.enterpriseOrgInstall !== true && isSlackPluginAccountConfigured(account);
+  return isSlackPluginAccountConfigured(resolveSlackAccount(params));
 }
 
 function resolveSlackNativeApprovalConfig(params: {

@@ -22,7 +22,7 @@ const CONVERSATION = {
   conversationId: "channel:C123",
 };
 
-describe("Slack Enterprise Grid runtime conversation bindings", () => {
+describe("Slack runtime conversation bindings", () => {
   let cfg: OpenClawConfig;
   let previousStateDir: string | undefined;
   let testStateDir = "";
@@ -77,54 +77,5 @@ describe("Slack Enterprise Grid runtime conversation bindings", () => {
     await expect(
       service.unbind({ bindingId: reassigned.bindingId, reason: "workspace cleanup" }),
     ).resolves.toEqual([reassigned]);
-  });
-
-  it("does not advertise, select, or mutate bindings for an enterprise account", async () => {
-    const service = getSessionBindingService();
-    const existing = await service.bind({
-      targetSessionKey: "agent:main:workspace",
-      targetKind: "session",
-      conversation: CONVERSATION,
-    });
-    const originalActivityAt = existing.metadata?.lastActivityAt;
-    cfg = { channels: { slack: { enterpriseOrgInstall: true } } };
-
-    expect(service.getCapabilities({ channel: "slack", accountId: "default" })).toEqual({
-      adapterAvailable: false,
-      bindSupported: false,
-      unbindSupported: false,
-      placements: [],
-    });
-    expect(service.resolveByConversation(CONVERSATION)).toBeNull();
-    expect(service.listBySession("agent:main:workspace")).toEqual([]);
-
-    service.touch(existing.bindingId, 9999);
-    await expect(
-      service.bind({
-        targetSessionKey: "agent:main:enterprise",
-        targetKind: "session",
-        conversation: CONVERSATION,
-      }),
-    ).rejects.toMatchObject({ code: "BINDING_ADAPTER_UNAVAILABLE" });
-    await expect(
-      service.bind({
-        targetSessionKey: "agent:main:new-enterprise",
-        targetKind: "session",
-        conversation: { ...CONVERSATION, conversationId: "channel:C456" },
-      }),
-    ).rejects.toMatchObject({ code: "BINDING_ADAPTER_UNAVAILABLE" });
-    await expect(
-      service.unbind({ bindingId: existing.bindingId, reason: "enterprise cleanup" }),
-    ).resolves.toEqual([]);
-    await expect(
-      service.unbind({ targetSessionKey: existing.targetSessionKey, reason: "enterprise cleanup" }),
-    ).resolves.toEqual([]);
-
-    cfg = { channels: { slack: {} } };
-    expect(service.resolveByConversation(CONVERSATION)).toMatchObject({
-      bindingId: existing.bindingId,
-      targetSessionKey: "agent:main:workspace",
-      metadata: { lastActivityAt: originalActivityAt },
-    });
   });
 });

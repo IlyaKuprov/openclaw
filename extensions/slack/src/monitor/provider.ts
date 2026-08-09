@@ -297,21 +297,6 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const mainKey = normalizeMainKey(sessionCfg?.mainKey);
 
   const slackMode = opts.mode ?? account.config.mode ?? "socket";
-  const enterpriseOrgInstall = account.config.enterpriseOrgInstall === true;
-  if (enterpriseOrgInstall && slackMode === "relay") {
-    throw new Error(
-      `Slack Enterprise Grid org account "${account.accountId}" requires direct socket or HTTP delivery; relay mode is unsupported`,
-    );
-  }
-  if (enterpriseOrgInstall && account.config.execApprovals?.enabled === true) {
-    throw new Error(
-      `Slack Enterprise Grid org account "${account.accountId}" does not support Slack-native exec approvals`,
-    );
-  }
-  if (enterpriseOrgInstall) {
-    assertEnterpriseSlackPolicyConfig({ config: account.config, accountId: account.accountId });
-    assertNoEnterpriseSlackBindings({ cfg, accountId: account.accountId });
-  }
   const slackWebhookPath = normalizeSlackWebhookPath(account.config.webhookPath);
   const signingSecret = normalizeResolvedSecretInputString({
     value: account.config.signingSecret,
@@ -369,14 +354,6 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const dmEnabled = dmConfig?.enabled ?? true;
   const dmPolicy = resolveSlackAccountDmPolicy({ cfg, accountId: account.accountId }) ?? "pairing";
   let allowFrom = resolveSlackAccountAllowFrom({ cfg, accountId: account.accountId });
-  if (enterpriseOrgInstall) {
-    assertEnterpriseSlackDmPolicy({
-      accountId: account.accountId,
-      dmEnabled,
-      dmPolicy,
-      allowFrom,
-    });
-  }
   const groupDmEnabled = dmConfig?.groupEnabled ?? false;
   const groupDmChannels = dmConfig?.groupChannels;
   let channelsConfig = slackCfg.channels;
@@ -513,18 +490,37 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
         accountId: account.accountId,
       });
     }
-    if (!authUserId && !enterpriseOrgInstall) {
+    if (!authUserId && auth.is_enterprise_install !== true) {
       authTestError = "auth.test returned no user_id";
     }
   } catch (err) {
     authTestError = err instanceof Error ? err.message : String(err);
   }
   const installationIdentity = resolveSlackInstallationIdentity({
-    enterpriseOrgInstall,
     auth: authTestError === undefined ? authTestIdentity : undefined,
-    authError: authTestError,
     transportApiAppId: expectedApiAppIdFromAppToken,
   });
+  const isEnterpriseInstall = installationIdentity.kind === "enterprise";
+  if (isEnterpriseInstall && slackMode === "relay") {
+    throw new Error(
+      `Slack Enterprise Grid org account "${account.accountId}" requires direct socket or HTTP delivery; relay mode is unsupported`,
+    );
+  }
+  if (isEnterpriseInstall && account.config.execApprovals?.enabled === true) {
+    throw new Error(
+      `Slack Enterprise Grid org account "${account.accountId}" does not support Slack-native exec approvals`,
+    );
+  }
+  if (isEnterpriseInstall) {
+    assertEnterpriseSlackPolicyConfig({ config: account.config, accountId: account.accountId });
+    assertNoEnterpriseSlackBindings({ cfg, accountId: account.accountId });
+    assertEnterpriseSlackDmPolicy({
+      accountId: account.accountId,
+      dmEnabled,
+      dmPolicy,
+      allowFrom,
+    });
+  }
   const teamId = installationIdentity.kind === "workspace" ? installationIdentity.teamId : "";
   const apiAppId =
     installationIdentity.kind === "degraded" ? "" : (installationIdentity.apiAppId ?? "");

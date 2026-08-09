@@ -23,10 +23,12 @@ describe("slack config schema", () => {
     expectSlackConfigIssue({ capabilities: { interactiveReplies: true } }, "capabilities");
   });
 
-  it("accepts explicit Enterprise Grid org-install mode", () => {
-    expectSlackConfigValid({ enterpriseOrgInstall: true });
-    expectSlackConfigValid({ accounts: { org: { enterpriseOrgInstall: true } } });
-    expectSlackConfigIssue({ enterpriseOrgInstall: "true" }, "enterpriseOrgInstall");
+  it("rejects the retired Enterprise Grid installation setting", () => {
+    expectSlackConfigIssue({ enterpriseOrgInstall: true }, "enterpriseOrgInstall");
+    expectSlackConfigIssue(
+      { accounts: { org: { enterpriseOrgInstall: true } } },
+      "accounts.org.enterpriseOrgInstall",
+    );
   });
 
   it("keeps workspace-scoped mention pattern policies valid for workspace installs", () => {

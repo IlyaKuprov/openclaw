@@ -135,7 +135,6 @@ uses the org-installed bot token:
     slack: {
       enabled: true,
       mode: "socket",
-      enterpriseOrgInstall: true,
       appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
       botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
       dmPolicy: "open",
@@ -212,7 +211,6 @@ the enterprise account with the same Request URL path:
     slack: {
       enabled: true,
       mode: "http",
-      enterpriseOrgInstall: true,
       botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
       signingSecret: {
         source: "env",
@@ -231,11 +229,12 @@ the enterprise account with the same Request URL path:
 }
 ```
 
-At startup, OpenClaw verifies `enterpriseOrgInstall` with Slack `auth.test`.
-An org-installed token without the flag, or a workspace token with the flag,
-fails startup. Slack remains the source of truth for which workspaces have
-granted the installation; OpenClaw then applies the configured channel, user,
-DM, and mention policies to each delivered event. Enterprise V1 rejects all
+At startup, OpenClaw uses Slack `auth.test` to detect whether the token belongs
+to a workspace installation or an Enterprise Grid org-wide installation. No
+installation-mode setting is required. Slack remains the source of truth for
+which workspaces have granted the installation; OpenClaw then applies the
+configured channel, user, DM, and mention policies to each delivered event.
+Enterprise installs reject all
 bot-authored `message` and `app_mention` events before dispatch, regardless of
 `allowBots`, because org installs do not provide a stable workspace-qualified
 bot identity for loop prevention.
@@ -243,18 +242,17 @@ bot identity for loop prevention.
 Enterprise support accepts direct Socket Mode or HTTP `message` and
 `app_mention` events plus workspace-qualified outbound messages. Relay mode,
 slash commands, interactions, App Home, reaction event listeners, pins,
-Slack-native approvals, and bindings remain unavailable for an enterprise
-account. Slack action tools remain unavailable except for file uploads and
-adding or removing emoji reactions. Outbound acknowledgment, typing, and
-status reactions are supported and require `reactions:write`; inbound reaction
+Slack-native approvals, and configured bindings remain unavailable for an
+enterprise account. Slack action tools use the same workspace-qualified
+destinations for reads and writes. Outbound acknowledgment, typing, and status
+reactions are supported and require `reactions:write`; inbound reaction
 notifications remain unavailable.
 
 OpenClaw records Enterprise Grid destinations as
 `team:<team-id>:channel:<channel-id>` or `team:<team-id>:user:<user-id>`.
 Current-conversation sends, uploads, and reactions inherit that destination.
 Detached or proactive calls must provide the workspace-qualified target;
-bare channel and user IDs fail closed because those IDs can be reused by
-different workspaces.
+channel and user IDs can be reused by different workspaces.
 
 Immediate replies reuse the standard Slack delivery behavior for chunks,
 media, metadata, identity fallback, unfurls, and receipts, but only while the
@@ -1845,7 +1843,7 @@ Primary reference: [Configuration reference - Slack](/gateway/config-channels#sl
 
 <Accordion title="High-signal Slack fields">
 
-- mode/auth: `identity`, `mode`, `enterpriseOrgInstall`, `botToken`, `appToken`, `userToken`, `signingSecret`, `webhookPath`, `accounts.*`
+- mode/auth: `identity`, `mode`, `botToken`, `appToken`, `userToken`, `signingSecret`, `webhookPath`, `accounts.*`
 - DM access: `dm.enabled`, `dmPolicy`, `allowFrom` (legacy: `dm.policy`, `dm.allowFrom`), `dm.groupEnabled`, `dm.groupChannels`
 - compatibility toggle: `dangerouslyAllowNameMatching` (break-glass; keep off unless needed)
 - channel access: `groupPolicy`, `channels.*`, `channels.*.users`, `channels.*.requireMention`, `implicitMentions.*`
