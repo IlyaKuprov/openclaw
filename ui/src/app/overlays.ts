@@ -87,7 +87,7 @@ export type ApplicationOverlays = {
   runUpdate: () => Promise<void>;
   holdUpdate: () => Promise<boolean>;
   decideApproval: (decision: ExecApprovalDecision, approvalId?: string) => Promise<void>;
-  openDevicePairSetup: () => Promise<void>;
+  openDevicePairSetup: () => Promise<boolean>;
   refreshDevicePairSetup: () => Promise<void>;
   setDevicePairSetupAccess: (access: DevicePairSetupAccess) => Promise<void>;
   closeDevicePairSetup: () => void;
@@ -676,13 +676,14 @@ export function createApplicationOverlays(
     async openDevicePairSetup() {
       const access = readGatewayOperatorAccess(gateway.snapshot);
       if (disposed || (!access.canAdmin && !access.canPair)) {
-        return;
+        return false;
       }
       devicePairSetupState.pendingCount = 0;
       const setupOperation = openDevicePairSetupState(devicePairSetupState);
       // Pairing-list latency must not keep a ready setup code behind the loading state.
       void pairingPendingCount.refresh();
       await publishDevicePairSetupOperation(setupOperation);
+      return devicePairSetupState.devicePairSetupOpen;
     },
     async refreshDevicePairSetup() {
       if (disposed || !readGatewayOperatorAccess(gateway.snapshot).canAdmin) {

@@ -20,6 +20,7 @@ type PluginCommandEntrySpec = {
   description: string;
   acceptsArgs: boolean;
   nativeName?: string;
+  clientPresentation?: NonNullable<OpenClawPluginCommandDefinition["clientPresentation"]>;
 };
 
 function resolvePluginNativeName(
@@ -155,5 +156,6 @@ function serializePluginCommandEntrySpec(
     description: cmd.description.trim(),
     acceptsArgs: cmd.acceptsArgs ?? false,
     ...(nativeName ? { nativeName } : {}),
+    ...(cmd.clientPresentation ? { clientPresentation: cmd.clientPresentation } : {}),
   };
 }

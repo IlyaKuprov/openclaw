@@ -6,7 +6,12 @@ import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewayRequestError } from "../../api/gateway.ts";
 import type { AgentsListResult, GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
-import { SLASH_COMMANDS } from "../../lib/chat/commands.ts";
+import {
+  buildFallbackSlashCommands,
+  buildSlashCommandsFromEntries,
+  replaceSlashCommands,
+  SLASH_COMMANDS,
+} from "../../lib/chat/commands.ts";
 import { createResolvedModelPatch } from "../../test-helpers/chat-model.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
@@ -288,6 +293,25 @@ function idleChatHistory(sessionKey = "agent:main") {
     messages: [],
     sessionInfo: row(sessionKey, { hasActiveRun: false, status: "done" }),
   };
+}
+
+function installPairClientPresentationCommand() {
+  replaceSlashCommands(
+    buildSlashCommandsFromEntries([
+      {
+        name: "pair",
+        textAliases: ["/pair"],
+        description: "Pair a device.",
+        source: "plugin",
+        scope: "both",
+        acceptsArgs: true,
+        clientPresentation: {
+          when: "no-arguments",
+          action: { kind: "device-pairing" },
+        },
+      },
+    ]),
+  );
 }
 
 function createDeferred<T>() {
@@ -1002,8 +1026,138 @@ describe("handleSendChat", () => {
   );
 
   afterEach(() => {
+    replaceSlashCommands(buildFallbackSlashCommands());
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it.each(["/pair", "/pair:", "/pair :"])(
+    "handles parsed no-argument presentation %s before queueing",
+    async (chatMessage) => {
+      installPairClientPresentationCommand();
+      const dispatchClientPresentation = vi.fn(async () => true);
+      const baselineMessages = [{ role: "assistant", content: "Ready." }];
+      const host = makeChatHost({
+        requestHandlers: { "chat.send": { status: "started" } },
+        chatMessage,
+        chatMessages: baselineMessages,
+        dispatchClientPresentation,
+      });
+
+      await handleSendChat(host);
+
+      expect(dispatchClientPresentation).toHaveBeenCalledWith({ kind: "device-pairing" });
+      expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
+      expect(host.chatQueue).toStrictEqual([]);
+      expect(host.chatMessages).toEqual(baselineMessages);
+      expect(host.chatMessage).toBe("");
+    },
+  );
+
+  it.each(["/pair status", "/pair approve request-1", "/pair:qr", "/pair unknown"])(
+    "keeps argument-bearing presentation command %s on the remote path",
+    async (chatMessage) => {
+      installPairClientPresentationCommand();
+      const dispatchClientPresentation = vi.fn(async () => true);
+      const host = makeChatHost({
+        requestHandlers: { "chat.send": { status: "started" } },
+        chatMessage,
+        dispatchClientPresentation,
+      });
+
+      await handleSendChat(host);
+
+      expect(dispatchClientPresentation).not.toHaveBeenCalled();
+      expect(host.request).toHaveBeenCalledWith(
+        "chat.send",
+        expect.objectContaining({ message: chatMessage }),
+      );
+    },
+  );
+
+  it.each([
+    { name: "unavailable", dispatch: vi.fn(async () => false) },
+    {
+      name: "failed",
+      dispatch: vi.fn(async () => {
+        throw new Error("presentation unavailable");
+      }),
+    },
+  ])("retains remote behavior when client presentation is $name", async ({ dispatch }) => {
+    installPairClientPresentationCommand();
+    const host = makeChatHost({
+      requestHandlers: { "chat.send": { status: "started" } },
+      chatMessage: "/pair",
+      dispatchClientPresentation: dispatch,
+    });
+
+    await handleSendChat(host);
+
+    expect(host.request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.objectContaining({ message: "/pair" }),
+    );
+  });
+
+  it("does not intercept offline presentation commands before durable queue admission", async () => {
+    installPairClientPresentationCommand();
+    const dispatchClientPresentation = vi.fn(async () => true);
+    const host = makeChatHost({
+      chatMessage: "/pair",
+      connected: false,
+      dispatchClientPresentation,
+    });
+
+    await handleSendChat(host);
+
+    expect(dispatchClientPresentation).not.toHaveBeenCalled();
+    expect(host.chatQueue).toEqual([
+      expect.objectContaining({ text: "/pair", sendState: "waiting-reconnect" }),
+    ]);
+
+    const request = makeRequestMock({
+      "chat.history": idleChatHistory(),
+      "chat.send": { status: "started" },
+    });
+    host.client = clientWithRequest(request);
+    host.connected = true;
+    await retryReconnectableQueuedChatSends(host);
+
+    expect(dispatchClientPresentation).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.objectContaining({ message: "/pair" }),
+    );
+  });
+
+  it("keeps presentation commands with attachments on the remote path", async () => {
+    installPairClientPresentationCommand();
+    const dispatchClientPresentation = vi.fn(async () => true);
+    const file = new File(["pairing notes"], "pairing.txt", { type: "text/plain" });
+    const attachment = registerChatAttachmentPayload({
+      attachment: {
+        id: "pairing-notes",
+        mimeType: "text/plain",
+        fileName: file.name,
+        sizeBytes: file.size,
+      },
+      dataUrl: "data:text/plain;base64,cGFpcmluZyBub3Rlcw==",
+      file,
+    });
+    const host = makeChatHost({
+      requestHandlers: { "chat.send": { status: "started" } },
+      chatMessage: "/pair",
+      chatAttachments: [attachment],
+      dispatchClientPresentation,
+    });
+
+    await handleSendChat(host);
+
+    expect(dispatchClientPresentation).not.toHaveBeenCalled();
+    expect(host.request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.objectContaining({ message: "/pair" }),
+    );
   });
 
   it("routes typed /new through the fresh-session action without confirmation", async () => {
