@@ -735,6 +735,30 @@ describe("Parallels smoke model selection", () => {
     expect(script).toContain("[macos-app-bootstrap-ci] FAILED (exit 1)");
   });
 
+  it("captures bounded app samples and lane file logs when packaged bootstrap fails", () => {
+    const script = TS_SOURCE.macosAppBootstrapCi;
+
+    expect(script).toContain("captureLaneLogs: true, sampleApp: true");
+    expect(script).toContain('run("/usr/bin/sample", [pid, "3", "1", "-file", rawSamplePath]');
+    expect(script).toContain("maxDiagnosticTotalBytes = 256 * 1024");
+    expect(script).toContain("captureLaneFileLogs(label, diagnostics)");
+    expect(script).toContain("no regular files were written to the configured lane log directory");
+    expect(script).toContain('capture("launchd OPENCLAW_LOG_DIR"');
+  });
+
+  it("keeps the process-sample head and ordinary log tail when diagnostics are capped", async () => {
+    const tempDir = makeTempDir(tempDirs, "openclaw-macos-diagnostic-read-");
+    const logPath = join(tempDir, "diagnostic.log");
+    writeFileSync(logPath, "head-middle-tail");
+
+    await expect(macosAppBootstrapCiTesting.readFileHead(logPath, 4)).resolves.toEqual(
+      Buffer.from("head"),
+    );
+    await expect(macosAppBootstrapCiTesting.readFileTail(logPath, 4)).resolves.toEqual(
+      Buffer.from("tail"),
+    );
+  });
+
   it("does not start CLI readiness probes before the Gateway listener is ready", () => {
     expect(macosAppBootstrapCiTesting.gatewayServiceIsListening(0, true)).toBe(true);
     expect(macosAppBootstrapCiTesting.gatewayServiceIsListening(0, false)).toBe(false);

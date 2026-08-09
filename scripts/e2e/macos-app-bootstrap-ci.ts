@@ -1,7 +1,17 @@
 #!/usr/bin/env -S pnpm tsx
 // Native macOS CI proof for the packaged app's first-launch CLI bootstrap.
 import { appendFileSync, existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -27,6 +37,9 @@ const laneBundleIds: Record<Lane, string> = {
 
 const oldOnboardingReadinessTimeoutMs = 12_000;
 const expectedMismatchOutcome = "CLI install completed result=failed code=incompatible-version";
+const maxDiagnosticFileCount = 20;
+const maxDiagnosticFileBytes = 64 * 1024;
+const maxDiagnosticTotalBytes = 256 * 1024;
 
 type StartupPreference = {
   expected: string;
@@ -83,6 +96,52 @@ async function portIsOpen(port: number): Promise<boolean> {
 
 function safeArtifactText(text: string): string {
   return redactSensitiveText(text);
+}
+
+async function regularFilesWithin(root: string, limit: number): Promise<string[]> {
+  const files: string[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.toSorted((left, right) => left.name.localeCompare(right.name))) {
+      if (files.length >= limit) {
+        return;
+      }
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+      } else if (entry.isFile()) {
+        files.push(entryPath);
+      }
+    }
+  };
+  await visit(root);
+  return files;
+}
+
+async function readFileTail(filePath: string, maxBytes: number): Promise<Buffer> {
+  const fileStat = await stat(filePath);
+  const bytesToRead = Math.min(fileStat.size, maxBytes);
+  const buffer = Buffer.alloc(bytesToRead);
+  const handle = await open(filePath, "r");
+  try {
+    await handle.read(buffer, 0, bytesToRead, Math.max(0, fileStat.size - bytesToRead));
+  } finally {
+    await handle.close();
+  }
+  return buffer;
+}
+
+async function readFileHead(filePath: string, maxBytes: number): Promise<Buffer> {
+  const fileStat = await stat(filePath);
+  const bytesToRead = Math.min(fileStat.size, maxBytes);
+  const buffer = Buffer.alloc(bytesToRead);
+  const handle = await open(filePath, "r");
+  try {
+    await handle.read(buffer, 0, bytesToRead, 0);
+  } finally {
+    await handle.close();
+  }
+  return buffer;
 }
 
 function hasExpectedMismatchOutcome(logs: string): boolean {
@@ -232,6 +291,7 @@ class MacosAppBootstrapCi {
   private tempRoot = "";
   private candidateVersion = "";
   private activeBundleId: string | null = null;
+  private activeLane: Lane | null = null;
   private activeLogStart: string | null = null;
 
   async run(): Promise<void> {
@@ -280,7 +340,9 @@ class MacosAppBootstrapCi {
         path.join(this.artifactDir, "failure.log"),
         `${safeArtifactText(error instanceof Error ? (error.stack ?? error.message) : String(error))}\n`,
       ).catch(() => undefined);
-      await this.captureDiagnostics("failure").catch(() => undefined);
+      await this.captureDiagnostics("failure", { captureLaneLogs: true, sampleApp: true }).catch(
+        () => undefined,
+      );
       throw error;
     } finally {
       await this.resetState().catch((error: unknown) => {
@@ -537,6 +599,7 @@ class MacosAppBootstrapCi {
       );
     }
     this.activeBundleId = actualBundleId;
+    this.activeLane = lane;
 
     for (const preference of startupPreferencesForLane(lane)) {
       this.runLogged("/usr/bin/defaults", [
@@ -680,6 +743,7 @@ class MacosAppBootstrapCi {
       this.runLogged("/usr/bin/defaults", ["delete", bundleId], { check: false });
     }
     this.activeBundleId = null;
+    this.activeLane = null;
     this.activeLogStart = null;
   }
 
@@ -732,7 +796,10 @@ class MacosAppBootstrapCi {
     return `${result.stdout}${result.stderr}`;
   }
 
-  private async captureDiagnostics(label: string): Promise<void> {
+  private async captureDiagnostics(
+    label: string,
+    options: { captureLaneLogs?: boolean; sampleApp?: boolean } = {},
+  ): Promise<void> {
     const diagnostics: string[] = [];
     const capture = (title: string, command: string, args: string[]): void => {
       const result = run(command, args, { check: false, quiet: true, timeoutMs: 30_000 });
@@ -743,6 +810,7 @@ class MacosAppBootstrapCi {
 
     capture("console user", "/usr/bin/stat", ["-f", "%Su", "/dev/console"]);
     capture("OpenClaw processes", "/usr/bin/pgrep", ["-alf", "OpenClaw|openclaw|install-cli"]);
+    capture("launchd OPENCLAW_LOG_DIR", "/bin/launchctl", ["getenv", "OPENCLAW_LOG_DIR"]);
     const launchd = run("/bin/launchctl", ["print", `gui/${this.uid}/${gatewayLabel}`], {
       check: false,
       quiet: true,
@@ -796,10 +864,95 @@ class MacosAppBootstrapCi {
       }
     }
 
+    if (options.captureLaneLogs) {
+      await this.captureLaneFileLogs(label, diagnostics).catch((error: unknown) => {
+        diagnostics.push(`## Lane file logs\n${this.errorMessage(error)}`);
+      });
+    }
+    if (options.sampleApp) {
+      await this.captureOpenClawSamples(label, diagnostics).catch((error: unknown) => {
+        diagnostics.push(`## OpenClaw process samples\n${this.errorMessage(error)}`);
+      });
+    }
+
     await writeFile(
       path.join(this.artifactDir, `diagnostics-${label}.log`),
       `${safeArtifactText(diagnostics.join("\n\n"))}\n`,
     );
+  }
+
+  private async captureLaneFileLogs(label: string, diagnostics: string[]): Promise<void> {
+    if (!this.activeLane) {
+      diagnostics.push("## Lane file logs\nno active lane");
+      return;
+    }
+    const laneLogDir = path.join(this.artifactDir, this.activeLane);
+    if (!existsSync(laneLogDir)) {
+      diagnostics.push(`## Lane file logs (${this.activeLane})\ndirectory missing: ${laneLogDir}`);
+      return;
+    }
+
+    const files = await regularFilesWithin(laneLogDir, maxDiagnosticFileCount);
+    let remainingBytes = maxDiagnosticTotalBytes;
+    const sections: string[] = [];
+    for (const filePath of files) {
+      if (remainingBytes <= 0) {
+        break;
+      }
+      const content = await readFileTail(
+        filePath,
+        Math.min(maxDiagnosticFileBytes, remainingBytes),
+      );
+      remainingBytes -= content.byteLength;
+      sections.push(
+        `### ${path.relative(laneLogDir, filePath)}\n${content.toString("utf8")}`.trimEnd(),
+      );
+    }
+    const captured = sections.length
+      ? sections.join("\n\n")
+      : "no regular files were written to the configured lane log directory";
+    const outputPath = path.join(this.artifactDir, `lane-file-logs-${label}.log`);
+    await writeFile(outputPath, `${safeArtifactText(captured)}\n`);
+    diagnostics.push(
+      `## Lane file logs (${this.activeLane})\nfiles=${files.length}\ncaptured=${sections.length}\noutput=${outputPath}`,
+    );
+  }
+
+  private async captureOpenClawSamples(label: string, diagnostics: string[]): Promise<void> {
+    const processResult = run("/usr/bin/pgrep", ["-x", "OpenClaw"], {
+      check: false,
+      quiet: true,
+      timeoutMs: 30_000,
+    });
+    const pids = processResult.stdout
+      .split(/\s+/u)
+      .filter((value) => /^[1-9]\d*$/u.test(value))
+      .slice(0, 2);
+    if (pids.length === 0) {
+      diagnostics.push("## OpenClaw process samples\nno live OpenClaw process");
+      return;
+    }
+
+    const safeLabel = label.replace(/[^a-zA-Z0-9._-]/gu, "-");
+    const sampleSummaries: string[] = [];
+    for (const pid of pids) {
+      const rawSamplePath = path.join(this.tempRoot, `sample-${safeLabel}-${pid}.txt`);
+      const result = run("/usr/bin/sample", [pid, "3", "1", "-file", rawSamplePath], {
+        check: false,
+        quiet: true,
+        timeoutMs: 15_000,
+      });
+      const outputPath = path.join(this.artifactDir, `sample-${safeLabel}-${pid}.txt`);
+      if (existsSync(rawSamplePath)) {
+        // `sample` writes the main-thread call tree before its trailing binary-image inventory.
+        const sample = await readFileHead(rawSamplePath, maxDiagnosticTotalBytes);
+        await writeFile(outputPath, `${safeArtifactText(sample.toString("utf8"))}\n`);
+      }
+      sampleSummaries.push(
+        `pid=${pid} exit=${result.status} output=${existsSync(outputPath) ? outputPath : "missing"}`,
+      );
+    }
+    diagnostics.push(`## OpenClaw process samples\n${sampleSummaries.join("\n")}`);
   }
 
   private runLogged(command: string, args: string[], options: CommandOptions = {}) {
@@ -854,6 +1007,8 @@ export const testing = {
   gatewayServiceIsListening,
   hasExpectedMismatchOutcome,
   macosLogStartTimestamp,
+  readFileHead,
+  readFileTail,
   requireEphemeralCiHome,
   resolveManagedGatewayCommand,
   startupPreferencesForLane,
