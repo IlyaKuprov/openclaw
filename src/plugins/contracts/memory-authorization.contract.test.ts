@@ -26,6 +26,11 @@ import {
 import * as memoryAuthorizationSdk from "../../plugin-sdk/memory-authorization.js";
 import type { MemoryPluginRuntime } from "../registry-contribution-types.js";
 
+type AuthorizedMutationForOperation<Operation extends AuthorizedMemoryMutation["kind"]> =
+  AuthorizedMemoryMutation & Readonly<{ kind: Operation }>;
+
+type IsNever<Value> = [Value] extends [never] ? true : false;
+
 function createSerializableContext(): MemoryAccessContext {
   return {
     version: 1,
@@ -247,6 +252,83 @@ describe("memory authorization SDK contract", () => {
     };
 
     expectTypeOf(assertContentOperationContract).toBeFunction();
+  });
+
+  it("binds every authorized action to its plan operation", () => {
+    type ImportMutation = Parameters<AuthorizedMemoryRuntime["importAuthorized"]>[0]["mutation"];
+    expectTypeOf<IsNever<ImportMutation>>().toEqualTypeOf<false>();
+
+    const assertActionOperationContract = (
+      runtime: AuthorizedMemoryRuntime,
+      retrieveContext: MemoryAccessContext & Readonly<{ operation: "retrieve" }>,
+      retrievePlan: AuthorizedMemoryPlan & Readonly<{ operation: "retrieve" }>,
+      appendContext: MemoryAccessContext & Readonly<{ operation: "append" }>,
+      appendPlan: AuthorizedMemoryPlan & Readonly<{ operation: "append" }>,
+      appendMutation: AuthorizedMutationForOperation<"append">,
+      importContext: MemoryAccessContext & Readonly<{ operation: "import" }>,
+      importPlan: AuthorizedMemoryPlan & Readonly<{ operation: "import" }>,
+      importMutation: AuthorizedMutationForOperation<"import">,
+      syncContext: MemoryAccessContext & Readonly<{ operation: "sync" }>,
+      syncPlan: AuthorizedMemoryPlan & Readonly<{ operation: "sync" }>,
+      exportContext: MemoryAccessContext & Readonly<{ operation: "export" }>,
+      exportPlan: AuthorizedMemoryPlan & Readonly<{ operation: "export" }>,
+      statusContext: MemoryAccessContext & Readonly<{ operation: "status" }>,
+      statusPlan: AuthorizedMemoryPlan & Readonly<{ operation: "status" }>,
+      handle: AuthorizedResourceHandle,
+    ) => {
+      void runtime.writeAuthorized({
+        context: appendContext,
+        plan: appendPlan,
+        mutation: appendMutation,
+      });
+      void runtime.importAuthorized({
+        context: importContext,
+        plan: importPlan,
+        mutation: importMutation,
+      });
+      void runtime.syncAuthorized({ context: syncContext, plan: syncPlan });
+      void runtime.exportAuthorized({
+        context: exportContext,
+        plan: exportPlan,
+        handles: [handle],
+      });
+      const exportPlanFromAuthorize = runtime.authorize(exportContext);
+      void exportPlanFromAuthorize.then((plan) =>
+        runtime.exportAuthorized({ context: exportContext, plan, handles: [handle] }),
+      );
+      void runtime.statusAuthorized({ context: statusContext, plan: statusPlan });
+
+      // @ts-expect-error retrieve may select candidates only inside the broker.
+      void runtime.writeAuthorized({
+        context: retrieveContext,
+        plan: retrievePlan,
+        mutation: appendMutation,
+      });
+      // @ts-expect-error the mutation kind must match the context and plan operation.
+      void runtime.writeAuthorized({
+        context: appendContext,
+        plan: appendPlan,
+        mutation: importMutation,
+      });
+      // @ts-expect-error retrieve may not invoke an import action.
+      void runtime.importAuthorized({
+        context: retrieveContext,
+        plan: retrievePlan,
+        mutation: importMutation,
+      });
+      // @ts-expect-error retrieve may not invoke a sync action.
+      void runtime.syncAuthorized({ context: retrieveContext, plan: retrievePlan });
+      // @ts-expect-error retrieve may not produce a content-bearing export payload.
+      void runtime.exportAuthorized({
+        context: retrieveContext,
+        plan: retrievePlan,
+        handles: [handle],
+      });
+      // @ts-expect-error retrieve may not invoke a status action.
+      void runtime.statusAuthorized({ context: retrieveContext, plan: retrievePlan });
+    };
+
+    expectTypeOf(assertActionOperationContract).toBeFunction();
   });
 
   it("extends the selected memory runtime with the versioned authorized surface", () => {

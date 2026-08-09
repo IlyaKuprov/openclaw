@@ -345,6 +345,12 @@ export type AuthorizedMemoryReadParams<Operation extends MemoryContentAccessOper
   lines?: number;
 }>;
 
+/** Every authorized method is bound to the operation that produced its plan. */
+type AuthorizedMemoryOperationParams<Operation extends MemoryOperation> = Readonly<{
+  context: MemoryAccessContext & Readonly<{ operation: Operation }>;
+  plan: AuthorizedMemoryPlan & Readonly<{ operation: Operation }>;
+}>;
+
 type AuthorizedMemoryContentMutation = Readonly<{
   version: 1;
   mutationId: string;
@@ -381,6 +387,18 @@ export type AuthorizedMemoryMutation =
       idempotencyKey: string;
       target: AuthorizedResourceHandle;
     }>;
+
+/** Narrows a grouped mutation discriminant without losing its operation-specific fields. */
+type AuthorizedMemoryMutationForOperation<Operation extends AuthorizedMemoryMutation["kind"]> =
+  AuthorizedMemoryMutation & Readonly<{ kind: Operation }>;
+
+/** Keep mutation kind, context operation, and plan operation correlated at the SDK boundary. */
+type AuthorizedMemoryWriteParams = {
+  [Operation in AuthorizedMemoryMutation["kind"]]: AuthorizedMemoryOperationParams<Operation> &
+    Readonly<{
+      mutation: AuthorizedMemoryMutationForOperation<Operation>;
+    }>;
+}[AuthorizedMemoryMutation["kind"]];
 
 export type MemoryExposureReceipt = DeepReadonly<{
   version: 1;
@@ -456,29 +474,25 @@ export interface AuthorizedMemoryRuntime {
   readAuthorized(
     params: AuthorizedMemoryReadParams<"derive">,
   ): Promise<AuthorizedMemoryResultEnvelope<MemoryReadResult>>;
-  writeAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    mutation: AuthorizedMemoryMutation;
-  }): Promise<MemoryWriteResult>;
-  importAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    mutation: Extract<AuthorizedMemoryMutation, { kind: "import" }>;
-  }): Promise<MemoryWriteResult>;
-  syncAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-  }): Promise<AuthorizedMemoryResultEnvelope<MemorySyncResult>>;
-  exportAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    handles: readonly AuthorizedResourceHandle[];
-  }): Promise<AuthorizedMemoryResultEnvelope<MemoryExportResult>>;
-  statusAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-  }): Promise<AuthorizedMemoryResultEnvelope<MemoryProviderStatus>>;
+  writeAuthorized(params: AuthorizedMemoryWriteParams): Promise<MemoryWriteResult>;
+  importAuthorized(
+    params: AuthorizedMemoryOperationParams<"import"> &
+      Readonly<{
+        mutation: AuthorizedMemoryMutationForOperation<"import">;
+      }>,
+  ): Promise<MemoryWriteResult>;
+  syncAuthorized(
+    params: AuthorizedMemoryOperationParams<"sync">,
+  ): Promise<AuthorizedMemoryResultEnvelope<MemorySyncResult>>;
+  exportAuthorized(
+    params: AuthorizedMemoryOperationParams<"export"> &
+      Readonly<{
+        handles: readonly AuthorizedResourceHandle[];
+      }>,
+  ): Promise<AuthorizedMemoryResultEnvelope<MemoryExportResult>>;
+  statusAuthorized(
+    params: AuthorizedMemoryOperationParams<"status">,
+  ): Promise<AuthorizedMemoryResultEnvelope<MemoryProviderStatus>>;
 }
 
 export type MemoryAuthorizationReasonCode =

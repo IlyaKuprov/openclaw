@@ -1000,6 +1000,20 @@ type AuthorizedMemoryReadParams<Operation extends MemoryContentAccessOperation> 
   lines?: number;
 };
 
+type AuthorizedMemoryOperationParams<Operation extends MemoryOperation> = {
+  context: MemoryAccessContext & { operation: Operation };
+  plan: AuthorizedMemoryPlan & { operation: Operation };
+};
+
+type AuthorizedMemoryMutationForOperation<Operation extends AuthorizedMemoryMutation["kind"]> =
+  AuthorizedMemoryMutation & { kind: Operation };
+
+type AuthorizedMemoryWriteParams = {
+  [Operation in AuthorizedMemoryMutation["kind"]]: AuthorizedMemoryOperationParams<Operation> & {
+    mutation: AuthorizedMemoryMutationForOperation<Operation>;
+  };
+}[AuthorizedMemoryMutation["kind"]];
+
 interface AuthorizedMemoryRuntime {
   authorization: MemoryAuthorizationCapabilities;
   authorize<Operation extends MemoryOperation>(
@@ -1017,36 +1031,31 @@ interface AuthorizedMemoryRuntime {
   readAuthorized(
     params: AuthorizedMemoryReadParams<"derive">,
   ): Promise<AuthorizedMemoryResultEnvelope<MemoryReadResult>>;
-  writeAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    mutation: AuthorizedMemoryMutation;
-  }): Promise<MemoryWriteResult>;
-  importAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    mutation: Extract<AuthorizedMemoryMutation, { kind: "import" }>;
-  }): Promise<MemoryWriteResult>;
-  syncAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-  }): Promise<AuthorizedMemoryResultEnvelope<MemorySyncResult>>;
-  exportAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-    handles: readonly AuthorizedResourceHandle[];
-  }): Promise<AuthorizedMemoryResultEnvelope<MemoryExportResult>>;
-  statusAuthorized(params: {
-    context: MemoryAccessContext;
-    plan: AuthorizedMemoryPlan;
-  }): Promise<AuthorizedMemoryResultEnvelope<MemoryProviderStatus>>;
+  writeAuthorized(params: AuthorizedMemoryWriteParams): Promise<MemoryWriteResult>;
+  importAuthorized(
+    params: AuthorizedMemoryOperationParams<"import"> & {
+      mutation: AuthorizedMemoryMutationForOperation<"import">;
+    },
+  ): Promise<MemoryWriteResult>;
+  syncAuthorized(
+    params: AuthorizedMemoryOperationParams<"sync">,
+  ): Promise<AuthorizedMemoryResultEnvelope<MemorySyncResult>>;
+  exportAuthorized(
+    params: AuthorizedMemoryOperationParams<"export"> & {
+      handles: readonly AuthorizedResourceHandle[];
+    },
+  ): Promise<AuthorizedMemoryResultEnvelope<MemoryExportResult>>;
+  statusAuthorized(
+    params: AuthorizedMemoryOperationParams<"status">,
+  ): Promise<AuthorizedMemoryResultEnvelope<MemoryProviderStatus>>;
 }
 ```
 
 There is intentionally no `retrieve` overload for content-bearing search or
 exact read. It may select candidates only inside the broker; `read` and
 `derive` carry the matching context and plan operation before content can cross
-that boundary.
+that boundary. Every action also requires matching context and plan operations,
+so a `retrieve` plan cannot invoke export or produce a content-bearing payload.
 
 The plan is plugin-issued and bound to the context fingerprint, session and
 subject revisions, operation, mounts, policy revision, delivery revision,
