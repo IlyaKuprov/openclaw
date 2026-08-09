@@ -329,6 +329,12 @@ describe("legacy file install scan compatibility", () => {
 
     expect(firstAttempt?.blocked).toEqual({
       code: "security_scan_blocked",
+      installPolicyWarning: {
+        targetName: "payload",
+        targetType: "plugin",
+        requestMode: "install",
+        reason: "review this plugin",
+      },
       reason: expectedInstallPolicyNotice({
         decision: "warn",
         guidance: [

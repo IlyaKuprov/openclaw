@@ -269,6 +269,7 @@ type ArchiveInstallCall = {
     requestedSpecifier?: string;
     source?: { kind?: string; authority?: string; mutable?: boolean; network?: boolean };
   };
+  onInstallPolicyWarning?: () => Promise<boolean>;
   trustedSourceLinkedOfficialInstall?: boolean;
 };
 
@@ -1755,6 +1756,14 @@ describe("installPluginFromClawHub", () => {
 
     expect(archiveInstallCall().archivePath).toBe("/tmp/clawhub-demo/archive.zip");
     expect(archiveInstallCall().dangerouslyForceUnsafeInstall).toBe(true);
+  });
+
+  it("passes install policy warning approval through to archive installs", async () => {
+    const onInstallPolicyWarning = vi.fn().mockResolvedValue(true);
+
+    await installPluginFromClawHub({ spec: "clawhub:demo", onInstallPolicyWarning });
+
+    expect(archiveInstallCall().onInstallPolicyWarning).toBe(onInstallPolicyWarning);
   });
 
   it("cleans up the downloaded archive even when archive install fails", async () => {

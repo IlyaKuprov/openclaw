@@ -1436,6 +1436,7 @@ export async function installPluginFromClawHub(
     const installResult = await installPluginFromArchive({
       archivePath: archive.archivePath,
       dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
+      onInstallPolicyWarning: params.onInstallPolicyWarning,
       trustedSourceLinkedOfficialInstall:
         officialClawHubPackage || isTrustedSourceLinkedOfficialPackage(detail.package!),
       config: params.config,
