@@ -147,6 +147,30 @@ function createConfigure() {
   }).configure;
 }
 
+describe("channel setup wizard credential input", () => {
+  it("chooses one secret input mode for all credentials in the setup run", async () => {
+    const queued = createQueuedWizardPrompter({
+      selectValues: ["plaintext"],
+      textValues: ["test-bot-id", "test-private-key"],
+    });
+
+    const result = await runSetupWizardConfigure({
+      configure: createConfigure(),
+      cfg: {} as OpenClawConfig,
+      prompter: queued.prompter,
+    });
+
+    expect(getChannelConfig(result.cfg)).toMatchObject({
+      botId: "test-bot-id",
+      secret: "test-private-key",
+    });
+    expect(queued.select).toHaveBeenCalledTimes(1);
+    expect(queued.select).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "How do you want to provide this Bot ID?" }),
+    );
+  });
+});
+
 describe("channel setup wizard account scoping", () => {
   it("does not prefill or overwrite the existing account when adding a new account", async () => {
     const main = {

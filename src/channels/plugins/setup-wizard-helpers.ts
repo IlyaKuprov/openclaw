@@ -670,9 +670,14 @@ async function promptSingleChannelToken(params: {
 }
 
 type SingleChannelSecretInputPromptResult =
-  | { action: "keep" }
-  | { action: "use-env" }
-  | { action: "set"; value: SecretInput; resolvedValue: string };
+  | { action: "keep"; inputMode: "plaintext" | "ref" }
+  | { action: "use-env"; inputMode: "plaintext" | "ref" }
+  | {
+      action: "set";
+      inputMode: "plaintext" | "ref";
+      value: SecretInput;
+      resolvedValue: string;
+    };
 
 export async function runSingleChannelSecretStep(params: {
   cfg: OpenClawConfig;
@@ -698,6 +703,7 @@ export async function runSingleChannelSecretStep(params: {
 }): Promise<{
   cfg: OpenClawConfig;
   action: SingleChannelSecretInputPromptResult["action"];
+  inputMode: "plaintext" | "ref";
   resolvedValue?: string;
 }> {
   const promptState = buildSingleChannelSecretPromptState({
@@ -730,6 +736,7 @@ export async function runSingleChannelSecretStep(params: {
     return {
       cfg: params.applyUseEnv ? await params.applyUseEnv(params.cfg) : params.cfg,
       action: result.action,
+      inputMode: result.inputMode,
       resolvedValue: normalizeOptionalString(params.envValue),
     };
   }
@@ -740,6 +747,7 @@ export async function runSingleChannelSecretStep(params: {
         ? await params.applySet(params.cfg, result.value, result.resolvedValue)
         : params.cfg,
       action: result.action,
+      inputMode: result.inputMode,
       resolvedValue: result.resolvedValue,
     };
   }
@@ -747,6 +755,7 @@ export async function runSingleChannelSecretStep(params: {
   return {
     cfg: params.cfg,
     action: result.action,
+    inputMode: result.inputMode,
   };
 }
 
@@ -787,12 +796,17 @@ export async function promptSingleChannelSecretInput(params: {
       inputPrompt: params.inputPrompt,
     });
     if (plainResult.useEnv) {
-      return { action: "use-env" };
+      return { action: "use-env", inputMode: selectedMode };
     }
     if (plainResult.token) {
-      return { action: "set", value: plainResult.token, resolvedValue: plainResult.token };
+      return {
+        action: "set",
+        inputMode: selectedMode,
+        value: plainResult.token,
+        resolvedValue: plainResult.token,
+      };
     }
-    return { action: "keep" };
+    return { action: "keep", inputMode: selectedMode };
   }
 
   if (params.hasConfigToken && params.accountConfigured) {
@@ -801,7 +815,7 @@ export async function promptSingleChannelSecretInput(params: {
       initialValue: true,
     });
     if (keep) {
-      return { action: "keep" };
+      return { action: "keep", inputMode: selectedMode };
     }
   }
 
@@ -822,6 +836,7 @@ export async function promptSingleChannelSecretInput(params: {
   });
   return {
     action: "set",
+    inputMode: selectedMode,
     value: resolved.ref,
     resolvedValue: resolved.resolvedValue,
   };

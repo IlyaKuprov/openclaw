@@ -377,6 +377,7 @@ export function buildChannelSetupWizardAdapterFromSetupWizard(params: {
         if (usedEnvShortcut) {
           return;
         }
+        let secretInputMode = options?.secretInputMode;
         for (const credential of wizard.credentials) {
           let credentialState = credential.inspect({ cfg: next, accountId });
           let resolvedCredentialValue = normalizeOptionalString(credentialState.resolvedValue);
@@ -406,7 +407,7 @@ export function buildChannelSetupWizardAdapterFromSetupWizard(params: {
             prompter,
             providerHint: credential.providerHint,
             credentialLabel: credential.credentialLabel,
-            secretInputMode: options?.secretInputMode,
+            secretInputMode,
             accountConfigured: credentialState.accountConfigured,
             hasConfigToken: credentialState.hasConfiguredValue,
             allowEnv,
@@ -461,6 +462,7 @@ export function buildChannelSetupWizardAdapterFromSetupWizard(params: {
             },
           });
 
+          secretInputMode ??= credentialResult.inputMode;
           next = credentialResult.cfg;
           credentialState = credential.inspect({ cfg: next, accountId });
           resolvedCredentialValue =
