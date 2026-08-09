@@ -602,7 +602,6 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     try {
       const auth = await createSlackStartupAuthClient(token, clientOptions).auth.test();
       resolveSlackInstallationIdentity({
-        enterpriseOrgInstall,
         auth,
         transportApiAppId: expectedApiAppIdFromAppToken,
       });

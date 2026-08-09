@@ -42,7 +42,6 @@ describe("resolveSlackInstallationIdentity", () => {
   it("preserves the human workspace name from auth.test", () => {
     expect(
       resolveSlackInstallationIdentity({
-        enterpriseOrgInstall: false,
         auth: {
           team: "Local Claw",
           team_id: "T123",
