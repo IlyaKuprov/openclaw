@@ -77,9 +77,14 @@ describe("cron edit command", () => {
     const fixtureDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cron-edit-cli-"));
     const scriptPath = path.join(fixtureDir, "next.js");
     await fs.promises.writeFile(scriptPath, "return { fire: true };", "utf8");
+    const configRevision = "trigger-script-revision";
     callGatewayFromCli.mockImplementation(async (method: string) => {
       if (method === "cron.get") {
-        return { id: "job-1", trigger: { script: "return { fire: false };", once: true } };
+        return {
+          id: "job-1",
+          configRevision,
+          trigger: { script: "return { fire: false };", once: true },
+        };
       }
       return { ok: true };
     });
@@ -98,8 +103,52 @@ describe("cron edit command", () => {
       expect.objectContaining({
         id: "job-1",
         patch: { trigger: { script: "return { fire: true };", once: true } },
+        expectedConfigRevision: configRevision,
       }),
     );
+  });
+
+  it.each([
+    ["empty", ""],
+    ["whitespace", "   "],
+    ["empty with --clear-trigger", "", "--clear-trigger"],
+    ["whitespace with --clear-trigger", "   ", "--clear-trigger"],
+  ])(
+    "rejects %s --trigger-script before Gateway access",
+    async (_label, value, clearFlag) => {
+      await expectCronEditRejection(
+        ["--trigger-script", value, ...(clearFlag ? [clearFlag] : [])],
+        "--trigger-script must not be blank",
+      );
+    },
+  );
+
+  it("validates trigger script files before Gateway access", async () => {
+    const fixtureDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cron-edit-invalid-"));
+    const emptyPath = path.join(fixtureDir, "empty.js");
+    const oversizedPath = path.join(fixtureDir, "oversized.js");
+    const missingPath = path.join(fixtureDir, "missing.js");
+    await Promise.all([
+      fs.promises.writeFile(emptyPath, " \n", "utf8"),
+      fs.promises.writeFile(oversizedPath, "x".repeat(65_537), "utf8"),
+    ]);
+
+    try {
+      await expectCronEditRejection(
+        ["--pacing-min", "30m", "--trigger-script", emptyPath],
+        "Trigger script must not be empty",
+      );
+      await expectCronEditRejection(
+        ["--pacing-min", "30m", "--trigger-script", oversizedPath],
+        "Trigger script exceeds 65536 bytes",
+      );
+      await expectCronEditRejection(
+        ["--pacing-min", "30m", "--trigger-script", missingPath],
+        "ENOENT",
+      );
+    } finally {
+      await fs.promises.rm(fixtureDir, { recursive: true, force: true });
+    }
   });
 
   it("reuses one versioned snapshot for combined pacing and tool edits", async () => {
