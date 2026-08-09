@@ -1058,8 +1058,9 @@ describe("GatewayBrowserClient", () => {
         protocol: 4,
         auth: {
           role: "operator",
-          scopes: [...CONTROL_UI_OPERATOR_SCOPES],
+          scopes: ["operator.read"],
           deviceToken: "test-token-placeholder",
+          deviceTokenScopes: [...CONTROL_UI_OPERATOR_SCOPES],
         },
       },
     });
@@ -1070,6 +1071,9 @@ describe("GatewayBrowserClient", () => {
       createHash("sha256").update("test-token-placeholder").digest("hex"),
     );
     expect(client.recoveryScope).not.toContain("test-token-placeholder");
+    expect(loadDeviceAuthToken({ deviceId: "device-1", role: "operator" })?.scopes).toEqual(
+      [...CONTROL_UI_OPERATOR_SCOPES].toSorted(),
+    );
     client.stop();
   });
 
