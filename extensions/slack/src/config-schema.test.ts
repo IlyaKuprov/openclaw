@@ -17,6 +17,21 @@ function expectSlackConfigIssue(config: unknown, path: string) {
   }
 }
 
+function expectSlackConfigKeyRejected(config: unknown, key: string) {
+  const res = SlackConfigSchema.safeParse(config);
+  expect(res.success).toBe(false);
+  if (!res.success) {
+    expect(res.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "unrecognized_keys",
+          keys: expect.arrayContaining([key]),
+        }),
+      ]),
+    );
+  }
+}
+
 describe("slack config schema", () => {
   it("accepts capability arrays and rejects retired interactive reply objects", () => {
     expectSlackConfigValid({ capabilities: ["presentation"] });
@@ -24,10 +39,10 @@ describe("slack config schema", () => {
   });
 
   it("rejects the retired Enterprise Grid installation setting", () => {
-    expectSlackConfigIssue({ enterpriseOrgInstall: true }, "enterpriseOrgInstall");
-    expectSlackConfigIssue(
+    expectSlackConfigKeyRejected({ enterpriseOrgInstall: true }, "enterpriseOrgInstall");
+    expectSlackConfigKeyRejected(
       { accounts: { org: { enterpriseOrgInstall: true } } },
-      "accounts.org.enterpriseOrgInstall",
+      "enterpriseOrgInstall",
     );
   });
 

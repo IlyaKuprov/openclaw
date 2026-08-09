@@ -333,6 +333,10 @@ describe("auth.test boot call", () => {
         slack: {},
       },
     });
+    getSlackClient().auth.test.mockResolvedValueOnce({
+      enterprise_id: "E1",
+      is_enterprise_install: true,
+    });
 
     const monitor = startSlackMonitor(monitorSlackProvider);
     await expect(monitor.run).rejects.toThrow(

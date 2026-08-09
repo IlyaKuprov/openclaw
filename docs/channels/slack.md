@@ -242,11 +242,12 @@ bot identity for loop prevention.
 Enterprise support accepts direct Socket Mode or HTTP `message` and
 `app_mention` events plus workspace-qualified outbound messages. Relay mode,
 slash commands, interactions, App Home, reaction event listeners, pins,
-Slack-native approvals, and configured bindings remain unavailable for an
-enterprise account. Slack action tools use the same workspace-qualified
-destinations for reads and writes. Outbound acknowledgment, typing, and status
-reactions are supported and require `reactions:write`; inbound reaction
-notifications remain unavailable.
+Slack-native approval UI, and configured static bindings remain unavailable
+for an enterprise account. Web and terminal approval flows and runtime
+current-conversation bindings remain available. Slack action tools use the same
+workspace-qualified destinations for reads and writes. Outbound acknowledgment,
+typing, and status reactions are supported and require `reactions:write`;
+inbound reaction notifications remain unavailable.
 
 OpenClaw records Enterprise Grid destinations as
 `team:<team-id>:channel:<channel-id>` or `team:<team-id>:user:<user-id>`.
