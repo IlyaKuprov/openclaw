@@ -55,6 +55,9 @@ export type MutableRunAccounting = {
   toolNamesTruncated: boolean;
   toolsObserved: number;
   attemptsObserved: number;
+  agentDurationMs: number;
+  agentDurationObservations: number;
+  agentDurationInvalidObservations: number;
   costCoverageExpected: number;
   providerBilledCostUsd: number;
   providerBilledCostReports: number;

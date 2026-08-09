@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { AI_MODEL_TRANSPORT_ATTEMPT_REASONS } from "@openclaw/ai";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { extractAuditableProviderTransportAccountingSnapshot } from "../agents/provider-transport-accounting-audit.js";
 import {
   digest,
   hasKeys,
@@ -50,7 +53,19 @@ export type AgentExecDispatchReceiptContents = Omit<
   "schemaVersion" | "kind" | "sha256"
 >;
 
+declare const zeroSubmissionProofBrand: unique symbol;
+export type AgentExecZeroSubmissionProof = {
+  readonly [zeroSubmissionProofBrand]: true;
+};
+
+type ZeroSubmissionProofData = {
+  contents: AgentExecDispatchReceiptContents;
+  contentsSha256: string;
+  zeroSubmissionOrdinals: ReadonlySet<number>;
+};
+
 const trustedReceipts = new WeakSet<object>();
+const zeroSubmissionProofs = new WeakMap<object, ZeroSubmissionProofData>();
 
 export function trustAgentExecDispatchReceipt(receipt: AgentExecDispatchReceipt): void {
   trustedReceipts.add(receipt);
@@ -58,6 +73,10 @@ export function trustAgentExecDispatchReceipt(receipt: AgentExecDispatchReceipt)
 
 function parseReceiptContents(
   value: unknown,
+  options: {
+    allowStoredTerminalZeroDispatch?: boolean;
+    zeroSubmissionOrdinals?: ReadonlySet<number>;
+  } = {},
 ): Omit<AgentExecDispatchReceipt, "sha256"> | undefined {
   if (
     !isRecord(value) ||
@@ -196,7 +215,17 @@ function parseReceiptContents(
         value.incompleteReasons.length > 0 ||
         !route ||
         calls.length === 0 ||
-        calls.some((call) => !call.outcome || !call.finalized || !counts.has(call.ordinal)))) ||
+        calls.some(
+          (call) =>
+            !call.outcome ||
+            !call.finalized ||
+            (!counts.has(call.ordinal) &&
+              !options.zeroSubmissionOrdinals?.has(call.ordinal) &&
+              !(
+                options.allowStoredTerminalZeroDispatch &&
+                (call.outcome === "failed" || call.outcome === "aborted")
+              )),
+        ))) ||
     (!value.complete && value.incompleteReasons.length === 0)
   ) {
     return undefined;
@@ -237,7 +266,9 @@ export function normalizeAgentExecDispatchReceiptData(
     return undefined;
   }
   const { sha256, ...rawContents } = value;
-  const contents = parseReceiptContents(rawContents);
+  const contents = parseReceiptContents(rawContents, {
+    allowStoredTerminalZeroDispatch: true,
+  });
   if (
     !contents ||
     typeof sha256 !== "string" ||
@@ -246,9 +277,33 @@ export function normalizeAgentExecDispatchReceiptData(
   ) {
     return undefined;
   }
+  const dispatchedCallOrdinals = new Set(
+    contents.dispatches.map((dispatch) => dispatch.logicalCallOrdinal),
+  );
+  const producerProofWasRequired = contents.calls.some(
+    (call) => !dispatchedCallOrdinals.has(call.ordinal),
+  );
+  const persistedIncompleteReasons = producerProofWasRequired
+    ? normalizeReasons([
+        ...contents.incompleteReasons,
+        "dispatch_receipt_producer_proof_not_persisted",
+      ])
+    : contents.incompleteReasons;
+  if (!sortedKnownReasons(persistedIncompleteReasons, true)) {
+    return undefined;
+  }
+  const persistedContents = producerProofWasRequired
+    ? {
+        ...contents,
+        complete: false,
+        incompleteReasons: persistedIncompleteReasons,
+      }
+    : contents;
   const receipt = isolatePlainDataForPersistence({
-    ...contents,
-    sha256,
+    ...persistedContents,
+    sha256: producerProofWasRequired
+      ? digest("openclaw.agent-exec.dispatch-receipt.v2", persistedContents)
+      : sha256,
   }) as AgentExecDispatchReceipt;
   trustAgentExecDispatchReceipt(receipt);
   return receipt;
@@ -269,16 +324,301 @@ export function verifyAgentExecDispatchReceipt(value: unknown): boolean {
   return normalizeAgentExecDispatchReceipt(value) !== undefined;
 }
 
+function hashCallId(callId: string): string {
+  return createHash("sha256").update(callId).digest("hex");
+}
+
+const MAX_PROOF_GRAPH_DEPTH = 32;
+const MAX_PROOF_GRAPH_NODES = 16_384;
+
+function deepFreezePlainData(
+  value: unknown,
+  state = { nodes: 0, seen: new WeakSet<object>() },
+  depth = 0,
+): boolean {
+  if (!value || typeof value !== "object") {
+    return true;
+  }
+  state.nodes += 1;
+  if (
+    state.nodes > MAX_PROOF_GRAPH_NODES ||
+    depth > MAX_PROOF_GRAPH_DEPTH ||
+    types.isProxy(value)
+  ) {
+    return false;
+  }
+  if (state.seen.has(value)) {
+    return true;
+  }
+  state.seen.add(value);
+
+  const prototype = Object.getPrototypeOf(value);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(value);
+  const values: unknown[] = [];
+  if (Array.isArray(value)) {
+    if (
+      prototype !== Array.prototype ||
+      keys.length !== value.length + 1 ||
+      keys.at(-1) !== "length"
+    ) {
+      return false;
+    }
+    for (let index = 0; index < value.length; index += 1) {
+      const key = String(index);
+      const descriptor = descriptors[key];
+      if (keys[index] !== key || !descriptor?.enumerable || !("value" in descriptor)) {
+        return false;
+      }
+      values.push(descriptor.value);
+    }
+  } else {
+    if (
+      (prototype !== Object.prototype && prototype !== null) ||
+      keys.some((key) => typeof key !== "string")
+    ) {
+      return false;
+    }
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor?.enumerable || !("value" in descriptor)) {
+        return false;
+      }
+      values.push(descriptor.value);
+    }
+  }
+  for (const entry of values) {
+    if (!deepFreezePlainData(entry, state, depth + 1)) {
+      return false;
+    }
+  }
+  if (!Object.isFrozen(value)) {
+    Object.freeze(value);
+  }
+  return Object.isFrozen(value);
+}
+
+export function createAgentExecZeroSubmissionProof(
+  snapshot: unknown,
+  coverage: unknown,
+  contents: AgentExecDispatchReceiptContents,
+): AgentExecZeroSubmissionProof | undefined {
+  const normalizedContents = normalizePlainData(contents, MAX_RECEIPT_BYTES, {
+    allowToJSONBlocker: false,
+  });
+  if (!normalizedContents) {
+    return undefined;
+  }
+  const audit = extractAuditableProviderTransportAccountingSnapshot(snapshot, coverage);
+  const transport = audit.snapshot;
+  if (
+    audit.truncated ||
+    audit.coverage?.state !== "complete" ||
+    !transport ||
+    transport.attempts.totalKind !== "exact" ||
+    transport.attempts.entries === undefined ||
+    transport.attempts.entriesTruncated ||
+    transport.dispatches?.totalKind !== "exact" ||
+    transport.dispatches.entriesTruncated ||
+    transport.fallbacks.totalKind !== "exact" ||
+    transport.providerFallbacks.totalKind !== "exact" ||
+    transport.zeroSubmissions.totalKind !== "exact" ||
+    transport.events.totalKind !== "exact" ||
+    transport.events.entriesTruncated
+  ) {
+    return undefined;
+  }
+  const firstCall = transport.logicalCalls.entries[0];
+  if (
+    !firstCall ||
+    transport.logicalCalls.entries.some(
+      (call) =>
+        call.provider !== firstCall.provider ||
+        call.model !== firstCall.model ||
+        call.api !== firstCall.api,
+    ) ||
+    transport.dispatches.entries.some(
+      (dispatch) =>
+        dispatch.provider !== firstCall.provider ||
+        dispatch.model !== firstCall.model ||
+        dispatch.api !== firstCall.api,
+    )
+  ) {
+    return undefined;
+  }
+  const zeroSubmissionOrdinals = new Set<number>();
+  for (const call of transport.logicalCalls.entries) {
+    if (
+      (call.outcome !== "failed" && call.outcome !== "aborted") ||
+      call.finalized !== true ||
+      transport.attempts.entries.some((attempt) => attempt.logicalCallOrdinal === call.ordinal) ||
+      transport.dispatches.entries.some((dispatch) => dispatch.logicalCallOrdinal === call.ordinal)
+    ) {
+      continue;
+    }
+    const callEvents = transport.events.entries.filter(
+      (event) => "callId" in event && event.callId === call.callId,
+    );
+    const zeroSubmissions = callEvents.filter(
+      (event) => event.type === "submission" && event.total === 0,
+    );
+    const zeroSubmission = zeroSubmissions[0];
+    if (
+      zeroSubmissions.length === 1 &&
+      zeroSubmission?.type === "submission" &&
+      zeroSubmission.outcome === call.outcome &&
+      callEvents.every(
+        (event) =>
+          event.type !== "attempt" &&
+          event.type !== "dispatch" &&
+          event.type !== "fallback" &&
+          event.type !== "provider_fallback" &&
+          event.type !== "coverage",
+      )
+    ) {
+      zeroSubmissionOrdinals.add(call.ordinal!);
+    }
+  }
+  if (
+    zeroSubmissionOrdinals.size === 0 ||
+    zeroSubmissionOrdinals.size !== transport.zeroSubmissions.total
+  ) {
+    return undefined;
+  }
+  const expectedCalls = transport.logicalCalls.entries.map((call) => ({
+    ordinal: call.ordinal!,
+    callIdSha256: hashCallId(call.callId),
+    outcome: call.outcome!,
+    finalized: call.finalized!,
+  }));
+  const expectedDispatches = transport.dispatches.entries.map((dispatch) => ({
+    sequence: dispatch.sequence,
+    logicalCallOrdinal: dispatch.logicalCallOrdinal,
+    perCallAttemptOrdinal: dispatch.attemptOrdinal,
+    hopOrdinal: dispatch.hopOrdinal,
+    reason: dispatch.reason,
+    transport: dispatch.transport,
+  }));
+  const dispatchOrdinals = new Set(
+    expectedDispatches.map((dispatch) => dispatch.logicalCallOrdinal),
+  );
+  const missingDispatchOrdinals = new Set(
+    expectedCalls.filter((call) => !dispatchOrdinals.has(call.ordinal)).map((call) => call.ordinal),
+  );
+  if (
+    !contents.complete ||
+    contents.truncated ||
+    contents.incompleteReasons.length > 0 ||
+    contents.logicalCalls !== expectedCalls.length ||
+    contents.modelFacingApiCalls !== expectedDispatches.length ||
+    contents.calls.length !== expectedCalls.length ||
+    contents.calls.some((call, index) => {
+      const expected = expectedCalls[index];
+      return (
+        !expected ||
+        call.ordinal !== expected.ordinal ||
+        call.callIdSha256 !== expected.callIdSha256 ||
+        call.outcome !== expected.outcome ||
+        call.finalized !== expected.finalized
+      );
+    }) ||
+    contents.dispatches.length !== expectedDispatches.length ||
+    contents.dispatches.some((dispatch, index) => {
+      const expected = expectedDispatches[index];
+      return (
+        !expected ||
+        dispatch.sequence !== expected.sequence ||
+        dispatch.logicalCallOrdinal !== expected.logicalCallOrdinal ||
+        dispatch.perCallAttemptOrdinal !== expected.perCallAttemptOrdinal ||
+        dispatch.hopOrdinal !== expected.hopOrdinal ||
+        dispatch.reason !== expected.reason ||
+        dispatch.transport !== expected.transport
+      );
+    }) ||
+    missingDispatchOrdinals.size !== zeroSubmissionOrdinals.size ||
+    [...missingDispatchOrdinals].some((ordinal) => !zeroSubmissionOrdinals.has(ordinal)) ||
+    !contents.route ||
+    contents.route.provider !== firstCall.provider ||
+    contents.route.model !== firstCall.model ||
+    contents.route.api !== firstCall.api
+  ) {
+    return undefined;
+  }
+  if (!deepFreezePlainData(contents)) {
+    return undefined;
+  }
+  const proof = Object.freeze({}) as AgentExecZeroSubmissionProof;
+  zeroSubmissionProofs.set(proof, {
+    contents,
+    contentsSha256: digest("openclaw.agent-exec.zero-submission-proof.v1", normalizedContents),
+    zeroSubmissionOrdinals,
+  });
+  return proof;
+}
+
+function consumeZeroSubmissionProof(
+  proof: AgentExecZeroSubmissionProof | undefined,
+): ZeroSubmissionProofData | undefined {
+  if (!proof || typeof proof !== "object") {
+    return undefined;
+  }
+  const data = zeroSubmissionProofs.get(proof);
+  zeroSubmissionProofs.delete(proof);
+  return data;
+}
+
 export function sealAgentExecDispatchReceipt(
   input: AgentExecDispatchReceiptContents,
+  proof?: AgentExecZeroSubmissionProof,
 ): AgentExecDispatchReceipt | undefined {
+  const proofData = consumeZeroSubmissionProof(proof);
+  const dispatchOrdinals = new Set(input.dispatches.map((dispatch) => dispatch.logicalCallOrdinal));
+  const missingDispatchOrdinals = new Set(
+    input.calls.filter((call) => !dispatchOrdinals.has(call.ordinal)).map((call) => call.ordinal),
+  );
+  let proofContentsMatch = false;
+  if (proofData && input === proofData.contents) {
+    try {
+      const normalizedInput = normalizePlainData(input, MAX_RECEIPT_BYTES, {
+        allowToJSONBlocker: false,
+      });
+      proofContentsMatch =
+        normalizedInput !== undefined &&
+        digest("openclaw.agent-exec.zero-submission-proof.v1", normalizedInput) ===
+          proofData.contentsSha256;
+    } catch {
+      proofContentsMatch = false;
+    }
+  }
+  if (
+    ((input.complete && missingDispatchOrdinals.size > 0) || proofData) &&
+    (!proofData ||
+      !proofContentsMatch ||
+      !input.complete ||
+      input.truncated ||
+      input.incompleteReasons.length > 0 ||
+      missingDispatchOrdinals.size !== proofData.zeroSubmissionOrdinals.size ||
+      [...missingDispatchOrdinals].some(
+        (ordinal) => !proofData.zeroSubmissionOrdinals.has(ordinal),
+      ))
+  ) {
+    return undefined;
+  }
   const candidate = {
     schemaVersion: RECEIPT_SCHEMA_VERSION,
     kind: "transport_dispatch_receipt" as const,
     ...input,
+    calls: input.calls.map((call) => ({
+      ordinal: call.ordinal,
+      callIdSha256: call.callIdSha256,
+      ...(call.outcome ? { outcome: call.outcome } : {}),
+      finalized: call.finalized,
+    })),
     incompleteReasons: normalizeReasons(input.incompleteReasons),
   };
-  const contents = parseReceiptContents(candidate);
+  const contents = parseReceiptContents(candidate, {
+    zeroSubmissionOrdinals: proofData?.zeroSubmissionOrdinals,
+  });
   if (!contents) {
     return undefined;
   }

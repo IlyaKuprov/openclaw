@@ -5,15 +5,27 @@ import os from "node:os";
 import path from "node:path";
 import { TextDecoder } from "node:util";
 import { readByteStreamWithLimit } from "@openclaw/media-core/read-byte-stream-with-limit";
-import { findAgentRunTerminalOutcome } from "../agents/agent-run-terminal-error.js";
+import {
+  findAgentRunTerminalOutcome,
+  hasStructuredTimeoutCause,
+} from "../agents/agent-run-terminal-error.js";
+import { classifyAgentRunTerminalOutcome } from "../agents/agent-run-terminal-outcome.js";
+import { takeAgentCommandRunAccounting } from "../agents/command/run-accounting.js";
 import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent.js";
 import { isExecutionIdentityCollectionEnabled } from "../audit/audit-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { mergeDeep } from "../infra/deep-merge.js";
-import { formatErrorMessage } from "../infra/errors.js";
+import { formatErrorMessage, toErrorObject } from "../infra/errors.js";
 import { parseStrictNonNegativeInteger } from "../infra/parse-finite-number.js";
 import { writeRuntimeJson, writeRuntimeStdout, type RuntimeEnv } from "../runtime.js";
-import type { AgentExecTrace } from "./agent-exec-trace.js";
+import {
+  applyAgentExecCleanupOutcome,
+  isAgentExecTaskFailure,
+  type AgentExecCleanupFailure,
+  type AgentExecError,
+  type AgentExecStatus,
+} from "./agent-exec-status.js";
+import { projectAgentExecTrace, type AgentExecTrace } from "./agent-exec-trace.js";
 
 const AGENT_EXEC_MESSAGE_MAX_BYTES = 4 * 1024 * 1024;
 const AGENT_EXEC_DEFAULT_TIMEOUT_SECONDS = 600;
@@ -51,8 +63,6 @@ type AgentExecRunResult = {
   meta: EmbeddedAgentRunMeta;
 };
 
-type AgentExecStatus = "ok" | "error" | "timeout";
-
 export type AgentExecEnvelope = {
   ok: boolean;
   status: AgentExecStatus;
@@ -69,10 +79,8 @@ export type AgentExecEnvelope = {
   model: string | null;
   provider: string | null;
   sessionId: string;
-  error?: {
-    message: string;
-    kind: string;
-  };
+  error?: AgentExecError;
+  cleanup?: AgentExecCleanupFailure;
 };
 
 type AgentExecCommandResult = {
@@ -187,7 +195,6 @@ export function classifyAgentExecResult(
   result: AgentExecRunResult,
   fallbackExhausted = false,
   projectedErrorPayload?: string | true,
-  trace?: AgentExecTrace,
 ): AgentExecEnvelope {
   const meta = result.meta;
   const errorPayload = firstErrorPayload(result);
@@ -253,11 +260,12 @@ export function classifyAgentExecResult(
     ...(agentMeta?.bridgeCalls ? { bridgeCalls: agentMeta.bridgeCalls } : {}),
     ...(agentMeta?.codeModeStats ? { codeModeStats: agentMeta.codeModeStats } : {}),
     ...(meta.toolSummary ? { toolSummary: meta.toolSummary } : {}),
-    ...(trace ? { trace: structuredClone(trace) } : {}),
     model: agentMeta?.model ?? null,
     provider: agentMeta?.provider ?? null,
     sessionId: agentMeta?.sessionId ?? "",
-    ...(errorMessage && errorKind ? { error: { message: errorMessage, kind: errorKind } } : {}),
+    ...(errorMessage && errorKind
+      ? { error: { message: errorMessage, kind: errorKind, phase: "task" as const } }
+      : {}),
   };
 }
 
@@ -339,7 +347,17 @@ function buildExecRunOverlay(params: {
         ...(params.opts.localModelLean ? { experimental: { localModelLean: true } } : {}),
       },
       ...(entries.length > 0
-        ? { entries: Object.fromEntries(entries.map((id) => [id, { workspace: params.cwd }])) }
+        ? {
+            entries: Object.fromEntries(
+              entries.map((id) => [
+                id,
+                {
+                  workspace: params.cwd,
+                  ...(codeMode !== undefined ? { tools: { codeMode } } : {}),
+                },
+              ]),
+            ),
+          }
         : {}),
     },
     ...(codeMode !== undefined ? { tools: { codeMode } } : {}),
@@ -483,35 +501,28 @@ function setAgentExecEnvironment(params: { stateDir: string; cwd: string }): () 
   };
 }
 
-function isStructuredTimeoutError(error: unknown): boolean {
-  if (findAgentRunTerminalOutcome(error)?.status === "timeout") {
-    return true;
-  }
-  let candidate = error;
-  for (let depth = 0; depth < 4; depth += 1) {
-    if (!candidate || typeof candidate !== "object") {
-      return false;
-    }
-    const record = candidate as {
-      cause?: unknown;
-      code?: unknown;
-      name?: unknown;
-      reason?: unknown;
-    };
-    if (
-      record.name === "TimeoutError" ||
-      record.code === "ETIMEDOUT" ||
-      record.reason === "timeout"
-    ) {
-      return true;
-    }
-    candidate = record.cause;
-  }
-  return false;
-}
-
-function errorEnvelope(error: unknown, sessionId: string): AgentExecEnvelope {
-  const status = isStructuredTimeoutError(error) ? "timeout" : "error";
+function errorEnvelope(
+  error: unknown,
+  sessionId: string,
+  phase: "task" | "infrastructure",
+): AgentExecEnvelope {
+  const terminal = findAgentRunTerminalOutcome(error);
+  const terminalClassification = terminal ? classifyAgentRunTerminalOutcome(terminal) : undefined;
+  const status = (
+    terminal ? terminalClassification === "timeout" : hasStructuredTimeoutCause(error)
+  )
+    ? "timeout"
+    : "error";
+  const kind =
+    status === "timeout"
+      ? "timeout"
+      : terminalClassification === "cancellation"
+        ? terminal?.reason === "cancelled"
+          ? "cancelled"
+          : "aborted"
+        : terminalClassification === "failure"
+          ? (terminal?.reason ?? "agent_error")
+          : "exception";
   return {
     ok: false,
     status,
@@ -522,7 +533,8 @@ function errorEnvelope(error: unknown, sessionId: string): AgentExecEnvelope {
     sessionId,
     error: {
       message: formatErrorMessage(error),
-      kind: status === "timeout" ? "timeout" : "exception",
+      kind,
+      phase,
     },
   };
 }
@@ -549,6 +561,7 @@ export async function agentExecCommand(
   runtime: RuntimeEnv,
   deps: AgentExecCommandDeps = {},
 ): Promise<AgentExecCommandResult> {
+  const injectedRunAgent = deps.runAgent !== undefined;
   const sessionId = randomUUID();
   let commandResult: AgentExecCommandResult;
   let temporaryStateDir: string | undefined;
@@ -558,6 +571,9 @@ export async function agentExecCommand(
   let runtimePaths: typeof import("../config/paths.js") | undefined;
   let configIo: typeof import("../config/io.js") | undefined;
   let stopLocalAuditWriter: (() => Promise<void>) | undefined;
+  let codeModeConfigured: false | "auto" | true | "unreported" = "unreported";
+  let taskFailure: unknown;
+  let hasTaskFailure = false;
   try {
     const prompt = await resolveAgentExecPrompt(
       positionalMessage,
@@ -602,6 +618,12 @@ export async function agentExecCommand(
         after: envAfterConfigLoad,
       });
     const runConfig = buildExecRunConfig({ base: baseConfig, cwd, opts });
+    const [{ resolveCodeModeConfig }, { resolveDefaultAgentDir, resolveDefaultAgentId }] =
+      await Promise.all([
+        import("../agents/code-mode-runtime.js"),
+        import("../agents/agent-scope-config.js"),
+      ]);
+    codeModeConfigured = resolveCodeModeConfig(runConfig, resolveDefaultAgentId(runConfig)).enabled;
     // Installed plugins belong to the operator config resolved above, not to
     // the disposable state root used for this run. Capture all roots before
     // OPENCLAW_STATE_DIR moves so discovery and the installed-index DB agree.
@@ -612,7 +634,6 @@ export async function agentExecCommand(
     const pluginInstallRoots = pluginInstallContext?.resolvePluginInstallRoots();
     const timeout = normalizeTimeoutSeconds(opts.timeout);
     const fallbacks = normalizeFallbacks(opts.model, opts.fallback);
-    const { resolveDefaultAgentDir } = await import("../agents/agent-scope-config.js");
     // Resolve from the inherited config, not `{}`: the default agent may declare
     // its own `agentDir`, and that is where its stored auth profiles live. This
     // reads `baseConfig` rather than `runConfig` because the run config
@@ -660,29 +681,36 @@ export async function agentExecCommand(
       error: (...args) => runtime.error(...args),
       exit: (code, exitOpts) => runtime.exit(code, exitOpts),
     };
-    const invoke = async () =>
-      await runAgent(
-        {
-          message: prompt,
-          sessionId,
-          workspaceDir: cwd,
-          cwd,
-          model: opts.model,
-          thinking: opts.thinking,
-          timeout,
-          modelFallbacksOverride: fallbacks.length > 0 ? fallbacks : undefined,
-          cleanupBundleMcpOnRunEnd: true,
-          cleanupCliLiveSessionOnRunEnd: true,
-          oneShotCliRun: true,
-          onModelFallbackExhausted: () => {
-            fallbackExhausted = true;
+    const invoke = async () => {
+      try {
+        return await runAgent(
+          {
+            message: prompt,
+            sessionId,
+            workspaceDir: cwd,
+            cwd,
+            model: opts.model,
+            thinking: opts.thinking,
+            timeout,
+            modelFallbacksOverride: fallbacks.length > 0 ? fallbacks : undefined,
+            cleanupBundleMcpOnRunEnd: true,
+            cleanupCliLiveSessionOnRunEnd: true,
+            oneShotCliRun: true,
+            onModelFallbackExhausted: () => {
+              fallbackExhausted = true;
+            },
+            onResultErrorPayload: (message?: string) => {
+              resultErrorPayload = message ?? true;
+            },
           },
-          onResultErrorPayload: (message?: string) => {
-            resultErrorPayload = message ?? true;
-          },
-        },
-        silentRuntime,
-      );
+          silentRuntime,
+        );
+      } catch (error) {
+        taskFailure = error;
+        hasTaskFailure = true;
+        throw error;
+      }
+    };
     // Stored credentials are the default so a folder-scoped run reaches the
     // same logins as the rest of the CLI; `--auth-env-only` opts back into an
     // environment-only scope for automation.
@@ -701,23 +729,63 @@ export async function agentExecCommand(
     if (!result) {
       throw new Error("Agent run returned no result");
     }
+    const snapshot = takeAgentCommandRunAccounting(result.meta);
+    const trace = injectedRunAgent
+      ? undefined
+      : projectAgentExecTrace({
+          snapshot,
+          codeModeConfigured,
+          model: result.meta.agentMeta?.model,
+          provider: result.meta.agentMeta?.provider,
+        });
     const envelope = classifyAgentExecResult(result, fallbackExhausted, resultErrorPayload);
+    if (trace) {
+      envelope.trace = trace;
+    }
     if (!envelope.sessionId) {
       envelope.sessionId = sessionId;
     }
     commandResult = { envelope, exitCode: exitCodeForEnvelope(envelope) };
   } catch (error) {
-    const envelope = errorEnvelope(error, sessionId);
+    const taskTerminal = findAgentRunTerminalOutcome(error) !== undefined;
+    const envelope = errorEnvelope(
+      error,
+      sessionId,
+      taskTerminal || (hasTaskFailure && isAgentExecTaskFailure(error, taskFailure))
+        ? "task"
+        : "infrastructure",
+    );
+    const snapshot = takeAgentCommandRunAccounting(error);
+    const trace = injectedRunAgent
+      ? undefined
+      : projectAgentExecTrace({
+          snapshot,
+          codeModeConfigured,
+        });
+    if (trace) {
+      envelope.trace = trace;
+    }
     commandResult = { envelope, exitCode: exitCodeForEnvelope(envelope) };
   }
 
-  let cleanupError: unknown;
-  await stopLocalAuditWriter?.().catch(() => undefined);
+  let cleanupError: Error | undefined;
+  const captureCleanupError = (error: unknown) => {
+    if (cleanupError === undefined) {
+      cleanupError = toErrorObject(error, "Non-Error agent exec cleanup rejection");
+    }
+  };
+  if (stopLocalAuditWriter) {
+    try {
+      await stopLocalAuditWriter();
+    } catch (error) {
+      captureCleanupError(error);
+    }
+  }
   const runCleanupStep = (step: () => void) => {
     try {
       step();
     } catch (error) {
-      cleanupError ??= error;
+      captureCleanupError(error);
     }
   };
   runCleanupStep(() => restoreEnvironment?.());
@@ -733,15 +801,13 @@ export async function agentExecCommand(
     try {
       await fs.rm(temporaryStateDir, { recursive: true, force: true });
     } catch (error) {
-      cleanupError ??= error;
+      captureCleanupError(error);
     }
   }
-  if (cleanupError) {
-    const cleanupFailure = new Error(
-      `Agent exec cleanup failed: ${formatErrorMessage(cleanupError)}`,
-    );
-    const envelope = errorEnvelope(cleanupFailure, sessionId);
-    commandResult = { envelope, exitCode: exitCodeForEnvelope(envelope) };
+  if (cleanupError !== undefined) {
+    commandResult = applyAgentExecCleanupOutcome(commandResult, {
+      message: `Agent exec cleanup failed: ${formatErrorMessage(cleanupError)}`,
+    });
   }
 
   writeAgentExecOutput(runtime, commandResult.envelope, opts.json === true);

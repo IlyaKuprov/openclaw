@@ -115,8 +115,7 @@ function deriveMetrics(source: AgentExecTraceSource): MetricSet {
       ? { state: "exact", value: receipt.modelFacingApiCalls }
       : receipt
         ? {
-            state: "lower_bound",
-            value: receipt.modelFacingApiCalls,
+            state: "unavailable",
             reasons: normalizeReasons([
               "dispatch_receipt_incomplete",
               ...receipt.incompleteReasons,
@@ -278,6 +277,9 @@ function deriveAudit(source: AgentExecTraceSource, metrics: MetricSet): AgentExe
     }
     if (!source.dispatchReceipt.complete) {
       reasons.add("dispatch_receipt_incomplete");
+      for (const reason of source.dispatchReceipt.incompleteReasons) {
+        reasons.add(reason);
+      }
     }
     if (source.dispatchReceipt.truncated) {
       reasons.add("dispatch_receipt_truncated");
@@ -302,6 +304,42 @@ function deriveAudit(source: AgentExecTraceSource, metrics: MetricSet): AgentExe
   return normalized.length === 0
     ? { state: "valid" }
     : { state: "inconclusive", reasons: normalized };
+}
+
+function downgradeFactsAfterProducerProofLoss(facts: SourceFacts): SourceFacts {
+  const reasons = ["dispatch_receipt_producer_proof_not_persisted"];
+  const unavailable = (): AgentExecTraceMetric => ({ state: "unavailable", reasons });
+  return {
+    auditReasons: normalizeReasons([...facts.auditReasons, ...reasons]),
+    accounting: {
+      effectiveTurns: unavailable(),
+      logicalModelCalls: unavailable(),
+      providerAttempts: {
+        total: unavailable(),
+        initial: unavailable(),
+        retries: unavailable(),
+        authRecoveries: unavailable(),
+        payloadRecoveries: unavailable(),
+        transportFallbacks: unavailable(),
+      },
+    },
+    tools: {
+      outerToolCalls: unavailable(),
+      codeModeBridgeCalls: unavailable(),
+    },
+    usage: {
+      input: unavailable(),
+      cachedInput: unavailable(),
+      firstLogicalCallCachedInput: { state: "unknown", reasons },
+      output: unavailable(),
+      reasoning: unavailable(),
+      total: unavailable(),
+    },
+    duration: {
+      agentDurationMs: unavailable(),
+      commandExecutionDurationMs: unavailable(),
+    },
+  };
 }
 
 function parseSourceContents(value: unknown): Omit<AgentExecTraceSource, "sha256"> | undefined {
@@ -338,12 +376,14 @@ function parseSourceContents(value: unknown): Omit<AgentExecTraceSource, "sha256
   ) {
     return undefined;
   }
+  const producerProofWasLost =
+    receipt?.incompleteReasons.includes("dispatch_receipt_producer_proof_not_persisted") === true;
   return {
     kind: "agent_exec_source_facts",
     mode: { configured: value.mode.configured, engaged: value.mode.engaged },
-    ...(route ? { route: route as TraceRoute } : {}),
+    ...(!producerProofWasLost && route ? { route: route as TraceRoute } : {}),
     ...(receipt ? { dispatchReceipt: receipt } : {}),
-    facts,
+    facts: producerProofWasLost ? downgradeFactsAfterProducerProofLoss(facts) : facts,
   };
 }
 
@@ -362,16 +402,17 @@ function normalizeSource(value: unknown): AgentExecTraceSource | undefined {
     return undefined;
   }
   const { sha256, ...rawContents } = value;
-  const contents = parseSourceContents(rawContents);
-  if (
-    !contents ||
-    typeof sha256 !== "string" ||
-    !SHA256_PATTERN.test(sha256) ||
-    sha256 !== digest("openclaw.agent-exec.trace-source.v2", contents)
-  ) {
+  if (sha256 !== digest("openclaw.agent-exec.trace-source.v2", rawContents)) {
     return undefined;
   }
-  return { ...contents, sha256 };
+  const contents = parseSourceContents(rawContents);
+  if (!contents || typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256)) {
+    return undefined;
+  }
+  return {
+    ...contents,
+    sha256: digest("openclaw.agent-exec.trace-source.v2", contents),
+  };
 }
 
 function parseAudit(value: unknown): AgentExecTrace["audit"] | undefined {
@@ -403,6 +444,15 @@ function normalizeAgentExecTraceData(value: unknown): AgentExecTrace | undefined
   ) {
     return undefined;
   }
+  const rawContents = {
+    schemaVersion: TRACE_SCHEMA_VERSION,
+    source: value.source,
+    projection: value.projection,
+    audit: value.audit,
+  };
+  if (value.sha256 !== digest("openclaw.agent-exec.trace.v2", rawContents)) {
+    return undefined;
+  }
   const source = normalizeSource(value.source);
   const metrics = parseMetrics(value.projection.metrics);
   const audit = parseAudit(value.audit);
@@ -411,22 +461,24 @@ function normalizeAgentExecTraceData(value: unknown): AgentExecTrace | undefined
   }
   const derivedMetrics = deriveMetrics(source);
   const derivedAudit = deriveAudit(source, derivedMetrics);
+  const sourceWasDowngraded = canonicalJson(source) !== canonicalJson(value.source);
   if (
-    canonicalJson(metrics) !== canonicalJson(derivedMetrics) ||
-    canonicalJson(audit) !== canonicalJson(derivedAudit)
+    !sourceWasDowngraded &&
+    (canonicalJson(metrics) !== canonicalJson(derivedMetrics) ||
+      canonicalJson(audit) !== canonicalJson(derivedAudit))
   ) {
     return undefined;
   }
   const contents = {
     schemaVersion: TRACE_SCHEMA_VERSION,
     source,
-    projection: { metrics },
-    audit,
+    projection: { metrics: sourceWasDowngraded ? derivedMetrics : metrics },
+    audit: sourceWasDowngraded ? derivedAudit : audit,
   };
-  if (value.sha256 !== digest("openclaw.agent-exec.trace.v2", contents)) {
-    return undefined;
-  }
-  return { ...contents, sha256: value.sha256 };
+  return {
+    ...contents,
+    sha256: digest("openclaw.agent-exec.trace.v2", contents),
+  };
 }
 
 export function normalizeAgentExecTrace(value: unknown): AgentExecTrace | undefined {

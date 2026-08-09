@@ -192,6 +192,7 @@ vi.mock("./command/run-accounting.js", async (importOriginal) => {
   return {
     ...actual,
     bindAgentCommandRunAccounting: state.bindAgentCommandRunAccountingMock,
+    bindAgentCommandRunAccountingOnce: state.bindAgentCommandRunAccountingMock,
   };
 });
 
@@ -2778,7 +2779,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
         },
         providerTransport: {
           state: "unavailable",
-          reasons: ["not_observed", "unknown_runtime", "post_turn_compaction"],
+          reasons: ["not_observed", "not_instrumented"],
         },
       },
     });
@@ -2816,7 +2817,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       coverage: {
         providerTransport: {
           state: "unavailable",
-          reasons: ["not_observed", "unknown_runtime"],
+          reasons: ["not_observed", "not_instrumented"],
         },
       },
     });
@@ -5335,7 +5336,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
         },
         providerTransport: {
           state: "unavailable",
-          reasons: ["not_observed", "acp_runtime"],
+          reasons: ["not_observed", "not_instrumented"],
         },
       },
     });

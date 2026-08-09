@@ -2,10 +2,12 @@ import type { AiModelTransportEvent } from "@openclaw/ai";
 import { describe, expect, it } from "vitest";
 import { createCodeModeStats } from "../agents/code-mode-stats.js";
 import type { AgentCommandRunAccountingSnapshot } from "../agents/command/run-accounting.types.js";
+import { createProviderTransportAccountingCollector } from "../agents/provider-transport-accounting.js";
 import {
-  agentExecTraceTesting,
+  normalizeAgentExecTrace,
   projectAgentExecTrace,
-  type AgentExecDispatchReceipt,
+  verifyAgentExecDispatchReceipt,
+  verifyAgentExecTrace,
 } from "./agent-exec-trace.js";
 import { classifyAgentExecResult } from "./agent-exec.js";
 
@@ -26,6 +28,44 @@ function attemptEvent(callId: string, ordinal = 1): AiModelTransportEvent {
     ordinal,
     reason: ordinal === 1 ? "initial" : "retry",
     outcome: "completed",
+  };
+}
+
+function dispatchEvent(params: {
+  attemptOrdinal?: number;
+  callId: string;
+  hopOrdinal?: number;
+  ordinal?: number;
+}): AiModelTransportEvent {
+  const ordinal = params.ordinal ?? 1;
+  const attemptOrdinal = params.attemptOrdinal ?? 1;
+  return {
+    eventId: `dispatch-${params.callId}-${String(ordinal)}`,
+    type: "dispatch",
+    provider: PROVIDER,
+    model: MODEL,
+    api: API,
+    callId: params.callId,
+    transport: TRANSPORT,
+    ordinal,
+    attemptOrdinal,
+    hopOrdinal: params.hopOrdinal ?? 1,
+    reason: attemptOrdinal === 1 ? "initial" : "retry",
+  };
+}
+
+function zeroSubmissionEvent(callId: string): AiModelTransportEvent {
+  return {
+    eventId: `zero-${callId}`,
+    type: "submission",
+    provider: PROVIDER,
+    model: MODEL,
+    api: API,
+    callId,
+    transport: TRANSPORT,
+    total: 0,
+    outcome: "failed",
+    reason: "failed_before_submission",
   };
 }
 
@@ -60,7 +100,29 @@ function snapshot(callCount = 2): AgentCommandRunAccountingSnapshot {
     settled: 3,
     unresolvedAtExtraction: 0,
   };
-  const events = callIds.map((callId) => attemptEvent(callId));
+  const collector = createProviderTransportAccountingCollector();
+  for (const callId of callIds) {
+    collector.observer.onLogicalCallStarted({
+      callId,
+      provider: PROVIDER,
+      model: MODEL,
+      api: API,
+    });
+  }
+  for (const [index, callId] of callIds.entries()) {
+    collector.observer.onTransportEvent(dispatchEvent({ callId }));
+    collector.observer.onTransportEvent(attemptEvent(callId));
+    collector.observer.onLogicalCallSettled(callId, "completed", {
+      state: "exact",
+      tokens: index === 0 ? 7 : 13,
+    });
+    collector.finalize(callId);
+  }
+  collector.seal();
+  const projectedTransport = collector.project();
+  if (!projectedTransport.snapshot || projectedTransport.coverage.state !== "complete") {
+    throw new Error("expected complete provider transport fixture");
+  }
   return {
     candidates: {
       total: 1,
@@ -93,59 +155,8 @@ function snapshot(callCount = 2): AgentCommandRunAccountingSnapshot {
       total: 140,
     },
     toolSummary: { calls: 1, tools: ["read"] },
-    providerTransport: {
-      logicalCalls: {
-        total: callCount,
-        totalKind: "exact",
-        outcomeKind: "exact",
-        completed: callCount,
-        failed: 0,
-        aborted: 0,
-        entries: callIds.map((callId, index) => ({
-          callId,
-          provider: PROVIDER,
-          model: MODEL,
-          api: API,
-          transport: TRANSPORT,
-          outcome: "completed",
-          cachedInput: { state: "exact", tokens: index === 0 ? 7 : 13 },
-        })),
-        entriesTruncated: false,
-      },
-      attempts: {
-        total: callCount,
-        totalKind: "exact",
-        initial: callCount,
-        retries: 0,
-        authRecoveries: 0,
-        payloadRecoveries: 0,
-        transportFallbacks: 0,
-      },
-      connections: {
-        total: 0,
-        totalKind: "exact",
-        initial: 0,
-        prewarms: 0,
-        reconnects: 0,
-      },
-      fallbacks: {
-        total: 0,
-        totalKind: "exact",
-        unsupported: 0,
-        connectionFailures: 0,
-        submissionFailures: 0,
-        streamFailures: 0,
-        policy: 0,
-      },
-      providerFallbacks: { total: 0, totalKind: "exact", server: 0 },
-      zeroSubmissions: { total: 0, totalKind: "exact", failed: 0, aborted: 0 },
-      events: {
-        total: events.length,
-        totalKind: "exact",
-        entries: events,
-        entriesTruncated: false,
-      },
-    },
+    providerTransport: projectedTransport.snapshot,
+    agentDurationMs: 110,
     commandExecutionDurationMs: 125,
     coverage: {
       candidates: { state: "complete" },
@@ -180,48 +191,82 @@ function snapshot(callCount = 2): AgentCommandRunAccountingSnapshot {
   };
 }
 
-function receipt(
+function setDispatchCounts(
   source: AgentCommandRunAccountingSnapshot,
-  dispatches?: readonly number[],
-): AgentExecDispatchReceipt {
+  dispatches: readonly number[],
+): void {
   const calls = source.providerTransport?.logicalCalls.entries ?? [];
-  const perCall = dispatches ?? calls.map(() => 1);
-  return {
-    schemaVersion: 1,
-    authority: "host_dispatch_guard",
-    complete: true,
-    truncated: false,
-    route: { provider: PROVIDER, model: MODEL, api: API },
-    logicalCalls: calls.length,
-    physicalFetchDispatch: perCall.reduce((total, value) => total + value, 0),
-    calls: calls.map((call, index) => ({
-      ordinal: index + 1,
-      callIdSha256: agentExecTraceTesting.hashCallId(call.callId),
-      physicalFetchDispatch: perCall[index] ?? 0,
+  const transport = source.providerTransport!;
+  let sequence = 0;
+  transport.dispatches!.entries = calls.flatMap((call, index) =>
+    Array.from({ length: dispatches[index] ?? 0 }, (_, hopIndex) => ({
+      sequence: ++sequence,
+      logicalCallOrdinal: index + 1,
+      callId: call.callId,
+      provider: PROVIDER,
+      model: MODEL,
+      api: API,
+      transport: TRANSPORT,
+      ordinal: hopIndex + 1,
+      attemptOrdinal: 1,
+      hopOrdinal: hopIndex + 1,
+      reason: "initial" as const,
     })),
+  );
+  transport.dispatches!.total = sequence;
+  transport.events.entries = calls.flatMap((call, index) =>
+    Array.from({ length: dispatches[index] ?? 0 }, (_, hopIndex) =>
+      dispatchEvent({
+        callId: call.callId,
+        ordinal: hopIndex + 1,
+        hopOrdinal: hopIndex + 1,
+      }),
+    ).concat(attemptEvent(call.callId)),
+  );
+  transport.events.total = transport.events.entries.length;
+}
+
+function setTerminalZeroSubmission(source: AgentCommandRunAccountingSnapshot): void {
+  const callId = "zero-submission-call";
+  const collector = createProviderTransportAccountingCollector();
+  collector.observer.onLogicalCallStarted({
+    callId,
+    provider: PROVIDER,
+    model: MODEL,
+    api: API,
+  });
+  collector.observer.onTransportEvent(zeroSubmissionEvent(callId));
+  collector.observer.onLogicalCallSettled(callId, "failed", { state: "exact", tokens: 0 });
+  collector.finalize(callId);
+  collector.seal();
+  const projected = collector.project();
+  if (!projected.snapshot || projected.coverage.state !== "complete") {
+    throw new Error("expected complete zero-submission transport fixture");
+  }
+  source.providerTransport = projected.snapshot;
+  source.coverage.providerTransport = projected.coverage;
+  source.modelCalls = { total: 1, completed: 0, failed: 1 };
+  source.usage = {
+    input: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    output: 0,
+    reasoningTokens: 0,
+    total: 0,
   };
 }
 
-function project(
-  source: AgentCommandRunAccountingSnapshot,
-  dispatchReceipt: AgentExecDispatchReceipt | undefined = receipt(source),
-) {
+function project(source: AgentCommandRunAccountingSnapshot) {
   return projectAgentExecTrace({
     snapshot: source,
-    agentDurationMs: 110,
-    codeModeEngaged: true,
-    dispatchReceipt,
+    codeModeConfigured: true,
     provider: PROVIDER,
     model: MODEL,
   });
 }
 
-function expectInconclusiveReason(
-  source: AgentCommandRunAccountingSnapshot,
-  reason: string,
-  dispatchReceipt = receipt(source),
-): void {
-  const trace = project(source, dispatchReceipt);
+function expectInconclusiveReason(source: AgentCommandRunAccountingSnapshot, reason: string): void {
+  const trace = project(source);
   expect(trace?.audit).toEqual({
     state: "inconclusive",
     reasons: expect.arrayContaining([reason]),
@@ -234,29 +279,34 @@ describe("agent exec frontier trace projection", () => {
     const trace = project(source);
 
     expect(trace).toMatchObject({
-      route: { provider: PROVIDER, model: MODEL, api: API, runtime: "embedded" },
-      metrics: {
-        effectiveTurns: { state: "exact", value: 2 },
-        logicalModelCalls: { state: "exact", value: 2 },
-        providerAttempts: {
-          total: { state: "exact", value: 2 },
-          retries: { state: "exact", value: 0 },
+      source: {
+        mode: { configured: true, engaged: true },
+        route: { provider: PROVIDER, model: MODEL, api: API, runtime: "embedded" },
+      },
+      projection: {
+        metrics: {
+          effectiveTurns: { state: "exact", value: 2 },
+          logicalModelCalls: { state: "exact", value: 2 },
+          providerAttempts: {
+            total: { state: "exact", value: 2 },
+            retries: { state: "exact", value: 0 },
+          },
+          modelFacingApiCalls: { state: "exact", value: 2 },
+          outerToolCalls: { state: "exact", value: 1 },
+          codeModeBridgeCalls: { state: "exact", value: 3 },
+          totalToolOperations: { state: "exact", value: 4 },
+          underlyingTotalCalls: { state: "exact", value: 6 },
+          tokens: {
+            input: { state: "exact", value: 100 },
+            cachedInput: { state: "exact", value: 20 },
+            firstLogicalCallCachedInput: { state: "exact", value: 7 },
+            output: { state: "exact", value: 30 },
+            reasoning: { state: "exact", value: 10 },
+            total: { state: "exact", value: 140 },
+          },
+          agentDurationMs: { state: "exact", value: 110 },
+          commandExecutionDurationMs: { state: "exact", value: 125 },
         },
-        physicalFetchDispatch: { state: "exact", value: 2 },
-        outerToolCalls: { state: "exact", value: 1 },
-        codeModeBridgeCalls: { state: "exact", value: 3 },
-        totalToolOperations: { state: "exact", value: 4 },
-        underlyingTotalCalls: { state: "exact", value: 6 },
-        tokens: {
-          input: { state: "exact", value: 100 },
-          cachedInput: { state: "exact", value: 20 },
-          firstLogicalCallCachedInput: { state: "exact", value: 7 },
-          output: { state: "exact", value: 30 },
-          reasoning: { state: "exact", value: 10 },
-          total: { state: "exact", value: 140 },
-        },
-        agentDurationMs: { state: "exact", value: 110 },
-        commandExecutionDurationMs: { state: "exact", value: 125 },
       },
       audit: { state: "valid" },
     });
@@ -264,16 +314,120 @@ describe("agent exec frontier trace projection", () => {
 
   it("conserves mixed physical dispatch counts across multiple calls", () => {
     const source = snapshot(3);
-    const trace = project(source, receipt(source, [1, 2, 3]));
+    setDispatchCounts(source, [1, 2, 3]);
+    const trace = project(source);
 
-    expect(trace?.metrics).toMatchObject({
+    expect(trace?.projection.metrics).toMatchObject({
       logicalModelCalls: { state: "exact", value: 3 },
       providerAttempts: { total: { state: "exact", value: 3 } },
-      physicalFetchDispatch: { state: "exact", value: 6 },
+      modelFacingApiCalls: { state: "exact", value: 6 },
       totalToolOperations: { state: "exact", value: 4 },
       underlyingTotalCalls: { state: "exact", value: 10 },
     });
     expect(trace?.audit).toEqual({ state: "valid" });
+    expect(verifyAgentExecTrace(JSON.stringify(trace))).toBe(true);
+  });
+
+  it("downgrades zero-submission authority at the persistable trace boundary", () => {
+    const source = snapshot(1);
+    setTerminalZeroSubmission(source);
+    const trace = project(source);
+
+    expect(trace?.source.dispatchReceipt).toMatchObject({
+      complete: false,
+      incompleteReasons: ["dispatch_receipt_producer_proof_not_persisted"],
+      logicalCalls: 1,
+      modelFacingApiCalls: 0,
+      calls: [{ outcome: "failed", finalized: true }],
+      dispatches: [],
+    });
+    expect(trace?.projection.metrics).toMatchObject({
+      logicalModelCalls: { state: "unavailable" },
+      providerAttempts: {
+        total: { state: "unavailable" },
+        retries: { state: "unavailable" },
+      },
+      modelFacingApiCalls: { state: "unavailable" },
+      tokens: {
+        input: { state: "unavailable" },
+        cachedInput: { state: "unavailable" },
+        firstLogicalCallCachedInput: { state: "unknown" },
+        output: { state: "unavailable" },
+        reasoning: { state: "unavailable" },
+        total: { state: "unavailable" },
+      },
+    });
+    expect(trace?.audit).toMatchObject({
+      state: "inconclusive",
+      reasons: expect.arrayContaining(["dispatch_receipt_producer_proof_not_persisted"]),
+    });
+    const serialized = JSON.stringify(trace);
+    expect(verifyAgentExecTrace(serialized)).toBe(true);
+    const persisted = normalizeAgentExecTrace(serialized);
+    expect(persisted?.source.dispatchReceipt).toMatchObject({
+      complete: false,
+      incompleteReasons: ["dispatch_receipt_producer_proof_not_persisted"],
+    });
+    expect(persisted?.projection.metrics).toMatchObject({
+      logicalModelCalls: { state: "unavailable" },
+      providerAttempts: { total: { state: "unavailable" } },
+      modelFacingApiCalls: { state: "unavailable" },
+    });
+    expect(persisted?.audit).toMatchObject({
+      state: "inconclusive",
+      reasons: expect.arrayContaining(["dispatch_receipt_producer_proof_not_persisted"]),
+    });
+    expect(persisted).toEqual(trace);
+    expect(serialized).not.toContain("zeroSubmission");
+    expect(serialized).not.toContain("Proof");
+  });
+
+  it("withholds all benchmark projections when canonical provider replay fails", () => {
+    const source = snapshot();
+    source.providerTransport!.events.entries = [];
+    source.providerTransport!.events.total = 0;
+
+    const trace = project(source);
+
+    expect(trace?.source.route).toBeUndefined();
+    expect(trace?.source.dispatchReceipt).toMatchObject({
+      complete: false,
+      logicalCalls: 0,
+      modelFacingApiCalls: 0,
+      incompleteReasons: expect.arrayContaining(["provider_event_conservation_mismatch"]),
+    });
+    expect(trace?.projection.metrics).toMatchObject({
+      effectiveTurns: { state: "unavailable" },
+      logicalModelCalls: { state: "unavailable" },
+      providerAttempts: {
+        total: { state: "unavailable" },
+        initial: { state: "unavailable" },
+        retries: { state: "unavailable" },
+      },
+      modelFacingApiCalls: { state: "unavailable" },
+      outerToolCalls: { state: "unavailable" },
+      codeModeBridgeCalls: { state: "unavailable" },
+      totalToolOperations: { state: "unavailable" },
+      underlyingTotalCalls: { state: "unavailable" },
+      tokens: {
+        input: { state: "unavailable" },
+        cachedInput: { state: "unavailable" },
+        firstLogicalCallCachedInput: { state: "unknown" },
+        output: { state: "unavailable" },
+        reasoning: { state: "unavailable" },
+        total: { state: "unavailable" },
+      },
+      agentDurationMs: { state: "unavailable" },
+      commandExecutionDurationMs: { state: "unavailable" },
+    });
+    expect(trace?.audit).toEqual({
+      state: "inconclusive",
+      reasons: expect.arrayContaining([
+        "dispatch_receipt_authority_invalid",
+        "provider_event_conservation_mismatch",
+        "route_unavailable",
+      ]),
+    });
   });
 
   it("keeps calls and attempts exact while retry token attribution is inconclusive", () => {
@@ -281,13 +435,55 @@ describe("agent exec frontier trace projection", () => {
     const transport = source.providerTransport!;
     transport.attempts.total = 3;
     transport.attempts.retries = 1;
+    transport.attempts.entries!.push({
+      logicalCallOrdinal: 1,
+      ordinal: 2,
+      transport: TRANSPORT,
+      reason: "retry",
+      outcome: "completed",
+    });
+    transport.dispatches!.entries.splice(1, 0, {
+      sequence: 2,
+      logicalCallOrdinal: 1,
+      callId: "call-1",
+      provider: PROVIDER,
+      model: MODEL,
+      api: API,
+      transport: TRANSPORT,
+      ordinal: 2,
+      attemptOrdinal: 2,
+      hopOrdinal: 1,
+      reason: "retry",
+    });
+    transport.dispatches!.entries[2]!.sequence = 3;
+    transport.dispatches!.total = 3;
+    transport.attempts.entries![0]!.outcome = "failed";
+    const initialAttempt = transport.events.entries.find(
+      (event) => event.type === "attempt" && event.callId === "call-1" && event.ordinal === 1,
+    );
+    if (!initialAttempt || initialAttempt.type !== "attempt") {
+      throw new Error("expected initial attempt");
+    }
+    initialAttempt.outcome = "failed";
+    transport.events.entries.splice(
+      2,
+      0,
+      dispatchEvent({
+        callId: "call-1",
+        ordinal: 2,
+        attemptOrdinal: 2,
+      }),
+    );
     transport.events.entries.push(attemptEvent("call-1", 2));
     transport.events.total = transport.events.entries.length;
-    const trace = project(source, receipt(source, [2, 1]));
+    const trace = project(source);
 
-    expect(trace?.metrics.logicalModelCalls).toEqual({ state: "exact", value: 2 });
-    expect(trace?.metrics.providerAttempts.total).toEqual({ state: "exact", value: 3 });
-    expect(trace?.metrics.tokens.total).toEqual({
+    expect(trace?.projection.metrics.logicalModelCalls).toEqual({ state: "exact", value: 2 });
+    expect(trace?.projection.metrics.providerAttempts.total).toEqual({
+      state: "exact",
+      value: 3,
+    });
+    expect(trace?.projection.metrics.tokens.total).toEqual({
       state: "lower_bound",
       value: 140,
       reasons: expect.arrayContaining([
@@ -295,11 +491,7 @@ describe("agent exec frontier trace projection", () => {
         "provider_attempt_usage_unproven",
       ]),
     });
-    expectInconclusiveReason(
-      source,
-      "provider_attempt_usage_unattributed",
-      receipt(source, [2, 1]),
-    );
+    expectInconclusiveReason(source, "provider_attempt_usage_unattributed");
   });
 
   for (const reason of [
@@ -319,7 +511,7 @@ describe("agent exec frontier trace projection", () => {
       }
 
       const trace = project(source);
-      expect(trace?.route).toBeUndefined();
+      expect(trace?.source.route).toBeUndefined();
       expectInconclusiveReason(source, reason);
     });
   }
@@ -332,7 +524,7 @@ describe("agent exec frontier trace projection", () => {
       reasons: ["transport_totals_lower_bound"],
     };
 
-    expectInconclusiveReason(source, "provider_logical_calls_lower_bound");
+    expectInconclusiveReason(source, "transport_totals_lower_bound");
   });
 
   it("rejects unavailable terminal fallback metadata", () => {
@@ -357,7 +549,7 @@ describe("agent exec frontier trace projection", () => {
       reasons: ["transport_totals_lower_bound"],
     };
 
-    expectInconclusiveReason(source, "terminal_metadata_unavailable");
+    expectInconclusiveReason(source, "transport_totals_lower_bound");
   });
 
   it("rejects truncated transport evidence", () => {
@@ -368,14 +560,13 @@ describe("agent exec frontier trace projection", () => {
       reasons: ["transport_details_truncated"],
     };
 
-    expectInconclusiveReason(source, "provider_events_truncated");
+    expectInconclusiveReason(source, "transport_details_truncated");
   });
 
   it("rejects missing provider ledger conservation", () => {
     const source = snapshot();
     source.providerTransport!.events.total += 1;
 
-    expectInconclusiveReason(source, "provider_event_entries_incomplete");
     expectInconclusiveReason(source, "provider_event_conservation_mismatch");
   });
 
@@ -386,62 +577,146 @@ describe("agent exec frontier trace projection", () => {
     transport.logicalCalls.aborted = 1;
     transport.logicalCalls.entries[1]!.outcome = "aborted";
 
-    expectInconclusiveReason(source, "model_provider_completed_count_mismatch");
-    expectInconclusiveReason(source, "model_provider_failed_count_mismatch");
+    expectInconclusiveReason(source, "provider_event_conservation_mismatch");
   });
 
-  for (const reason of ["transport_observer_failed", "settled_finalization_failed"] as const) {
-    it(`rejects ${reason} coverage`, () => {
-      const source = snapshot();
-      source.coverage.providerTransport = { state: "partial", reasons: [reason] };
-
-      expectInconclusiveReason(source, reason);
-    });
-  }
-
-  it("rejects a missing physical dispatch receipt", () => {
+  it("rejects transport observer failure coverage", () => {
     const source = snapshot();
+    source.coverage.providerTransport = {
+      state: "partial",
+      reasons: ["transport_observer_failed"],
+    };
+
+    expectInconclusiveReason(source, "transport_observer_failed");
+  });
+
+  it("rejects a cross-domain provider coverage reason", () => {
+    const source = snapshot();
+    source.coverage.providerTransport = {
+      state: "partial",
+      reasons: ["settled_finalization_failed"],
+    } as never;
+
+    expectInconclusiveReason(source, "provider_event_conservation_mismatch");
+  });
+
+  it("rejects a missing dispatch ledger", () => {
+    const source = snapshot();
+    delete source.providerTransport!.dispatches;
     const trace = projectAgentExecTrace({
       snapshot: source,
-      agentDurationMs: 110,
-      codeModeEngaged: true,
+      codeModeConfigured: true,
       provider: PROVIDER,
       model: MODEL,
     });
     expect(trace?.audit).toEqual({
       state: "inconclusive",
-      reasons: expect.arrayContaining(["dispatch_receipt_unavailable"]),
+      reasons: expect.arrayContaining(["provider_event_conservation_mismatch"]),
     });
   });
 
-  it("requires outer result route identity", () => {
+  it("uses the sealed accounting route without duplicate result metadata", () => {
     const source = snapshot();
     const trace = projectAgentExecTrace({
       snapshot: source,
-      agentDurationMs: 110,
-      codeModeEngaged: true,
-      dispatchReceipt: receipt(source),
+      codeModeConfigured: true,
     });
 
-    expect(trace?.route).toBeUndefined();
-    expect(trace?.audit).toEqual({
-      state: "inconclusive",
-      reasons: expect.arrayContaining(["reported_route_identity_missing"]),
+    expect(trace?.source.route).toEqual({
+      provider: PROVIDER,
+      model: MODEL,
+      api: API,
+      runtime: "embedded",
+    });
+    expect(trace?.audit).toEqual({ state: "valid" });
+  });
+
+  it("ignores unowned caller duration, engagement, and metric fields", () => {
+    const trace = projectAgentExecTrace({
+      snapshot: snapshot(),
+      codeModeConfigured: true,
+      provider: PROVIDER,
+      model: MODEL,
+      agentDurationMs: 999_999,
+      codeModeEngaged: false,
+      metrics: { logicalModelCalls: { state: "exact", value: 999 } },
+    } as Parameters<typeof projectAgentExecTrace>[0] & Record<string, unknown>);
+
+    expect(trace?.source.mode).toEqual({ configured: true, engaged: true });
+    expect(trace?.source.facts.duration.agentDurationMs).toEqual({
+      state: "exact",
+      value: 110,
+    });
+    expect(trace?.projection.metrics.logicalModelCalls).toEqual({
+      state: "exact",
+      value: 2,
     });
   });
 
-  it("rejects duplicate or reordered receipt call identities", () => {
-    const source = snapshot();
-    const duplicate = receipt(source);
-    duplicate.calls[1]!.callIdSha256 = duplicate.calls[0]!.callIdSha256;
-    expectInconclusiveReason(source, "dispatch_receipt_call_identity_duplicate", duplicate);
+  it("rejects reported route disagreement instead of accepting caller identity", () => {
+    const trace = projectAgentExecTrace({
+      snapshot: snapshot(),
+      codeModeConfigured: true,
+      provider: "untrusted-provider",
+      model: "untrusted-model",
+    });
 
-    const reordered = receipt(source);
-    [reordered.calls[0]!.callIdSha256, reordered.calls[1]!.callIdSha256] = [
-      reordered.calls[1]!.callIdSha256,
-      reordered.calls[0]!.callIdSha256,
-    ];
-    expectInconclusiveReason(source, "dispatch_provider_ledger_mismatch", reordered);
+    expect(trace?.source.route).toBeUndefined();
+    expect(trace?.audit).toEqual({
+      state: "inconclusive",
+      reasons: expect.arrayContaining(["reported_route_identity_mismatch"]),
+    });
+    expect(JSON.stringify(trace)).not.toContain("untrusted-provider");
+    expect(JSON.stringify(trace)).not.toContain("untrusted-model");
+  });
+
+  it("rejects duplicate or reordered dispatch facts", () => {
+    const source = snapshot();
+    source.providerTransport!.dispatches!.entries[1]!.sequence = 1;
+    expectInconclusiveReason(source, "provider_event_conservation_mismatch");
+  });
+
+  it("rejects a tampered receipt digest", () => {
+    const trace = project(snapshot())!;
+    const receipt = structuredClone(trace.source.dispatchReceipt!);
+    receipt.sha256 = "0".repeat(64);
+    expect(verifyAgentExecDispatchReceipt(receipt)).toBe(false);
+  });
+
+  it("accepts only the closed bounded receipt shape", () => {
+    const receipt = structuredClone(project(snapshot())!.source.dispatchReceipt!);
+    expect(verifyAgentExecDispatchReceipt(receipt)).toBe(false);
+    expect(verifyAgentExecDispatchReceipt(JSON.stringify(receipt))).toBe(true);
+
+    const extraTopLevel = { ...receipt, rawSnapshot: { privateValue: "redacted" } };
+    expect(verifyAgentExecDispatchReceipt(extraTopLevel)).toBe(false);
+
+    const extraNested = structuredClone(receipt) as typeof receipt & {
+      dispatches: Array<(typeof receipt.dispatches)[number] & { requestBody?: string }>;
+    };
+    extraNested.dispatches[0]!.requestBody = "redacted";
+    expect(verifyAgentExecDispatchReceipt(extraNested)).toBe(false);
+
+    const oversized = structuredClone(receipt);
+    oversized.dispatches = Array.from({ length: 129 }, (_, index) => ({
+      ...receipt.dispatches[0]!,
+      sequence: index + 1,
+      hopOrdinal: index + 1,
+    }));
+    oversized.modelFacingApiCalls = 129;
+    expect(verifyAgentExecDispatchReceipt(oversized)).toBe(false);
+
+    expect(() => verifyAgentExecDispatchReceipt(null)).not.toThrow();
+    expect(verifyAgentExecDispatchReceipt(["not", "a", "receipt"])).toBe(false);
+  });
+
+  it("rejects sensitive-looking incomplete reasons before digest verification", () => {
+    const source = snapshot();
+    delete source.providerTransport!.dispatches;
+    const receipt = structuredClone(project(source)!.source.dispatchReceipt!);
+    receipt.incompleteReasons.push("<redacted-private-value>");
+
+    expect(verifyAgentExecDispatchReceipt(receipt)).toBe(false);
   });
 
   it("rejects unresolved Code Mode bridge work", () => {
@@ -470,28 +745,25 @@ describe("agent exec frontier trace projection", () => {
   it("requires explicit direct configuration before projecting zero bridge calls", () => {
     const source = snapshot();
     delete source.codeMode;
-    const dispatchReceipt = receipt(source);
     const base = {
       snapshot: source,
-      agentDurationMs: 110,
-      codeModeEngaged: false,
-      dispatchReceipt,
       provider: PROVIDER,
       model: MODEL,
     } as const;
 
-    expect(projectAgentExecTrace(base)?.metrics.codeModeBridgeCalls).toEqual({
+    expect(projectAgentExecTrace(base)?.projection.metrics.codeModeBridgeCalls).toEqual({
       state: "unavailable",
       reasons: ["code_mode_stats_not_observed"],
     });
     const directTrace = projectAgentExecTrace({ ...base, codeModeConfigured: false });
-    expect(directTrace?.metrics.codeModeBridgeCalls).toEqual({ state: "exact", value: 0 });
+    expect(directTrace?.projection.metrics.codeModeBridgeCalls).toEqual({
+      state: "exact",
+      value: 0,
+    });
     expect(directTrace?.audit).toEqual({ state: "valid" });
   });
 
-  it("adds an explicitly projected trace to the stable envelope without changing normal runs", () => {
-    const source = snapshot();
-    const trace = project(source)!;
+  it("keeps the public result classifier unable to inject trace authority", () => {
     const result = {
       payloads: [{ text: "done" }],
       meta: {
@@ -505,10 +777,5 @@ describe("agent exec frontier trace projection", () => {
     };
 
     expect(classifyAgentExecResult(result)).not.toHaveProperty("trace");
-    const envelope = classifyAgentExecResult(result, false, undefined, trace);
-    expect(envelope.trace).toEqual(trace);
-    expect(envelope.trace).not.toBe(trace);
-    trace.metrics.logicalModelCalls.value = 99;
-    expect(envelope.trace?.metrics.logicalModelCalls).toEqual({ state: "exact", value: 2 });
   });
 });

@@ -6,6 +6,11 @@ import {
   createProviderTransportAccountingCollector,
   runWithProviderTransportAccountingObserver,
 } from "../provider-transport-accounting.js";
+import type {
+  ProviderTransportAccountingCoverage,
+  ProviderTransportAccountingCoverageReason,
+} from "../provider-transport-accounting.types.js";
+import { bindAgentCommandRunAccountingOnce } from "./run-accounting-binding.js";
 import {
   AGENT_COMMAND_USAGE_BUCKETS,
   boundAccountingIdentity,
@@ -23,6 +28,13 @@ import type {
   AgentCommandRunCandidateAccounting,
   RunAccountingAccumulator,
 } from "./run-accounting.types.js";
+
+export {
+  bindAgentCommandRunAccounting,
+  bindAgentCommandRunAccountingOnce,
+  resolveAgentCommandRunAccounting,
+  takeAgentCommandRunAccounting,
+} from "./run-accounting-binding.js";
 
 const MAX_AGENT_COMMAND_ACCOUNTING_CANDIDATES = 32;
 const COVERAGE_REASON_ORDER: readonly AgentCommandRunAccountingCoverageReason[] = [
@@ -58,33 +70,7 @@ const COVERAGE_REASON_RANK = new Map(
   COVERAGE_REASON_ORDER.map((reason, index) => [reason, index] as const),
 );
 
-const snapshots = new WeakMap<object, AgentCommandRunAccountingSnapshot>();
 const activeCommandRunAccounting = new AsyncLocalStorage<RunAccountingAccumulator>();
-
-function cloneRunAccountingSnapshot(
-  snapshot: AgentCommandRunAccountingSnapshot,
-): AgentCommandRunAccountingSnapshot {
-  return structuredClone(snapshot);
-}
-
-export function bindAgentCommandRunAccounting(
-  target: unknown,
-  snapshot: AgentCommandRunAccountingSnapshot,
-): void {
-  if ((typeof target === "object" && target !== null) || typeof target === "function") {
-    snapshots.set(target, cloneRunAccountingSnapshot(snapshot));
-  }
-}
-
-export function resolveAgentCommandRunAccounting(
-  target: unknown,
-): AgentCommandRunAccountingSnapshot | undefined {
-  if ((typeof target === "object" && target !== null) || typeof target === "function") {
-    const snapshot = snapshots.get(target);
-    return snapshot ? cloneRunAccountingSnapshot(snapshot) : undefined;
-  }
-  return undefined;
-}
 
 export function markActiveAgentCommandOpaqueWork(reason: EmbeddedRunOpaqueWorkReason): void {
   activeCommandRunAccounting.getStore()?.markOpaqueWork(reason);
@@ -109,7 +95,7 @@ export async function runWithAgentCommandAccounting<T>(
     } catch (error) {
       accounting.seal();
       if ((typeof error === "object" && error !== null) || typeof error === "function") {
-        bindAgentCommandRunAccounting(error, accounting.project());
+        bindAgentCommandRunAccountingOnce(error, accounting.project());
       }
       throw error;
     }
@@ -130,15 +116,21 @@ function createCoverage(
   };
 }
 
-function extendCoverage(
-  coverage: AgentCommandRunAccountingCoverage,
-  reasons: AgentCommandRunAccountingCoverageReason[],
-): AgentCommandRunAccountingCoverage {
-  if (reasons.length === 0) {
+function extendProviderTransportCoverage(
+  coverage: ProviderTransportAccountingCoverage,
+  hasUninstrumentedWork: boolean,
+): ProviderTransportAccountingCoverage {
+  if (!hasUninstrumentedWork) {
     return coverage;
   }
-  const combined = [...("reasons" in coverage ? coverage.reasons : []), ...reasons];
-  return createCoverage(coverage.state === "unavailable" ? "unavailable" : "partial", combined);
+  const reasons = [
+    ...("reasons" in coverage ? coverage.reasons : []),
+    "not_instrumented",
+  ] satisfies ProviderTransportAccountingCoverageReason[];
+  return {
+    state: coverage.state === "unavailable" ? "unavailable" : "partial",
+    reasons: [...new Set(reasons)],
+  };
 }
 
 function runtimeCoverageReasons(
@@ -220,6 +212,9 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
     toolNamesTruncated: false,
     toolsObserved: 0,
     attemptsObserved: 0,
+    agentDurationMs: 0,
+    agentDurationObservations: 0,
+    agentDurationInvalidObservations: 0,
     costCoverageExpected: 0,
     providerBilledCostUsd: 0,
     providerBilledCostReports: 0,
@@ -268,6 +263,7 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
       let settled = false;
       let modelCallInstrumentationInstalled = false;
       let embeddedAttemptObserved = false;
+      let agentDurationObserved = false;
       const provider = boundAccountingIdentity(identity.provider);
       const model = boundAccountingIdentity(identity.model);
       state.candidateIdentityTruncated ||= provider.truncated || model.truncated;
@@ -340,6 +336,28 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
           }
           observeEmbeddedAttempt(state, observation, entry);
         },
+        observeAgentDuration(durationMs) {
+          if (agentDurationObserved) {
+            state.agentDurationInvalidObservations += 1;
+            return;
+          }
+          agentDurationObserved = true;
+          if (
+            typeof durationMs !== "number" ||
+            !Number.isSafeInteger(durationMs) ||
+            durationMs < 0
+          ) {
+            state.agentDurationInvalidObservations += 1;
+            return;
+          }
+          const nextAgentDurationMs = state.agentDurationMs + durationMs;
+          if (!Number.isSafeInteger(nextAgentDurationMs)) {
+            state.agentDurationInvalidObservations += 1;
+            return;
+          }
+          state.agentDurationMs = nextAgentDurationMs;
+          state.agentDurationObservations += 1;
+        },
         markOpaqueWork(reason) {
           state.opaqueWorkReasons.add(reason);
         },
@@ -375,10 +393,10 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
       const auxiliaryHiddenWorkReasons = opaqueWorkReasons.filter(
         (reason) => reason !== "settled_finalization_failed",
       );
-      const providerTransportCoverage = extendCoverage(providerTransport.coverage, [
-        ...runtimeReasons,
-        ...auxiliaryHiddenWorkReasons,
-      ]);
+      const providerTransportCoverage = extendProviderTransportCoverage(
+        providerTransport.coverage,
+        runtimeReasons.length > 0 || auxiliaryHiddenWorkReasons.length > 0,
+      );
       const candidateCoverageReasons = [
         ...(state.candidates.truncated > 0 ? (["candidate_details_truncated"] as const) : []),
         ...(state.candidateIdentityTruncated ? (["candidate_identity_truncated"] as const) : []),
@@ -537,6 +555,25 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
           ? state.codeModeFinalQuiescence
           : undefined;
       const codeModeFinalQuiescenceObserved = observedCodeModeFinalQuiescence !== undefined;
+      const singleEmbeddedCandidate =
+        state.candidates.total === 1 && state.candidates.runtimes.embedded === 1;
+      const agentTimeComplete =
+        singleEmbeddedCandidate &&
+        state.agentDurationObservations === 1 &&
+        state.agentDurationInvalidObservations === 0;
+      const agentTimeReasons: AgentCommandRunAccountingCoverageReason[] = [...runtimeReasons];
+      if (!agentTimeComplete && state.candidates.threw > 0) {
+        agentTimeReasons.push("candidate_failed");
+      }
+      if (!agentTimeComplete) {
+        agentTimeReasons.push("not_observed");
+      }
+      const agentTimeCoverage: AgentCommandRunAccountingCoverage = agentTimeComplete
+        ? { state: "complete" }
+        : createCoverage(
+            state.agentDurationObservations > 0 ? "partial" : "unavailable",
+            agentTimeReasons.length > 0 ? agentTimeReasons : ["not_observed"],
+          );
       const codeMode =
         state.codeModeEngaged || state.codeModeStats || codeModeFinalQuiescenceObserved
           ? {
@@ -607,6 +644,7 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
             }
           : {}),
         ...(providerTransport.snapshot ? { providerTransport: providerTransport.snapshot } : {}),
+        ...(state.agentDurationObservations > 0 ? { agentDurationMs: state.agentDurationMs } : {}),
         commandExecutionDurationMs: Math.max(0, Date.now() - state.startedAtMs),
         coverage: {
           candidates: candidatesCoverage,
@@ -642,7 +680,7 @@ export function createRunAccountingAccumulator(startedAtMs = Date.now()): RunAcc
                 ],
               }),
           cost: effectiveCostCoverage,
-          agentTime: createCoverage("unavailable", ["not_instrumented"]),
+          agentTime: agentTimeCoverage,
           commandExecutionDuration: { state: "complete" },
           wallLatency: createCoverage("unavailable", ["not_instrumented"]),
           providerTransport: providerTransportCoverage,

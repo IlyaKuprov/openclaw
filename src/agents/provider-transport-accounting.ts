@@ -1,5 +1,11 @@
 import { AI_MODEL_TRANSPORT_OUTCOMES, type AiModelTransportEvent } from "@openclaw/ai";
 import {
+  MAX_MODEL_TRANSPORT_ATTEMPTS,
+  MAX_MODEL_TRANSPORT_DISPATCHES,
+  MAX_MODEL_TRANSPORT_EVENTS,
+  MAX_MODEL_TRANSPORT_LOGICAL_CALLS,
+} from "./provider-transport-accounting-limits.js";
+import {
   hasTransportFallbackCause,
   isKnownValue,
   normalizeIdentity,
@@ -53,16 +59,12 @@ export {
   runWithProviderTransportAccountingObserver,
 } from "./provider-transport-accounting-observer.js";
 export type {
+  ProviderTransportAccountingCoverage,
   ProviderTransportAccountingCoverageReason,
   ProviderTransportAccountingObserver,
   ProviderTransportAccountingObservationKind,
   ProviderTransportAccountingSnapshot,
 } from "./provider-transport-accounting.types.js";
-
-const MAX_MODEL_TRANSPORT_LOGICAL_CALLS = 64;
-const MAX_MODEL_TRANSPORT_EVENTS = 128;
-const MAX_MODEL_TRANSPORT_ATTEMPTS = 128;
-const MAX_MODEL_TRANSPORT_DISPATCHES = 128;
 
 type TrackedLogicalCall = ProviderTransportProjectionCall;
 type RoutePhase = NonNullable<TrackedLogicalCall["phase"]>;

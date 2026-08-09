@@ -5,6 +5,7 @@ import type { EmbeddedRunAccountingObservation } from "../embedded-agent-runner/
 import type { EmbeddedRunOpaqueWorkReason } from "../embedded-agent-runner/run/accounting-observers.js";
 import type { ToolSummaryTrace } from "../embedded-agent-runner/types.js";
 import type {
+  ProviderTransportAccountingCoverage,
   ProviderTransportAccountingCoverageReason,
   ProviderTransportAccountingObserver,
   ProviderTransportAccountingSnapshot,
@@ -57,6 +58,7 @@ export type AgentCommandRunCandidateAccounting = {
   beginModelCall: () => AgentSubmissionHandle;
   markModelCallInstrumentationInstalled: () => void;
   observeEmbeddedAttempt: (observation: EmbeddedRunAccountingObservation) => void;
+  observeAgentDuration: (durationMs: unknown) => void;
   markOpaqueWork: (reason: EmbeddedRunOpaqueWorkReason) => void;
   settle: (outcome: "returned" | "threw") => void;
 };
@@ -125,6 +127,7 @@ export type AgentCommandRunAccountingSnapshot = {
   toolNamesTruncated?: true;
   costUsd?: number;
   providerTransport?: ProviderTransportAccountingSnapshot;
+  agentDurationMs?: number;
   commandExecutionDurationMs: number;
   coverage: {
     candidates: AgentCommandRunAccountingCoverage;
@@ -138,7 +141,7 @@ export type AgentCommandRunAccountingSnapshot = {
     agentTime: AgentCommandRunAccountingCoverage;
     commandExecutionDuration: AgentCommandRunAccountingCoverage;
     wallLatency: AgentCommandRunAccountingCoverage;
-    providerTransport: AgentCommandRunAccountingCoverage;
+    providerTransport: ProviderTransportAccountingCoverage;
   };
   codeMode?: {
     engaged: boolean;

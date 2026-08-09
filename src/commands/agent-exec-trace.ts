@@ -1,82 +1,31 @@
-import { createHash } from "node:crypto";
 import type { AgentCommandRunAccountingSnapshot } from "../agents/command/run-accounting.types.js";
 import {
   agentDurationMetric,
   coverageReasons,
   normalizeTraceReasons,
   observedMetric,
-  sumExactMetrics,
   unavailableMetric,
   type AgentExecTraceCacheObservation,
   type AgentExecTraceMetric,
 } from "./agent-exec-trace-metrics.js";
+import { projectAgentExecDispatchAuthority } from "./agent-exec-trace-receipt.js";
+import {
+  buildAgentExecTrace,
+  type AgentExecTraceSourceInput,
+} from "./agent-exec-trace-schema.internal.js";
+import type { AgentExecDispatchReceipt, AgentExecTrace } from "./agent-exec-trace-schema.js";
 
-const AGENT_EXEC_TRACE_SCHEMA_VERSION = 1 as const;
-const AGENT_EXEC_DISPATCH_RECEIPT_SCHEMA_VERSION = 1 as const;
-
-export type AgentExecDispatchReceipt = {
-  schemaVersion: typeof AGENT_EXEC_DISPATCH_RECEIPT_SCHEMA_VERSION;
-  authority: "host_dispatch_guard";
-  complete: boolean;
-  truncated: boolean;
-  route: {
-    provider: string;
-    model: string;
-    api: string;
-  };
-  logicalCalls: number;
-  physicalFetchDispatch: number;
-  calls: Array<{
-    ordinal: number;
-    callIdSha256: string;
-    physicalFetchDispatch: number;
-  }>;
-};
-
-export type AgentExecTrace = {
-  schemaVersion: typeof AGENT_EXEC_TRACE_SCHEMA_VERSION;
-  source: "agent-command-accounting";
-  route?: {
-    provider: string;
-    model: string;
-    api: string;
-    runtime: "embedded";
-  };
-  dispatchReceipt?: AgentExecDispatchReceipt;
-  metrics: {
-    effectiveTurns: AgentExecTraceMetric;
-    logicalModelCalls: AgentExecTraceMetric;
-    providerAttempts: {
-      total: AgentExecTraceMetric;
-      initial: AgentExecTraceMetric;
-      retries: AgentExecTraceMetric;
-      authRecoveries: AgentExecTraceMetric;
-      payloadRecoveries: AgentExecTraceMetric;
-      transportFallbacks: AgentExecTraceMetric;
-    };
-    physicalFetchDispatch: AgentExecTraceMetric;
-    outerToolCalls: AgentExecTraceMetric;
-    codeModeBridgeCalls: AgentExecTraceMetric;
-    totalToolOperations: AgentExecTraceMetric;
-    underlyingTotalCalls: AgentExecTraceMetric;
-    tokens: {
-      input: AgentExecTraceMetric;
-      cachedInput: AgentExecTraceMetric;
-      firstLogicalCallCachedInput: AgentExecTraceCacheObservation;
-      output: AgentExecTraceMetric;
-      reasoning: AgentExecTraceMetric;
-      total: AgentExecTraceMetric;
-    };
-    agentDurationMs: AgentExecTraceMetric;
-    commandExecutionDurationMs: AgentExecTraceMetric;
-  };
-  audit:
-    | { state: "valid" }
-    | {
-        state: "inconclusive";
-        reasons: string[];
-      };
-};
+export {
+  normalizeAgentExecDispatchReceipt,
+  normalizeAgentExecTrace,
+  verifyAgentExecDispatchReceipt,
+  verifyAgentExecTrace,
+} from "./agent-exec-trace-schema.js";
+export type {
+  AgentExecDispatchReceipt,
+  AgentExecTrace,
+  AgentExecTraceSource,
+} from "./agent-exec-trace-schema.js";
 
 type ProviderTransport = NonNullable<AgentCommandRunAccountingSnapshot["providerTransport"]>;
 
@@ -87,10 +36,6 @@ function metricWithReasons(value: number | undefined, reasons: Iterable<string>)
     coverage:
       normalized.length === 0 ? { state: "complete" } : { state: "partial", reasons: normalized },
   });
-}
-
-function hashCallId(callId: string): string {
-  return createHash("sha256").update(callId).digest("hex");
 }
 
 function sum(values: readonly number[]): number {
@@ -133,19 +78,14 @@ function modelCallReconciliationReasons(
   return [...reasons];
 }
 
-function providerLedgerAudit(
-  snapshot: AgentCommandRunAccountingSnapshot,
-  transport: ProviderTransport | undefined,
-): { reasons: string[]; attemptsByCall: ReadonlyMap<string, number> } {
+function providerLedgerAudit(transport: ProviderTransport | undefined): {
+  reasons: string[];
+  attemptsByOrdinal: ReadonlyMap<number, number>;
+} {
   const reasons = new Set<string>();
-  const attemptsByCall = new Map<string, number>();
+  const attemptsByOrdinal = new Map<number, number>();
   if (!transport) {
-    return { reasons: ["provider_transport_not_observed"], attemptsByCall };
-  }
-  if (snapshot.coverage.providerTransport.state !== "complete") {
-    for (const reason of coverageReasons(snapshot.coverage.providerTransport)) {
-      reasons.add(reason);
-    }
+    return { reasons: ["provider_transport_not_observed"], attemptsByOrdinal };
   }
   if (transport.logicalCalls.totalKind !== "exact") {
     reasons.add("provider_logical_calls_lower_bound");
@@ -167,13 +107,11 @@ function providerLedgerAudit(
   ) {
     reasons.add("logical_outcome_conservation_mismatch");
   }
-  const callIds = new Set<string>();
   const outcomes = { completed: 0, failed: 0, aborted: 0 };
-  for (const call of transport.logicalCalls.entries) {
-    if (!call.callId || callIds.has(call.callId)) {
+  for (const [index, call] of transport.logicalCalls.entries.entries()) {
+    if (!call.callId || call.ordinal !== index + 1) {
       reasons.add("provider_logical_call_identity_invalid");
     }
-    callIds.add(call.callId);
     if (!call.outcome) {
       reasons.add("provider_logical_call_terminal_unverified");
     } else {
@@ -199,6 +137,22 @@ function providerLedgerAudit(
     if (aggregate.totalKind !== "exact") {
       reasons.add(`provider_${name}_lower_bound`);
     }
+  }
+  if (transport.attempts.entries === undefined || transport.attempts.entriesTruncated) {
+    reasons.add("dispatch_attempt_ledger_incomplete");
+  } else {
+    for (const attempt of transport.attempts.entries) {
+      attemptsByOrdinal.set(
+        attempt.logicalCallOrdinal,
+        (attemptsByOrdinal.get(attempt.logicalCallOrdinal) ?? 0) + 1,
+      );
+    }
+  }
+  if (
+    !transport.dispatches ||
+    transport.dispatches.entries.some((dispatch, index) => dispatch.sequence !== index + 1)
+  ) {
+    reasons.add("dispatch_global_sequence_invalid");
   }
   if (transport.events.entriesTruncated) {
     reasons.add("provider_events_truncated");
@@ -240,20 +194,17 @@ function providerLedgerAudit(
     reasons.add("provider_aggregate_conservation_mismatch");
   }
 
-  // Complete collector coverage already proves event normalization, correlation,
-  // ordinals, and sub-bucket derivation. Recheck only exported conservation here.
   let coverageEvents = 0;
   for (const event of transport.events.entries) {
     if (event.type === "coverage") {
       coverageEvents += 1;
       reasons.add(event.reason);
-    } else if (event.type === "attempt") {
-      attemptsByCall.set(event.callId, (attemptsByCall.get(event.callId) ?? 0) + 1);
     }
   }
   if (
     transport.events.total !==
-    transport.attempts.total +
+    (transport.dispatches?.total ?? 0) +
+      transport.attempts.total +
       transport.connections.total +
       transport.fallbacks.total +
       transport.providerFallbacks.total +
@@ -262,7 +213,7 @@ function providerLedgerAudit(
   ) {
     reasons.add("provider_event_conservation_mismatch");
   }
-  return { reasons: [...reasons], attemptsByCall };
+  return { reasons: [...reasons], attemptsByOrdinal };
 }
 
 function projectRoute(params: {
@@ -270,9 +221,9 @@ function projectRoute(params: {
   transport: ProviderTransport | undefined;
   observedModel?: string;
   observedProvider?: string;
-  authorityReasons: readonly string[];
-}): { route?: AgentExecTrace["route"]; reasons: string[] } {
-  const reasons = new Set<string>(params.authorityReasons);
+  auditReasons: readonly string[];
+}): { route?: AgentExecTraceSourceInput["route"]; reasons: string[] } {
+  const reasons = new Set<string>(params.auditReasons);
   const { snapshot, transport } = params;
   const [candidate] = snapshot.candidates.entries;
   const [effectiveModel] = candidate?.effectiveModels.entries ?? [];
@@ -281,14 +232,18 @@ function projectRoute(params: {
       reasons.add(reason);
     }
   }
+  const aggregateMatchesCandidate =
+    candidate?.outcome === "returned"
+      ? snapshot.candidates.returned === 1 && snapshot.candidates.threw === 0
+      : candidate?.outcome === "threw" &&
+        snapshot.candidates.returned === 0 &&
+        snapshot.candidates.threw === 1;
   if (
     snapshot.candidates.total !== 1 ||
-    snapshot.candidates.returned !== 1 ||
-    snapshot.candidates.threw !== 0 ||
+    !aggregateMatchesCandidate ||
     snapshot.candidates.truncated !== 0 ||
     snapshot.candidates.entries.length !== 1 ||
     candidate?.runtime !== "embedded" ||
-    candidate.outcome !== "returned" ||
     candidate.effectiveModels.truncated !== 0 ||
     candidate.effectiveModels.entries.length !== 1 ||
     !effectiveModel ||
@@ -320,9 +275,13 @@ function projectRoute(params: {
       reasons.add("provider_route_identity_mismatch");
     }
   }
-  if (!params.observedProvider || !params.observedModel) {
+  const hasReportedRoute =
+    params.observedProvider !== undefined || params.observedModel !== undefined;
+  if (hasReportedRoute && (!params.observedProvider || !params.observedModel)) {
     reasons.add("reported_route_identity_missing");
   } else if (
+    params.observedProvider &&
+    params.observedModel &&
     candidate &&
     (params.observedProvider !== candidate.provider || params.observedModel !== candidate.model)
   ) {
@@ -344,96 +303,10 @@ function projectRoute(params: {
   };
 }
 
-function dispatchReceiptReasons(params: {
-  receipt: AgentExecDispatchReceipt | undefined;
-  transport: ProviderTransport | undefined;
-  route: AgentExecTrace["route"];
-  attemptsByCall: ReadonlyMap<string, number>;
-}): string[] {
-  const { receipt, transport, route } = params;
-  const reasons = new Set<string>();
-  if (!receipt) {
-    return ["dispatch_receipt_unavailable"];
-  }
-  if (
-    receipt.schemaVersion !== AGENT_EXEC_DISPATCH_RECEIPT_SCHEMA_VERSION ||
-    receipt.authority !== "host_dispatch_guard"
-  ) {
-    reasons.add("dispatch_receipt_authority_invalid");
-  }
-  if (!receipt.complete) {
-    reasons.add("dispatch_receipt_incomplete");
-  }
-  if (receipt.truncated) {
-    reasons.add("dispatch_receipt_truncated");
-  }
-  if (
-    !Number.isSafeInteger(receipt.logicalCalls) ||
-    receipt.logicalCalls < 1 ||
-    !Number.isSafeInteger(receipt.physicalFetchDispatch) ||
-    receipt.physicalFetchDispatch < 0 ||
-    receipt.calls.length !== receipt.logicalCalls
-  ) {
-    reasons.add("dispatch_receipt_conservation_mismatch");
-  }
-  const receiptDispatches = receipt.calls.reduce(
-    (total, call) => total + call.physicalFetchDispatch,
-    0,
-  );
-  if (receiptDispatches !== receipt.physicalFetchDispatch) {
-    reasons.add("dispatch_receipt_conservation_mismatch");
-  }
-  if (
-    receipt.calls.some(
-      (call, index) =>
-        call.ordinal !== index + 1 ||
-        !/^[a-f0-9]{64}$/u.test(call.callIdSha256) ||
-        !Number.isSafeInteger(call.physicalFetchDispatch) ||
-        call.physicalFetchDispatch < 0,
-    )
-  ) {
-    reasons.add("dispatch_receipt_call_invalid");
-  }
-  if (new Set(receipt.calls.map((call) => call.callIdSha256)).size !== receipt.calls.length) {
-    reasons.add("dispatch_receipt_call_identity_duplicate");
-  }
-  if (
-    !route ||
-    receipt.route.provider !== route.provider ||
-    receipt.route.model !== route.model ||
-    receipt.route.api !== route.api
-  ) {
-    reasons.add("dispatch_receipt_route_mismatch");
-  }
-  if (!transport) {
-    reasons.add("provider_transport_not_observed");
-  } else {
-    if (
-      receipt.logicalCalls !== transport.logicalCalls.total ||
-      receipt.calls.some(
-        (call, index) =>
-          call.callIdSha256 !== hashCallId(transport.logicalCalls.entries[index]?.callId ?? ""),
-      )
-    ) {
-      reasons.add("dispatch_provider_ledger_mismatch");
-    }
-    if (
-      receipt.calls.some(
-        (call, index) =>
-          call.physicalFetchDispatch <
-          (params.attemptsByCall.get(transport.logicalCalls.entries[index]?.callId ?? "") ?? 0),
-      )
-    ) {
-      reasons.add("dispatch_attempt_conservation_mismatch");
-    }
-  }
-  return [...reasons];
-}
-
 function codeModeBridgeMetric(
   snapshot: AgentCommandRunAccountingSnapshot,
   codeModeEngaged: boolean | undefined,
-  codeModeConfigured: false | "auto" | true | undefined,
+  codeModeConfigured: false | "auto" | true | "unreported" | undefined,
 ): AgentExecTraceMetric {
   if (codeModeConfigured === false && snapshot.codeMode === undefined) {
     if (codeModeEngaged !== false) {
@@ -503,16 +376,33 @@ function codeModeBridgeMetric(
 
 function tokenAuthorityReasons(
   transport: ProviderTransport | undefined,
-  authorityReasons: readonly string[],
-  attemptsByCall: ReadonlyMap<string, number>,
+  dispatchReceipt: AgentExecDispatchReceipt | undefined,
+  auditReasons: readonly string[],
+  attemptsByOrdinal: ReadonlyMap<number, number>,
 ): string[] {
-  const reasons = new Set<string>(authorityReasons);
+  const reasons = new Set<string>(auditReasons);
   if (!transport) {
     return [...reasons];
   }
+  const dispatchedOrdinals = new Set(
+    dispatchReceipt?.dispatches.map((dispatch) => dispatch.logicalCallOrdinal) ?? [],
+  );
+  const zeroSubmissionOrdinals = new Set(
+    dispatchReceipt?.complete
+      ? dispatchReceipt.calls
+          .filter(
+            (call) =>
+              call.finalized &&
+              (call.outcome === "failed" || call.outcome === "aborted") &&
+              !dispatchedOrdinals.has(call.ordinal),
+          )
+          .map((call) => call.ordinal)
+      : [],
+  );
+  const expectedAttemptCount = transport.logicalCalls.total - zeroSubmissionOrdinals.size;
   if (
-    transport.attempts.total !== transport.logicalCalls.total ||
-    transport.attempts.initial !== transport.logicalCalls.total ||
+    transport.attempts.total !== expectedAttemptCount ||
+    transport.attempts.initial !== expectedAttemptCount ||
     transport.attempts.retries !== 0 ||
     transport.attempts.authRecoveries !== 0 ||
     transport.attempts.payloadRecoveries !== 0 ||
@@ -520,7 +410,13 @@ function tokenAuthorityReasons(
   ) {
     reasons.add("provider_attempt_usage_unattributed");
   }
-  if (transport.logicalCalls.entries.some((call) => attemptsByCall.get(call.callId) !== 1)) {
+  if (
+    transport.logicalCalls.entries.some((call, index) => {
+      const ordinal = call.ordinal ?? index + 1;
+      const attempts = attemptsByOrdinal.get(ordinal) ?? 0;
+      return attempts !== (zeroSubmissionOrdinals.has(ordinal) ? 0 : 1);
+    })
+  ) {
     reasons.add("provider_attempt_usage_unproven");
   }
   return [...reasons];
@@ -551,57 +447,13 @@ function firstLogicalCallCachedInput(
   return { state: "exact", value: firstCall.cachedInput.tokens };
 }
 
-function auditTrace(params: {
-  metrics: AgentExecTrace["metrics"];
-  routeReasons: readonly string[];
-}): AgentExecTrace["audit"] {
-  const reasons = new Set<string>(params.routeReasons);
-  const required: Array<[string, AgentExecTraceMetric]> = [
-    ["effective_turns", params.metrics.effectiveTurns],
-    ["logical_model_calls", params.metrics.logicalModelCalls],
-    ["provider_attempts", params.metrics.providerAttempts.total],
-    ["provider_initial_attempts", params.metrics.providerAttempts.initial],
-    ["provider_retries", params.metrics.providerAttempts.retries],
-    ["provider_auth_recoveries", params.metrics.providerAttempts.authRecoveries],
-    ["provider_payload_recoveries", params.metrics.providerAttempts.payloadRecoveries],
-    ["provider_transport_fallbacks", params.metrics.providerAttempts.transportFallbacks],
-    ["physical_fetch_dispatch", params.metrics.physicalFetchDispatch],
-    ["outer_tool_calls", params.metrics.outerToolCalls],
-    ["code_mode_bridge_calls", params.metrics.codeModeBridgeCalls],
-    ["total_tool_operations", params.metrics.totalToolOperations],
-    ["underlying_total_calls", params.metrics.underlyingTotalCalls],
-    ["input_tokens", params.metrics.tokens.input],
-    ["cached_input_tokens", params.metrics.tokens.cachedInput],
-    ["output_tokens", params.metrics.tokens.output],
-    ["reasoning_tokens", params.metrics.tokens.reasoning],
-    ["total_tokens", params.metrics.tokens.total],
-    ["agent_duration", params.metrics.agentDurationMs],
-    ["command_execution_duration", params.metrics.commandExecutionDurationMs],
-  ];
-  for (const [name, metric] of required) {
-    if (metric.state !== "exact") {
-      reasons.add(`${name}_${metric.state}`);
-      for (const reason of "reasons" in metric ? (metric.reasons ?? []) : []) {
-        reasons.add(reason);
-      }
-    }
-  }
-  if (params.metrics.tokens.firstLogicalCallCachedInput.state !== "exact") {
-    for (const reason of params.metrics.tokens.firstLogicalCallCachedInput.reasons) {
-      reasons.add(reason);
-    }
-  }
-  return reasons.size === 0
-    ? { state: "valid" }
-    : { state: "inconclusive", reasons: [...reasons].toSorted() };
+function metricReasons(metric: AgentExecTraceMetric): readonly string[] {
+  return "reasons" in metric ? (metric.reasons ?? []) : [];
 }
 
 export function projectAgentExecTrace(params: {
   snapshot: AgentCommandRunAccountingSnapshot | undefined;
-  agentDurationMs?: number;
-  codeModeEngaged?: boolean;
-  codeModeConfigured?: false | "auto" | true;
-  dispatchReceipt?: AgentExecDispatchReceipt;
+  codeModeConfigured?: false | "auto" | true | "unreported";
   model?: string;
   provider?: string;
 }): AgentExecTrace | undefined {
@@ -609,26 +461,41 @@ export function projectAgentExecTrace(params: {
   if (!snapshot) {
     return undefined;
   }
-  const transport = snapshot.providerTransport;
-  const providerAudit = providerLedgerAudit(snapshot, transport);
-  const providerReasons = providerAudit.reasons;
-  const modelCallReasons = modelCallReconciliationReasons(snapshot, transport);
-  const authorityReasons = normalizeTraceReasons([...providerReasons, ...modelCallReasons]);
-  const routeProjection = projectRoute({
-    snapshot,
-    transport,
-    observedModel: params.model,
-    observedProvider: params.provider,
-    authorityReasons,
-  });
-  const receiptReasons = dispatchReceiptReasons({
-    receipt: params.dispatchReceipt,
-    transport,
-    route: routeProjection.route,
-    attemptsByCall: providerAudit.attemptsByCall,
-  });
-  const logicalModelCalls = metricWithReasons(transport?.logicalCalls.total, authorityReasons);
-  const attemptReasons = providerReasons;
+  const dispatchAuthority = projectAgentExecDispatchAuthority(snapshot);
+  const dispatchReceipt = dispatchAuthority.receipt;
+  const transport =
+    dispatchReceipt?.complete === true ? dispatchAuthority.providerTransport : undefined;
+  const authorityValid = transport !== undefined;
+  const authorityReasons = authorityValid
+    ? []
+    : normalizeTraceReasons([
+        "dispatch_receipt_authority_invalid",
+        ...(dispatchReceipt?.incompleteReasons ?? ["dispatch_receipt_unavailable"]),
+      ]);
+  const providerAudit = transport
+    ? providerLedgerAudit(transport)
+    : { reasons: authorityReasons, attemptsByOrdinal: new Map<number, number>() };
+  const auditReasons = transport
+    ? normalizeTraceReasons([
+        ...providerAudit.reasons,
+        ...modelCallReconciliationReasons(snapshot, transport),
+      ])
+    : authorityReasons;
+  const routeProjection = transport
+    ? projectRoute({
+        snapshot,
+        transport,
+        observedModel: params.model,
+        observedProvider: params.provider,
+        auditReasons,
+      })
+    : { reasons: authorityReasons };
+  const codeModeEngaged =
+    snapshot.codeMode?.engaged ?? (params.codeModeConfigured === false ? false : undefined);
+  const authorityUnavailable = () => unavailableMetric(authorityReasons);
+  const logicalModelCalls = transport
+    ? metricWithReasons(transport.logicalCalls.total, auditReasons)
+    : authorityUnavailable();
   const outerToolCalls = observedMetric({
     value: snapshot.toolSummary?.calls,
     coverage: snapshot.coverage.tools,
@@ -636,55 +503,63 @@ export function projectAgentExecTrace(params: {
   });
   const codeModeBridgeCalls = codeModeBridgeMetric(
     snapshot,
-    params.codeModeEngaged,
+    codeModeEngaged,
     params.codeModeConfigured,
   );
-  const totalToolOperations = sumExactMetrics(
-    [outerToolCalls, codeModeBridgeCalls],
-    "tool_operation_components_incomplete",
-  );
-  const physicalFetchDispatch =
-    receiptReasons.length === 0
-      ? {
-          state: "exact" as const,
-          value: params.dispatchReceipt!.physicalFetchDispatch,
-        }
-      : unavailableMetric(receiptReasons);
   const tokenReasons = tokenAuthorityReasons(
     transport,
-    authorityReasons,
-    providerAudit.attemptsByCall,
+    dispatchReceipt,
+    auditReasons,
+    providerAudit.attemptsByOrdinal,
   );
   const tokenMetric = (
     value: number | undefined,
     coverage: AgentCommandRunAccountingSnapshot["coverage"]["usageBuckets"]["input"],
-  ) => observedMetric({ value, coverage, reasons: tokenReasons });
-  const metrics: AgentExecTrace["metrics"] = {
-    effectiveTurns: observedMetric({
-      value: snapshot.assistantTurns,
-      coverage: snapshot.coverage.assistantTurns,
-    }),
-    logicalModelCalls,
-    providerAttempts: {
-      total: metricWithReasons(transport?.attempts.total, attemptReasons),
-      initial: metricWithReasons(transport?.attempts.initial, attemptReasons),
-      retries: metricWithReasons(transport?.attempts.retries, attemptReasons),
-      authRecoveries: metricWithReasons(transport?.attempts.authRecoveries, attemptReasons),
-      payloadRecoveries: metricWithReasons(transport?.attempts.payloadRecoveries, attemptReasons),
-      transportFallbacks: metricWithReasons(transport?.attempts.transportFallbacks, attemptReasons),
+  ) =>
+    authorityValid
+      ? observedMetric({ value, coverage, reasons: tokenReasons })
+      : authorityUnavailable();
+  const facts: AgentExecTraceSourceInput["facts"] = {
+    auditReasons: [],
+    accounting: {
+      effectiveTurns: transport
+        ? observedMetric({
+            value: snapshot.assistantTurns,
+            coverage: snapshot.coverage.assistantTurns,
+          })
+        : authorityUnavailable(),
+      logicalModelCalls,
+      providerAttempts: {
+        total: transport
+          ? metricWithReasons(transport.attempts.total, providerAudit.reasons)
+          : authorityUnavailable(),
+        initial: transport
+          ? metricWithReasons(transport.attempts.initial, providerAudit.reasons)
+          : authorityUnavailable(),
+        retries: transport
+          ? metricWithReasons(transport.attempts.retries, providerAudit.reasons)
+          : authorityUnavailable(),
+        authRecoveries: transport
+          ? metricWithReasons(transport.attempts.authRecoveries, providerAudit.reasons)
+          : authorityUnavailable(),
+        payloadRecoveries: transport
+          ? metricWithReasons(transport.attempts.payloadRecoveries, providerAudit.reasons)
+          : authorityUnavailable(),
+        transportFallbacks: transport
+          ? metricWithReasons(transport.attempts.transportFallbacks, providerAudit.reasons)
+          : authorityUnavailable(),
+      },
     },
-    physicalFetchDispatch,
-    outerToolCalls,
-    codeModeBridgeCalls,
-    totalToolOperations,
-    underlyingTotalCalls: sumExactMetrics(
-      [physicalFetchDispatch, totalToolOperations],
-      "underlying_call_components_incomplete",
-    ),
-    tokens: {
+    tools: {
+      outerToolCalls: transport ? outerToolCalls : authorityUnavailable(),
+      codeModeBridgeCalls: transport ? codeModeBridgeCalls : authorityUnavailable(),
+    },
+    usage: {
       input: tokenMetric(snapshot.usage?.input, snapshot.coverage.usageBuckets.input),
       cachedInput: tokenMetric(snapshot.usage?.cacheRead, snapshot.coverage.usageBuckets.cacheRead),
-      firstLogicalCallCachedInput: firstLogicalCallCachedInput(transport, tokenReasons),
+      firstLogicalCallCachedInput: transport
+        ? firstLogicalCallCachedInput(transport, tokenReasons)
+        : { state: "unknown", reasons: authorityReasons },
       output: tokenMetric(snapshot.usage?.output, snapshot.coverage.usageBuckets.output),
       reasoning: tokenMetric(
         snapshot.usage?.reasoningTokens,
@@ -692,25 +567,42 @@ export function projectAgentExecTrace(params: {
       ),
       total: tokenMetric(snapshot.usage?.total, snapshot.coverage.usageBuckets.total),
     },
-    agentDurationMs: agentDurationMetric(snapshot, params.agentDurationMs),
-    commandExecutionDurationMs: observedMetric({
-      value: snapshot.commandExecutionDurationMs,
-      coverage: snapshot.coverage.commandExecutionDuration,
-    }),
+    duration: {
+      agentDurationMs: authorityValid ? agentDurationMetric(snapshot) : authorityUnavailable(),
+      commandExecutionDurationMs: authorityValid
+        ? observedMetric({
+            value: snapshot.commandExecutionDurationMs,
+            coverage: snapshot.coverage.commandExecutionDuration,
+          })
+        : authorityUnavailable(),
+    },
   };
-  return {
-    schemaVersion: AGENT_EXEC_TRACE_SCHEMA_VERSION,
-    source: "agent-command-accounting",
+  facts.auditReasons = normalizeTraceReasons([
+    ...routeProjection.reasons,
+    ...(dispatchReceipt?.incompleteReasons ?? []),
+    ...metricReasons(facts.accounting.effectiveTurns),
+    ...metricReasons(facts.accounting.logicalModelCalls),
+    ...Object.values(facts.accounting.providerAttempts).flatMap(metricReasons),
+    ...metricReasons(facts.tools.outerToolCalls),
+    ...metricReasons(facts.tools.codeModeBridgeCalls),
+    ...metricReasons(facts.usage.input),
+    ...metricReasons(facts.usage.cachedInput),
+    ...(facts.usage.firstLogicalCallCachedInput.state === "unknown"
+      ? facts.usage.firstLogicalCallCachedInput.reasons
+      : []),
+    ...metricReasons(facts.usage.output),
+    ...metricReasons(facts.usage.reasoning),
+    ...metricReasons(facts.usage.total),
+    ...metricReasons(facts.duration.agentDurationMs),
+    ...metricReasons(facts.duration.commandExecutionDurationMs),
+  ]);
+  return buildAgentExecTrace({
+    mode: {
+      configured: params.codeModeConfigured ?? "unreported",
+      engaged: codeModeEngaged ?? null,
+    },
     ...(routeProjection.route ? { route: routeProjection.route } : {}),
-    ...(params.dispatchReceipt ? { dispatchReceipt: structuredClone(params.dispatchReceipt) } : {}),
-    metrics,
-    audit: auditTrace({
-      metrics,
-      routeReasons: routeProjection.reasons,
-    }),
-  };
+    ...(dispatchReceipt ? { dispatchReceipt } : {}),
+    facts,
+  });
 }
-
-export const agentExecTraceTesting = {
-  hashCallId,
-};

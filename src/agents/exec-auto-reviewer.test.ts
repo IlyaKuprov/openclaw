@@ -279,7 +279,7 @@ describe("createModelExecAutoReviewer", () => {
       },
       providerTransport: {
         state: "unavailable",
-        reasons: ["not_observed", "exec_auto_review_model_completion"],
+        reasons: ["not_observed", "not_instrumented"],
       },
     });
   });
