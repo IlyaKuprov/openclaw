@@ -2627,7 +2627,7 @@ jobs:
             sha256sum "${notes_file}" | awk '{print $1}'
           )"
           docker_status_file="${RUNNER_TEMP}/extended-stable-docker-status.json"
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" > "${docker_status_file}"
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status?per_page=100" > "${docker_status_file}"
           docker_status_run_id="$(node .release-harness/scripts/docker-channel-promote.mjs \
             --find-status-file "${docker_status_file}" \
             --version "${release_version}" \
@@ -2734,7 +2734,7 @@ jobs:
           status_file="${RUNNER_TEMP}/extended-stable-docker-status.json"
           docker_status_run_id=""
           for attempt in $(seq 1 12); do
-            gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status" > "${status_file}"
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/status?per_page=100" > "${status_file}"
             docker_status_run_id="$(node scripts/docker-channel-promote.mjs \
               --find-status-file "${status_file}" \
               --version "${release_version}" \

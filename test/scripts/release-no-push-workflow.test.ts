@@ -1141,6 +1141,7 @@ describe("release validation no-push transport", () => {
     expect(createDraft.run).toContain('verify_release_resource "${release_id}" false true');
     expect(createDraft.run).toContain("wait_until_not_latest");
     expect(createDraft.run).toContain("Docker completion will be checked independently");
+    expect(createDraft.run).toContain("commits/${TARGET_SHA}/status?per_page=100");
     expect(createDraft.run).toContain("--find-status-file");
     expect(createDraft.run).toContain("docker_already_published=true");
     expect(createDraft.run).toContain("public without Docker completion");
@@ -1156,9 +1157,12 @@ describe("release validation no-push transport", () => {
     expect(verifyDockerCompletion.if).toContain(
       "needs.prepare_extended_stable_release.outputs.docker_already_published == 'true'",
     );
-    expect(step(verifyDockerCompletion, "Verify durable Docker completion status").run).toContain(
-      "--find-status-file",
-    );
+    const verifyDockerCompletionRun = step(
+      verifyDockerCompletion,
+      "Verify durable Docker completion status",
+    ).run;
+    expect(verifyDockerCompletionRun).toContain("commits/${TARGET_SHA}/status?per_page=100");
+    expect(verifyDockerCompletionRun).toContain("--find-status-file");
     expect(finalizeRelease.needs).toEqual([
       "resolve_release_target",
       "prepare_extended_stable_release",
