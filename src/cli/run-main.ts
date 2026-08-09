@@ -1205,19 +1205,12 @@ async function runCliWithPreparedOutputMode(
   if (shouldEnsureCliPath(normalizedArgv)) {
     ensureOpenClawCliOnPath();
   }
-  const bareSessionPrimary = !isHelpOrVersionInvocation
-    ? resolveUnownedCliPrimaryCandidate(normalizedArgv)
-    : null;
-  const sessionRefModule = bareSessionPrimary ? await import("./session-ref.js") : null;
-  const bareSessionTarget = bareSessionPrimary
-    ? sessionRefModule?.isSessionUrlInputCandidate(bareSessionPrimary)
-      ? bareSessionPrimary
-      : null
-    : null;
-  const bareSessionOptions =
-    bareSessionTarget && sessionRefModule
-      ? sessionRefModule.parseBareSessionTuiOptions(normalizedArgv, bareSessionTarget)
-      : {};
+  // Cheap import gate only. Session-ref owns the authoritative URL/options parse.
+  const mayContainBareSessionUrl = normalizedArgv.slice(2).some((arg) => arg.includes("://"));
+  const bareSessionInvocation =
+    !isHelpOrVersionInvocation && mayContainBareSessionUrl
+      ? (await import("./session-ref.js")).parseBareSessionInvocation(normalizedArgv)
+      : null;
 
   // Activate operator-managed proxy routing for network-capable commands.
   // Local Gateway/control-plane commands keep direct loopback access while
@@ -1260,7 +1253,7 @@ async function runCliWithPreparedOutputMode(
   }
   if (
     !isHelpOrVersionInvocation &&
-    !bareSessionTarget &&
+    !bareSessionInvocation &&
     normalizedInvocation.primary &&
     !isKnownBuiltInCommandRoot(normalizedInvocation.primary)
   ) {
@@ -1329,7 +1322,7 @@ async function runCliWithPreparedOutputMode(
   };
   if (!isHelpOrVersionInvocation && shouldStartProxyForCli(normalizedArgv)) {
     const config = await withConsoleLogsRoutedToStderr(readBestEffortCliConfig);
-    if (!bareSessionTarget) {
+    if (!bareSessionInvocation) {
       const unownedPrimary = await resolveUnownedCliPrimary({ argv: normalizedArgv, config });
       if (unownedPrimary) {
         throw new Error(await resolveUnownedCliPrimaryMessage({ primary: unownedPrimary, config }));
@@ -1381,7 +1374,7 @@ async function runCliWithPreparedOutputMode(
     // invocation can still fail validation and must honor the console style.
     await installConsoleCapture();
 
-    if (bareSessionTarget) {
+    if (bareSessionInvocation) {
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
         console.error(
           "OpenClaw TUI needs an interactive TTY. Use `openclaw agent --local ...` for automation.",
@@ -1390,7 +1383,7 @@ async function runCliWithPreparedOutputMode(
         return;
       }
       const { runTuiCliAction } = await import("./tui-cli.js");
-      await runTuiCliAction(bareSessionTarget, bareSessionOptions);
+      await runTuiCliAction(bareSessionInvocation.target, bareSessionInvocation.options);
       return;
     }
 
