@@ -566,12 +566,13 @@ test("sessions.list exposes effective fast auto defaults from the selected model
 
 test.each([
   {
-    label: "rosterless global default",
+    label: "global default",
     agents: {
       defaults: {
         fastModeDefault: true,
         models: { "openai/gpt-5.5": { params: { fastMode: false } } },
       },
+      entries: { main: { default: true } },
     },
     expectedFastMode: undefined,
     expectedEffectiveFastMode: true,
@@ -584,7 +585,7 @@ test.each([
         fastModeDefault: true,
         models: { "openai/gpt-5.5": { params: { fastMode: true } } },
       },
-      entries: { main: { fastModeDefault: false } },
+      entries: { main: { default: true, fastModeDefault: false } },
     },
     expectedFastMode: undefined,
     expectedEffectiveFastMode: false,
@@ -597,7 +598,7 @@ test.each([
         fastModeDefault: false,
         models: { "openai/gpt-5.5": { params: { fastMode: false } } },
       },
-      entries: { main: { fastModeDefault: false } },
+      entries: { main: { default: true, fastModeDefault: false } },
     },
     sessionFastMode: "auto" as const,
     expectedFastMode: "auto",

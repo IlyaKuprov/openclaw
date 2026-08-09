@@ -19,6 +19,7 @@ import {
   getRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/io.js";
+import { withCanonicalTestAgentRoster } from "../config/test-fixtures.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
@@ -36,6 +37,10 @@ async function makeTempRoot(prefix: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   tempRoots.push(root);
   return root;
+}
+
+async function writeCanonicalConfigSeed(seedPath: string, config: OpenClawConfig): Promise<void> {
+  await fs.writeFile(seedPath, JSON.stringify(withCanonicalTestAgentRoster(config)), "utf8");
 }
 
 function createRuntime() {
@@ -630,11 +635,9 @@ describe("agent exec command composition", () => {
   it("undoes environment mutations made by loading the config", async () => {
     const seedDir = await makeTempRoot("openclaw-agent-exec-envseed-");
     const seedPath = path.join(seedDir, "openclaw.json");
-    await fs.writeFile(
-      seedPath,
-      JSON.stringify({ env: { vars: { OPENCLAW_EXEC_ENV_PROBE: "from-config" } } }),
-      "utf8",
-    );
+    await writeCanonicalConfigSeed(seedPath, {
+      env: { vars: { OPENCLAW_EXEC_ENV_PROBE: "from-config" } },
+    });
     const { runtime } = createRuntime();
     let observedDuringRun: string | undefined;
 
@@ -697,14 +700,10 @@ describe("agent exec command composition", () => {
     // The loader owns this: it applies `env.vars` only after validation passes,
     // and restores them from its own catch. Pinned here because the observable
     // contract matters regardless of which layer enforces it.
-    await fs.writeFile(
-      seedPath,
-      JSON.stringify({
-        env: { vars: { OPENCLAW_EXEC_FAILED_PROBE: "from-rejected-config" } },
-        agents: { defaults: { sandbox: { mode: "not-a-real-mode" } } },
-      }),
-      "utf8",
-    );
+    await writeCanonicalConfigSeed(seedPath, {
+      env: { vars: { OPENCLAW_EXEC_FAILED_PROBE: "from-rejected-config" } },
+      agents: { defaults: { sandbox: { mode: "not-a-real-mode" } } },
+    } as OpenClawConfig);
     const { runtime } = createRuntime();
 
     const result = await agentExecCommand("inspect", { config: seedPath }, runtime, {
@@ -809,13 +808,9 @@ describe("agent exec command composition", () => {
     const customAgentDir = path.join(stateDir, "custom-home");
     await fs.mkdir(customAgentDir, { recursive: true });
     const seedPath = path.join(stateDir, "openclaw.json");
-    await fs.writeFile(
-      seedPath,
-      JSON.stringify({
-        agents: { entries: { main: { agentDir: customAgentDir } } },
-      }),
-      "utf8",
-    );
+    await writeCanonicalConfigSeed(seedPath, {
+      agents: { entries: { main: { default: true, agentDir: customAgentDir } } },
+    });
     const { saveAuthProfileStore } = await import("../agents/auth-profiles.js");
     saveAuthProfileStore(
       {
@@ -1040,6 +1035,7 @@ describe("agent exec run config layering", () => {
 
 describe("agent exec base config resolution", () => {
   const seedConfig = {
+    agents: { entries: { main: { default: true } } },
     models: {
       providers: {
         custom: {
@@ -1053,10 +1049,14 @@ describe("agent exec base config resolution", () => {
     },
   } satisfies OpenClawConfig;
 
-  async function writeSeed(body: string): Promise<string> {
+  async function writeSeed(body: string | OpenClawConfig): Promise<string> {
     const dir = await makeTempRoot("openclaw-agent-exec-seed-");
     const seedPath = path.join(dir, "openclaw.json");
-    await fs.writeFile(seedPath, body, "utf8");
+    if (typeof body === "string") {
+      await fs.writeFile(seedPath, body, "utf8");
+    } else {
+      await writeCanonicalConfigSeed(seedPath, body);
+    }
     return seedPath;
   }
 
@@ -1071,11 +1071,9 @@ describe("agent exec base config resolution", () => {
   });
 
   it("reads the pinned file even when a runtime snapshot is already published", async () => {
-    const seedPath = await writeSeed(
-      JSON.stringify({
-        models: { providers: { custom: { baseUrl: "https://from-file.invalid", models: [] } } },
-      }),
-    );
+    const seedPath = await writeSeed({
+      models: { providers: { custom: { baseUrl: "https://from-file.invalid", models: [] } } },
+    });
     setRuntimeConfigSnapshot({
       models: { providers: { custom: { baseUrl: "https://from-snapshot.invalid", models: [] } } },
     });
@@ -1090,7 +1088,7 @@ describe("agent exec base config resolution", () => {
 
   it("reads --config through the JSON5-aware loader", async () => {
     const seedPath = await writeSeed(
-      `{\n  // pinned run config\n  models: { providers: { custom: { baseUrl: "https://example.invalid", models: [] } } },\n}\n`,
+      `{\n  // pinned run config\n  agents: { entries: { main: { default: true } } },\n  models: { providers: { custom: { baseUrl: "https://example.invalid", models: [] } } },\n}\n`,
     );
 
     const resolved = await resolveExecBaseConfig({ config: seedPath });
@@ -1099,7 +1097,7 @@ describe("agent exec base config resolution", () => {
   });
 
   it("rejects --config paired with a mode that reads no config", async () => {
-    const seedPath = await writeSeed(JSON.stringify(seedConfig));
+    const seedPath = await writeSeed(seedConfig);
 
     await expect(resolveExecBaseConfig({ config: seedPath, isolated: true })).rejects.toThrow(
       "--config cannot be combined with --isolated",
@@ -1110,7 +1108,7 @@ describe("agent exec base config resolution", () => {
   });
 
   it("reads no config at all under --auth-env-only", async () => {
-    const seedPath = await writeSeed(JSON.stringify(seedConfig));
+    const seedPath = await writeSeed(seedConfig);
 
     // A config can supply provider credentials through several surfaces, so
     // env-only means no config at all.

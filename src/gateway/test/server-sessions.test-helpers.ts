@@ -417,7 +417,7 @@ function createGatewaySessionsTestHarness(startServer: boolean) {
     const storeTemplate = path.join(dir, "agents", "{agentId}", "sessions", "sessions.json");
     testState.sessionStorePath = storeTemplate;
     testState.sessionConfig = { scope: "global" };
-    testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "work" }] };
+    testState.agentsConfig = { entries: { main: { default: true }, work: {} } };
     return {
       dir,
       storeTemplate,
@@ -489,7 +489,7 @@ function createGatewaySessionsTestHarness(startServer: boolean) {
       configPath,
       `${JSON.stringify(
         {
-          agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+          agents: { entries: { main: { default: true }, work: {} } },
           session: { scope: "global", store: storeTemplate },
         },
         null,
@@ -523,7 +523,7 @@ function createGatewaySessionsTestHarness(startServer: boolean) {
   }) {
     testState.sessionStorePath = undefined;
     testState.sessionConfig = undefined;
-    await fs.writeFile(configPath, "{}\n", "utf-8");
+    await fs.rm(configPath, { force: true });
     clearRuntimeConfigSnapshot();
     clearConfigCache();
   }

@@ -215,12 +215,13 @@ export function createGatewayConfigModuleMock(actual: GatewayConfigModule): Gate
   const writeConfigFile = vi.fn(async (cfg: Record<string, unknown>) => {
     const configPath = resolveConfigPath();
     await fs.mkdir(path.dirname(configPath), { recursive: true });
-    const raw = JSON.stringify(cfg, null, 2).trimEnd().concat("\n");
+    const persistedConfig = withCanonicalTestAgentRoster(cfg as OpenClawConfig);
+    const raw = JSON.stringify(persistedConfig, null, 2).trimEnd().concat("\n");
     await fs.writeFile(configPath, raw, "utf-8");
     actual.resetConfigRuntimeState();
     return {
       persistedHash: "test-config-hash",
-      persistedConfig: composeTestConfig(cfg),
+      persistedConfig: composeTestConfig(persistedConfig),
     };
   });
 
