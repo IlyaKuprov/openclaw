@@ -5,6 +5,7 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setSlackRuntime } from "../runtime.js";
 import { createSlackMonitorContext } from "./context.js";
+import type { SlackInstallationIdentity } from "./enterprise-install.js";
 import type { SlackEventScope } from "./event-scope.js";
 
 function createTestContext(params?: {
@@ -13,6 +14,7 @@ function createTestContext(params?: {
   groupDmChannels?: string[];
   appClient?: App["client"];
   apiAppId?: string;
+  installationIdentity?: SlackInstallationIdentity;
 }) {
   return createSlackMonitorContext({
     cfg: {
@@ -28,6 +30,7 @@ function createTestContext(params?: {
     identityHealth: { lifecycle: "ready", lastError: null },
     teamId: "T_EXPECTED",
     apiAppId: params?.apiAppId ?? "A_EXPECTED",
+    installationIdentity: params?.installationIdentity,
     historyLimit: 0,
     sessionScope: "per-sender",
     mainKey: "main",
@@ -142,6 +145,28 @@ describe("createSlackMonitorContext resolveSlackSystemEventSessionKey", () => {
         senderId: "U_ACTOR",
       }),
     ).toBe("agent:main:slack:group:c0mpdm42");
+  });
+
+  it("partitions Enterprise Grid deferred-action sessions by event team", () => {
+    const ctx = createTestContext({
+      installationIdentity: { kind: "enterprise", enterpriseId: "EGRID" },
+    });
+
+    expect(
+      ctx.resolveSlackSystemEventSessionKey({
+        channelId: "CSHARED1",
+        channelType: "channel",
+        senderId: "UACTOR1",
+        teamId: "T111",
+      }),
+    ).toBe("agent:main:slack:channel:team:t111:channel:cshared1");
+    expect(
+      ctx.resolveSlackSystemEventSessionKey({
+        channelType: "im",
+        senderId: "UACTOR1",
+        teamId: "T222",
+      }),
+    ).toBe("agent:main:main:account:default:team:t222");
   });
 });
 

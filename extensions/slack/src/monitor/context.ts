@@ -29,6 +29,10 @@ import type { SlackChannelConfigEntries } from "./channel-config.js";
 import { resolveSlackChannelConfig } from "./channel-config.js";
 import { normalizeSlackChannelType } from "./channel-type.js";
 import { resolveSessionKey } from "./config.runtime.js";
+import {
+  partitionSlackDeferredActionDmRoute,
+  resolveSlackDeferredActionSessionTarget,
+} from "./deferred-action-routing.js";
 import type { SlackIdentityHealth, SlackInstallationIdentity } from "./enterprise-install.js";
 import type { SlackEventScope } from "./event-scope.js";
 import { readLruMapEntry, writeLruMapEntry } from "./lru-map-cache.js";
@@ -162,6 +166,7 @@ export type SlackMonitorContext = {
     channelType?: string | null;
     senderId?: string | null;
     threadTs?: string | null;
+    teamId?: string | null;
   }) => string;
   isChannelAllowed: (params: {
     channelId?: string;
@@ -381,6 +386,7 @@ export function createSlackMonitorContext(params: {
     channelType?: string | null;
     senderId?: string | null;
     threadTs?: string | null;
+    teamId?: string | null;
   }) => {
     const channelId = normalizeOptionalString(p.channelId) ?? "";
     const senderId = normalizeOptionalString(p.senderId) ?? "";
@@ -395,27 +401,34 @@ export function createSlackMonitorContext(params: {
       return params.mainKey;
     }
     const isGroup = channelType === "mpim";
-    const from = isDirectMessage
-      ? `slack:${channelId || senderId}`
-      : isGroup
-        ? `slack:group:${channelId}`
-        : `slack:channel:${channelId}`;
+    const deferredTarget = resolveSlackDeferredActionSessionTarget({
+      installationIdentity: params.installationIdentity,
+      teamId: p.teamId,
+      channelId,
+      senderId,
+      isDirectMessage,
+      isGroup,
+    });
     const chatType = isDirectMessage ? "direct" : isGroup ? "group" : "channel";
     // Resolve through shared channel/account bindings so system events route to
     // the same agent session as regular inbound messages.
     try {
-      const peerKind = isDirectMessage ? "direct" : isGroup ? "group" : "channel";
-      const peerId = isDirectMessage ? senderId : channelId;
-      if (peerId) {
-        const route = resolveAgentRoute({
+      if (deferredTarget.peerId) {
+        const initialRoute = resolveAgentRoute({
           cfg: params.cfg,
           channel: "slack",
           accountId: params.accountId,
-          teamId: params.teamId,
-          peer: { kind: peerKind, id: peerId },
+          teamId: deferredTarget?.teamId ?? p.teamId ?? params.teamId,
+          peer: { kind: deferredTarget.peerKind, id: deferredTarget.peerId },
+        });
+        const route = partitionSlackDeferredActionDmRoute({
+          route: initialRoute,
+          accountId: params.accountId,
+          teamId: deferredTarget.teamId,
+          isDirectMessage,
         });
         const threadTs = normalizeOptionalString(p.threadTs);
-        const baseConversationId = isDirectMessage ? `user:${senderId}` : channelId;
+        const baseConversationId = deferredTarget.baseConversationId;
         const threadBindingRoute = threadTs
           ? resolveRuntimeConversationBindingRoute({
               route,
@@ -454,7 +467,7 @@ export function createSlackMonitorContext(params: {
 
     const legacySessionKey = resolveSessionKey(
       params.sessionScope,
-      { From: from, ChatType: chatType, Provider: "slack" },
+      { From: deferredTarget.from, ChatType: chatType, Provider: "slack" },
       params.mainKey,
       resolveDefaultAgentId(params.cfg),
     );
