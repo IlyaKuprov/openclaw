@@ -69,13 +69,27 @@ function readMatrixConfigOverrides(
     : undefined;
 }
 
+function arrayPreservesBaseEntries(base: unknown[], merged: unknown[]): boolean {
+  const unmatchedMerged = [...merged];
+  for (const baseEntry of base) {
+    const matchIndex = unmatchedMerged.findIndex((mergedEntry) =>
+      isDeepStrictEqual(mergedEntry, baseEntry),
+    );
+    if (matchIndex === -1) {
+      return false;
+    }
+    unmatchedMerged.splice(matchIndex, 1);
+  }
+  return true;
+}
+
 function createMatrixQaConfigPatch(
   current: OpenClawConfig,
   target: OpenClawConfig,
   accountId: string,
 ) {
   const accountPath = `channels.matrix.accounts.${accountId}`;
-  const replacePaths: string[] = [];
+  const replacePaths = new Set<string>();
   const isReplacePath = (path: string) =>
     /^(?:account\.(?:autoJoinAllowlist|dm\.allowFrom|execApprovals\.(?:agentFilter|approvers|sessionFilter)|groupAllowFrom|groups\..+\.tools\.(?:allow|deny))|messages\.groupChat\.mentionPatterns|tools\.media\.(?:models|audio\.scope\.rules))$/u.test(
       path.startsWith(accountPath) ? `account${path.slice(accountPath.length)}` : path,
@@ -85,13 +99,22 @@ function createMatrixQaConfigPatch(
       return MATRIX_QA_PATCH_UNCHANGED;
     }
     if (!isRecord(after)) {
+      // Gateway validates exact array intent below parent tombstones, so walk
+      // removed objects while admitting only Matrix QA-owned array leaves.
+      if (after === null && isRecord(before)) {
+        for (const key of Object.keys(before)) {
+          if (MATRIX_QA_PATCH_BLOCKED_KEYS.has(key)) {
+            continue;
+          }
+          diff(before[key], null, path ? `${path}.${key}` : key);
+        }
+      }
       if (
         Array.isArray(before) &&
-        (!Array.isArray(after) ||
-          before.some((entry) => !after.some((value) => isDeepStrictEqual(value, entry)))) &&
+        (!Array.isArray(after) || !arrayPreservesBaseEntries(before, after)) &&
         isReplacePath(path)
       ) {
-        replacePaths.push(path);
+        replacePaths.add(path);
       }
       return structuredClone(after);
     }
@@ -104,9 +127,7 @@ function createMatrixQaConfigPatch(
       const childPath = path ? `${path}.${key}` : key;
       if (!Object.hasOwn(after, key)) {
         patch[key] = null;
-        if (Array.isArray(source[key]) && isReplacePath(childPath)) {
-          replacePaths.push(childPath);
-        }
+        diff(source[key], null, childPath);
         continue;
       }
       const value = diff(source[key], after[key], childPath);
@@ -119,7 +140,7 @@ function createMatrixQaConfigPatch(
   const patch = diff(current, target, "");
   return {
     patch: patch === MATRIX_QA_PATCH_UNCHANGED ? {} : (patch as Record<string, unknown>),
-    replacePaths: replacePaths.sort(),
+    replacePaths: [...replacePaths].toSorted(),
   };
 }
 

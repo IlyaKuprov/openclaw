@@ -105,8 +105,13 @@ describe("matrix scenario environment", () => {
     expect(runMatrixQaCanary).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
   });
 
-  it("restores each scenario from one baseline against fresh current config", async () => {
+  it("restores an ordered exec-approval override to defaults from fresh current config", async () => {
     buildMatrixQaConfig.mockClear();
+    const execApprovalOverrides = {
+      agentFilter: ["main", "stale"],
+      approvers: ["@driver:test", "@stale:test"],
+      sessionFilter: ["matrix", "stale"],
+    };
     const baselineConfig = {
       channels: {
         matrix: {
@@ -118,7 +123,12 @@ describe("matrix scenario environment", () => {
     const firstTarget = {
       channels: {
         matrix: {
-          accounts: { sut: { enabled: true } },
+          accounts: {
+            sut: {
+              enabled: true,
+              execApprovals: execApprovalOverrides,
+            },
+          },
           enabled: true,
         },
       },
@@ -136,11 +146,7 @@ describe("matrix scenario environment", () => {
                 allowFrom: ["@driver:test", "@stale:test"],
                 sessionScope: "per-user",
               },
-              execApprovals: {
-                agentFilter: ["main", "stale"],
-                approvers: ["@driver:test", "@stale:test"],
-                sessionFilter: ["matrix", "stale"],
-              },
+              execApprovals: execApprovalOverrides,
               groupAllowFrom: ["@driver:test", "@stale:test"],
               groups: {
                 "!room:test": {
@@ -158,7 +164,7 @@ describe("matrix scenario environment", () => {
       },
       messages: {
         groupChat: {
-          mentionPatterns: ["@sut", "@stale"],
+          mentionPatterns: ["@sut", "@sut"],
         },
       },
       plugins: {
@@ -193,11 +199,6 @@ describe("matrix scenario environment", () => {
               autoJoinAllowlist: ["@driver:test"],
               deviceId: "CURRENT-DEVICE",
               dm: { allowFrom: ["@driver:test"] },
-              execApprovals: {
-                agentFilter: ["main"],
-                approvers: ["@driver:test"],
-                sessionFilter: ["matrix"],
-              },
               groupAllowFrom: ["@driver:test"],
               groups: {
                 "!room:test": {
@@ -251,46 +252,52 @@ describe("matrix scenario environment", () => {
       runtimeEnv: {},
       tempRoot: "/tmp/matrix-qa",
       workspaceDir: "/tmp/matrix-qa/workspace",
-      call: vi.fn(async (method: string) => {
-        if (method === "config.get") {
-          configReadCount += 1;
-          const scenario = Math.ceil(configReadCount / 3);
-          const phase = (configReadCount - 1) % 3;
-          if (phase === 0) {
-            return { config: scenario === 1 ? baselineConfig : currentConfig };
+      call: vi.fn(
+        async (
+          method: string,
+          _params?: unknown,
+          _opts?: { deadlineMs?: number; expectFinal?: boolean; timeoutMs?: number },
+        ) => {
+          if (method === "config.get") {
+            configReadCount += 1;
+            const scenario = Math.ceil(configReadCount / 3);
+            const phase = (configReadCount - 1) % 3;
+            if (phase === 0) {
+              return { config: scenario === 1 ? baselineConfig : currentConfig };
+            }
+            if (phase === 1) {
+              return { hash: `base-${scenario}` };
+            }
+            return {
+              appliedConfigHash: `patched-${scenario}`,
+              configRevisionHash: `patched-${scenario}`,
+              hash: `patched-${scenario}`,
+            };
           }
-          if (phase === 1) {
-            return { hash: `base-${scenario}` };
+          if (method === "config.patch") {
+            patchCount += 1;
+            return { hash: `patched-${patchCount}`, ok: true };
           }
-          return {
-            appliedConfigHash: `patched-${scenario}`,
-            configRevisionHash: `patched-${scenario}`,
-            hash: `patched-${scenario}`,
-          };
-        }
-        if (method === "config.patch") {
-          patchCount += 1;
-          return { hash: `patched-${patchCount}`, ok: true };
-        }
-        if (method === "channels.status") {
-          statusCount += 1;
-          return {
-            channelAccounts: {
-              matrix: [
-                {
-                  accountId: "sut",
-                  connected: true,
-                  healthState: "healthy",
-                  lastStartAt: statusCount,
-                  restartPending: false,
-                  running: true,
-                },
-              ],
-            },
-          };
-        }
-        throw new Error(`unexpected gateway method ${method}`);
-      }),
+          if (method === "channels.status") {
+            statusCount += 1;
+            return {
+              channelAccounts: {
+                matrix: [
+                  {
+                    accountId: "sut",
+                    connected: true,
+                    healthState: "healthy",
+                    lastStartAt: statusCount,
+                    restartPending: false,
+                    running: true,
+                  },
+                ],
+              },
+            };
+          }
+          throw new Error(`unexpected gateway method ${method}`);
+        },
+      ),
     };
     const environment = createMatrixQaScenarioEnvironment({
       accountId: "sut",
@@ -305,7 +312,11 @@ describe("matrix scenario environment", () => {
       } as never,
     });
     const input = {
-      config: {},
+      config: {
+        matrixConfigOverrides: {
+          execApprovals: execApprovalOverrides,
+        },
+      } as Record<string, unknown>,
       gateway,
       outputDir: "/tmp/matrix-qa/output",
       scenarioId: "matrix-state-reset",
@@ -315,17 +326,21 @@ describe("matrix scenario environment", () => {
     };
 
     await environment.prepareFlow(input);
+    input.config = {};
     await environment.prepareFlow(input);
 
     expect(buildMatrixQaConfig).toHaveBeenNthCalledWith(
       1,
       baselineConfig,
-      expect.objectContaining({ currentConfig: baselineConfig }),
+      expect.objectContaining({
+        currentConfig: baselineConfig,
+        overrides: { execApprovals: execApprovalOverrides },
+      }),
     );
     expect(buildMatrixQaConfig).toHaveBeenNthCalledWith(
       2,
       baselineConfig,
-      expect.objectContaining({ currentConfig }),
+      expect.objectContaining({ currentConfig, overrides: undefined }),
     );
     const patchCalls = gateway.call.mock.calls.filter(([method]) => method === "config.patch");
     expect(patchCalls).toHaveLength(2);
@@ -341,6 +356,7 @@ describe("matrix scenario environment", () => {
             sut: {
               autoJoin: null,
               dm: { sessionScope: null },
+              execApprovals: null,
             },
             "qa-driver-bot-source": null,
           },
@@ -373,6 +389,11 @@ describe("matrix scenario environment", () => {
       "tools.media.audio.scope.rules",
       "tools.media.models",
     ]);
+    expect(
+      secondPatchParams.replacePaths?.filter(
+        (path) => path === "messages.groupChat.mentionPatterns",
+      ),
+    ).toHaveLength(1);
     expect(secondPatchParams.replacePaths).not.toEqual(
       expect.arrayContaining(["channels.matrix", "messages", "tools", "agents.defaults"]),
     );

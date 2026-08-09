@@ -223,8 +223,10 @@ function buildMatrixQaGroupEntries(
     if (group.tools) {
       Object.assign(tools, group.tools);
     }
-    entry.tools = tools;
-    if (Object.keys(tools).length === 0) delete entry.tools;
+    delete entry.tools;
+    if (Object.keys(tools).length > 0) {
+      entry.tools = tools;
+    }
     result[group.roomId] = entry as MatrixQaGroupEntry;
   }
   return result;
@@ -365,8 +367,8 @@ function buildMatrixQaConfiguredBotAccounts(params: {
     },
   } as const;
   const accounts: Record<string, MatrixQaChannelAccountConfig> = {};
-  for (const role of params.roles) {
-    if (role === "sut") continue;
+  const roles = params.roles as Array<keyof typeof botSources>;
+  for (const role of roles) {
     const source = botSources[role];
     if (!source.accessToken) {
       throw new Error(`Matrix QA configured bot role "${role}" requires an access token`);
@@ -394,21 +396,20 @@ function buildMatrixQaChannelAccountConfig(params: {
   sutUserId: string;
 }): MatrixQaChannelAccountConfig {
   const { currentAccount: current, baselineAccount: baseline } = params;
-  const account = restoreOwnedFields(current, baseline, [
-    "allowBots",
-    "autoJoin",
-    "autoJoinAllowlist",
-    "startupVerification",
-  ]);
-  const dm = restoreOwnedFields(current?.dm, baseline?.dm, [
-    "allowFrom",
-    "enabled",
-    "policy",
-    "sessionScope",
-    "threadReplies",
-  ]);
+  const account = restoreOwnedFields(
+    current,
+    baseline,
+    "allowBots autoJoin autoJoinAllowlist startupVerification".split(" "),
+  );
+  for (const field of ["execApprovals", "groups", "threadBindings"]) {
+    delete account[field];
+  }
+  const dm = restoreOwnedFields(
+    current?.dm,
+    params.snapshot.dm.enabled ? baseline?.dm : undefined,
+    "allowFrom enabled policy sessionScope threadReplies".split(" "),
+  );
   if (!params.snapshot.dm.enabled) {
-    for (const field of ["allowFrom", "policy", "sessionScope", "threadReplies"]) delete dm[field];
     dm.enabled = false;
   } else {
     Object.assign(dm, {
@@ -462,25 +463,29 @@ function buildMatrixQaChannelAccountConfig(params: {
   Object.assign(threadBindings, params.overrides?.threadBindings);
   Object.assign(account, {
     accessToken: params.sutAccessToken,
+    ...(params.sutDeviceId ? { deviceId: params.sutDeviceId } : {}),
     dm,
     enabled: true,
     encryption: params.snapshot.encryption,
     groupAllowFrom: params.snapshot.groupAllowFrom,
     groupPolicy: params.snapshot.groupPolicy,
+    ...(Object.keys(params.groups).length > 0 ? { groups: params.groups } : {}),
     homeserver: params.homeserver,
     network: {
       ...current?.network,
       dangerouslyAllowPrivateNetwork: true,
     },
     replyToMode: params.snapshot.replyToMode,
+    ...(Object.keys(execApprovals).length > 0 ? { execApprovals } : {}),
+    ...(params.overrides?.startupVerification !== undefined
+      ? { startupVerification: params.snapshot.startupVerification }
+      : {}),
     streaming,
+    ...(Object.keys(threadBindings).length > 0 ? { threadBindings } : {}),
     threadReplies: params.snapshot.threadReplies,
     userId: params.sutUserId,
     textChunkLimit: params.snapshot.textChunkLimit ?? 4000,
   });
-  if (params.sutDeviceId) account.deviceId = params.sutDeviceId;
-  account.groups = params.groups;
-  if (Object.keys(params.groups).length === 0) delete account.groups;
   if (params.overrides?.allowBots !== undefined) {
     account.allowBots = params.snapshot.allowBots;
   }
@@ -497,12 +502,6 @@ function buildMatrixQaChannelAccountConfig(params: {
       }
     }
   }
-  account.execApprovals = execApprovals;
-  if (Object.keys(execApprovals).length === 0) delete account.execApprovals;
-  if (params.overrides?.startupVerification !== undefined)
-    account.startupVerification = params.snapshot.startupVerification;
-  account.threadBindings = threadBindings;
-  if (Object.keys(threadBindings).length === 0) delete account.threadBindings;
   return account as MatrixQaChannelAccountConfig;
 }
 
@@ -645,21 +644,21 @@ export function buildMatrixQaConfig(
   if (params.overrides?.mediaModels) {
     media.models = params.overrides.mediaModels;
   }
-  media.audio = audio;
   if (
-    !currentCfg.tools?.media?.audio &&
-    !baselineCfg.tools?.media?.audio &&
-    !params.overrides?.audio
-  )
-    delete media.audio;
-  tools.media = media;
+    currentCfg.tools?.media?.audio ||
+    baselineCfg.tools?.media?.audio ||
+    params.overrides?.audio
+  ) {
+    media.audio = audio;
+  }
   if (
-    !currentCfg.tools?.media &&
-    !baselineCfg.tools?.media &&
-    !params.overrides?.audio &&
-    !params.overrides?.mediaModels
-  )
-    delete tools.media;
+    currentCfg.tools?.media ||
+    baselineCfg.tools?.media ||
+    params.overrides?.audio ||
+    params.overrides?.mediaModels
+  ) {
+    tools.media = media;
+  }
   const groupChat = restoreOwnedFields(
     currentCfg.messages?.groupChat,
     baselineCfg.messages?.groupChat,
