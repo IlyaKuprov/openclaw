@@ -21,13 +21,15 @@ export function requireWorkerLease(value: unknown): WorkerLease {
     !isRecord(value) ||
     typeof value.leaseId !== "string" ||
     !value.leaseId.trim() ||
-    !isRecord(value.ssh)
+    !isRecord(value.ssh) ||
+    (value.sharedHost !== undefined && typeof value.sharedHost !== "boolean")
   ) {
     throw new Error("Worker provider returned an invalid provision result");
   }
   return {
     leaseId: value.leaseId.trim(),
     ssh: normalizeWorkerSshEndpoint(value.ssh as WorkerSshEndpoint),
+    ...(value.sharedHost === true ? { sharedHost: true } : {}),
   };
 }
 

@@ -200,6 +200,7 @@ describe("worker environment service", () => {
   function seedBootstrapping(
     environmentId: string,
     install?: WorkerInstallationArtifact["install"],
+    sharedHost = false,
   ) {
     const intent = store.createIntent({
       environmentId,
@@ -217,12 +218,16 @@ describe("worker environment service", () => {
       environmentId,
       from: provisioning.state,
       to: "bootstrapping",
-      patch: { leaseId: `lease:${environmentId}`, sshEndpoint: SSH_ENDPOINT },
+      patch: { leaseId: `lease:${environmentId}`, sshEndpoint: SSH_ENDPOINT, sharedHost },
     });
   }
 
-  function seedReady(environmentId: string, install?: WorkerInstallationArtifact["install"]) {
-    const bootstrapping = seedBootstrapping(environmentId, install);
+  function seedReady(
+    environmentId: string,
+    install?: WorkerInstallationArtifact["install"],
+    sharedHost = false,
+  ) {
+    const bootstrapping = seedBootstrapping(environmentId, install, sharedHost);
     return store.transition({
       environmentId,
       from: bootstrapping.state,
@@ -1589,6 +1594,11 @@ describe("worker environment service", () => {
       },
       "SSH fallback ports cannot exceed 10",
     ],
+    [
+      "invalid shared-host declaration",
+      { leaseId: "lease-invalid", ssh: SSH_ENDPOINT, sharedHost: "yes" },
+      "invalid provision result",
+    ],
   ])("keeps %s from a provider retryable", async (_name, result, error) => {
     const workerService = createService(createProvider({ provision: async () => result as never }));
 
@@ -2156,7 +2166,7 @@ describe("worker environment service", () => {
   });
 
   it("projects live tunnel status and fences the tunnel before provider teardown", async () => {
-    seedReady("worker-tunnel");
+    seedReady("worker-tunnel", undefined, true);
     const order: string[] = [];
     let tunnelStatus: "stopped" | "connected" = "stopped";
     const tunnelManager = {
@@ -2198,6 +2208,7 @@ describe("worker environment service", () => {
       expect.objectContaining({
         bundleHash: BUNDLE_HASH,
         gateway: { host: "127.0.0.1", port: 18_789 },
+        sharedHost: true,
       }),
     );
     expect(workerService.get("worker-tunnel")).toMatchObject({ tunnelStatus: "connected" });

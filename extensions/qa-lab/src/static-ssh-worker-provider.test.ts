@@ -32,6 +32,7 @@ describe("QA Lab static-SSH worker provider", () => {
     expect(provider.id).toBe("static-ssh");
     expect(first).toStrictEqual({
       leaseId: "static-ssh:operation-123",
+      sharedHost: true,
       ssh: {
         host: "worker.example.test",
         port: 22,

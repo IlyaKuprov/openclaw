@@ -80,6 +80,7 @@ type WorkerTunnelStartRequest = WorkerTunnelRequest & {
   bundleHash: string;
   gateway: { host: "127.0.0.1" | "::1"; port: number };
   ssh: WorkerSshEndpoint;
+  sharedHost?: boolean;
   resolveIdentity: WorkerSshIdentityResolver;
 };
 
@@ -88,6 +89,7 @@ type TunnelEntry = {
   environmentId: string;
   ownerEpoch: number;
   gateway: WorkerTunnelStartRequest["gateway"];
+  sharedHost: boolean;
   remoteDirectory: string;
   remoteSocketPath: string;
   abortController: AbortController;
@@ -226,6 +228,7 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
     remoteSocketPath: entry.remoteSocketPath,
     ...createWorkerWorkspaceActions({
       environmentId: entry.environmentId,
+      sharedHost: entry.sharedHost,
       ownerSignal: entry.abortController.signal,
       isConnected: () => isCurrent(entry) && entry.status === "connected",
       getPrepared: () => entry.prepared,
@@ -419,6 +422,7 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
       bundleHash: request.bundleHash,
       ownerEpoch: request.ownerEpoch,
       gateway: request.gateway,
+      sharedHost: request.sharedHost === true,
       remoteDirectory,
       remoteSocketPath: `${remoteDirectory}/${REMOTE_SOCKET_NAME}`,
       abortController: new AbortController(),

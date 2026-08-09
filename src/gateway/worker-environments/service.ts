@@ -520,6 +520,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     return move(destroying, "failed", {
       leaseId: null,
       sshEndpoint: null,
+      sharedHost: false,
       lastError: destroying.lastError ?? "Worker bootstrap failed after provider teardown",
     });
   };
@@ -631,7 +632,11 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       throw serviceError("provider_failure", `Worker provider operation failed: ${detail}`);
     }
     // A timeout can happen after allocation; retain the same operation id for safe replay.
-    const patch = { leaseId: lease.leaseId, sshEndpoint: lease.ssh };
+    const patch = {
+      leaseId: lease.leaseId,
+      sshEndpoint: lease.ssh,
+      sharedHost: lease.sharedHost === true,
+    };
     const bootstrapping = move(record, "bootstrapping", patch);
     if (record.destroyRequestedAtMs !== null) {
       return bootstrapping;
@@ -1107,6 +1112,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
         bundleHash: record.bootstrapReceipt.bundleHash,
         gateway,
         ssh: record.sshEndpoint,
+        sharedHost: record.sharedHost,
         resolveIdentity: identityResolverFor(record, provider, record.leaseId),
       });
     });

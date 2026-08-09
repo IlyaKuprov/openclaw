@@ -153,6 +153,7 @@ export function createWorkerWorkspaceActions(
         REMOTE_WORKSPACE_QUIESCE_JS,
         remoteWorkspaceDir,
         String(WORKSPACE_QUIESCENCE_TIMEOUT_MS),
+        options.sharedHost === true ? "shared-host" : "dedicated",
       ],
     });
     if (!success(result)) {
@@ -181,6 +182,7 @@ export function createWorkerWorkspaceActions(
             nonce,
             String(WORKSPACE_QUIESCENCE_TIMEOUT_MS),
             validationMode,
+            options.sharedHost === true ? "shared-host" : "dedicated",
           ],
         });
         if (!success(renewedResult)) {

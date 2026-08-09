@@ -77,6 +77,7 @@ export function createStaticSshWorkerProvider(): WorkerProvider {
       return {
         leaseId: `${STATIC_SSH_LEASE_PREFIX}${opId}`,
         ssh: parseStaticSshWorkerSettings(profile),
+        sharedHost: true,
       };
     },
     async inspect({ leaseId }) {

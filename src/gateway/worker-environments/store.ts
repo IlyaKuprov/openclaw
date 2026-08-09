@@ -43,6 +43,7 @@ type RecordIdentity = { environmentId: string; providerId: string; profileId: st
 type RecordBase = RecordIdentity & {
   profileSnapshot: WorkerEnvironmentProfileSnapshot;
   provisionOperationId: string;
+  sharedHost: boolean;
   bootstrapReceipt: WorkerEnvironmentBootstrapReceipt | null;
   ownerEpoch: number;
   teardownTerminalState: WorkerEnvironmentTeardownTerminalState | null;
@@ -67,6 +68,7 @@ export class WorkerSessionAlreadyAttachedError extends Error {
 export type WorkerEnvironmentTransitionPatch = {
   leaseId?: string | null;
   sshEndpoint?: WorkerEnvironmentSshEndpoint | null;
+  sharedHost?: boolean;
   bootstrapReceipt?: WorkerEnvironmentBootstrapReceipt;
   attachedSessionIds?: readonly string[];
   lastError?: string | null;
@@ -369,6 +371,7 @@ function fromRow(row: Row, fallbackPorts: readonly number[]): WorkerEnvironmentR
     profileId: row.profile_id,
     profileSnapshot: JSON.parse(row.profile_snapshot_json) as WorkerEnvironmentProfileSnapshot,
     provisionOperationId: row.provision_operation_id,
+    sharedHost: row.shared_host === 1,
     leaseId: row.lease_id,
     sshEndpoint: endpointFrom(row, fallbackPorts),
     bootstrapReceipt: bootstrapReceiptFrom(row),
@@ -719,6 +722,7 @@ export function createWorkerEnvironmentStore(
                 "provision operation id",
               ),
               lease_id: null,
+              shared_host: 0,
               ssh_host: null,
               ssh_port: null,
               ssh_user: null,
@@ -829,6 +833,7 @@ export function createWorkerEnvironmentStore(
             : patch.sshEndpoint === null
               ? null
               : normalizeWorkerSshEndpoint(patch.sshEndpoint);
+        const sharedHost = leaseId === null ? false : (patch.sharedHost ?? current.sharedHost);
         const acceptsBootstrapReceipt = from === "bootstrapping" && to === "ready";
         if (patch.bootstrapReceipt !== undefined && !acceptsBootstrapReceipt) {
           throw new Error("Bootstrap receipt can only be recorded when a worker becomes ready");
@@ -906,6 +911,7 @@ export function createWorkerEnvironmentStore(
             : current.ownerEpoch;
         updateRow(db, environmentId, from, {
           lease_id: leaseId,
+          shared_host: sharedHost ? 1 : 0,
           ssh_host: sshEndpoint?.host ?? null,
           ssh_port: sshEndpoint?.port ?? null,
           ssh_user: sshEndpoint?.user ?? null,

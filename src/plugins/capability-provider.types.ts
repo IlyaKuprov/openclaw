@@ -82,6 +82,8 @@ export type WorkerSshIdentityRequest = {
 export type WorkerLease = {
   leaseId: string;
   ssh: WorkerSshEndpoint;
+  /** The SSH account also owns processes unrelated to this worker lease. */
+  sharedHost?: boolean;
 };
 
 /** Authoritative inspection result for an already-known worker lease. */
