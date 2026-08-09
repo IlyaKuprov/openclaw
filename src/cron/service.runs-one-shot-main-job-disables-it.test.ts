@@ -6,9 +6,8 @@ import {
   type HeartbeatRunResult,
 } from "../infra/heartbeat-wake.js";
 import {
-  consumeSelectedSystemEventEntries,
   drainSystemEventEntries,
-  enqueueSystemEventEntry,
+  enqueueSystemEventWithReceipt,
   peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "../infra/system-events.js";
@@ -82,16 +81,15 @@ async function createCronHarness(options: CronHarnessOptions = {}) {
         if (!opts?.sessionKey) {
           throw new Error("test removable queue requires a sessionKey");
         }
-        const event = enqueueSystemEventEntry(text, {
+        const receipt = enqueueSystemEventWithReceipt(text, {
           sessionKey: opts.sessionKey,
           contextKey: opts.contextKey,
           deliveryContext: opts.deliveryContext,
         });
-        return event
+        return receipt
           ? {
               accepted: true,
-              remove: () =>
-                consumeSelectedSystemEventEntries(opts.sessionKey as string, [event]).length > 0,
+              remove: receipt,
             }
           : { accepted: false };
       })

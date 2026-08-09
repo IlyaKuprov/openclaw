@@ -9,11 +9,7 @@ import {
   seedMainSessionStore,
   setupTelegramHeartbeatPluginRuntimeForTests,
 } from "../infra/heartbeat-runner.test-utils.js";
-import {
-  consumeSelectedSystemEventEntries,
-  enqueueSystemEventEntry,
-  resetSystemEventsForTest,
-} from "../infra/system-events.js";
+import { enqueueSystemEventWithReceipt, resetSystemEventsForTest } from "../infra/system-events.js";
 import { getQueueSize } from "../process/command-queue.js";
 import { CommandLane } from "../process/lanes.js";
 import { resetCronActiveJobs, waitForActiveCronJobs } from "./active-jobs.js";
@@ -80,16 +76,15 @@ async function runWakeNowCase(mode: WakeNowRunMode) {
     cronEnabled: true,
     log: noopLogger,
     enqueueSystemEvent: (text, opts) => {
-      const event = enqueueSystemEventEntry(text, {
+      const receipt = enqueueSystemEventWithReceipt(text, {
         sessionKey: opts?.sessionKey as string,
         contextKey: opts?.contextKey,
         deliveryContext: opts?.deliveryContext,
       });
-      return event
+      return receipt
         ? {
             accepted: true,
-            remove: () =>
-              consumeSelectedSystemEventEntries(opts?.sessionKey as string, [event]).length > 0,
+            remove: receipt,
           }
         : { accepted: false };
     },

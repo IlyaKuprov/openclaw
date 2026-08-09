@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/config.js";
+import { runHeartbeatOnce } from "../infra/heartbeat-runner.js";
+import {
+  seedMainSessionStore,
+  setupTelegramHeartbeatPluginRuntimeForTests,
+  withTempTelegramHeartbeatSandbox,
+} from "../infra/heartbeat-runner.test-utils.js";
 import {
   enqueueSystemEventEntry,
   peekSystemEventEntries,
@@ -12,7 +19,10 @@ const requestHeartbeatMock = vi.hoisted(() => vi.fn());
 const supervisorSpawnMock = vi.hoisted(() => vi.fn());
 const randomMock = vi.hoisted(() => vi.fn(() => 0));
 
-vi.mock("../infra/heartbeat-wake.js", () => ({ requestHeartbeat: requestHeartbeatMock }));
+vi.mock("../infra/heartbeat-wake.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/heartbeat-wake.js")>()),
+  requestHeartbeat: requestHeartbeatMock,
+}));
 vi.mock("../infra/secure-random.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/secure-random.js")>()),
   generateSecureInt: randomMock,
@@ -34,7 +44,10 @@ const execute = (action: "poll" | "clear", sessionId: string) =>
 const poll = (sessionId: string) => execute("poll", sessionId);
 const contexts = () => peekSystemEventEntries(QUEUE_KEY).map((event) => event.contextKey);
 
-beforeEach(() => vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000));
+beforeEach(() => {
+  setupTelegramHeartbeatPluginRuntimeForTests();
+  vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+});
 afterEach(() => {
   resetProcessRegistryForTests();
   resetSystemEventsForTest();
@@ -69,6 +82,69 @@ it("does not recall a heartbeat snapshot taken before terminal poll", async () =
 
   expect(contexts()).toEqual([]);
   expect(snapshot.map((event) => event.contextKey)).toEqual([`exec:${process.run.session.id}`]);
+});
+
+it("keeps an identical successor queued when heartbeat consumes a stale snapshot", async () => {
+  await withTempTelegramHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "telegram" },
+        },
+      },
+      channels: { telegram: { allowFrom: ["*"] } },
+      session: { mainKey: "notify-ack", store: storePath },
+    };
+    const sessionKey = await seedMainSessionStore(storePath, cfg, {
+      lastChannel: "telegram",
+      lastProvider: "telegram",
+      lastTo: "-100123",
+      lastThreadId: 42,
+    });
+    expect(sessionKey).toBe(QUEUE_KEY);
+
+    const first = await startNotifyRun();
+    await first.finish();
+    const firstQueued = peekSystemEventEntries(QUEUE_KEY);
+    expect(firstQueued).toHaveLength(1);
+
+    let successor: Awaited<ReturnType<typeof startNotifyRun>> | undefined;
+    replySpy.mockImplementation(async () => {
+      await poll(first.run.session.id);
+      await execute("clear", first.run.session.id);
+      const replacement = await startNotifyRun();
+      successor = replacement;
+      await replacement.finish();
+      expect(peekSystemEventEntries(QUEUE_KEY)).toEqual(firstQueued);
+      return { text: "Handled the exec completion" };
+    });
+    const sendTelegram = vi.fn().mockResolvedValue({ messageId: "m1", chatId: "100123" });
+
+    const result = await runHeartbeatOnce({
+      cfg,
+      agentId: "main",
+      source: "exec-event",
+      intent: "event",
+      reason: "exec-event",
+      deps: {
+        getQueueSize: () => 0,
+        getReplyFromConfig: replySpy,
+        telegram: sendTelegram,
+      },
+    });
+
+    expect(result.status).toBe("ran");
+    expect(sendTelegram).toHaveBeenCalledOnce();
+    if (!successor) {
+      throw new Error("heartbeat reply did not enqueue the successor completion");
+    }
+    expect(successor.run.session.id).toBe(first.run.session.id);
+    expect(peekSystemEventEntries(QUEUE_KEY)).toEqual(firstQueued);
+
+    await poll(successor.run.session.id);
+    expect(peekSystemEventEntries(QUEUE_KEY)).toEqual([]);
+  });
 });
 
 it("keeps an unpolled completion deliverable after finished-session cleanup", async () => {
