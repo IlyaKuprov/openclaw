@@ -49,6 +49,10 @@ import {
   type WorkerCredentialBinding,
   type WorkerCredentialDeliveryClaim,
 } from "./credential.js";
+import {
+  registerWorkerInferenceSessionDrain,
+  type WorkerInferenceSessionDrain,
+} from "./inference-control-internal.js";
 import type { WorkerInferenceStore } from "./inference-store.js";
 import {
   createWorkerInferenceManager,
@@ -234,6 +238,9 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     now,
     ...(options.inferenceStore ? { store: options.inferenceStore } : {}),
   });
+  const inferenceWithDrain = inference as typeof inference & {
+    beginSessionDrain(sessionId: string): WorkerInferenceSessionDrain;
+  };
   let reconcileInFlight: Promise<void> | undefined;
   let interval: ReturnType<typeof setInterval> | undefined;
   let unsubscribeSessionIdentityMutation: (() => void) | undefined;
@@ -1481,7 +1488,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     });
   };
 
-  return {
+  const service = {
     list: () => store.list().map(project),
     get: (environmentId: string) => {
       const record = store.get(environmentId);
@@ -1555,7 +1562,6 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     cancelInference,
     cancelInferenceForSession: (params: { sessionId: string; runId?: string }): string[] =>
       inference.cancelSession(params.sessionId, params.runId),
-    beginInferenceSessionDrain: (sessionId: string) => inference.beginSessionDrain(sessionId),
     hasInferenceForSession: (sessionId: string, runId?: string): boolean =>
       inference.hasSession(sessionId, runId),
     resolveInferenceSessionForRunId: (runId: string): string | undefined =>
@@ -1613,6 +1619,10 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     start,
     stop,
   };
+  registerWorkerInferenceSessionDrain(service, (sessionId) =>
+    inferenceWithDrain.beginSessionDrain(sessionId),
+  );
+  return service;
 }
 
 export type WorkerEnvironmentService = ReturnType<typeof createWorkerEnvironmentService>;

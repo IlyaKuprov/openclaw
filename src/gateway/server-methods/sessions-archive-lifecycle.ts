@@ -20,15 +20,36 @@ import {
   isCompetingSessionWorkAdmissionActive,
   SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
 } from "../../sessions/session-lifecycle-admission.js";
-import { waitForChatAbortControllerRemoval } from "../chat-abort.js";
+import { waitForChatAbortControllerRemoval } from "../chat-abort-lifecycle-internal.js";
+import {
+  beginWorkerInferenceSessionDrain,
+  type WorkerInferenceSessionDrain,
+} from "../worker-environments/inference-control-internal.js";
 import { asWorkerInferenceControl } from "../worker-environments/inference-control.js";
-import type { WorkerInferenceSessionDrain } from "../worker-environments/inference.js";
+import type { WorkerSessionPlacementStore } from "../worker-environments/placement-store.js";
 import {
   abortChatRunsForSessionKeyWithPartials,
   createChatAbortOps,
   hasGatewaySessionAbortOwner,
 } from "./chat-abort-runtime.js";
 import type { GatewayRequestContext } from "./types.js";
+
+type ArchivePlacementService = NonNullable<GatewayRequestContext["workerSessionPlacementService"]> &
+  Partial<Pick<WorkerSessionPlacementStore, "waitForTurnClaimRelease">>;
+
+type ArchiveInferenceDrainService = {
+  beginInferenceSessionDrain(sessionId: string): WorkerInferenceSessionDrain;
+};
+
+function asArchiveInferenceDrainService(value: unknown): ArchiveInferenceDrainService | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  return typeof (value as { beginInferenceSessionDrain?: unknown }).beginInferenceSessionDrain ===
+    "function"
+    ? (value as ArchiveInferenceDrainService)
+    : undefined;
+}
 
 type SessionArchiveLifecycleParams = {
   context: GatewayRequestContext;
@@ -83,12 +104,17 @@ export async function prepareSessionArchiveLifecycle(
   const workIdentities = Array.from(
     new Set([...params.sessionKeys, ...(params.sessionId ? [params.sessionId] : [])]),
   );
-  const workerControl = asWorkerInferenceControl(params.context.workerEnvironmentService);
+  const workerService = params.context.workerEnvironmentService;
+  const workerControl = asWorkerInferenceControl(workerService);
   let workerDrain: WorkerInferenceSessionDrain | undefined;
-  if (params.sessionId && workerControl?.beginInferenceSessionDrain) {
-    workerDrain = workerControl.beginInferenceSessionDrain(params.sessionId);
-  } else if (params.sessionId && workerControl?.hasInferenceForSession(params.sessionId) === true) {
-    throw new Error("Worker inference drain is unavailable");
+  if (params.sessionId) {
+    // Lightweight contexts may expose the drain directly without widening the public service.
+    workerDrain =
+      beginWorkerInferenceSessionDrain(workerService, params.sessionId) ??
+      asArchiveInferenceDrainService(workerService)?.beginInferenceSessionDrain(params.sessionId);
+    if (!workerDrain && workerControl?.hasInferenceForSession(params.sessionId) === true) {
+      throw new Error("Worker inference drain is unavailable");
+    }
   }
 
   try {
@@ -141,14 +167,15 @@ export async function prepareSessionArchiveLifecycle(
     const embeddedWork = params.sessionId
       ? waitForEmbeddedAgentRunEnd(params.sessionId, timeoutMs)
       : Promise.resolve(true);
+    const placementService = params.context.workerSessionPlacementService as
+      | ArchivePlacementService
+      | undefined;
     const placement = params.sessionId
-      ? params.context.workerSessionPlacementService
-          ?.getMany([params.sessionId])
-          .get(params.sessionId)
+      ? placementService?.getMany([params.sessionId]).get(params.sessionId)
       : undefined;
     const placementWork = placement?.turnClaim
-      ? params.context.workerSessionPlacementService?.waitForTurnClaimRelease
-        ? params.context.workerSessionPlacementService
+      ? placementService?.waitForTurnClaimRelease
+        ? placementService
             .waitForTurnClaimRelease(params.sessionId!, { timeoutMs })
             .then(() => true)
         : Promise.resolve(false)

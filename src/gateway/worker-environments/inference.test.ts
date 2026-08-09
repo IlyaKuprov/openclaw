@@ -6,6 +6,7 @@ import type {
 } from "../../../packages/gateway-protocol/src/schema/worker-inference.js";
 import { createDeferred } from "../../shared/deferred.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
+import type { WorkerInferenceSessionDrain } from "./inference-control-internal.js";
 import type { WorkerInferenceStore } from "./inference-store.js";
 import {
   createWorkerInferenceManager,
@@ -18,6 +19,17 @@ function waitForFast<T>(
   options: { timeout?: number; interval?: number } = {},
 ) {
   return vi.waitFor(callback, { interval: 1, ...options });
+}
+
+function beginSessionDrain(
+  manager: ReturnType<typeof createWorkerInferenceManager>,
+  sessionId: string,
+): WorkerInferenceSessionDrain {
+  return (
+    manager as typeof manager & {
+      beginSessionDrain(sessionId: string): WorkerInferenceSessionDrain;
+    }
+  ).beginSessionDrain(sessionId);
 }
 
 const REQUEST: WorkerInferenceStartParams = {
@@ -192,7 +204,7 @@ describe("worker inference manager", () => {
     accept(instance);
     await waitForFast(() => expect(execute).toHaveBeenCalledOnce());
 
-    const drain = instance.beginSessionDrain(REQUEST.sessionId);
+    const drain = beginSessionDrain(instance, REQUEST.sessionId);
     expect(drain.hasWork()).toBe(true);
     expect(
       instance.start({
@@ -225,7 +237,7 @@ describe("worker inference manager", () => {
     const instance = makeManager(async () => await pending.promise, store);
     accept(instance);
 
-    const drain = instance.beginSessionDrain(REQUEST.sessionId);
+    const drain = beginSessionDrain(instance, REQUEST.sessionId);
     pending.resolve(ERROR);
     await expect(drain.drained).rejects.toThrow("terminal persistence failed");
     drain.release();

@@ -20,6 +20,7 @@ import { withTimeout } from "../../infra/fs-safe.js";
 import { boundedJsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
+import type { WorkerInferenceSessionDrain } from "./inference-control-internal.js";
 import {
   createWorkerInferenceStore,
   type WorkerInferenceStore,
@@ -86,12 +87,6 @@ type ActiveInference = {
   settled: boolean;
   credentialExpiryTimer?: ReturnType<typeof setTimeout>;
   abortReason?: WorkerInferenceErrorReason;
-};
-
-export type WorkerInferenceSessionDrain = {
-  drained: Promise<void>;
-  hasWork(): boolean;
-  release(): void;
 };
 
 function activeKey(sessionId: string, runId: string): string {
@@ -724,14 +719,16 @@ export function createWorkerInferenceManager(options: {
     ).catch(() => undefined);
   };
 
-  return {
+  const manager = {
     start,
     cancel,
     cancelEnvironment,
     cancelSession,
-    beginSessionDrain,
     hasSession,
     resolveSessionIdForRunId,
     stop,
   };
+  // Archive-only control stays non-enumerable so the manager's inferred contract remains stable.
+  Object.defineProperty(manager, "beginSessionDrain", { value: beginSessionDrain });
+  return manager;
 }

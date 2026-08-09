@@ -5,6 +5,7 @@ import { loadSessionEntry, upsertSessionEntry } from "../config/sessions/session
 import { onAgentEvent } from "../infra/agent-events.js";
 import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { markChatAbortTerminalPersistenceError } from "./chat-abort-lifecycle-internal.js";
 import { registerChatAbortController, removeChatAbortControllerEntry } from "./chat-abort.js";
 import { createChatRunState } from "./server-chat-state.js";
 import { embeddedRunMock, writeSessionStore } from "./test-helpers.js";
@@ -15,6 +16,7 @@ import {
   sessionStoreEntry,
   setupGatewaySessionsHandlerTestHarness,
 } from "./test/server-sessions.test-helpers.js";
+import { registerWorkerInferenceSessionDrain } from "./worker-environments/inference-control-internal.js";
 
 const {
   createConfiguredGlobalAgentSessionStore,
@@ -63,7 +65,7 @@ function activeRunContext(params: {
         removeChatAbortControllerEntry(chatAbortControllers, params.runId, entry);
       },
       (error: unknown) => {
-        entry.projectSessionTerminalPersistenceError = error;
+        markChatAbortTerminalPersistenceError(entry, error);
         removeChatAbortControllerEntry(chatAbortControllers, params.runId, entry);
       },
     );
@@ -181,6 +183,38 @@ test("sessions.patch rechecks authoritative worker work before projection and re
   const sessionId = "session-archive-worker-recheck";
   await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
   const release = vi.fn();
+  const workerEnvironmentService = {
+    cancelInferenceForSession: vi.fn(() => []),
+    hasInferenceForSession: vi.fn(() => false),
+    resolveInferenceSessionForRunId: vi.fn(),
+  };
+  registerWorkerInferenceSessionDrain(workerEnvironmentService, () => ({
+    drained: Promise.resolve(),
+    hasWork: () => true,
+    release,
+  }));
+
+  const archived = await directSessionReq(
+    "sessions.patch",
+    { key: sessionKey, archived: true },
+    {
+      context: {
+        workerEnvironmentService,
+      },
+    },
+  );
+
+  expect(archived.ok).toBe(false);
+  expect(archived.error).toMatchObject({ code: "UNAVAILABLE", retryable: true });
+  expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+  expect(release).toHaveBeenCalledOnce();
+});
+
+test("sessions.patch fails closed when active worker inference has no archive drain", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const sessionKey = "agent:main:archive-worker-drain-unavailable";
+  const sessionId = "session-archive-worker-drain-unavailable";
+  await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
 
   const archived = await directSessionReq(
     "sessions.patch",
@@ -188,13 +222,8 @@ test("sessions.patch rechecks authoritative worker work before projection and re
     {
       context: {
         workerEnvironmentService: {
-          beginInferenceSessionDrain: vi.fn(() => ({
-            drained: Promise.resolve(),
-            hasWork: () => true,
-            release,
-          })),
           cancelInferenceForSession: vi.fn(() => []),
-          hasInferenceForSession: vi.fn(() => false),
+          hasInferenceForSession: vi.fn(() => true),
           resolveInferenceSessionForRunId: vi.fn(),
         },
       },
@@ -204,7 +233,6 @@ test("sessions.patch rechecks authoritative worker work before projection and re
   expect(archived.ok).toBe(false);
   expect(archived.error).toMatchObject({ code: "UNAVAILABLE", retryable: true });
   expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
-  expect(release).toHaveBeenCalledOnce();
 });
 
 test("sessions.patch retains the archive drain through the ordered audit append", async () => {

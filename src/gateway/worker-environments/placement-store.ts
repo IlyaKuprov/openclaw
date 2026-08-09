@@ -570,7 +570,3 @@ export type WorkerSessionPlacementRetirementService = Pick<
   WorkerSessionPlacementStore,
   "retireSessionPlacement"
 >;
-export type WorkerSessionPlacementDrainService = Pick<
-  WorkerSessionPlacementStore,
-  "waitForTurnClaimRelease"
->;

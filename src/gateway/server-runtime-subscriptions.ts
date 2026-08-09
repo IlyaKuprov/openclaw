@@ -14,6 +14,7 @@ import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { createLazyPromise, createLazyPromiseLoader } from "../shared/lazy-runtime.js";
 import type { TaskRegistryObserverEvent } from "../tasks/task-registry.store.js";
+import { markChatAbortTerminalPersistenceError } from "./chat-abort-lifecycle-internal.js";
 import {
   type ChatAbortControllerEntry,
   removeChatAbortControllerEntry,
@@ -129,7 +130,7 @@ export function startGatewayEventSubscriptions(params: {
                   entry.projectSessionActive = false;
                   entry.projectSessionTerminalPending = false;
                   entry.projectSessionTerminalPersisted = false;
-                  entry.projectSessionTerminalPersistenceError = undefined;
+                  markChatAbortTerminalPersistenceError(entry, undefined);
                   queueMicrotask(() => {
                     const current = params.chatAbortControllers.get(candidateRunId);
                     if (
@@ -156,7 +157,7 @@ export function startGatewayEventSubscriptions(params: {
                   entry.projectSessionTerminalPending = false;
                   entry.projectSessionTerminalPersisted = true;
                   entry.projectSessionTerminalPersistence = undefined;
-                  entry.projectSessionTerminalPersistenceError = undefined;
+                  markChatAbortTerminalPersistenceError(entry, undefined);
                 }
               }
             },
@@ -174,7 +175,7 @@ export function startGatewayEventSubscriptions(params: {
                   entry.projectSessionTerminalPending = false;
                   entry.projectSessionTerminalPersistence = persistence;
                   void persistence.catch((error: unknown) => {
-                    entry.projectSessionTerminalPersistenceError = error;
+                    markChatAbortTerminalPersistenceError(entry, error);
                   });
                   if (entry.registrationCleanupRequested === true) {
                     void persistence
