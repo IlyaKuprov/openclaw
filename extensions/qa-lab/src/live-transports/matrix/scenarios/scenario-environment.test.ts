@@ -105,6 +105,279 @@ describe("matrix scenario environment", () => {
     expect(runMatrixQaCanary).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
   });
 
+  it("restores each scenario from one baseline against fresh current config", async () => {
+    buildMatrixQaConfig.mockClear();
+    const baselineConfig = {
+      channels: {
+        matrix: {
+          accounts: { sut: { enabled: true } },
+          enabled: false,
+        },
+      },
+    };
+    const firstTarget = {
+      channels: {
+        matrix: {
+          accounts: { sut: { enabled: true } },
+          enabled: true,
+        },
+      },
+    };
+    const currentConfig = {
+      channels: {
+        matrix: {
+          accounts: {
+            sibling: { enabled: true },
+            sut: {
+              autoJoin: "allowlist",
+              autoJoinAllowlist: ["@driver:test", "@stale:test"],
+              deviceId: "CURRENT-DEVICE",
+              dm: {
+                allowFrom: ["@driver:test", "@stale:test"],
+                sessionScope: "per-user",
+              },
+              execApprovals: {
+                agentFilter: ["main", "stale"],
+                approvers: ["@driver:test", "@stale:test"],
+                sessionFilter: ["matrix", "stale"],
+              },
+              groupAllowFrom: ["@driver:test", "@stale:test"],
+              groups: {
+                "!room:test": {
+                  tools: {
+                    allow: ["read", "write"],
+                    deny: ["shell", "network"],
+                  },
+                },
+              },
+              lifecycleState: "preserve",
+            },
+            "qa-driver-bot-source": { enabled: true },
+          },
+        },
+      },
+      messages: {
+        groupChat: {
+          mentionPatterns: ["@sut", "@stale"],
+        },
+      },
+      plugins: {
+        entries: {
+          matrix: {
+            config: { preserve: "matrix-config" },
+            enabled: false,
+            hooks: { allowConversationAccess: true },
+            llm: { allowModelOverride: true },
+            subagent: { allowModelOverride: true },
+          },
+        },
+      },
+      tools: {
+        media: {
+          audio: {
+            scope: {
+              rules: [{ action: "allow" }, { action: "deny" }],
+            },
+          },
+          models: [{ provider: "first" }, { provider: "stale" }],
+        },
+      },
+      unrelated: { preserve: true },
+    };
+    const secondTarget = {
+      channels: {
+        matrix: {
+          accounts: {
+            sibling: { enabled: true },
+            sut: {
+              autoJoinAllowlist: ["@driver:test"],
+              deviceId: "CURRENT-DEVICE",
+              dm: { allowFrom: ["@driver:test"] },
+              execApprovals: {
+                agentFilter: ["main"],
+                approvers: ["@driver:test"],
+                sessionFilter: ["matrix"],
+              },
+              groupAllowFrom: ["@driver:test"],
+              groups: {
+                "!room:test": {
+                  tools: {
+                    allow: ["read"],
+                    deny: ["shell"],
+                  },
+                },
+              },
+              lifecycleState: "preserve",
+            },
+          },
+        },
+      },
+      messages: {
+        groupChat: {
+          mentionPatterns: ["@sut"],
+        },
+      },
+      plugins: {
+        entries: {
+          matrix: {
+            config: { preserve: "matrix-config" },
+            enabled: true,
+            hooks: { allowConversationAccess: true },
+            llm: { allowModelOverride: true },
+            subagent: { allowModelOverride: true },
+          },
+        },
+      },
+      tools: {
+        media: {
+          audio: {
+            scope: {
+              rules: [{ action: "allow" }],
+            },
+          },
+          models: [{ provider: "first" }],
+        },
+      },
+      unrelated: { preserve: true },
+    };
+    buildMatrixQaConfig
+      .mockReturnValueOnce(firstTarget as never)
+      .mockReturnValueOnce(secondTarget as never);
+    let configReadCount = 0;
+    let patchCount = 0;
+    let statusCount = 0;
+    const gateway = {
+      baseUrl: "http://127.0.0.1:12345",
+      runtimeEnv: {},
+      tempRoot: "/tmp/matrix-qa",
+      workspaceDir: "/tmp/matrix-qa/workspace",
+      call: vi.fn(async (method: string) => {
+        if (method === "config.get") {
+          configReadCount += 1;
+          const scenario = Math.ceil(configReadCount / 3);
+          const phase = (configReadCount - 1) % 3;
+          if (phase === 0) {
+            return { config: scenario === 1 ? baselineConfig : currentConfig };
+          }
+          if (phase === 1) {
+            return { hash: `base-${scenario}` };
+          }
+          return {
+            appliedConfigHash: `patched-${scenario}`,
+            configRevisionHash: `patched-${scenario}`,
+            hash: `patched-${scenario}`,
+          };
+        }
+        if (method === "config.patch") {
+          patchCount += 1;
+          return { hash: `patched-${patchCount}`, ok: true };
+        }
+        if (method === "channels.status") {
+          statusCount += 1;
+          return {
+            channelAccounts: {
+              matrix: [
+                {
+                  accountId: "sut",
+                  connected: true,
+                  healthState: "healthy",
+                  lastStartAt: statusCount,
+                  restartPending: false,
+                  running: true,
+                },
+              ],
+            },
+          };
+        }
+        throw new Error(`unexpected gateway method ${method}`);
+      }),
+    };
+    const environment = createMatrixQaScenarioEnvironment({
+      accountId: "sut",
+      harness: { baseUrl: "http://127.0.0.1:8008", recording: {} } as never,
+      observedEvents: [],
+      provisioning: {
+        driver: { accessToken: "fixture", userId: "@driver:test" },
+        observer: { accessToken: "fixture", userId: "@observer:test" },
+        roomId: "!room:test",
+        sut: { accessToken: "fixture", userId: "@sut:test" },
+        topology: { rooms: [] },
+      } as never,
+    });
+    const input = {
+      config: {},
+      gateway,
+      outputDir: "/tmp/matrix-qa/output",
+      scenarioId: "matrix-state-reset",
+      scenarioTitle: "Matrix state reset",
+      timeoutMs: 8_000,
+      waitForConfigRestartSettle: vi.fn(),
+    };
+
+    await environment.prepareFlow(input);
+    await environment.prepareFlow(input);
+
+    expect(buildMatrixQaConfig).toHaveBeenNthCalledWith(
+      1,
+      baselineConfig,
+      expect.objectContaining({ currentConfig: baselineConfig }),
+    );
+    expect(buildMatrixQaConfig).toHaveBeenNthCalledWith(
+      2,
+      baselineConfig,
+      expect.objectContaining({ currentConfig }),
+    );
+    const patchCalls = gateway.call.mock.calls.filter(([method]) => method === "config.patch");
+    expect(patchCalls).toHaveLength(2);
+    const secondPatchParams = patchCalls[1]?.[1] as {
+      raw: string;
+      replacePaths?: string[];
+    };
+    const secondPatch = JSON.parse(secondPatchParams.raw) as Record<string, unknown>;
+    expect(secondPatch).toMatchObject({
+      channels: {
+        matrix: {
+          accounts: {
+            sut: {
+              autoJoin: null,
+              dm: { sessionScope: null },
+            },
+            "qa-driver-bot-source": null,
+          },
+        },
+      },
+    });
+    expect(secondPatch).toMatchObject({
+      plugins: {
+        entries: {
+          matrix: { enabled: true },
+        },
+      },
+    });
+    expect(
+      (secondPatch.plugins as { entries?: Record<string, unknown> }).entries?.matrix as Record<
+        string,
+        unknown
+      >,
+    ).toEqual({ enabled: true });
+    expect(secondPatchParams.replacePaths).toEqual([
+      "channels.matrix.accounts.sut.autoJoinAllowlist",
+      "channels.matrix.accounts.sut.dm.allowFrom",
+      "channels.matrix.accounts.sut.execApprovals.agentFilter",
+      "channels.matrix.accounts.sut.execApprovals.approvers",
+      "channels.matrix.accounts.sut.execApprovals.sessionFilter",
+      "channels.matrix.accounts.sut.groupAllowFrom",
+      "channels.matrix.accounts.sut.groups.!room:test.tools.allow",
+      "channels.matrix.accounts.sut.groups.!room:test.tools.deny",
+      "messages.groupChat.mentionPatterns",
+      "tools.media.audio.scope.rules",
+      "tools.media.models",
+    ]);
+    expect(secondPatchParams.replacePaths).not.toEqual(
+      expect.arrayContaining(["channels.matrix", "messages", "tools", "agents.defaults"]),
+    );
+  });
+
   it("shares the preparation deadline across revision and fresh account readiness", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -229,17 +502,8 @@ describe("matrix scenario environment", () => {
     expect(scenarioContext.timeoutMs).toBe(8_000);
     expect(waitForConfigRestartSettle).not.toHaveBeenCalled();
     expect(gateway.call.mock.calls.filter(([method]) => method === "config.patch")).toHaveLength(1);
-    expect(gateway.call).toHaveBeenCalledWith(
-      "config.patch",
-      expect.objectContaining({
-        replacePaths: [
-          "channels.matrix",
-          "channels.matrix.accounts.sut.groupAllowFrom",
-          "messages",
-        ],
-      }),
-      { deadlineMs: 60_000, timeoutMs: 60_000 },
-    );
+    const patchCall = gateway.call.mock.calls.find(([method]) => method === "config.patch");
+    expect(patchCall?.[1]).not.toHaveProperty("replacePaths");
     expect(gateway.call).toHaveBeenLastCalledWith(
       "exec.approval.request",
       { id: "approval-1" },
