@@ -163,6 +163,7 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["taskSuggestions.dismiss", "task-suggestions", "operator.write", "<=2026.7"],
   ["environments.list", "environments", "operator.read", "2026.7"],
   ["environments.status", "environments", "operator.read", "2026.7"],
+  ["projects.list", "projects", "operator.read", "2026.8"],
   ["worktrees.list", "worktrees", "operator.read", "2026.7"],
   // Read-only git probe, but it accepts arbitrary host paths; keep it at the
   // same bar as starting worktree sessions instead of plain read scope.

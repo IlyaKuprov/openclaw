@@ -1,6 +1,7 @@
 import * as agent from "./agent.js";
 import * as environments from "./environments.js";
 import * as fsSchemas from "./fs.js";
+import * as projects from "./projects.js";
 import * as systemInfo from "./system-info.js";
 import * as worktrees from "./worktrees.js";
 
@@ -19,6 +20,10 @@ export const AgentControlProtocolSchemas = {
   EnvironmentsListResult: environments.EnvironmentsListResultSchema,
   EnvironmentsStatusParams: environments.EnvironmentsStatusParamsSchema,
   EnvironmentsStatusResult: environments.EnvironmentsStatusResultSchema,
+  ProjectCheckout: projects.ProjectCheckoutSchema,
+  ProjectSummary: projects.ProjectSummarySchema,
+  ProjectsListParams: projects.ProjectsListParamsSchema,
+  ProjectsListResult: projects.ProjectsListResultSchema,
   SystemInfoParams: systemInfo.SystemInfoParamsSchema,
   SystemInfoResult: systemInfo.SystemInfoResultSchema,
   AgentEvent: agent.AgentEventSchema,

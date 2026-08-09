@@ -34,6 +34,7 @@ export {
 } from "./schema/sessions-row.js";
 export * from "./schema/session-classification.js";
 export * from "./schema/sessions-suggestions.js";
+export { PROJECTS_LIST_DEFAULT_LIMIT, PROJECTS_LIST_MAX_LIMIT } from "./schema/projects.js";
 export * from "./migration-api.js";
 export type * from "./public-session-catalog.js";
 export * from "./validator-registry.js";

@@ -91,6 +91,7 @@ const CORE_GATEWAY_HANDLER_MODULES = {
   doctor: () => import("./server-methods/doctor.js").then((module) => module.doctorHandlers),
   environments: () =>
     import("./server-methods/environments.js").then((module) => module.environmentsHandlers),
+  projects: () => import("./server-methods/projects.js").then((module) => module.projectsHandlers),
   worktrees: () =>
     import("./server-methods/worktrees.js").then((module) => module.worktreesHandlers),
   "exec-approvals": () =>
