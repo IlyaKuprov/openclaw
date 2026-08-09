@@ -1,4 +1,8 @@
-const DISCORD_PROVIDER_ENDPOINT_ENV = "DISCORD_PROVIDER_ENDPOINT";
+const DISCORD_PROVIDER_ENDPOINT_ENV = {
+  restApiBaseUrl: "DISCORD_REST_API_BASE_URL",
+  gatewayBotUrl: "DISCORD_GATEWAY_BOT_URL",
+  gatewayOrigin: "DISCORD_GATEWAY_ORIGIN",
+} as const;
 
 type DiscordProviderEndpointDescriptor = Readonly<{
   restApiBaseUrl: string;
@@ -11,6 +15,8 @@ export async function initializeDiscordProviderEndpointForTest(
 ): Promise<void> {
   const { initializeDiscordProviderEndpointFromEnv } = await import("./provider-endpoint.js");
   initializeDiscordProviderEndpointFromEnv({
-    [DISCORD_PROVIDER_ENDPOINT_ENV]: JSON.stringify(descriptor),
+    [DISCORD_PROVIDER_ENDPOINT_ENV.restApiBaseUrl]: descriptor.restApiBaseUrl,
+    [DISCORD_PROVIDER_ENDPOINT_ENV.gatewayBotUrl]: descriptor.gatewayBotUrl,
+    [DISCORD_PROVIDER_ENDPOINT_ENV.gatewayOrigin]: descriptor.gatewayOrigin,
   });
 }
