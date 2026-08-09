@@ -1,3 +1,12 @@
+---
+doc-schema-version: 1
+summary: "Implementation tracker for staged multiplayer memory work"
+title: "Multiplayer memory implementation plan"
+read_when:
+  - You are planning or implementing staged multiplayer memory work
+  - You need the Phase 0 checklist or later phase boundaries
+---
+
 # OpenClaw Multiplayer Memory Implementation Plan
 
 Date: 2026-07-29
