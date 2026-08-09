@@ -1257,7 +1257,6 @@
                     "pages": [
                       "concepts/memory",
                       "concepts/memory-architecture",
-                      "concepts/memory-multiplayer",
                       "concepts/user-model",
                       "concepts/standing-intents",
                       "concepts/memory-builtin",

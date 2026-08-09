@@ -14,7 +14,7 @@ This page is an implementation design, not shipped behavior. OpenClaw does not
 currently use memory ACLs as a security boundary. After Stage 2, a deployment
 may claim only the cooperative-isolation boundary it has tested. Stage 5 is
 required for a tested process-adversarial claim. A deployment may claim
-model-adversarial isolation only after it has tested the Stage 1D sandbox,
+model-adversarial isolation only after it has tested the Stage 1 sandbox,
 file, and egress controls. Mutually untrusted or hostile tenants still require
 separate agents or separate Gateway, credential, and storage cells. See
 [Multi-user mode](/concepts/multi-user).
@@ -23,14 +23,17 @@ separate agents or separate Gateway, credential, and storage cells. See
 OpenClaw memory was designed for a personal agent. Its Markdown files,
 per-agent index, bootstrap context, transcript recall, and background
 consolidation all assume that the agent's audience is one trust domain. A
-shared DM inbox or group channel breaks that assumption: routing may separate
-conversations, but every conversation can still reach the same agent memory.
+shared DM inbox or group channel can break that assumption, depending on the
+selected memory backend and its scope configuration: routing may separate
+conversations while allowed sessions still reach the same agent memory. QMD's
+default scope allows direct sessions and denies group/channel searches.
 
 Today, the agent-scoped `MEMORY.md`, `USER.md`, agent index, bootstrap
 context, transcript recall, and background consolidation remain one shared
-legacy corpus. A person reaching that agent through a shared-DM/main session or
-a group can still reach that legacy agent memory. Phase 0 changes none of those
-results, adds no operator configuration, and makes no isolation claim.
+legacy corpus. An allowed shared-DM/main session can reach that legacy agent
+memory; group/channel access depends on backend scope configuration. Stage 0
+changes none of those results, adds no operator configuration, and makes no
+isolation claim.
 
 This design adds identity-aware memory without turning model instructions into
 an authorization mechanism. It uses verified principals, isolated logical
@@ -1391,7 +1394,7 @@ conformance result describes an implementation; it does not create a principal,
 mount, grant, or authorization decision. The selected memory plugin implements
 its policy, view, and backend operations from the core-provided context.
 `authorizeActiveMemorySearchHits()` remains a narrow current search-hit filter,
-not the future whole-runtime enforcement boundary. Phase 0 records shadow
+not the future whole-runtime enforcement boundary. Stage 0 records shadow
 decisions only. A future enforced core path must consume the trusted context and
 admitted capability at the selected-runtime boundary before memory ingress or
 egress.
@@ -1421,7 +1424,7 @@ active identity authority in place.
 
 `MEMORY_AUTHORIZATION_CONTRACT_VERSION = 1` is an exact admission contract.
 Missing, unknown, or incomplete version or capability declarations are never
-silently adapted or treated as grants. During Phase 0 they remain
+silently adapted or treated as grants. During Stage 0 they remain
 legacy/shadow-only; a future enforced path must reject them or make memory
 unavailable without falling back to context-free access. This design does not
 promise a compatibility window. An incompatible v2 requires an explicit
