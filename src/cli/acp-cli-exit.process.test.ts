@@ -39,6 +39,7 @@ async function createPreparedAcpProcessState() {
     scenario: "minimal",
   });
   try {
+    await state.writeConfig({ agents: { entries: { main: { default: true } } } });
     // These cases assert bridge stderr after normal startup. Prepare canonical
     // shared state so the one-time migration diagnostic is not part of that signal.
     const database = openOpenClawStateDatabase({ env: state.env });
