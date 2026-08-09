@@ -1689,6 +1689,43 @@ test("sessions.patch rejects archive while terminal compaction owns the session"
   ws.close();
 });
 
+test("sessions.compact maxLines releases CLI backend session bindings", async () => {
+  const { storePath } = await createSessionStoreDir();
+  await seedSessionEntry({
+    entry: sessionStoreEntry("sess-trim-bound", {
+      agentHarnessId: "claude",
+      cliSessionIds: { "claude-cli": "backend-session-1" },
+      cliSessionBindings: { "claude-cli": { sessionId: "backend-session-1" } },
+      claudeCliSessionId: "backend-session-1",
+    }),
+    sessionKey: "agent:main:main",
+    storePath,
+  });
+  await seedTranscriptRows({
+    sessionId: "sess-trim-bound",
+    sessionKey: "agent:main:main",
+    storePath,
+    totalLines: 200,
+  });
+
+  const { ws } = await openClient();
+  const compacted = await rpcReq<{ ok: true; compacted: boolean; kept?: number }>(
+    ws,
+    "sessions.compact",
+    { key: "main", maxLines: 20 },
+  );
+
+  expect(compacted.payload?.compacted).toBe(true);
+  // Trimming removes transcript rows the backend session still holds, so
+  // resuming that session would replay exactly what was just trimmed away.
+  const trimmedEntry = loadSessionEntry({ sessionKey: "agent:main:main", storePath });
+  expect(trimmedEntry?.cliSessionIds).toBeUndefined();
+  expect(trimmedEntry?.cliSessionBindings).toBeUndefined();
+  expect(trimmedEntry?.claudeCliSessionId).toBeUndefined();
+
+  ws.close();
+});
+
 test("sessions.compact maxLines trims SQLite transcript rows and archives the full pre-compaction transcript", async () => {
   const { dir, storePath } = await createSessionStoreDir();
   await seedSessionEntry({

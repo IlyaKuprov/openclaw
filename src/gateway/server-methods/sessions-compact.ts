@@ -309,6 +309,29 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
               },
               { maxLines },
             );
+            if (trimResult.compacted) {
+              // Trimming rewrites the transcript, so a resumed CLI backend
+              // session would replay the history that was just removed.
+              await applySessionPatchProjection({
+                agentId: target.agentId,
+                storePath,
+                resolveTarget: () => ({ primaryKey: compactTarget.primaryKey }),
+                project: ({ existingEntry }) => {
+                  if (
+                    !existingEntry ||
+                    existingEntry.sessionId !== sessionId ||
+                    existingEntry.lifecycleRevision !== lifecycleRevision
+                  ) {
+                    // The row belongs to a session generation this trim no
+                    // longer owns; its bindings are not ours to release.
+                    return { ok: false };
+                  }
+                  existingEntry.updatedAt = Date.now();
+                  clearAllCliSessions(existingEntry);
+                  return { ok: true, entry: existingEntry };
+                },
+              });
+            }
             respond(
               true,
               {
