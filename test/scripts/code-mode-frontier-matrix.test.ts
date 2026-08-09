@@ -1,737 +1,698 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import type { AiModelTransportEvent } from "@openclaw/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildFrontierModeConfigProof,
   buildFrozenFrontierMatrixPlan,
   createFrozenFrontierMatrixChildIsolation,
-  frozenFrontierMatrixTesting,
   runFrozenFrontierMatrix,
   verifyFrontierAuditBundle,
-  type FrontierMatrixCellObservation,
-  type FrozenFrontierMatrixIdentity,
+  verifyFrozenFrontierMatrixPlan,
+  type FrontierExecutionProof,
   type FrozenFrontierMatrixPlan,
 } from "../../scripts/lib/code-mode-frontier-matrix.js";
-import { createCodeModeStats } from "../../src/agents/code-mode-stats.js";
-import type { AgentCommandRunAccountingSnapshot } from "../../src/agents/command/run-accounting.types.js";
 import {
-  agentExecTraceTesting,
-  type AgentExecDispatchReceipt,
-} from "../../src/commands/agent-exec-trace.js";
-
-const tempRoots: string[] = [];
-const sourceIdentity = {
-  sourceSha: "a".repeat(40),
-  sourceDirty: false,
-  buildSha256: "b".repeat(64),
-  configSha256: "c".repeat(64),
-  entrypointSha256: "d".repeat(64),
-  lockfileSha256: "e".repeat(64),
-  modelCapabilitySha256: "f".repeat(64),
-  nodeVersion: "v24.15.0",
-  oracleSha256: "1".repeat(64),
-} satisfies FrozenFrontierMatrixIdentity;
-const modeConfigProof = buildFrontierModeConfigProof({
-  agentId: "proof",
-  direct: {
-    agents: { entries: { proof: { tools: { codeMode: { enabled: false } } } } },
-    tools: { codeMode: { enabled: false } },
-  },
-  code: {
-    agents: { entries: { proof: { tools: { codeMode: { enabled: true } } } } },
-    tools: { codeMode: { enabled: true } },
-  },
-});
-
-async function tempRoot(): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-frontier-matrix-"));
-  tempRoots.push(root);
-  return root;
-}
+  cleanupFrontierTempRoots,
+  collectFrontierKeys as collectKeys,
+  comparableFrontierProof as comparableProof,
+  frontierClocks as clocks,
+  frontierEnvelope as envelope,
+  frontierIdentity as identity,
+  frontierPlan as plan,
+  frontierRunner as runner,
+  frontierTempRoot as tempRoot,
+  terminalZeroSubmissionTrace,
+} from "./code-mode-frontier-matrix.fixtures.js";
 
 afterEach(async () => {
-  await Promise.all(
-    tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })),
-  );
+  await cleanupFrontierTempRoots();
 });
 
-function plan(): FrozenFrontierMatrixPlan {
-  return buildFrozenFrontierMatrixPlan({
-    api: "responses",
-    blockId: "block-01",
-    campaignId: "campaign-01",
-    campaignNonce: "one-use-campaign-nonce",
-    fixtureSha256: "2".repeat(64),
-    identity: sourceIdentity,
-    model: "openai/gpt-test",
-    promptSha256: "3".repeat(64),
-    providerMaxRetries: 2,
-    runDate: "2026-08-08",
-    taskSubset: ["task-01", "task-02"],
-    modeConfigProof,
-  });
-}
-
-function attemptEvent(callId: string): AiModelTransportEvent {
-  return {
-    eventId: `attempt-${callId}`,
-    type: "attempt",
-    provider: "openai",
-    model: "gpt-test",
-    api: "responses",
-    callId,
-    transport: "sse",
-    ordinal: 1,
-    reason: "initial",
-    outcome: "completed",
-  };
-}
-
-function snapshot(mode: "direct" | "code"): AgentCommandRunAccountingSnapshot {
-  const code = mode === "code";
-  const turns = code ? 8 : 10;
-  const calls = code ? 9 : 10;
-  const tokens = code ? 900 : 1_000;
-  const callIds = Array.from({ length: calls }, (_, index) => `call-${mode}-${index + 1}`);
-  const events = callIds.map(attemptEvent);
-  const codeModeStats = createCodeModeStats();
-  codeModeStats.bridgeCalls = code ? { search: 1, call: 2 } : {};
-  codeModeStats.bridgeLifecycle = code
-    ? { registered: 3, started: 3, settled: 3, unresolvedAtExtraction: 0 }
-    : {};
-  return {
-    candidates: {
-      total: 1,
-      returned: 1,
-      threw: 0,
-      runtimes: { embedded: 1, cli: 0, native: 0, cloud: 0, unknown: 0 },
-      entries: [
-        {
-          provider: "openai",
-          model: "gpt-test",
-          runtime: "embedded",
-          outcome: "returned",
-          effectiveModels: {
-            entries: [{ provider: "openai", model: "gpt-test" }],
-            truncated: 0,
-          },
-        },
-      ],
-      truncated: 0,
-    },
-    agentSubmissions: { total: 1, completed: 1, failed: 0 },
-    modelCalls: { total: calls, completed: calls, failed: 0 },
-    assistantTurns: turns,
-    usage: {
-      input: tokens - 200,
-      cacheRead: 100,
-      cacheWrite: 0,
-      output: 200,
-      reasoningTokens: 100,
-      total: tokens,
-    },
-    toolSummary: { calls: code ? 1 : 5, tools: code ? ["code_mode"] : ["read"] },
-    providerTransport: {
-      logicalCalls: {
-        total: calls,
-        totalKind: "exact",
-        outcomeKind: "exact",
-        completed: calls,
-        failed: 0,
-        aborted: 0,
-        entries: callIds.map((callId, index) => ({
-          callId,
-          provider: "openai",
-          model: "gpt-test",
-          api: "responses",
-          transport: "sse",
-          outcome: "completed",
-          cachedInput: { state: "exact", tokens: index === 0 ? 50 : 0 },
-        })),
-        entriesTruncated: false,
-      },
-      attempts: {
-        total: calls,
-        totalKind: "exact",
-        initial: calls,
-        retries: 0,
-        authRecoveries: 0,
-        payloadRecoveries: 0,
-        transportFallbacks: 0,
-      },
-      connections: {
-        total: 0,
-        totalKind: "exact",
-        initial: 0,
-        prewarms: 0,
-        reconnects: 0,
-      },
-      fallbacks: {
-        total: 0,
-        totalKind: "exact",
-        unsupported: 0,
-        connectionFailures: 0,
-        submissionFailures: 0,
-        streamFailures: 0,
-        policy: 0,
-      },
-      providerFallbacks: { total: 0, totalKind: "exact", server: 0 },
-      zeroSubmissions: { total: 0, totalKind: "exact", failed: 0, aborted: 0 },
-      events: {
-        total: events.length,
-        totalKind: "exact",
-        entries: events,
-        entriesTruncated: false,
-      },
-    },
-    commandExecutionDurationMs: code ? 950 : 1_000,
-    coverage: {
-      candidates: { state: "complete" },
-      agentSubmissions: { state: "complete" },
-      modelCalls: { state: "complete" },
-      assistantTurns: { state: "complete" },
-      usage: { state: "complete" },
-      usageBuckets: {
-        input: { state: "complete" },
-        output: { state: "complete" },
-        cacheRead: { state: "complete" },
-        cacheWrite: { state: "complete" },
-        reasoningTokens: { state: "complete" },
-        total: { state: "complete" },
-      },
-      tools: { state: "complete" },
-      cost: { state: "complete" },
-      agentTime: { state: "complete" },
-      commandExecutionDuration: { state: "complete" },
-      wallLatency: { state: "complete" },
-      providerTransport: { state: "complete" },
-    },
-    ...(code
-      ? {
-          codeMode: {
-            engaged: true,
-            stats: codeModeStats,
-            lifecycle: {
-              maxUnresolvedAtExtraction: 0,
-              attemptsWithUnresolved: 0,
-              finalQuiescence: { state: "quiescent" as const },
-            },
-          },
-        }
-      : {}),
-  };
-}
-
-function receipt(source: AgentCommandRunAccountingSnapshot): AgentExecDispatchReceipt {
-  const calls = source.providerTransport?.logicalCalls.entries ?? [];
-  return {
-    schemaVersion: 1,
-    authority: "host_dispatch_guard",
-    complete: true,
-    truncated: false,
-    route: { provider: "openai", model: "gpt-test", api: "responses" },
-    logicalCalls: calls.length,
-    physicalFetchDispatch: calls.length,
-    calls: calls.map((call, index) => ({
-      ordinal: index + 1,
-      callIdSha256: agentExecTraceTesting.hashCallId(call.callId),
-      physicalFetchDispatch: 1,
-    })),
-  };
-}
-
-function createObservation(
-  mode: "direct" | "code",
-  taskPassed = true,
-): FrontierMatrixCellObservation {
-  const source = snapshot(mode);
-  const code = mode === "code";
-  return {
-    execution: {
-      campaignId: "",
-      blockId: "",
-      cellId: "",
-      cellStateKey: "",
-      modeConfigSha256: "",
-      declaredProviderMaxRetries: 2,
-      harnessAttempt: 1,
-      identitySha256: "",
-      source: "simulated_harness_observation",
-      openClawState: "cold_fresh",
-      gatewayProcess: "cold",
-      transportPrewarm: "unobserved",
-      transportReuse: "unobserved",
-      startedAtUtc: "2026-08-08T12:00:00.000Z",
-      endedAtUtc: "2026-08-08T12:00:01.000Z",
-    },
-    taskPassed,
-    traceInput: {
-      snapshot: source,
-      agentDurationMs: code ? 900 : 1_000,
-      codeModeConfigured: code,
-      codeModeEngaged: code,
-      dispatchReceipt: receipt(source),
-      model: "gpt-test",
-      provider: "openai",
-    },
-  };
-}
-
-function runner(params: {
-  matrixPlan: FrozenFrontierMatrixPlan;
-  taskFailureCell?: string;
-  invalidTraceCell?: string;
-}) {
-  return {
-    runCell: async (cell: FrozenFrontierMatrixPlan["cells"][number]) => {
-      const fixture = createObservation(cell.mode, cell.id !== params.taskFailureCell);
-      if (cell.id === params.invalidTraceCell && fixture.traceInput.snapshot) {
-        fixture.traceInput.snapshot.coverage.providerTransport = {
-          state: "partial",
-          reasons: ["transport_terminal_unverified"],
-        };
-      }
-      return {
-        ...fixture,
-        execution: {
-          ...fixture.execution,
-          campaignId: params.matrixPlan.campaign.id,
-          blockId: params.matrixPlan.campaign.blockId,
-          cellId: cell.id,
-          cellStateKey: cell.stateKey,
-          modeConfigSha256:
-            cell.mode === "direct"
-              ? params.matrixPlan.execution.modeConfigProof.directSha256
-              : params.matrixPlan.execution.modeConfigProof.codeSha256,
-          identitySha256: params.matrixPlan.identitySha256,
-        },
-      };
-    },
-  };
-}
-
 describe("frozen frontier matrix plan", () => {
-  it("freezes runtime, campaign, task, recovery, and serial ABBA identity", () => {
+  it("binds task-major task x ABBA order and every identity dimension", () => {
     const matrixPlan = plan();
 
-    expect(matrixPlan).toMatchObject({
-      campaign: {
-        id: "campaign-01",
-        blockId: "block-01",
-        nonceSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
-        evidenceAuthority: "simulated_contract_only",
-      },
-      runDate: "2026-08-08",
-      model: { ref: "openai/gpt-test", provider: "openai", api: "responses" },
-      source: sourceIdentity,
-      task: {
-        subset: ["task-01", "task-02"],
-        subsetSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
-        fixtureSha256: "2".repeat(64),
-        promptSha256: "3".repeat(64),
-        oracleSha256: sourceIdentity.oracleSha256,
-      },
-      execution: {
-        concurrency: 1,
-        schedule: "serial_abba",
-        sampling: {
-          seedSupport: "unsupported",
-          seed: "unset",
-          temperature: "provider_default",
-          topP: "provider_default",
-        },
-        state: "fresh_process_and_state_per_cell",
-        warmCold: {
-          build: "warm_shared_immutable",
-          gatewayProcess: "cold_per_cell",
-          openClawState: "cold_fresh_per_cell",
-          providerFirstCallCache: "observed_per_trace",
-          transportPrewarm: "unobserved",
-          transportReuse: "unobserved",
-        },
-        retryPolicy: {
-          harness: { status: "disabled", maxRetries: 0 },
-          provider: { status: "declared_unverified", declaredMaxRetries: 2 },
-          encryptedPayloadRecovery: { status: "mandatory", maxRecoveries: 1 },
-          transport: { status: "unknown" },
-          comparability: "blocked",
-          blocker: "mandatory_or_unknown_recovery_layers",
-        },
-      },
+    expect(matrixPlan.task).toMatchObject({
+      subset: ["task-a", "task-b"],
+      order: ["task-b", "task-a"],
+      subsetSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      orderSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
     });
     expect(matrixPlan.cells.map((cell) => cell.id)).toEqual([
-      "direct-1",
-      "code-1",
-      "code-2",
-      "direct-2",
+      "task-b:direct-1",
+      "task-b:code-1",
+      "task-b:code-2",
+      "task-b:direct-2",
+      "task-a:direct-1",
+      "task-a:code-1",
+      "task-a:code-2",
+      "task-a:direct-2",
     ]);
-    expect(new Set(matrixPlan.cells.map((cell) => cell.stateKey)).size).toBe(4);
-    expect(frozenFrontierMatrixTesting.schedule).toHaveLength(4);
-  });
+    expect(new Set(matrixPlan.cells.map((cell) => cell.stateKey)).size).toBe(8);
+    expect(verifyFrozenFrontierMatrixPlan(matrixPlan)).toBe(true);
 
-  it("rejects dirty identities, duplicate subsets, and ambiguous retry policy", () => {
-    expect(() =>
-      buildFrozenFrontierMatrixPlan({
-        api: "responses",
-        blockId: "block",
-        campaignId: "campaign",
-        campaignNonce: "one-use-campaign-nonce",
-        fixtureSha256: "2".repeat(64),
-        identity: {
-          ...sourceIdentity,
-          sourceDirty: true,
-        } as unknown as FrozenFrontierMatrixIdentity,
-        model: "openai/gpt-test",
-        promptSha256: "3".repeat(64),
-        providerMaxRetries: 2,
-        runDate: "2026-08-08",
-        taskSubset: ["task"],
-        modeConfigProof,
-      }),
-    ).toThrow("clean frozen runtime identity");
-    expect(() =>
-      buildFrozenFrontierMatrixPlan({
-        api: "responses",
-        blockId: "block",
-        campaignId: "campaign",
-        campaignNonce: "one-use-campaign-nonce",
-        fixtureSha256: "2".repeat(64),
-        identity: sourceIdentity,
-        model: "openai/gpt-test",
-        promptSha256: "3".repeat(64),
-        providerMaxRetries: 2,
-        runDate: "2026-08-08",
-        taskSubset: ["task", "task"],
-        modeConfigProof,
-      }),
-    ).toThrow("non-empty, unique");
-    expect(() =>
-      buildFrozenFrontierMatrixPlan({
-        api: "responses",
-        blockId: "block",
-        campaignId: "campaign",
-        campaignNonce: "one-use-campaign-nonce",
-        fixtureSha256: "2".repeat(64),
-        identity: sourceIdentity,
-        model: "openai/gpt-test",
-        promptSha256: "3".repeat(64),
-        providerMaxRetries: -1,
-        runDate: "2026-08-08",
-        taskSubset: ["task"],
-        modeConfigProof,
-      }),
-    ).toThrow("retry policy");
+    for (const mutate of [
+      (value: FrozenFrontierMatrixPlan) => {
+        value.task.manifest[0]!.promptSha256 = "9".repeat(64);
+      },
+      (value: FrozenFrontierMatrixPlan) => {
+        value.execution.sampling.seed = "changed";
+      },
+      (value: FrozenFrontierMatrixPlan) => {
+        value.execution.proof.providerRetry.maxRetries = 1;
+      },
+      (value: FrozenFrontierMatrixPlan) => {
+        value.cells[0]!.taskSha256 = "8".repeat(64);
+      },
+    ]) {
+      const tampered = structuredClone(matrixPlan);
+      mutate(tampered);
+      expect(verifyFrozenFrontierMatrixPlan(tampered)).toBe(false);
+    }
   });
 
   it("keeps Direct and Code child configs mode-only and credentials out of artifacts", async () => {
-    const credential = "frontier-matrix-secret";
+    const credential = "frontier-matrix-test-token";
     const stateDir = await tempRoot();
     const base = {
       agentId: "proof",
       authProfileId: "openai:proof",
       credential,
       model: "openai/gpt-test",
-      sourceEnv: {
-        PATH: "/usr/bin",
-        LANG: "en_US.UTF-8",
-        OPENAI_API_KEY: credential,
-        HTTPS_PROXY: "http://proxy.invalid",
-      },
+      sourceEnv: { PATH: "/usr/bin", OPENAI_API_KEY: credential },
     };
     const direct = createFrozenFrontierMatrixChildIsolation({ ...base, mode: "direct" });
     const code = createFrozenFrontierMatrixChildIsolation({ ...base, mode: "code" });
     const directConfig = await direct.prepareConfigBeforeSpawn({
       config: {},
       stateDir: path.join(stateDir, "direct"),
+      tempRoot: stateDir,
     });
     const codeConfig = await code.prepareConfigBeforeSpawn({
       config: {},
       stateDir: path.join(stateDir, "code"),
+      tempRoot: stateDir,
     });
 
-    expect(direct.childBaseEnv).toEqual({ LANG: "en_US.UTF-8", PATH: "/usr/bin" });
-    expect(directConfig.tools?.codeMode).toEqual({ enabled: false });
-    expect(codeConfig.tools?.codeMode).toEqual({ enabled: true });
-    expect(directConfig.agents?.entries?.proof?.tools?.codeMode).toEqual({ enabled: false });
-    expect(codeConfig.agents?.entries?.proof?.tools?.codeMode).toEqual({ enabled: true });
+    expect(direct.childBaseEnv).toEqual({ PATH: "/usr/bin" });
     expect(() =>
-      buildFrontierModeConfigProof({
-        agentId: "proof",
-        direct: directConfig,
-        code: codeConfig,
-      }),
+      buildFrontierModeConfigProof({ agentId: "proof", direct: directConfig, code: codeConfig }),
     ).not.toThrow();
     expect(JSON.stringify({ direct, code })).not.toContain(credential);
   });
 
-  it("rejects any Direct/Code config delta beyond the two enable flags", async () => {
-    const stateDir = await tempRoot();
-    const base = {
-      agentId: "proof",
-      authProfileId: "openai:proof",
-      credential: "test-credential",
-      model: "openai/gpt-test",
-      sourceEnv: { PATH: "/usr/bin" },
-    };
-    const direct = await createFrozenFrontierMatrixChildIsolation({
-      ...base,
-      mode: "direct",
-    }).prepareConfigBeforeSpawn({
-      config: {},
-      stateDir: path.join(stateDir, "direct"),
-    });
-    const code = await createFrozenFrontierMatrixChildIsolation({
-      ...base,
-      mode: "code",
-    }).prepareConfigBeforeSpawn({
-      config: {},
-      stateDir: path.join(stateDir, "code"),
-    });
-    code.tools = { ...code.tools, toolSearch: { enabled: true } };
+  it("requires explicit clean source state and reapplies semantic invariants", () => {
+    const matrixPlan = plan();
+    const missingCleanliness = structuredClone(matrixPlan);
+    delete (missingCleanliness.source as Partial<typeof missingCleanliness.source>).sourceDirty;
+    expect(verifyFrozenFrontierMatrixPlan(missingCleanliness)).toBe(false);
 
-    expect(() => buildFrontierModeConfigProof({ agentId: "proof", direct, code })).toThrow(
-      "differ only at Code Mode enable flags",
-    );
+    const equalModes = structuredClone(matrixPlan);
+    equalModes.execution.modeConfigProof.codeSha256 =
+      equalModes.execution.modeConfigProof.directSha256;
+    expect(verifyFrozenFrontierMatrixPlan(equalModes)).toBe(false);
+
+    const invalidRetry = structuredClone(matrixPlan);
+    invalidRetry.execution.proof.providerRetry.maxRetries = -1;
+    expect(verifyFrozenFrontierMatrixPlan(invalidRetry)).toBe(false);
+
+    const malformedIdentity = structuredClone(identity) as Partial<typeof identity>;
+    delete malformedIdentity.sourceDirty;
+    expect(() =>
+      buildFrozenFrontierMatrixPlan({
+        api: matrixPlan.model.api,
+        blockId: matrixPlan.campaign.blockId,
+        campaignId: matrixPlan.campaign.id,
+        campaignNonce: "one-use-campaign-nonce",
+        executionProof: comparableProof,
+        identity: malformedIdentity as typeof identity,
+        modeConfigProof: matrixPlan.execution.modeConfigProof,
+        model: matrixPlan.model.ref,
+        runDate: matrixPlan.runDate,
+        sampling: {
+          seedSupport: matrixPlan.execution.sampling.seedSupport,
+          seed: matrixPlan.execution.sampling.seed,
+        },
+        tasks: matrixPlan.task.manifest.map(
+          ({ id, fixtureSha256, promptSha256, oracleSha256 }) => ({
+            id,
+            fixtureSha256,
+            promptSha256,
+            oracleSha256,
+          }),
+        ),
+      }),
+    ).toThrow("clean frozen runtime identity");
   });
 });
 
 describe("frozen frontier matrix runner", () => {
-  it("runs serial ABBA, writes recomputable audit bundles, and remains ineligible", async () => {
+  it("owns monotonic timing, conserves multi-task bundles, and never promotes fixtures", async () => {
     const repoRoot = await tempRoot();
     const matrixPlan = plan();
-    const observedCells: string[] = [];
-    const cellRunner = runner({ matrixPlan });
-
+    const observed: string[] = [];
     const result = await runFrozenFrontierMatrix({
       repoRoot,
       outputDir: "evidence",
       plan: matrixPlan,
       deps: {
-        readIdentity: async () => sourceIdentity,
+        evidenceSource: "test_fixture",
+        readIdentity: async () => identity,
         runCell: async (cell, currentPlan) => {
-          observedCells.push(cell.id);
-          return await cellRunner.runCell(cell, currentPlan);
+          expect(currentPlan.identitySha256).toBe(matrixPlan.identitySha256);
+          observed.push(cell.id);
+          return runner()(cell, currentPlan);
         },
+        ...clocks(),
       },
     });
 
-    expect(observedCells).toEqual(["direct-1", "code-1", "code-2", "direct-2"]);
-    expect(result.exitCode).toBe(1);
+    expect(observed).toEqual(matrixPlan.cells.map((cell) => cell.id));
+    expect(result.results).toHaveLength(8);
+    expect(
+      result.results.every((entry) => entry.auditBundle?.execution.wallLatencyMs === 125),
+    ).toBe(true);
+    expect(
+      result.results.every((entry) => verifyFrontierAuditBundle(entry.auditBundle!, matrixPlan)),
+    ).toBe(true);
     expect(result.summary).toMatchObject({
-      evidenceAuthority: "simulated_contract_only",
       evidenceValid: false,
       betaEligible: false,
-      comparability: {
-        state: "blocked",
-        reasons: expect.arrayContaining([
-          "dispatch_authority_not_bound",
-          "mandatory_encrypted_payload_recovery",
-          "transport_retry_policy_unknown",
-        ]),
-      },
+      comparability: { state: "blocked", reasons: ["simulated_or_test_fixture"] },
       direct: {
-        cells: 2,
-        passed: 2,
-        validTraces: 2,
+        cells: 4,
+        passed: 4,
+        validTraces: 4,
         totals: {
-          effectiveTurns: 20,
-          underlyingTotalCalls: 30,
-          totalTokens: 2_000,
-          wallLatencyMs: 2_000,
+          effectiveTurns: 12,
+          totalTokens: 520,
+          underlyingTotalCalls: 24,
+          wallLatencyMs: 500,
         },
       },
       code: {
-        cells: 2,
-        passed: 2,
-        validTraces: 2,
+        cells: 4,
+        passed: 4,
+        validTraces: 4,
         totals: {
-          effectiveTurns: 16,
-          underlyingTotalCalls: 26,
-          totalTokens: 1_800,
-          wallLatencyMs: 1_900,
+          effectiveTurns: 8,
+          totalTokens: 400,
+          underlyingTotalCalls: 16,
+          wallLatencyMs: 500,
         },
       },
+      bars: {
+        accuracyNonRegression: true,
+        fewerEffectiveTurns: true,
+        fewerTokens: true,
+        totalCallsNonRegression: true,
+        wallLatencyNonRegression: true,
+        auditableMatchedTraces: false,
+      },
     });
-    const resultLines = (
-      await fs.readFile(path.join(repoRoot, "evidence", "results.jsonl"), "utf8")
-    )
+    const persisted = (await fs.readFile(path.join(repoRoot, "evidence", "results.jsonl"), "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    const bundle = resultLines[0].auditBundle;
-    const { digests, ...contents } = bundle;
-    expect(digests.projectionInputSha256).toBe(
-      frozenFrontierMatrixTesting.digestJson(bundle.projectionInput),
-    );
-    expect(digests.bundleSha256).toBe(frozenFrontierMatrixTesting.digestJson(contents));
-    expect(digests.traceSha256).toBe(frozenFrontierMatrixTesting.digestJson(bundle.trace));
-    expect(verifyFrontierAuditBundle(bundle)).toBe(true);
-    bundle.oracle.passed = false;
-    expect(verifyFrontierAuditBundle(bundle)).toBe(false);
-    const manifest = await fs.readFile(path.join(repoRoot, "evidence", "manifest.json"), "utf8");
-    expect(manifest).toContain(matrixPlan.identitySha256);
-    expect(manifest).not.toContain("one-use-campaign-nonce");
-    expect(manifest).not.toMatch(/api[_-]?key|credential|secret/iu);
+    expect(persisted).toHaveLength(8);
+    const keys = collectKeys(persisted);
+    expect([...keys].filter((key) => ["payloads", "sessionId", "final"].includes(key))).toEqual([]);
+    const bundle = persisted[0].auditBundle;
+    expect(verifyFrontierAuditBundle(bundle, matrixPlan)).toBe(true);
+    bundle.execution.wallLatencyMs += 1;
+    expect(verifyFrontierAuditBundle(bundle, matrixPlan)).toBe(false);
   });
 
-  it("stops on an invalid trace without retrying the cell", async () => {
-    const repoRoot = await tempRoot();
+  it("defaults injected runners to fixture evidence", async () => {
     const matrixPlan = plan();
-    const cellRunner = runner({ matrixPlan, invalidTraceCell: "code-1" });
-    let calls = 0;
-
     const result = await runFrozenFrontierMatrix({
-      repoRoot,
+      repoRoot: await tempRoot(),
       outputDir: "evidence",
       plan: matrixPlan,
       deps: {
-        readIdentity: async () => sourceIdentity,
-        runCell: async (cell, currentPlan) => {
-          calls += 1;
-          return await cellRunner.runCell(cell, currentPlan);
-        },
+        readIdentity: async () => identity,
+        runCell: runner(),
+        ...clocks(),
       },
     });
 
-    expect(calls).toBe(2);
-    expect(result.exitCode).toBe(1);
-    expect(result.results.at(-1)).toMatchObject({
-      cellId: "code-1",
-      failure: "trace_invalid",
+    expect(result.summary).toMatchObject({
+      evidenceSource: "test_fixture",
+      betaEligible: false,
+      comparability: {
+        state: "blocked",
+        reasons: expect.arrayContaining(["simulated_or_test_fixture"]),
+      },
+    });
+  });
+
+  it.each([
+    ["task", "taskId", "task-wrong"],
+    ["config", "modeConfigSha256", "0".repeat(64)],
+  ] as const)("rejects observed %s receipt swaps", async (_label, field, mismatch) => {
+    const matrixPlan = plan();
+    const result = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "evidence",
+      plan: matrixPlan,
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => identity,
+        runCell: async (cell, currentPlan) => {
+          const observation = await runner()(cell, currentPlan);
+          observation.receipt[field] = mismatch as never;
+          return observation;
+        },
+        ...clocks(),
+      },
+    });
+
+    expect(result.results[0]).toMatchObject({
+      failure: "execution_receipt_mismatch",
       passed: false,
     });
+    expect(result.summary.comparability.reasons).toContain(
+      "non_task_failure:execution_receipt_mismatch",
+    );
   });
 
-  it("keeps task failures comparable and completes the matched schedule", async () => {
-    const repoRoot = await tempRoot();
+  it("rechecks frozen identity after the final cell", async () => {
     const matrixPlan = plan();
-    const cellRunner = runner({ matrixPlan, taskFailureCell: "code-1" });
-    let calls = 0;
-
-    const result = await runFrozenFrontierMatrix({
-      repoRoot,
-      outputDir: "evidence",
-      plan: matrixPlan,
-      deps: {
-        readIdentity: async () => sourceIdentity,
-        runCell: async (cell, currentPlan) => {
-          calls += 1;
-          return await cellRunner.runCell(cell, currentPlan);
-        },
-      },
-    });
-
-    expect(calls).toBe(4);
-    expect(result.results.find((entry) => entry.cellId === "code-1")).toMatchObject({
-      failure: "task_failed",
-      auditBundle: { trace: { audit: { state: "valid" } } },
-    });
-    expect(result.summary.betaEligible).toBe(false);
-  });
-
-  it("stops and marks the current cell when frozen identity drifts after execution", async () => {
-    const repoRoot = await tempRoot();
-    const matrixPlan = plan();
-    const cellRunner = runner({ matrixPlan });
     let identityReads = 0;
-
+    let cellCalls = 0;
     const result = await runFrozenFrontierMatrix({
-      repoRoot,
+      repoRoot: await tempRoot(),
       outputDir: "evidence",
       plan: matrixPlan,
       deps: {
+        evidenceSource: "test_fixture",
         readIdentity: async () => {
           identityReads += 1;
-          return identityReads === 2
-            ? { ...sourceIdentity, buildSha256: "9".repeat(64) }
-            : sourceIdentity;
+          return identityReads === matrixPlan.cells.length * 2
+            ? { ...identity, buildSha256: "0".repeat(64) }
+            : identity;
         },
-        runCell: cellRunner.runCell,
+        runCell: async (cell, currentPlan) => {
+          cellCalls += 1;
+          return runner()(cell, currentPlan);
+        },
+        ...clocks(),
       },
     });
 
-    expect(result.results).toHaveLength(1);
-    expect(result.results[0]).toMatchObject({
-      cellId: "direct-1",
+    expect(cellCalls).toBe(matrixPlan.cells.length);
+    expect(identityReads).toBe(matrixPlan.cells.length * 2);
+    expect(result.results.at(-1)).toMatchObject({
       failure: "frozen_identity_mismatch",
       passed: false,
     });
+    expect(result.summary.comparability.reasons).toContain(
+      "non_task_failure:frozen_identity_mismatch",
+    );
   });
 
-  it("rejects execution receipts from the wrong campaign identity", async () => {
+  it("records a bounded failure when post-cell identity observation fails", async () => {
+    const matrixPlan = plan();
+    let identityReads = 0;
+    const result = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "evidence",
+      plan: matrixPlan,
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => {
+          identityReads += 1;
+          if (identityReads === 2) {
+            throw new Error("identity unavailable");
+          }
+          return identity;
+        },
+        runCell: runner(),
+        ...clocks(),
+      },
+    });
+
+    expect(result.results[0]).toMatchObject({
+      failure: "identity_observation_failed",
+      passed: false,
+    });
+    expect(result.summary.comparability.reasons).toContain(
+      "non_task_failure:identity_observation_failed",
+    );
+  });
+
+  it("records a bounded failure when pre-cell identity observation fails", async () => {
+    let cellCalls = 0;
+    const result = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "evidence",
+      plan: plan(),
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => {
+          throw new Error("identity unavailable");
+        },
+        runCell: async (cell, matrixPlan) => {
+          cellCalls += 1;
+          return runner()(cell, matrixPlan);
+        },
+        ...clocks(),
+      },
+    });
+
+    expect(cellCalls).toBe(0);
+    expect(result.results[0]).toMatchObject({
+      failure: "identity_observation_failed",
+      passed: false,
+    });
+    expect(result.summary.comparability.reasons).toContain(
+      "non_task_failure:identity_observation_failed",
+    );
+
+    const timedOut = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "timeout",
+      plan: plan(comparableProof, 1),
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => await new Promise<never>(() => {}),
+        runCell: runner(),
+        ...clocks(),
+      },
+    });
+    expect(timedOut.results[0]).toMatchObject({ failure: "identity_observation_failed" });
+
+    const matrixPlan = plan();
+    let identityReads = 0;
+    let completedCells = 0;
+    const finalCell = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "final-cell",
+      plan: matrixPlan,
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => {
+          identityReads += 1;
+          if (identityReads === matrixPlan.cells.length * 2 - 1) {
+            throw new Error("final pre-cell identity unavailable");
+          }
+          return identity;
+        },
+        runCell: async (cell, currentPlan) => {
+          completedCells += 1;
+          return runner()(cell, currentPlan);
+        },
+        ...clocks(),
+      },
+    });
+    expect(completedCells).toBe(matrixPlan.cells.length - 1);
+    expect(finalCell.results.at(-1)).toMatchObject({ failure: "identity_observation_failed" });
+  });
+
+  it("rejects reused sessions and stale campaign dates", async () => {
+    const reused = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "reused",
+      plan: plan(),
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => identity,
+        runCell: runner((cell) => {
+          const value = JSON.parse(envelope(cell.mode));
+          value.sessionId = "shared-session";
+          return { envelope: value };
+        }),
+        ...clocks(),
+      },
+    });
+    expect(reused.results[1]).toMatchObject({ failure: "session_reused", passed: false });
+    expect(reused.summary.comparability.reasons).toContain("non_task_failure:session_reused");
+
+    let wall = Date.parse("2026-08-08T23:00:00.000Z");
+    let mono = 0;
+    const stale = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "stale-date",
+      plan: plan(),
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => identity,
+        runCell: runner(),
+        wallNow: () => {
+          wall += 1_000;
+          return new Date(wall);
+        },
+        monotonicNow: () => {
+          mono += 125;
+          return mono;
+        },
+      },
+    });
+    expect(stale.results[0]).toMatchObject({ failure: "runner_clock_invalid" });
+
+    const backwardTimes = [
+      new Date("2026-08-09T00:00:02.000Z"),
+      new Date("2026-08-09T00:00:01.000Z"),
+    ];
+    const backward = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "backward-clock",
+      plan: plan(),
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => identity,
+        runCell: runner(),
+        ...clocks(),
+        wallNow: () => backwardTimes.shift()!,
+      },
+    });
+    expect(backward.results[0]).toMatchObject({ failure: "runner_clock_invalid" });
+
+    wall = Date.parse("2026-08-09T23:59:58.000Z");
+    mono = 0;
+    const crossing = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "midnight",
+      plan: plan(),
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => identity,
+        runCell: runner(),
+        wallNow: () => {
+          wall += 1_000;
+          return new Date(wall);
+        },
+        monotonicNow: () => {
+          mono += 125;
+          return mono;
+        },
+      },
+    });
+    expect(crossing.results.every((entry) => entry.passed)).toBe(true);
+    expect(crossing.results[1]!.auditBundle!.execution.startedAtUtc.slice(0, 10)).toBe(
+      "2026-08-10",
+    );
+  });
+
+  it("blocks a valid-trace infrastructure failure in the final cell", async () => {
+    const matrixPlan = plan();
+    const result = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "evidence",
+      plan: matrixPlan,
+      deps: {
+        evidenceSource: "production",
+        readIdentity: async () => identity,
+        runCell: runner((cell) =>
+          cell.sequence === matrixPlan.cells.length ? { outcome: "infrastructure" } : {},
+        ),
+        ...clocks(),
+      },
+    });
+
+    expect(result.results.at(-1)).toMatchObject({
+      failure: "infrastructure_failed",
+      passed: false,
+    });
+    expect(result.summary).toMatchObject({
+      evidenceValid: false,
+      betaEligible: false,
+      comparability: {
+        reasons: expect.arrayContaining(["non_task_failure:infrastructure_failed"]),
+      },
+    });
+  });
+
+  it("blocks prompt-token regression even when total tokens fall", async () => {
+    const matrixPlan = plan();
+    const result = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "evidence",
+      plan: matrixPlan,
+      deps: {
+        evidenceSource: "production",
+        readIdentity: async () => identity,
+        runCell: runner((cell) => ({
+          envelope:
+            cell.mode === "code"
+              ? envelope("code", "ok", { input: 100, output: 0, total: 110 })
+              : envelope("direct"),
+        })),
+        ...clocks(),
+      },
+    });
+
+    expect(result.summary).toMatchObject({
+      betaEligible: false,
+      direct: { totals: { inputTokens: 360, totalTokens: 520 } },
+      code: { totals: { inputTokens: 400, totalTokens: 440 } },
+      bars: {
+        fewerTokens: true,
+        inputTokensNonRegression: false,
+      },
+    });
+  });
+
+  it.each([
+    ["provider", "provider", "anthropic"],
+    ["model", "model", "gpt-wrong"],
+  ] as const)("binds %s identity to the trace route", async (_label, field, mismatch) => {
+    const matrixPlan = plan();
+    const value = JSON.parse(envelope("direct")) as Record<string, unknown>;
+    value[field] = mismatch;
+    const result = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "evidence",
+      plan: matrixPlan,
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => identity,
+        runCell: runner(() => ({ envelope: JSON.stringify(value) })),
+        ...clocks(),
+      },
+    });
+
+    expect(result.results[0]).toMatchObject({
+      failure: "trace_route_mismatch",
+      passed: false,
+    });
+    expect(result.results.slice(1).every((entry) => entry.failure === "not_run")).toBe(true);
+  });
+
+  it("downgrades persisted zero-submission proof to trace_invalid", async () => {
+    const value = JSON.parse(envelope("code"));
+    value.trace = terminalZeroSubmissionTrace();
+    const result = await runFrozenFrontierMatrix({
+      repoRoot: await tempRoot(),
+      outputDir: "evidence",
+      plan: plan(),
+      deps: {
+        evidenceSource: "test_fixture",
+        readIdentity: async () => identity,
+        runCell: runner(() => ({ envelope: JSON.stringify(value) })),
+        ...clocks(),
+      },
+    });
+
+    expect(result.results[0]).toMatchObject({ failure: "trace_invalid", passed: false });
+    expect(result.results[0]?.auditBundle?.trace.audit).toMatchObject({
+      state: "inconclusive",
+      reasons: expect.arrayContaining(["dispatch_receipt_producer_proof_not_persisted"]),
+    });
+    expect(result.summary).toMatchObject({
+      betaEligible: false,
+      direct: { totals: null },
+      code: { totals: null },
+      bars: {
+        fewerEffectiveTurns: false,
+        fewerTokens: false,
+        totalCallsNonRegression: false,
+        wallLatencyNonRegression: false,
+      },
+    });
+  });
+
+  it.each([
+    ["oracle task failure", "ok", false, "task_failed", 8],
+    ["agent task error", "task", true, "task_error", 8],
+    ["infrastructure", "infrastructure", true, "infrastructure_failed", 1],
+    ["timeout", "timeout", true, "timeout", 1],
+    ["cleanup", "cleanup", true, "cleanup_failed", 1],
+  ] as const)("keeps %s independent", async (_label, outcome, oracle, failure, expectedCalls) => {
     const repoRoot = await tempRoot();
     const matrixPlan = plan();
-    const cellRunner = runner({ matrixPlan });
-
+    let calls = 0;
     const result = await runFrozenFrontierMatrix({
       repoRoot,
       outputDir: "evidence",
       plan: matrixPlan,
       deps: {
-        readIdentity: async () => sourceIdentity,
-        runCell: async (cell, currentPlan) => {
-          const observation = await cellRunner.runCell(cell, currentPlan);
-          observation.execution.campaignId = "wrong-campaign";
-          return observation;
-        },
+        evidenceSource: "test_fixture",
+        readIdentity: async () => identity,
+        runCell: runner(() => {
+          calls += 1;
+          return calls === 1 ? { outcome, oracle } : {};
+        }),
+        ...clocks(),
       },
     });
 
-    expect(result.results).toEqual([
-      expect.objectContaining({
-        cellId: "direct-1",
-        failure: "execution_receipt_mismatch",
-        passed: false,
-      }),
-    ]);
+    expect(calls).toBe(expectedCalls);
+    expect(result.results[0]).toMatchObject({ failure, passed: false });
   });
 
   it.each([
     [
-      "cell state",
-      (observation: FrontierMatrixCellObservation) => {
-        observation.execution.cellStateKey = "0".repeat(64);
+      "provider retry",
+      (proof: FrontierExecutionProof) => {
+        proof.providerRetry.status = "declared_unverified";
       },
+      "provider_retry_policy_unverified",
     ],
     [
-      "gateway warm/cold state",
-      (observation: FrontierMatrixCellObservation) => {
-        observation.execution.gatewayProcess = "warm" as "cold";
+      "encrypted recovery",
+      (proof: FrontierExecutionProof) => {
+        proof.encryptedPayloadRecovery = { status: "mandatory", maxRecoveries: 1 };
       },
+      "mandatory_encrypted_payload_recovery",
     ],
     [
-      "OpenClaw warm/cold state",
-      (observation: FrontierMatrixCellObservation) => {
-        observation.execution.openClawState = "warm" as "cold_fresh";
+      "transport retry",
+      (proof: FrontierExecutionProof) => {
+        proof.transportRetry = { status: "unknown", maxRetries: null };
       },
+      "transport_retry_policy_unknown",
     ],
-  ])("fails closed on %s mismatch", async (_label, mutate) => {
+    [
+      "warm/cold",
+      (proof: FrontierExecutionProof) => {
+        proof.warmCold.transportReuse = "unobserved";
+      },
+      "transport_warm_cold_state_unobserved",
+    ],
+  ] as const)("blocks %s before runCell", async (_label, mutate, blocker) => {
+    const proof = structuredClone(comparableProof);
+    mutate(proof);
+    const matrixPlan = plan(proof);
     const repoRoot = await tempRoot();
-    const matrixPlan = plan();
-    const cellRunner = runner({ matrixPlan });
-
+    let calls = 0;
     const result = await runFrozenFrontierMatrix({
       repoRoot,
       outputDir: "evidence",
       plan: matrixPlan,
       deps: {
-        readIdentity: async () => sourceIdentity,
-        runCell: async (cell, currentPlan) => {
-          const observation = await cellRunner.runCell(cell, currentPlan);
-          mutate(observation);
-          return observation;
+        readIdentity: async () => identity,
+        runCell: async () => {
+          calls += 1;
+          throw new Error("must not run");
         },
       },
     });
 
-    expect(result.results).toEqual([
-      expect.objectContaining({
-        cellId: "direct-1",
-        failure: "execution_receipt_mismatch",
-        passed: false,
-      }),
-    ]);
+    expect(calls).toBe(0);
+    expect(result.results).toHaveLength(matrixPlan.cells.length);
+    expect(result.results.every((entry) => entry.failure === "not_run")).toBe(true);
+    expect(result.summary.comparability.reasons).toContain(blocker);
   });
 });

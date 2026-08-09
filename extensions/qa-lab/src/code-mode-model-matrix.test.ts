@@ -171,7 +171,11 @@ describe("Code Mode model matrix classification", () => {
           ok: false,
           status: "error",
           final: "",
-          error: { kind: "error_payload", message: "credits depleted" },
+          error: {
+            kind: "error_payload",
+            message: "credits depleted",
+            phase: "infrastructure",
+          },
         },
         expected: "CM-EXPECTED",
         mode: "code",
@@ -332,7 +336,7 @@ describe("Code Mode model matrix classification", () => {
           status: "error",
           final: "",
           codeModeEngaged: undefined,
-          error: { kind: "agent_error", message: "run failed" },
+          error: { kind: "agent_error", message: "run failed", phase: "task" },
         },
         expected: "CM-EXPECTED",
         mode: "code",
@@ -608,7 +612,11 @@ describe("Code Mode model matrix artifacts", () => {
       expect(lines).toHaveLength(2);
       expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({
         failureCategory: "harness_error",
-        error: { kind: "harness_error", message: "fixture exploded" },
+        error: {
+          kind: "harness_error",
+          message: "fixture exploded",
+          phase: "infrastructure",
+        },
       });
       const evidence = validateQaEvidenceSummaryJson(
         JSON.parse(await fs.readFile(path.join(repoRoot, "artifacts", "qa-evidence.json"), "utf8")),
