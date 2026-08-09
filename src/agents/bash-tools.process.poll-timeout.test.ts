@@ -112,6 +112,41 @@ test("process poll waits for completion when timeout is provided", async () => {
   });
 });
 
+test("waiting poll returns only output appended since the previous poll", async () => {
+  vi.useFakeTimers();
+  try {
+    const sessionId = "sess-incremental-terminal-output";
+    const { processTool, session } = createProcessSessionHarness(sessionId);
+
+    appendOutput(session, "stdout", "already-observed\n");
+    const firstPoll = await pollSession(processTool, "toolcall-first", sessionId);
+    expect(firstPoll.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("already-observed"),
+    });
+
+    const pollPromise = pollSession(processTool, "toolcall-terminal", sessionId, 2_000);
+    setTimeout(() => {
+      appendOutput(session, "stdout", "new-terminal-output\n");
+      markExited(session, 0, null, "completed");
+    }, 10);
+
+    await vi.advanceTimersByTimeAsync(250);
+    const terminalPoll = await pollPromise;
+    const terminalText =
+      terminalPoll.content[0]?.type === "text" ? terminalPoll.content[0].text : "";
+    const details = terminalPoll.details as { status?: string; aggregated?: string };
+
+    expect(details.status).toBe("completed");
+    expect(details.aggregated).toContain("already-observed");
+    expect(details.aggregated).toContain("new-terminal-output");
+    expect(terminalText).toContain("new-terminal-output");
+    expect(terminalText).not.toContain("already-observed");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("waiting poll retains terminal state and its receipt after indexed cleanup", async () => {
   vi.useFakeTimers();
   try {

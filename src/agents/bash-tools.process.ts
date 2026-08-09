@@ -156,19 +156,22 @@ function resetPollRetrySuggestion(sessionId: string): void {
   }
 }
 
+type FinishedPollResultOptions = { incrementalOutput: string; outputDropped: boolean };
+
 function finishedPollResult(
   sessionId: string,
   finished: NonNullable<ReturnType<typeof getFinishedSession>>,
-  options?: { pendingOutputDropped?: boolean },
+  options?: FinishedPollResultOptions,
 ): AgentToolResult<unknown> {
   resetPollRetrySuggestion(sessionId);
   acknowledgeNotifyOnExit(finished);
+  const output = options?.incrementalOutput ?? finished.tail;
   // Aggregate-cap loss is permanent; tail and pending-buffer omissions remain pageable.
   const aggregateOutputNote = retentionCapNote(finished);
   const retainedOutputNote =
-    options?.pendingOutputDropped === true
+    options?.outputDropped === true
       ? "\n\n[earlier output is omitted from this poll; use action=log with offset and limit to inspect retained output]"
-      : finished.tail.length < finished.aggregated.length
+      : !options && finished.tail.length < finished.aggregated.length
         ? "\n\n[earlier retained output is omitted; use action=log with offset and limit to page]"
         : "";
   return {
@@ -176,8 +179,10 @@ function finishedPollResult(
       {
         type: "text",
         text: appendExecTimeoutRetryGuidance(
-          (finished.tail ||
-            `(no output recorded${finished.truncated ? " — truncated to cap" : ""})`) +
+          (output ||
+            (options
+              ? "(no new output)"
+              : `(no output recorded${finished.truncated ? " — truncated to cap" : ""})`)) +
             aggregateOutputNote +
             retainedOutputNote +
             `\n\nProcess exited with ${renderExecExitLabel(finished)}.`,
@@ -465,22 +470,22 @@ export function createProcessTool(
               await sleepPollInterval(Math.max(0, Math.min(250, deadline - Date.now())), signal);
             }
           }
+          const { stdout, stderr, outputDropped } = drainSession(scopedSession);
+          const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n").trim();
           if (scopedSession.exited) {
             markTerminalPollObserved(scopedSession);
             // Exit finalization owns the terminal transition. Re-read the snapshot
             // bound to this process object; the public id may already belong to a successor.
             const finishedAfterWait = getFinishedSessionForProcess(scopedSession);
             if (finishedAfterWait && isInScope(finishedAfterWait)) {
-              const { outputDropped } = drainSession(scopedSession);
               return finishedPollResult(params.sessionId, finishedAfterWait, {
-                pendingOutputDropped: outputDropped,
+                incrementalOutput: output,
+                outputDropped,
               });
             }
             resetPollRetrySuggestion(params.sessionId);
             return failText(`No session found for ${params.sessionId}`);
           }
-          const { stdout, stderr, outputDropped } = drainSession(scopedSession);
-          const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n").trim();
           const aggregateOutputNote = retentionCapNote(scopedSession);
           const retainedOutputNote = outputDropped
             ? "\n\n[earlier output is omitted from this poll; use action=log with offset and limit to inspect retained output]"
