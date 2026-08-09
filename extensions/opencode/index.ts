@@ -1,9 +1,13 @@
 // Opencode plugin entrypoint registers its OpenClaw integration.
-import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
+import {
+  defineSingleProviderPluginEntry,
+  type ProviderWrapStreamFnContext,
+} from "openclaw/plugin-sdk/provider-entry";
 import {
   buildProviderReplayFamilyHooks,
   matchesExactOrPrefix,
 } from "openclaw/plugin-sdk/provider-model-shared";
+import { createOpenAICompatibleCompletionsThinkingOffWrapper } from "openclaw/plugin-sdk/provider-stream-shared";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { applyOpencodeZenConfig, OPENCODE_ZEN_DEFAULT_MODEL } from "./api.js";
 import { opencodeMediaUnderstandingProvider } from "./media-understanding-provider.js";
@@ -21,7 +25,7 @@ import { registerOpenCodeSessionCatalog } from "./session-catalog-plugin.js";
 const PROVIDER_ID = "opencode";
 const MINIMAX_MODERN_MODEL_MATCHERS = ["minimax-m2.7"] as const;
 const OPENCODE_SHARED_PROFILE_IDS = ["opencode:default", "opencode-go:default"] as const;
-const OPENCODE_SHARED_HINT = "Shared API key for Zen + Go catalogs";
+const OPENCODE_SHARED_HINT = "Shared API key infrastructure for Zen + Go";
 type OpencodeZenCatalogAuth = {
   apiKey?: string;
   discoveryApiKey?: string;
@@ -50,6 +54,23 @@ function isModernOpencodeModel(modelId: string): boolean {
   return !matchesExactOrPrefix(lower, MINIMAX_MODERN_MODEL_MATCHERS);
 }
 
+function createOpencodeZenWrapper(
+  baseStreamFn: ProviderWrapStreamFnContext["streamFn"],
+  thinkingLevel: ProviderWrapStreamFnContext["thinkingLevel"],
+): ProviderWrapStreamFnContext["streamFn"] {
+  if (!baseStreamFn) {
+    return undefined;
+  }
+  const thinkingOff = createOpenAICompatibleCompletionsThinkingOffWrapper(
+    baseStreamFn,
+    thinkingLevel,
+  );
+  return (model, context, options) =>
+    model.provider === PROVIDER_ID && model.id === "kimi-k3"
+      ? thinkingOff(model, context, options)
+      : baseStreamFn(model, context, options);
+}
+
 export default defineSingleProviderPluginEntry({
   id: PROVIDER_ID,
   name: "OpenCode Zen Provider",
@@ -67,7 +88,7 @@ export default defineSingleProviderPluginEntry({
       applyConfig: applyOpencodeZenConfig,
       expectedProviders: ["opencode", "opencode-go"],
       noteMessage: [
-        "OpenCode uses one API key across the Zen and Go catalogs.",
+        "One OpenCode API key can authenticate Zen and a separately subscribed Go catalog.",
         "Zen provides access to Claude, GPT, Gemini, and more models.",
         "Get your API key at: https://opencode.ai/auth",
         "Choose the Zen catalog when you want the curated multi-model proxy.",
@@ -127,6 +148,7 @@ export default defineSingleProviderPluginEntry({
     ...buildProviderReplayFamilyHooks({ family: "passthrough-gemini" }),
     isModernModelRef: ({ modelId }) => isModernOpencodeModel(modelId),
     resolveThinkingProfile: resolveOpencodeThinkingProfile,
+    wrapStreamFn: (ctx) => createOpencodeZenWrapper(ctx.streamFn, ctx.thinkingLevel),
   },
   register(api) {
     api.registerMediaUnderstandingProvider(opencodeMediaUnderstandingProvider);
