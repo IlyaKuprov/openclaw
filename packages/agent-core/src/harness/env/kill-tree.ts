@@ -5,6 +5,9 @@ import { readdirSync, readFileSync } from "node:fs";
 const DEFAULT_GRACE_MS = 3000;
 const MAX_GRACE_MS = 60_000;
 const TASKKILL_COMPLETION_TIMEOUT_MS = 3000;
+const PS_TIMEOUT_MS = 500;
+/** Long enough to cover the longest grace period, short enough to forget stale trees. */
+const TRACKED_DESCENDANT_TTL_MS = MAX_GRACE_MS * 2;
 
 export type KillProcessTreeOptions = {
   graceMs?: number;
@@ -54,13 +57,34 @@ export function killProcessTree(pid: number, opts?: KillProcessTreeOptions): voi
   const graceMs = normalizeGraceMs(opts?.graceMs);
   signalProcessTreeUnix(pid, "SIGTERM", useGroupKill);
   setTimeout(() => {
-    const stillAlive = useGroupKill
-      ? isProcessAlive(-pid) || isProcessAlive(pid)
-      : isProcessAlive(pid);
-    if (!stillAlive) {
+    if (useGroupKill) {
+      if (isProcessAlive(-pid) || isProcessAlive(pid)) {
+        signalProcessTreeUnix(pid, "SIGKILL", useGroupKill);
+      }
       return;
     }
-    signalProcessTreeUnix(pid, "SIGKILL", useGroupKill);
+    // A descendant that ignored SIGTERM outlives a root that did not, so the
+    // root's own liveness cannot decide whether the tree still needs killing.
+    // The root is signaled again only when it is provably the same process, so
+    // a PID reused during the grace period is never force-killed.
+    const { descendants, rootIsSameProcess } = resolveTrackedUnixTree(pid);
+    if (descendants.length === 0 && !rootIsSameProcess) {
+      return;
+    }
+    for (const target of descendants) {
+      try {
+        process.kill(target, "SIGKILL");
+      } catch {
+        // Already gone, or not ours to signal.
+      }
+    }
+    if (rootIsSameProcess) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
   }, graceMs).unref();
 }
 
@@ -150,26 +174,29 @@ function isProcessGroupLeader(pid: number): boolean {
   return pgid === pid;
 }
 
-function parseProcessParentTable(text: string): Map<number, number[]> {
-  const children = new Map<number, number[]>();
-  for (const line of text.split("\n")) {
-    const [pidText, ppidText] = line.trim().split(/\s+/);
-    const pid = Number(pidText);
-    const ppid = Number(ppidText);
-    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(ppid) || ppid <= 0) {
+/** One process, with a start token that distinguishes it from a later PID reuse. */
+type ProcessTableEntry = { ppid: number; startToken: string };
+
+function parseProcessTable(lines: Iterable<string>): Map<number, ProcessTableEntry> {
+  const table = new Map<number, ProcessTableEntry>();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
       continue;
     }
-    const siblings = children.get(ppid);
-    if (siblings) {
-      siblings.push(pid);
-    } else {
-      children.set(ppid, [pid]);
+    const separator = /\s+/;
+    const [pidText, ppidText, ...rest] = trimmed.split(separator);
+    const pid = Number(pidText);
+    const ppid = Number(ppidText);
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(ppid) || ppid < 0) {
+      continue;
     }
+    table.set(pid, { ppid, startToken: rest.join(" ") });
   }
-  return children;
+  return table;
 }
 
-function readProcessParentTableFromProc(): Map<number, number[]> | undefined {
+function readProcessTableFromProc(): Map<number, ProcessTableEntry> | undefined {
   try {
     const lines: string[] = [];
     for (const entry of readdirSync("/proc")) {
@@ -182,57 +209,166 @@ function readProcessParentTableFromProc(): Map<number, number[]> | undefined {
         if (commEnd < 0) {
           continue;
         }
-        // After comm: state, ppid. The command name may contain spaces or ')'.
+        // After comm the fields are positional: state, ppid, ... starttime.
+        // The command name may itself contain spaces or ')'.
         const fields = stat
           .slice(commEnd + 1)
           .trim()
           .split(/\s+/);
-        lines.push(`${entry} ${fields[1] ?? ""}`);
+        lines.push(`${entry} ${fields[1] ?? ""} ${fields[19] ?? ""}`);
       } catch {
         // The process exited while the snapshot was being taken.
       }
     }
-    return parseProcessParentTable(lines.join("\n"));
+    return parseProcessTable(lines);
   } catch {
     return undefined;
   }
 }
 
-function readProcessParentTableFromPs(): Map<number, number[]> | undefined {
+function readProcessTableFromPs(): Map<number, ProcessTableEntry> | undefined {
+  // `timeout` alone only signals the child and keeps waiting for it, so a `ps`
+  // that ignores SIGTERM would block this synchronous call indefinitely.
+  const runPs = (format: string) =>
+    spawnSync("ps", ["-eo", format], {
+      encoding: "utf8",
+      killSignal: "SIGKILL",
+      timeout: PS_TIMEOUT_MS,
+    });
   try {
-    const res = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8", timeout: 500 });
+    const withStart = runPs("pid=,ppid=,lstart=");
+    const res =
+      !withStart.error && withStart.status === 0 && typeof withStart.stdout === "string"
+        ? withStart
+        : runPs("pid=,ppid=");
     if (res.error || res.status !== 0 || typeof res.stdout !== "string") {
       return undefined;
     }
-    return parseProcessParentTable(res.stdout);
+    return parseProcessTable(res.stdout.split("\n"));
   } catch {
     return undefined;
   }
 }
 
-/** Best-effort descendant snapshot for a PID that does not lead its own group. */
-function collectDescendantPids(pid: number): number[] {
-  const children =
-    (process.platform === "linux" ? readProcessParentTableFromProc() : undefined) ??
-    readProcessParentTableFromPs();
-  if (!children) {
-    return [];
+function readProcessTable(): Map<number, ProcessTableEntry> | undefined {
+  return (
+    (process.platform === "linux" ? readProcessTableFromProc() : undefined) ??
+    readProcessTableFromPs()
+  );
+}
+
+function collectDescendants(
+  pid: number,
+  table: Map<number, ProcessTableEntry>,
+): Array<{ pid: number; startToken: string }> {
+  const children = new Map<number, number[]>();
+  for (const [candidate, entry] of table) {
+    const siblings = children.get(entry.ppid);
+    if (siblings) {
+      siblings.push(candidate);
+    } else {
+      children.set(entry.ppid, [candidate]);
+    }
   }
-  const descendants: number[] = [];
+  const descendants: Array<{ pid: number; startToken: string }> = [];
   const seen = new Set<number>([pid]);
+  // The array iterator walks entries appended during the loop, which keeps this
+  // linear; shift() would make a runaway high-fanout tree quadratic and stall
+  // the caller's event loop while it is being cleaned up.
   const queue = [pid];
-  while (queue.length > 0) {
-    const current = queue.shift() as number;
+  for (const current of queue) {
     for (const child of children.get(current) ?? []) {
       if (seen.has(child)) {
         continue;
       }
       seen.add(child);
-      descendants.push(child);
+      descendants.push({ pid: child, startToken: table.get(child)?.startToken ?? "" });
       queue.push(child);
     }
   }
   return descendants;
+}
+
+/**
+ * Descendants seen for a root PID during its termination sequence. SIGTERM can
+ * end the root while a descendant ignores it; that descendant is reparented to
+ * init and can no longer be found from the root, so the force phase would have
+ * nothing to signal without this.
+ */
+const trackedTreeDescendants = new Map<
+  number,
+  { rootStartToken: string; entries: Array<{ pid: number; startToken: string }>; atMs: number }
+>();
+
+function pruneTrackedTreeDescendants(nowMs: number): void {
+  for (const [root, tracked] of trackedTreeDescendants) {
+    if (nowMs - tracked.atMs > TRACKED_DESCENDANT_TTL_MS) {
+      trackedTreeDescendants.delete(root);
+    }
+  }
+}
+
+/**
+ * Live descendants of a PID that does not lead its own process group: the ones
+ * visible now, plus the ones seen earlier in this termination sequence that are
+ * still the same process. A remembered PID whose start token changed has been
+ * reused by something unrelated and is never signaled.
+ */
+function resolveTrackedUnixTree(pid: number): {
+  descendants: number[];
+  rootIsSameProcess: boolean;
+} {
+  const nowMs = Date.now();
+  pruneTrackedTreeDescendants(nowMs);
+  const table = readProcessTable();
+  if (!table) {
+    return { descendants: [], rootIsSameProcess: false };
+  }
+  const tracked = trackedTreeDescendants.get(pid);
+  const rootStartToken = table.get(pid)?.startToken;
+  const rootIsSameProcess =
+    rootStartToken !== undefined &&
+    (tracked === undefined || tracked.rootStartToken === rootStartToken);
+  const discovered = rootIsSameProcess ? collectDescendants(pid, table) : [];
+  const merged = new Map(discovered.map((entry) => [entry.pid, entry] as const));
+  for (const entry of tracked?.entries ?? []) {
+    if (merged.has(entry.pid)) {
+      continue;
+    }
+    const current = table.get(entry.pid);
+    if (!current || current.startToken !== entry.startToken) {
+      // The PID is gone, or now belongs to an unrelated process.
+      continue;
+    }
+    merged.set(entry.pid, entry);
+  }
+  const entries = [...merged.values()];
+  if (entries.length > 0) {
+    trackedTreeDescendants.set(pid, {
+      rootStartToken: tracked?.rootStartToken ?? rootStartToken ?? "",
+      entries,
+      atMs: nowMs,
+    });
+  } else {
+    trackedTreeDescendants.delete(pid);
+  }
+  return { descendants: entries.map((entry) => entry.pid), rootIsSameProcess };
+}
+
+function signalUnixTargets(pid: number, signal: "SIGTERM" | "SIGKILL", targets: number[]): void {
+  for (const target of targets) {
+    try {
+      process.kill(target, signal);
+    } catch {
+      // Already gone, or not ours to signal.
+    }
+  }
+
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // Already gone.
+  }
 }
 
 function signalProcessTreeUnix(
@@ -253,19 +389,7 @@ function signalProcessTreeUnix(
   // the direct PID alone leaves everything the child forked running, reparented
   // to init with its output already closed, so a timed-out run keeps consuming
   // the machine and can never deliver a result.
-  for (const descendant of collectDescendantPids(pid)) {
-    try {
-      process.kill(descendant, signal);
-    } catch {
-      // Already gone, or not ours to signal.
-    }
-  }
-
-  try {
-    process.kill(pid, signal);
-  } catch {
-    // Already gone.
-  }
+  signalUnixTargets(pid, signal, resolveTrackedUnixTree(pid).descendants);
 }
 
 function runTaskkill(args: string[], onExit?: (code: number | null) => void): Promise<void> {

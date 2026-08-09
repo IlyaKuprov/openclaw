@@ -13,20 +13,24 @@ import {
   mockLinuxOomWrapperShell,
 } from "./test-support.js";
 
-const { spawnWithFallbackMock, signalProcessTreeMock, createWindowsOutputDecoderMock } = vi.hoisted(
-  () => ({
-    spawnWithFallbackMock: vi.fn(),
-    signalProcessTreeMock: vi.fn(
-      (_pid: number, _signal: string, opts?: { onComplete?: () => void }) => {
-        opts?.onComplete?.();
-      },
-    ),
-    createWindowsOutputDecoderMock: vi.fn(() => ({
-      decode: (chunk: Buffer | string) => (Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk),
-      flush: () => "",
-    })),
-  }),
-);
+const {
+  spawnWithFallbackMock,
+  signalProcessTreeMock,
+  killProcessTreeMock,
+  createWindowsOutputDecoderMock,
+} = vi.hoisted(() => ({
+  spawnWithFallbackMock: vi.fn(),
+  killProcessTreeMock: vi.fn(),
+  signalProcessTreeMock: vi.fn(
+    (_pid: number, _signal: string, opts?: { onComplete?: () => void }) => {
+      opts?.onComplete?.();
+    },
+  ),
+  createWindowsOutputDecoderMock: vi.fn(() => ({
+    decode: (chunk: Buffer | string) => (Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk),
+    flush: () => "",
+  })),
+}));
 
 vi.mock("../../spawn-utils.js", () => ({
   spawnWithFallback: spawnWithFallbackMock,
@@ -34,6 +38,7 @@ vi.mock("../../spawn-utils.js", () => ({
 
 vi.mock("../../kill-tree.js", () => ({
   signalProcessTree: signalProcessTreeMock,
+  killProcessTree: killProcessTreeMock,
 }));
 
 vi.mock("../../../infra/windows-encoding.js", () => ({
@@ -152,6 +157,7 @@ describe("createChildAdapter", () => {
     ({ createChildAdapter } = await import("./child.js"));
     spawnWithFallbackMock.mockClear();
     signalProcessTreeMock.mockClear();
+    killProcessTreeMock.mockClear();
     createWindowsOutputDecoderMock.mockClear();
     createWindowsOutputDecoderMock.mockImplementation(() => ({
       decode: (chunk: Buffer | string) => (Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk),
@@ -361,8 +367,12 @@ describe("createChildAdapter", () => {
     adapter.kill("SIGTERM");
 
     const expectedDetached = process.platform !== "win32" && !process.env.OPENCLAW_SERVICE_MARKER;
-    expect(signalProcessTreeMock).toHaveBeenCalledWith(7654, "SIGTERM", {
+    // Graceful cancellation owns its own escalation: the supervisor stops
+    // watching once the direct child settles, but a descendant that ignored
+    // SIGTERM outlives it.
+    expect(killProcessTreeMock).toHaveBeenCalledWith(7654, {
       detached: expectedDetached,
+      graceMs: 5000,
     });
     expect(killMock).not.toHaveBeenCalled();
   });
@@ -381,8 +391,9 @@ describe("createChildAdapter", () => {
 
     adapter.kill("SIGTERM");
 
-    expect(signalProcessTreeMock).toHaveBeenCalledWith(8765, "SIGTERM", {
+    expect(killProcessTreeMock).toHaveBeenCalledWith(8765, {
       detached: false,
+      graceMs: 5000,
     });
     expect(killMock).not.toHaveBeenCalled();
   });

@@ -6,7 +6,7 @@ import {
   resolveWindowsExecutablePath,
   resolveWindowsSpawnProgramCandidate,
 } from "../../../plugin-sdk/windows-spawn.js";
-import { signalProcessTree } from "../../kill-tree.js";
+import { killProcessTree, signalProcessTree } from "../../kill-tree.js";
 import { prepareOomScoreAdjustedSpawn } from "../../linux-oom-score.js";
 import {
   addSecretInputStdio,
@@ -71,6 +71,9 @@ function resolveChildInvocation(params: {
 }
 
 type ChildAdapter = SpawnProcessAdapter<NodeJS.Signals | null>;
+
+/** Mirrors the supervisor's graceful cancel window before forced termination. */
+const SIGTERM_TREE_ESCALATION_MS = 5000;
 
 function isServiceManagedRuntime(): boolean {
   return Boolean(process.env.OPENCLAW_SERVICE_MARKER?.trim());
@@ -434,9 +437,6 @@ export async function createChildAdapter(params: {
   // gateway's process group regardless of intent, so the kill must avoid
   // group-kill. (#71662 follow-up — caught by Greptile review)
   const childIsDetached = useDetached && !spawned.usedFallback;
-  const signalProcessTreeForChild = (pid: number, signal: "SIGTERM" | "SIGKILL") => {
-    signalProcessTree(pid, signal, { detached: childIsDetached });
-  };
   const signalProcessTreeForChildAndWait = (pid: number, signal: "SIGTERM" | "SIGKILL") =>
     new Promise<void>((resolve) => {
       signalProcessTree(pid, signal, { detached: childIsDetached, onComplete: resolve });
@@ -476,7 +476,14 @@ export async function createChildAdapter(params: {
       return;
     }
     if (signal === "SIGTERM" && pid) {
-      signalProcessTreeForChild(pid, "SIGTERM");
+      // The supervisor's own force phase is skipped once the direct child
+      // settles, so a descendant that ignores SIGTERM would outlive the run.
+      // Let the tree own its escalation: SIGTERM now, SIGKILL after the same
+      // graceful window for whatever is provably still the original tree.
+      killProcessTree(pid, {
+        detached: childIsDetached,
+        graceMs: SIGTERM_TREE_ESCALATION_MS,
+      });
       return;
     }
     try {

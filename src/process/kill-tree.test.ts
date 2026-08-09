@@ -41,6 +41,15 @@ function expectTaskkillCall(index: number, args: string[]) {
   ]);
 }
 
+/** A `/proc/<pid>/stat` line whose positional fields carry ppid and start time. */
+function mockProcStat(params: { pid: number; ppid: number; startToken: string }) {
+  const betweenPpidAndStartTime = Array.from({ length: 17 }, () => "0").join(" ");
+  return {
+    pid: params.pid,
+    stat: `${params.pid} (bash cmd) S ${params.ppid} ${betweenPpidAndStartTime} ${params.startToken}`,
+  };
+}
+
 function mockIsProcessGroupLeader(...pids: number[]) {
   spawnSyncMock.mockImplementation((command: string, args: string[]) => {
     if (command === "ps" && args[0] === "-p" && args[2] === "-o" && args[3] === "pgid=") {
@@ -335,6 +344,103 @@ describe("killProcessTree", () => {
       // An unrelated process must not be signaled.
       expect(killSpy).not.toHaveBeenCalledWith(6001, "SIGKILL");
     });
+  });
+
+  it("on Unix force-kills a descendant that outlived the root it was signaled with", async () => {
+    // SIGTERM ends the shell but not the process it forked. That process is
+    // reparented to init, so it can no longer be found from the root PID and
+    // only the remembered identity keeps it reachable for the force phase.
+    let rootAlive = true;
+    const mockProcessTable = () => {
+      const table = rootAlive
+        ? [
+            mockProcStat({ pid: 7010, ppid: 1, startToken: "100" }),
+            mockProcStat({ pid: 7011, ppid: 7010, startToken: "200" }),
+          ]
+        : [mockProcStat({ pid: 7011, ppid: 1, startToken: "200" })];
+      readdirSyncMock.mockReturnValue(table.map((entry) => String(entry.pid)));
+      readFileSyncMock.mockImplementation((filePath: unknown) => {
+        const pid = Number(String(filePath).replace("/proc/", "").replace("/stat", ""));
+        const found = table.find((entry) => entry.pid === pid);
+        if (!found) {
+          throw new Error("proc unavailable");
+        }
+        return found.stat;
+      });
+    };
+    mockProcessTable();
+    killSpy.mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0 && pid === 7010 && !rootAlive) {
+        throw new Error("ESRCH");
+      }
+      return true;
+    }) as typeof process.kill);
+
+    await withMockedPlatform("linux", async () => {
+      killProcessTree(7010, { graceMs: 10, detached: false });
+      expect(killSpy).toHaveBeenCalledWith(7011, "SIGTERM");
+
+      // The shell exits on SIGTERM; its TERM-resistant child is reparented.
+      rootAlive = false;
+      mockProcessTable();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(killSpy).toHaveBeenCalledWith(7011, "SIGKILL");
+    });
+  });
+
+  it("on Unix never force-kills a remembered PID that another process has reused", async () => {
+    let rootAlive = true;
+    const mockProcessTable = () => {
+      const table = rootAlive
+        ? [
+            mockProcStat({ pid: 7020, ppid: 1, startToken: "100" }),
+            mockProcStat({ pid: 7021, ppid: 7020, startToken: "200" }),
+          ]
+        : // Same PID, different process: the original descendant is gone.
+          [mockProcStat({ pid: 7021, ppid: 1, startToken: "999" })];
+      readdirSyncMock.mockReturnValue(table.map((entry) => String(entry.pid)));
+      readFileSyncMock.mockImplementation((filePath: unknown) => {
+        const pid = Number(String(filePath).replace("/proc/", "").replace("/stat", ""));
+        const found = table.find((entry) => entry.pid === pid);
+        if (!found) {
+          throw new Error("proc unavailable");
+        }
+        return found.stat;
+      });
+    };
+    mockProcessTable();
+    killSpy.mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0 && pid === 7020 && !rootAlive) {
+        throw new Error("ESRCH");
+      }
+      return true;
+    }) as typeof process.kill);
+
+    await withMockedPlatform("linux", async () => {
+      killProcessTree(7020, { graceMs: 10, detached: false });
+      rootAlive = false;
+      mockProcessTable();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(killSpy).not.toHaveBeenCalledWith(7021, "SIGKILL");
+    });
+  });
+
+  it("on Unix bounds the ps descendant probe with a signal the target cannot ignore", async () => {
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: "" });
+    killSpy.mockImplementation((() => true) as typeof process.kill);
+
+    await withMockedPlatform("darwin", async () => {
+      signalProcessTree(7030, "SIGKILL", { detached: false });
+    });
+
+    // `timeout` alone only signals the child and keeps waiting for it to exit.
+    expect(spawnSyncMock).toHaveBeenCalledWith(
+      "ps",
+      ["-eo", "pid=,ppid=,lstart="],
+      expect.objectContaining({ killSignal: "SIGKILL", timeout: 500 }),
+    );
   });
 
   it("on Unix uses group kill when the omitted option resolves to a group leader", async () => {
