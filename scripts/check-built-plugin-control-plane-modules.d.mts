@@ -22,8 +22,6 @@ export type BuiltDoctorContractClosureViolation = BuiltPluginControlPlaneModule 
   importerPath: string;
 };
 
-export function collectBuiltModuleStaticDependencies(entryPath: string): Map<string, string>;
-
 export function collectBuiltDoctorContractClosureViolations(
   modules: BuiltPluginControlPlaneModule[],
   params?: { rootDir?: string },

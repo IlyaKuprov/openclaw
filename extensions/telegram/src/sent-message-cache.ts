@@ -12,12 +12,6 @@ import {
   type SentMessageConfig,
 } from "./sent-message-cache.legacy-state.js";
 
-export {
-  TELEGRAM_SENT_MESSAGE_CACHE_MAX_ENTRIES,
-  TELEGRAM_SENT_MESSAGE_CACHE_NAMESPACE,
-  type SentMessageConfig,
-};
-
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const TELEGRAM_SENT_MESSAGES_STATE_KEY = Symbol.for("openclaw.telegramSentMessagesState");
 

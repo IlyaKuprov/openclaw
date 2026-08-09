@@ -22,11 +22,11 @@ export type PersistedSentMessage = {
 
 export type SentMessageConfig = Pick<OpenClawConfig, "agents" | "session">;
 
-export function resolveSentMessageAgentId(cfg?: SentMessageConfig, agentId?: string): string {
+function resolveSentMessageAgentId(cfg?: SentMessageConfig, agentId?: string): string {
   return agentId?.trim() || (cfg?.agents ? resolveDefaultAgentId(cfg as OpenClawConfig) : "main");
 }
 
-export function sentMessageScopeKeyForStorePath(storePath: string): string {
+function sentMessageScopeKeyForStorePath(storePath: string): string {
   return createHash("sha256").update(storePath, "utf8").digest("hex").slice(0, 24);
 }
 

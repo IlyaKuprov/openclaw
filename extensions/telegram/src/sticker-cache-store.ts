@@ -9,7 +9,7 @@ import {
   type CachedSticker,
 } from "./sticker-cache-store.legacy-state.js";
 
-export { TELEGRAM_STICKER_CACHE_MAX_ENTRIES, TELEGRAM_STICKER_CACHE_NAMESPACE, type CachedSticker };
+export type { CachedSticker };
 
 type TelegramStickerCacheStore = PluginStateSyncKeyedStore<CachedSticker>;
 

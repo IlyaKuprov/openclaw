@@ -54,7 +54,7 @@ export function resolveStoredBindingKey(params: {
     .slice(0, 32);
 }
 
-export function normalizeMetadataForStore(
+function normalizeMetadataForStore(
   metadata: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (!metadata) {
@@ -120,7 +120,7 @@ export function sanitizeStoredBinding(
 
 // A torn or foreign sidecar yields no plan, exactly as a missing file does; the
 // runtime store is authoritative once doctor has migrated.
-export function readLegacyBindingsFile(
+function readLegacyBindingsFile(
   filePath: string,
   accountId: string,
 ): TelegramThreadBindingRecord[] {

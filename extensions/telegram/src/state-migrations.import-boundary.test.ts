@@ -8,12 +8,12 @@ import { describe, expect, it } from "vitest";
 // runtime store below owns the same rows but also value-loads the plugin runtime
 // slot, the logger graph, or the ACP/session-binding graphs; the row shapes and
 // sidecar readers live in the matching `*.legacy-state.ts` leaf instead.
-const RUNTIME_STORE_MODULES = [
+const RUNTIME_STORE_MODULES = new Set([
   "message-cache.ts",
   "sent-message-cache.ts",
   "sticker-cache-store.ts",
   "thread-bindings.ts",
-];
+]);
 const SOURCE_DIR = path.dirname(new URL(import.meta.url).pathname);
 
 function listStaticRelativeImports(filePath: string): string[] {
@@ -58,7 +58,7 @@ describe("telegram state migration import boundary", () => {
   it("keeps runtime stores off the doctor discovery closure", () => {
     const closure = collectPluginLocalClosure("state-migrations.ts");
 
-    expect(closure.filter((module) => RUNTIME_STORE_MODULES.includes(module))).toStrictEqual([]);
+    expect(closure.filter((module) => RUNTIME_STORE_MODULES.has(module))).toStrictEqual([]);
     // The leaves are the intended replacements; an empty closure would pass vacuously.
     expect(closure).toEqual(
       expect.arrayContaining([

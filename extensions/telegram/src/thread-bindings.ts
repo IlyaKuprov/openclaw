@@ -21,7 +21,6 @@ import { getTelegramRuntime } from "./runtime.js";
 import { loadTelegramSendModule } from "./send-runtime.js";
 import {
   resolveStoredBindingKey,
-  resolveTelegramThreadBindingsPath,
   sanitizeStoredBinding,
   TELEGRAM_THREAD_BINDINGS_MAX_ENTRIES,
   TELEGRAM_THREAD_BINDINGS_NAMESPACE,
@@ -794,9 +793,4 @@ export function resetTelegramThreadBindingsForTests(): Promise<void> {
   return Promise.resolve();
 }
 
-export const testing = {
-  resetTelegramThreadBindingsForTests,
-  resolveBindingsPath: resolveTelegramThreadBindingsPath,
-  resolveStoredBindingKey,
-};
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

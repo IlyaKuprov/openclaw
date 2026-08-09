@@ -175,7 +175,7 @@ function resolveBuiltChunkPath(importerPath, specifier) {
 }
 
 /** Collects the bare dependencies a built artifact reaches through static imports. */
-export function collectBuiltModuleStaticDependencies(entryPath) {
+function collectBuiltModuleStaticDependencies(entryPath) {
   const dependencies = new Map();
   const visited = new Set();
   const pending = [entryPath];
@@ -236,7 +236,7 @@ export function verifyBuiltPluginControlPlaneModules(params = {}) {
   if (failures.length > 0) {
     const details = failures.map(
       (failure) =>
-        `- ${failure.pluginId} (${failure.kind}) ${failure.relativePath} [${failure.host} host]: ${failure.error}`,
+        `- ${failure.pluginId} (${failure.kind}) ${failure.relativePath}: ${failure.error}`,
     );
     throw new Error(`built plugin control-plane module load failures:\n${details.join("\n")}`);
   }
