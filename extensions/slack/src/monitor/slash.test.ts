@@ -1,14 +1,22 @@
-import type {
-  ChatCommandDefinition,
-  NativeCommandSpec,
+import {
+  listNativeCommandSpecsForConfig,
+  type ChatCommandDefinition,
 } from "openclaw/plugin-sdk/command-auth-native";
 // Slack tests cover slash plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { NativeCommandSpec } from "openclaw/plugin-sdk/native-command-registry";
+import { registerPluginCommand } from "openclaw/plugin-sdk/plugin-runtime";
+import {
+  createTestRegistry,
+  resetPluginRuntimeStateForTest,
+  setActivePluginRegistry,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { slackSetupPlugin } from "../../setup-plugin-api.js";
 import { getSlackSlashMocks, resetSlackSlashMocks } from "./slash.test-harness.js";
 
 vi.mock("openclaw/plugin-sdk/agent-runtime", async () => {
@@ -117,6 +125,10 @@ const slashCommandFixtures = vi.hoisted(() => {
   };
 });
 
+const skillCommandFixtures = vi.hoisted(() => ({
+  commands: [] as Array<{ name: string; skillName: string; description: string }>,
+}));
+
 vi.mock("./slash-commands.runtime.js", async () => {
   const actual = await vi.importActual<typeof import("./slash-commands.runtime.js")>(
     "./slash-commands.runtime.js",
@@ -136,12 +148,19 @@ vi.mock("./slash-commands.runtime.js", async () => {
     listNativeCommandSpecsForConfig: (
       ...args: Parameters<typeof actual.listNativeCommandSpecsForConfig>
     ): ReturnType<typeof actual.listNativeCommandSpecsForConfig> => [
-      ...actual.listNativeCommandSpecsForConfig(args[0], {
-        ...args[1],
-        provider: undefined,
-      }),
+      ...actual.listNativeCommandSpecsForConfig(...args),
       ...slashCommandFixtures.specs,
     ],
+  };
+});
+
+vi.mock("./slash-skill-commands.runtime.js", async () => {
+  const actual = await vi.importActual<typeof import("./slash-skill-commands.runtime.js")>(
+    "./slash-skill-commands.runtime.js",
+  );
+  return {
+    ...actual,
+    listSkillCommandsForAgents: () => skillCommandFixtures.commands,
   };
 });
 
@@ -154,13 +173,26 @@ const { registerSlackMonitorSlashCommands } = (await import("./slash.js")) as {
 };
 
 const { dispatchMock } = getSlackSlashMocks();
+const createSlackTestRegistry = () =>
+  createTestRegistry([{ pluginId: "slack", plugin: slackSetupPlugin, source: "test" }]);
+
+beforeAll(() => {
+  skillCommandFixtures.commands = [];
+  resetPluginRuntimeStateForTest();
+  setActivePluginRegistry(createSlackTestRegistry());
+});
 
 beforeEach(() => {
+  skillCommandFixtures.commands = [];
+  resetPluginRuntimeStateForTest();
+  setActivePluginRegistry(createSlackTestRegistry());
   clearRuntimeConfigSnapshot();
   resetSlackSlashMocks();
 });
 
 afterEach(() => {
+  skillCommandFixtures.commands = [];
+  resetPluginRuntimeStateForTest();
   clearRuntimeConfigSnapshot();
 });
 
@@ -203,6 +235,7 @@ function createArgMenusHarness(
   cfg: OpenClawConfig = { commands: { native: true, nativeSkills: false } },
 ) {
   const commands = new Map<string | RegExp, (args: unknown) => Promise<void>>();
+  const commandRegistrations: Array<string | RegExp> = [];
   const actions = new Map<string | RegExp, (args: unknown) => Promise<void>>();
   const options = new Map<string, (args: unknown) => Promise<void>>();
   const optionsReceiverContexts: unknown[] = [];
@@ -211,6 +244,7 @@ function createArgMenusHarness(
   const app = {
     client: { chat: { postEphemeral } },
     command: (name: string | RegExp, handler: (args: unknown) => Promise<void>) => {
+      commandRegistrations.push(name);
       commands.set(name, handler);
     },
     action: (id: string | RegExp, handler: (args: unknown) => Promise<void>) => {
@@ -256,6 +290,7 @@ function createArgMenusHarness(
   } as unknown;
 
   return {
+    commandRegistrations,
     commands,
     actions,
     options,
@@ -734,6 +769,71 @@ describe("Slack native command argument menus", () => {
     ).toBe(true);
     expect(testHarness.options.has("openclaw_cmdarg")).toBe(true);
     expect(testHarness.optionsReceiverContexts[0]).toBe(testHarness.app);
+  });
+
+  it("registers unique plugin commands and silently keeps primary names on collision", async () => {
+    expect(
+      registerPluginCommand("slack-test-plugin", {
+        name: "slack-plugin",
+        nativeNames: { slack: "slackplugin" },
+        description: "Unique Slack plugin command",
+        channels: ["slack"],
+        handler: async () => ({ text: "ok" }),
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      registerPluginCommand("slack-collision-plugin", {
+        name: "slack-collision",
+        nativeNames: { slack: "reportlong" },
+        description: "Colliding Slack plugin command",
+        channels: ["slack"],
+        handler: async () => ({ text: "ok" }),
+      }),
+    ).toEqual({ ok: true });
+    const testHarness = createArgMenusHarness();
+    const runtimeLog = vi.fn();
+    const runtimeError = vi.fn();
+    (
+      testHarness.ctx as { runtime: { log: typeof runtimeLog; error: typeof runtimeError } }
+    ).runtime = { log: runtimeLog, error: runtimeError };
+
+    await registerCommands(testHarness.ctx, testHarness.account);
+
+    expect(testHarness.commands.has("/slackplugin")).toBe(true);
+    expect(testHarness.commandRegistrations.filter((name) => name === "/slackplugin")).toHaveLength(
+      1,
+    );
+    expect(testHarness.commandRegistrations.filter((name) => name === "/reportlong")).toHaveLength(
+      1,
+    );
+    expect(runtimeLog).not.toHaveBeenCalled();
+    expect(runtimeError).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates a skill after the Slack status native rename", async () => {
+    setActivePluginRegistry(
+      createTestRegistry([{ pluginId: "slack", plugin: slackSetupPlugin, source: "test" }]),
+    );
+    const agentStatusSkill = {
+      name: "agentstatus",
+      skillName: "Agent Status Skill",
+      description: "Skill agent status",
+    };
+    skillCommandFixtures.commands = [agentStatusSkill];
+    const config: OpenClawConfig = { commands: { native: true, nativeSkills: true } };
+    const raw = listNativeCommandSpecsForConfig(config, {
+      provider: "slack",
+      skillCommands: [agentStatusSkill],
+    });
+    expect(raw.filter((spec) => spec.name === "agentstatus")).toHaveLength(2);
+    const testHarness = createArgMenusHarness(config);
+    (testHarness.account as { config: OpenClawConfig }).config = config;
+
+    await registerCommands(testHarness.ctx, testHarness.account);
+
+    expect(testHarness.commandRegistrations.filter((name) => name === "/agentstatus")).toHaveLength(
+      1,
+    );
   });
 
   it.each([
