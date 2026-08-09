@@ -134,6 +134,32 @@ describe("memory authorization SDK contract", () => {
     expect(Object.isFrozen(LEGACY_MEMORY_AUTHORIZATION_CAPABILITIES)).toBe(true);
   });
 
+  it("rejects non-exact capability declarations without invoking accessors", () => {
+    const unexpectedKey = { ...COMPLETE_MEMORY_AUTHORIZATION_CAPABILITIES, unexpected: true };
+    const symbolKey = {
+      ...COMPLETE_MEMORY_AUTHORIZATION_CAPABILITIES,
+      [Symbol("unexpected")]: true,
+    };
+    const inherited = Object.create(COMPLETE_MEMORY_AUTHORIZATION_CAPABILITIES);
+    let getterCalls = 0;
+    const accessor = { ...COMPLETE_MEMORY_AUTHORIZATION_CAPABILITIES };
+    Object.defineProperty(accessor, "scopedCandidates", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return true;
+      },
+    });
+
+    for (const declaration of [unexpectedKey, symbolKey, inherited, accessor]) {
+      expect(isMemoryAuthorizationCapabilities(declaration)).toBe(false);
+      expect(listMissingMemoryAuthorizationCapabilities(declaration)).toEqual(
+        MEMORY_AUTHORIZATION_CAPABILITY_NAMES,
+      );
+    }
+    expect(getterCalls).toBe(0);
+  });
+
   it("makes authorized search results the exact-read continuation input", () => {
     type SearchResult = Awaited<
       ReturnType<AuthorizedMemoryRuntime["searchAuthorized"]>

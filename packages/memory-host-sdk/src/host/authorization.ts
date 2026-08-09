@@ -173,17 +173,50 @@ export type MemoryAuthorizationCapabilities = Readonly<
   } & Record<MemoryAuthorizationCapabilityName, boolean>
 >;
 
+/**
+ * Reads own data descriptors so plugin capability claims cannot run getters or inherit authority.
+ */
+function readMemoryAuthorizationCapabilityValues(
+  value: unknown,
+): Readonly<Record<MemoryAuthorizationCapabilityName, boolean>> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return undefined;
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const expectedKeys = ["version", ...MEMORY_AUTHORIZATION_CAPABILITY_NAMES] as const;
+  if (
+    Object.getOwnPropertySymbols(value).length > 0 ||
+    Object.keys(descriptors).length !== expectedKeys.length ||
+    !expectedKeys.every((key) => {
+      const descriptor = descriptors[key];
+      return descriptor?.enumerable === true && "value" in descriptor;
+    })
+  ) {
+    return undefined;
+  }
+  if (descriptors.version?.value !== MEMORY_AUTHORIZATION_CONTRACT_VERSION) {
+    return undefined;
+  }
+
+  const capabilities: Partial<Record<MemoryAuthorizationCapabilityName, boolean>> = {};
+  for (const name of MEMORY_AUTHORIZATION_CAPABILITY_NAMES) {
+    const capability = descriptors[name]?.value;
+    if (typeof capability !== "boolean") {
+      return undefined;
+    }
+    capabilities[name] = capability;
+  }
+  return capabilities as Readonly<Record<MemoryAuthorizationCapabilityName, boolean>>;
+}
+
 export function isMemoryAuthorizationCapabilities(
   value: unknown,
 ): value is MemoryAuthorizationCapabilities {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return (
-    record.version === MEMORY_AUTHORIZATION_CONTRACT_VERSION &&
-    MEMORY_AUTHORIZATION_CAPABILITY_NAMES.every((name) => typeof record[name] === "boolean")
-  );
+  return readMemoryAuthorizationCapabilityValues(value) !== undefined;
 }
 
 /** Declaration used by a context-free backend during the shadow-only rollout. */
@@ -217,10 +250,11 @@ export const COMPLETE_MEMORY_AUTHORIZATION_CAPABILITIES = Object.freeze({
 export function listMissingMemoryAuthorizationCapabilities(
   capabilities: unknown,
 ): MemoryAuthorizationCapabilityName[] {
-  if (!isMemoryAuthorizationCapabilities(capabilities)) {
+  const values = readMemoryAuthorizationCapabilityValues(capabilities);
+  if (!values) {
     return [...MEMORY_AUTHORIZATION_CAPABILITY_NAMES];
   }
-  return MEMORY_AUTHORIZATION_CAPABILITY_NAMES.filter((name) => !capabilities[name]);
+  return MEMORY_AUTHORIZATION_CAPABILITY_NAMES.filter((name) => !values[name]);
 }
 
 export function hasCompleteMemoryAuthorizationCapabilities(
