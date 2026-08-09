@@ -48,11 +48,6 @@ export type PersistedPluginModelCatalog = {
   contents: string;
 };
 
-type PersistedPluginModelCatalogLoadResult = {
-  catalogs: PersistedPluginModelCatalog[];
-  warnings: string[];
-};
-
 function pluginModelCatalogDatabaseOptions(agentDir: string) {
   return {
     agentId: resolveAuthProfileDatabaseOwnerId(agentDir),
@@ -376,7 +371,7 @@ function retireOrphanedPluginModelCatalogMigrations(params: {
   }
 }
 
-/** Migrates released sidecars before runtime can read or replace agent SQLite state. */
+/** Doctor-owned import of released sidecars into canonical agent SQLite state. */
 export function migrateLegacyPluginModelCatalogs(params: {
   agentDir: string;
   expectedContents?: ReadonlyMap<string, string>;
@@ -620,22 +615,13 @@ export function migrateLegacyPluginModelCatalogs(params: {
   return { detected: legacyCatalogs.length, migrated, warnings };
 }
 
-/** Reads available provider catalogs without discarding legacy migration diagnostics. */
-export function loadPersistedPluginModelCatalogs(
-  agentDir: string,
-): PersistedPluginModelCatalogLoadResult {
-  const migration = migrateLegacyPluginModelCatalogs({ agentDir });
+/** Reads canonical provider catalogs and repairs stale SQLite transport metadata. */
+export function loadPersistedPluginModelCatalogs(agentDir: string): PersistedPluginModelCatalog[] {
   let catalogs = readPersistedPluginModelCatalogs(agentDir);
-  if (
-    migration.warnings.length === 0 &&
-    repairPersistedPluginModelCatalogs({ agentDir, catalogs })
-  ) {
+  if (repairPersistedPluginModelCatalogs({ agentDir, catalogs })) {
     catalogs = readPersistedPluginModelCatalogs(agentDir);
   }
-  return {
-    catalogs,
-    warnings: migration.warnings,
-  };
+  return catalogs;
 }
 
 /** Replaces rebuildable provider catalogs in the existing per-agent SQLite cache. */

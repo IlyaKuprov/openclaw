@@ -14,7 +14,7 @@ import { getModelRegistryRuntime } from "./model-registry-runtime.js";
 import { ModelRegistry, type ProviderConfigInput } from "./model-registry.js";
 
 function listPersistedPluginModelCatalogs(agentDir: string) {
-  return loadPersistedPluginModelCatalogs(agentDir).catalogs;
+  return loadPersistedPluginModelCatalogs(agentDir);
 }
 
 const PLUGIN_MODEL_CATALOG_FILE = "catalog.json";
@@ -325,7 +325,7 @@ describe("ModelRegistry models.json auth", () => {
     expect(registry.getAvailable().map((model) => model.id)).toEqual(["example-model"]);
   });
 
-  it("automatically migrates released provider models before the first registry load", async () => {
+  it("ignores released sidecars until Doctor migrates them", () => {
     const modelsPath = writeModelsJson({ providers: {} });
     const agentDir = dirname(modelsPath);
     const catalogPath = join(agentDir, "plugins", "zai", PLUGIN_MODEL_CATALOG_FILE);
@@ -348,12 +348,9 @@ describe("ModelRegistry models.json auth", () => {
     });
 
     expect(registry.getError()).toBeUndefined();
-    expect(registry.find("zai", "glm-5.1")?.name).toBe("GLM 5.1");
-    await expect(registry.getApiKeyForProvider("zai")).resolves.toBe(
-      "released-zai-provider-test-key",
-    );
-    expect(listPersistedPluginModelCatalogs(agentDir)).toEqual([{ pluginId: "zai", contents }]);
-    expect(existsSync(catalogPath)).toBe(false);
+    expect(registry.find("zai", "glm-5.1")).toBeUndefined();
+    expect(listPersistedPluginModelCatalogs(agentDir)).toEqual([]);
+    expect(existsSync(catalogPath)).toBe(true);
   });
 
   it("loads provider models from the SQLite-backed generated plugin catalog", () => {
@@ -474,7 +471,7 @@ describe("ModelRegistry models.json auth", () => {
     expect(fork.getProviderMetadataOwners()).toBe(pluginMetadataSnapshot.owners);
   });
 
-  it("reports an unreadable legacy catalog while preserving healthy provider models", () => {
+  it("does not inspect an unreadable legacy sidecar while loading healthy models", () => {
     if (process.getuid?.() === 0) {
       return;
     }
@@ -521,7 +518,7 @@ describe("ModelRegistry models.json auth", () => {
         ]),
       });
 
-      expect(registry.getError()).toContain("Could not read legacy provider catalog");
+      expect(registry.getError()).toBeUndefined();
       expect(registry.find("custom", "authored-model")?.name).toBe("Authored Model");
       expect(registry.find("anthropic", "healthy-model")?.name).toBe("Healthy Model");
       expect(existsSync(sourcePath)).toBe(true);

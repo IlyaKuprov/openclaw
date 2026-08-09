@@ -17,7 +17,7 @@ import { maybeMigrateLegacyPluginModelCatalogs } from "./doctor-plugin-model-cat
 import type { DoctorPrompter } from "./doctor-prompter.js";
 
 function listPersistedPluginModelCatalogs(agentDir: string) {
-  return loadPersistedPluginModelCatalogs(agentDir).catalogs;
+  return loadPersistedPluginModelCatalogs(agentDir);
 }
 
 const tempDirs: string[] = [];

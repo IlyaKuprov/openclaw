@@ -9,8 +9,8 @@ import type {
   ReadConfigFileSnapshotForWriteResult,
   ReadConfigFileSnapshotWithPluginMetadataResult,
 } from "../config/io.js";
-import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
+import { withCanonicalTestAgentRoster } from "../config/test-fixtures.js";
 import type { AgentBinding } from "../config/types.agents.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.js";
 import { writeConfigMachineState } from "../state/config-machine-state.js";
@@ -150,7 +150,7 @@ export function createGatewayConfigModuleMock(actual: GatewayConfigModule): Gate
       hooks,
       cron,
     } as OpenClawConfig;
-    return migratePersistedImplicitMainRoster(composed).config as OpenClawConfig;
+    return withCanonicalTestAgentRoster(composed);
   };
 
   const readConfigFileSnapshot = async (): Promise<ConfigFileSnapshot> => {
