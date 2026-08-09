@@ -515,8 +515,7 @@ export function isSecureWebSocketUrl(
   // Node's ws client accepts http(s) URLs and normalizes them to ws(s).
   // Treat those aliases the same way here so loopback cron announce delivery
   // and TLS-backed https endpoints follow the same security policy.
-  const protocol =
-    parsed.protocol === "https:" ? "wss:" : parsed.protocol === "http:" ? "ws:" : parsed.protocol;
+  const protocol = normalizeWebSocketProtocol(parsed.protocol);
 
   if (protocol === "wss:") {
     return true;
@@ -548,6 +547,11 @@ export function isSecureWebSocketUrl(
     return net.isIP(hostForIpCheck) === 0;
   }
   return false;
+}
+
+/** Map the HTTP aliases accepted by WebSocket clients onto their canonical schemes. */
+export function normalizeWebSocketProtocol(protocol: string): string {
+  return protocol === "https:" ? "wss:" : protocol === "http:" ? "ws:" : protocol;
 }
 
 function isTrustedPlaintextWebSocketHost(hostname: string): boolean {

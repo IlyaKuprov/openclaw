@@ -118,6 +118,9 @@ const runRemoteGatewayInferenceOnboardingMock = vi.hoisted(() => vi.fn(async () 
 const launchTuiCliMock = vi.hoisted(() =>
   vi.fn<(opts: unknown, launchOptions?: unknown) => Promise<void>>(async () => {}),
 );
+const runTuiCliActionMock = vi.hoisted(() =>
+  vi.fn<(target: string | undefined, opts: unknown) => Promise<void>>(async () => {}),
+);
 const probeGatewayConfiguredModelMock = vi.hoisted(() =>
   vi.fn<
     () => Promise<{
@@ -422,6 +425,10 @@ vi.mock("../commands/onboard-helpers.js", () => ({
 
 vi.mock("../tui/tui-launch.js", () => ({
   launchTuiCli: launchTuiCliMock,
+}));
+
+vi.mock("./tui-cli.js", () => ({
+  runTuiCliAction: runTuiCliActionMock,
 }));
 
 vi.mock("./progress.js", () => ({
@@ -2674,6 +2681,59 @@ describe("runCli exit behavior", () => {
     expect(tryRouteCliMock).not.toHaveBeenCalled();
     expect(buildProgramMock).not.toHaveBeenCalled();
     expect(registerPluginCliCommandsFromValidatedConfigMock).not.toHaveBeenCalled();
+  });
+
+  it("routes a bare-root Control UI URL directly to the TUI action", async () => {
+    const target = "https://gateway.example/dashboard/main/movies-a1166b81";
+
+    await withInteractiveTty(() => runCli(["node", "openclaw", target]));
+
+    expect(runTuiCliActionMock).toHaveBeenCalledWith(target, {});
+    expect(buildProgramMock).not.toHaveBeenCalled();
+    expect(tryRouteCliMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards bare-root TUI options directly without an environment handoff", async () => {
+    const target = "https://gateway.example/dashboard/main/movies-a1166b81";
+
+    await withEnvAsync(
+      {
+        OPENCLAW_GATEWAY_TOKEN: "ambient-token",
+        OPENCLAW_GATEWAY_PASSWORD: "ambient-password",
+      },
+      () =>
+        withInteractiveTty(() =>
+          runCli([
+            "node",
+            "openclaw",
+            target,
+            "--token",
+            "direct-token",
+            "--password=direct-password",
+            "--tls-fingerprint",
+            "sha256:direct",
+            "--deliver",
+            "--message",
+            "continue here",
+          ]),
+        ),
+    );
+
+    expect(runTuiCliActionMock).toHaveBeenCalledWith(target, {
+      token: "direct-token",
+      password: "direct-password",
+      tlsFingerprint: "sha256:direct",
+      deliver: true,
+      message: "continue here",
+    });
+  });
+
+  it("does not claim a bare session ref as root-command sugar", async () => {
+    await expect(runCli(["node", "openclaw", "movies-a1166b81"])).rejects.toThrow(
+      "Unknown command: openclaw movies-a1166b81",
+    );
+
+    expect(runTuiCliActionMock).not.toHaveBeenCalled();
   });
 
   it("suggests close known commands for unowned command roots before proxy startup", async () => {
