@@ -346,7 +346,7 @@ suite.define(() => {
         expect(await continueButton.evaluate(readInteractionStyle)).toEqual(disabledContinueStyle);
         expect(disabledContinueStyle.cursor).toBe("not-allowed");
         expect(await cancelButton.evaluate((element) => getComputedStyle(element).cursor)).toBe(
-          "pointer",
+          "default",
         );
         expect(
           await Promise.all(
@@ -401,7 +401,7 @@ suite.define(() => {
         });
         await page.getByLabel("Twitch").check();
         expect(await continueButton.evaluate((element) => getComputedStyle(element).cursor)).toBe(
-          "pointer",
+          "default",
         );
         await page.getByRole("button", { name: "Continue" }).click();
         await page.getByLabel("Announcements").waitFor();
@@ -434,6 +434,30 @@ suite.define(() => {
 
         await gateway.setMethodResponse("openclaw.chat", {
           sessionId: "e2e-rich-wizard",
+          reply: "Name this connection.",
+          action: "none",
+          wizardInputPending: true,
+          step: {
+            id: "label",
+            type: "text",
+            message: "Connection name",
+          },
+        });
+        await secretInput.fill("fake-client-secret");
+        await page.getByRole("button", { name: "Submit" }).click();
+        const labelInput = page.getByRole("textbox", { name: "Connection name" });
+        await labelInput.waitFor();
+
+        await gateway.deferNext("openclaw.chat");
+        await labelInput.fill("Twitch ops");
+        await page.getByRole("button", { name: "Submit" }).click();
+        await expect.poll(() => labelInput.isDisabled()).toBe(true);
+        expect(await labelInput.evaluate((element) => getComputedStyle(element).cursor)).toBe(
+          "not-allowed",
+        );
+
+        await gateway.resolveDeferred("openclaw.chat", {
+          sessionId: "e2e-rich-wizard",
           reply: "Confirm setup.",
           action: "none",
           wizardInputPending: true,
@@ -443,8 +467,6 @@ suite.define(() => {
             message: "Connect Twitch now?",
           },
         });
-        await secretInput.fill("fake-client-secret");
-        await page.getByRole("button", { name: "Submit" }).click();
         const noButton = page.getByRole("button", { name: "No" });
         const yesButton = page.getByRole("button", { name: "Yes" });
         await noButton.waitFor();
@@ -478,6 +500,9 @@ suite.define(() => {
           }),
           expect.objectContaining({
             wizardAnswer: { stepId: "secret", value: "fake-client-secret" },
+          }),
+          expect.objectContaining({
+            wizardAnswer: { stepId: "label", value: "Twitch ops" },
           }),
           expect.objectContaining({
             wizardAnswer: { stepId: "confirm", value: true },
