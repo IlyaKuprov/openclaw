@@ -4536,6 +4536,17 @@ export const en: TranslationMap = {
       oneMessage: "{count} message",
       messages: "{count} messages",
       activeBranch: "Active branch",
+      placement: {
+        cloud: "cloud",
+        gateway: "gateway",
+        onPlace: "on {place}",
+        bringHome: "Bring home to {gateway}",
+        confirm:
+          "Bring this session home to {gateway}? The cloud worker will stop after its workspace is reconciled.",
+        note: "Where this session runs never changes how you talk to it.",
+        activeRun: "Bring home after the active run finishes.",
+        unavailable: "Bring home is available when the cloud placement is active.",
+      },
       gatewayPicker: {
         menuLabel: "Gateway: {gateway}",
         primaryTag: "primary",

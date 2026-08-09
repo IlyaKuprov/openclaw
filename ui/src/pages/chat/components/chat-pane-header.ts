@@ -21,6 +21,7 @@ import "../../../components/tooltip.ts";
 import "../../../components/web-awesome.ts";
 import { t } from "../../../i18n/index.ts";
 import { formatRelativeTimestamp } from "../../../lib/format.ts";
+import { renderChatPanePlacement } from "./chat-pane-placement.ts";
 
 export type ChatPaneHeaderAction = "reveal" | "copy-path" | "copy-branch";
 
@@ -52,6 +53,9 @@ type ChatPaneHeaderProps = {
   presence?: TemplateResult | typeof nothing;
   faceControl?: TemplateResult | typeof nothing;
   sharingControl?: TemplateResult | typeof nothing;
+  placementPlace?: string;
+  placementGateway?: string;
+  placementReclaimDisabledReason?: string;
   nativeGateways?: NativeGatewaysCapability | null;
   gatewaysSnapshot?: NativeGatewaysSnapshot | null;
   onboarding?: boolean;
@@ -61,6 +65,7 @@ type ChatPaneHeaderProps = {
   onCancelRename: () => void;
   onMenuOpenChange: (open: boolean) => void;
   onMenuAction: (action: ChatPaneHeaderAction) => void;
+  onPlacementReclaim?: () => void;
   onBranchSelect: (leafEntryId: string) => void;
   onOpenSplitView?: () => void;
   onSplitDown?: (paneId: string) => void;
@@ -226,9 +231,6 @@ function renderGatewayPicker(props: ChatPaneHeaderProps) {
 }
 
 export function renderChatPaneHeader(props: ChatPaneHeaderProps) {
-  const placementState = props.session?.placement?.state;
-  const cloud = isCloudWorkerPlacementState(placementState);
-  const cloudLabel = cloud ? t("sessionsView.cloudWorkerPlacement", { state: placementState }) : "";
   const copyPathLabel =
     props.copiedAction === "copy-path"
       ? t("chat.sessionHeader.copied")
@@ -260,15 +262,6 @@ export function renderChatPaneHeader(props: ChatPaneHeaderProps) {
               ${icons.menu}
             </button>
           </openclaw-tooltip>`
-        : nothing}
-      ${cloud
-        ? html`<span
-            class="chat-pane__cloud"
-            role="img"
-            aria-label=${cloudLabel}
-            title=${cloudLabel}
-            >${icons.globe}</span
-          >`
         : nothing}
       ${props.session?.incognito
         ? html`<span
@@ -318,6 +311,7 @@ export function renderChatPaneHeader(props: ChatPaneHeaderProps) {
         "header",
         "created",
       )}
+      ${renderChatPanePlacement(props)}
       ${!props.catalog && props.workspaceLabel
         ? html`
             <wa-dropdown

@@ -190,7 +190,6 @@ openclaw-chat-pane {
   }
 }
 
-.chat-pane__cloud,
 .chat-pane__incognito {
   display: inline-flex;
   flex: 0 0 auto;
@@ -198,7 +197,6 @@ openclaw-chat-pane {
   color: var(--muted);
 }
 
-.chat-pane__cloud svg,
 .chat-pane__incognito svg,
 .chat-pane__workspace-chip svg {
   width: 14px;
@@ -215,6 +213,57 @@ openclaw-chat-pane {
 .chat-pane__workspace-menu {
   flex: 0 1 auto;
   min-width: 0;
+}
+
+.chat-pane__placement-menu {
+  flex: 0 0 auto;
+}
+
+.chat-pane__placement-menu::part(menu) {
+  width: 250px;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 78%, transparent);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+.chat-pane__placement-chip {
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chat-pane__placement-chip:hover,
+.chat-pane__placement-chip:focus-visible {
+  color: var(--text);
+  outline: none;
+}
+
+.chat-pane__placement-state,
+.chat-pane__placement-note {
+  padding: 6px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chat-pane__placement-state {
+  font-weight: 600;
+}
+
+.chat-pane__placement-note {
+  white-space: normal;
+}
+
+.chat-pane__placement-reclaim {
+  min-height: 30px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
 }
 
 .chat-pane__gateway-menu {

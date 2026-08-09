@@ -21,6 +21,7 @@ import { readSessionMethodAccess } from "../../lib/session-method-access.ts";
 import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
 import { renderBoardViewSwitch } from "./board-session-surface.ts";
 import { ChatPaneContext } from "./chat-pane-context.ts";
+import { reclaimChatPanePlacement, resolveChatPanePlacement } from "./chat-pane-placement.ts";
 import { headerPlatformByClient } from "./chat-pane-shared.ts";
 import { readChatSessionActionAccess } from "./chat-session-action-access.ts";
 import { patchChatSessionLabel } from "./chat-state-route.ts";
@@ -141,6 +142,12 @@ export abstract class ChatPaneHeader extends ChatPaneContext {
         : renameAccess.allowed
           ? undefined
           : renameAccess.reason;
+    const placement = resolveChatPanePlacement({
+      gatewaySnapshot: this.context.gateway.snapshot,
+      gatewaysSnapshot: this.gatewaysSnapshot,
+      reclaiming: this.headerPlacementReclaiming,
+      row,
+    });
     return renderChatPaneHeader({
       paneId: this.paneId,
       narrow: this.narrow,
@@ -250,6 +257,8 @@ export abstract class ChatPaneHeader extends ChatPaneContext {
               row && void this.setSessionMember(row, identityId, member),
           })
         : nothing,
+      placementGateway: placement.gateway,
+      placementReclaimDisabledReason: placement.reclaimDisabledReason,
       nativeGateways: this.nativeGateways,
       gatewaysSnapshot: this.gatewaysSnapshot,
       onboarding: this.onboarding,
@@ -269,6 +278,7 @@ export abstract class ChatPaneHeader extends ChatPaneContext {
           this.handleHeaderMenuAction(action, row, workspace.root, branch);
         }
       },
+      onPlacementReclaim: () => row && void this.reclaimHeaderPlacement(row),
       onBranchSelect: (leafEntryId) => {
         const access = readChatSessionActionAccess(
           this.context.gateway.snapshot,
@@ -310,6 +320,25 @@ export abstract class ChatPaneHeader extends ChatPaneContext {
     } catch {
       // Optional label refinement. Generic file-manager copy remains correct.
     }
+  }
+
+  protected async reclaimHeaderPlacement(row: GatewaySessionRow): Promise<void> {
+    await reclaimChatPanePlacement({
+      client: this.connectedClient,
+      connectionGeneration: this.connectionGeneration,
+      gatewaySnapshot: this.context.gateway.snapshot,
+      gatewaysSnapshot: this.gatewaysSnapshot,
+      reclaiming: this.headerPlacementReclaiming,
+      row,
+      isCurrent: (client, generation) =>
+        this.connectedClient === client && this.connectionGeneration === generation,
+      onReclaimingChange: (reclaiming) => {
+        this.headerPlacementReclaiming = reclaiming;
+      },
+      publishError: (error) => this.publishHeaderError(error),
+      refreshReplacement: (agentId) => this.context.sessions.refreshReplacement(agentId),
+      requestUpdate: () => this.requestUpdate(),
+    });
   }
 
   protected beginHeaderRename(row: GatewaySessionRow): void {

@@ -248,6 +248,60 @@ describe("chat pane header", () => {
     expect(props.onBeginRename).toHaveBeenCalledOnce();
   });
 
+  it("renders a quiet cloud placement chip with state, age, reclaim, and the plan note", () => {
+    vi.spyOn(Date, "now").mockReturnValue(600_000);
+    const onPlacementReclaim = vi.fn();
+    const { container } = mount({
+      session: row({
+        placement: {
+          state: "active",
+          generation: 1,
+          createdAtMs: 100_000,
+          updatedAtMs: 300_000,
+          stateChangedAtMs: 300_000,
+          environmentId: "worker:one",
+          activeOwnerEpoch: 1,
+          workerBundleHash: "a".repeat(64),
+          workspaceBaseManifestRef: "base-manifest",
+          remoteWorkspaceDir: "/worker/repo",
+        },
+      }),
+      placementGateway: "Studio",
+      onPlacementReclaim,
+    });
+
+    expect(container.querySelector(".chat-pane__placement-chip")?.textContent?.trim()).toBe(
+      "on cloud",
+    );
+    expect(container.querySelector(".chat-pane__placement-state")?.textContent?.trim()).toBe(
+      "active · 5m ago",
+    );
+    expect(container.querySelector(".chat-pane__placement-note")?.textContent?.trim()).toBe(
+      "Where this session runs never changes how you talk to it.",
+    );
+    const actions = container.querySelectorAll(".chat-pane__placement-menu wa-dropdown-item");
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.textContent?.trim()).toBe("Bring home to Studio");
+    actions[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(onPlacementReclaim).toHaveBeenCalledOnce();
+    vi.restoreAllMocks();
+  });
+
+  it.each(["local", "reclaimed"] as const)("hides the placement chip for %s state", (state) => {
+    const { container } = mount({
+      session: row({
+        placement: {
+          state,
+          generation: 1,
+          createdAtMs: 1,
+          updatedAtMs: 1,
+          stateChangedAtMs: 1,
+        },
+      }),
+    });
+    expect(container.querySelector(".chat-pane__placement-chip")).toBeNull();
+  });
+
   it("places pane presence between the workspace chip and face control", () => {
     const { container } = mount({
       presence: html`<span data-slot="presence"></span>`,
@@ -352,7 +406,7 @@ describe("chat pane header", () => {
       }),
       canReveal: false,
     });
-    expect(container.querySelector(".chat-pane__cloud")).not.toBeNull();
+    expect(container.querySelector(".chat-pane__placement-chip")).not.toBeNull();
     expect(container.querySelector('wa-dropdown-item[value="reveal"]')).toBeNull();
     expect(container.querySelector('wa-dropdown-item[value="copy-path"]')).not.toBeNull();
   });

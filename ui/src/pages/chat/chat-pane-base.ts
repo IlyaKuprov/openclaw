@@ -127,6 +127,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   @litState() protected headerRenameValue = "";
   @litState() protected headerPlatform: string | null = null;
   @litState() protected headerCopiedAction: ChatPaneHeaderAction | null = null;
+  @litState() protected headerPlacementReclaiming = false;
   @litState() protected presencePayload: PresencePayload | undefined;
   @litState() protected sessionSharingStates = new Map<string, ChatSessionSharingState>();
   protected readonly sessionParticipationTracker = new SessionParticipationTracker();
