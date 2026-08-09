@@ -78,9 +78,8 @@ class SessionMenu extends OpenClawLightDomElement {
     Record<SessionMenuActionKind, string>
   > = {};
   @property({ attribute: false }) forkDisabled = false;
-  // Single-session Archive and Delete use this local eligibility guard.
-  // Batch Archive delegates mixed rows to patchMany's authoritative ordered outcomes.
   @property({ attribute: false }) archiveAllowed = false;
+  @property({ attribute: false }) deleteAllowed = false;
   @property({ attribute: false }) cloudWorkerStopAllowed = false;
   @property({ attribute: false }) groups: readonly string[] = [];
   @property({ attribute: false }) canOpenChat = false;
@@ -590,7 +589,7 @@ class SessionMenu extends OpenClawLightDomElement {
                 aria-keyshortcuts="A"
                 ?disabled=${this.actionDisabled(
                   "toggle-archived",
-                  !batch && !session.archived && !this.archiveAllowed,
+                  !session.archived && !this.archiveAllowed,
                 )}
                 title=${this.actionTitle("toggle-archived")}
               >
@@ -614,10 +613,7 @@ class SessionMenu extends OpenClawLightDomElement {
                 variant="danger"
                 data-shortcut="d"
                 aria-keyshortcuts="D"
-                ?disabled=${this.actionDisabled(
-                  "delete",
-                  !(session.archived || this.archiveAllowed),
-                )}
+                ?disabled=${this.actionDisabled("delete", !this.deleteAllowed)}
                 title=${this.actionTitle("delete")}
               >
                 <span slot="icon" class="session-menu__icon" aria-hidden="true"

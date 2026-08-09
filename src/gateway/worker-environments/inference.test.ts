@@ -185,6 +185,53 @@ describe("worker inference manager", () => {
     await instance.stop();
   });
 
+  it("blocks replacement inference until an exact session drain settles", async () => {
+    const pending = createDeferred<WorkerInferenceTerminalOutcome>();
+    const execute = vi.fn<WorkerInferenceExecutor>(async () => await pending.promise);
+    const instance = makeManager(execute);
+    accept(instance);
+    await waitForFast(() => expect(execute).toHaveBeenCalledOnce());
+
+    const drain = instance.beginSessionDrain(REQUEST.sessionId);
+    expect(drain.hasWork()).toBe(true);
+    expect(
+      instance.start({
+        identity: IDENTITY,
+        request: { ...REQUEST, runId: "replacement", turnId: "replacement" },
+        sink: createSink().sink,
+      }),
+    ).toEqual({ ok: false, reason: "cancelled" });
+
+    pending.resolve(ERROR);
+    await drain.drained;
+    expect(drain.hasWork()).toBe(false);
+    drain.release();
+    expect(
+      instance.start({
+        identity: IDENTITY,
+        request: { ...REQUEST, runId: "replacement", turnId: "replacement" },
+        sink: createSink().sink,
+      }),
+    ).toMatchObject({ ok: true });
+    await instance.stop();
+  });
+
+  it("rejects an inference drain when terminal persistence fails", async () => {
+    const store = createMemoryStore();
+    vi.spyOn(store, "complete").mockImplementation(() => {
+      throw new Error("write failed");
+    });
+    const pending = createDeferred<WorkerInferenceTerminalOutcome>();
+    const instance = makeManager(async () => await pending.promise, store);
+    accept(instance);
+
+    const drain = instance.beginSessionDrain(REQUEST.sessionId);
+    pending.resolve(ERROR);
+    await expect(drain.drained).rejects.toThrow("terminal persistence failed");
+    drain.release();
+    await instance.stop();
+  });
+
   it("settles cumulatively oversized output while preserving the abort reason", async () => {
     let signal: AbortSignal | undefined;
     const store = createMemoryStore();

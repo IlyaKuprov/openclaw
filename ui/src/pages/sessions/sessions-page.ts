@@ -54,6 +54,7 @@ import {
   areUiSessionKeysEquivalent,
   buildAgentMainSessionKey,
   canArchiveSessionRow,
+  canDeleteSessionRows,
   parseAgentSessionKey,
   resolveUiConfiguredMainKey,
 } from "../../lib/sessions/session-key.ts";
@@ -1397,13 +1398,12 @@ class SessionsPage extends OpenClawLightDomElement {
         .flatMap((card) => [card.sessionKey, card.execution?.sessionKey])
         .filter((key): key is string => typeof key === "string" && key.length > 0),
     );
-    const archiveAllowed = canArchiveSessionRow(
-      row,
-      resolveUiConfiguredMainKey({
-        agentsList: context.agents.state.agentsList,
-        hello: gateway.hello,
-      }),
-    );
+    const configuredMainKey = resolveUiConfiguredMainKey({
+      agentsList: context.agents.state.agentsList,
+      hello: gateway.hello,
+    });
+    const archiveAllowed = canArchiveSessionRow(row, configuredMainKey);
+    const deleteAllowed = canDeleteSessionRows([row], configuredMainKey);
     return html`
       <openclaw-session-menu
         .session=${{
@@ -1420,6 +1420,7 @@ class SessionsPage extends OpenClawLightDomElement {
         .actionDisabledReasons=${this.sessionMenuActionDisabledReasons(row)}
         .forkDisabled=${row.modelSelectionLocked === true}
         .archiveAllowed=${archiveAllowed}
+        .deleteAllowed=${deleteAllowed}
         .cloudWorkerStopAllowed=${isStoppableCloudWorkerPlacement(row.placement) &&
         row.hasActiveRun !== true &&
         isGatewayMethodAdvertised(gateway, "sessions.reclaim") === true}

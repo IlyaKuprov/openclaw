@@ -49,7 +49,10 @@ import type { SessionObserverService } from "../session-observer-contract.js";
 import type { TerminalLaunchResolution } from "../terminal/launch.js";
 import type { TerminalSessionManager } from "../terminal/session-manager.js";
 import type { WorkerSessionPlacementReader } from "../worker-environments/placement-projector.js";
-import type { WorkerSessionPlacementRetirementService } from "../worker-environments/placement-store.js";
+import type {
+  WorkerSessionPlacementDrainService,
+  WorkerSessionPlacementRetirementService,
+} from "../worker-environments/placement-store.js";
 import type {
   WorkerEnvironmentServiceContract,
   WorkerPlacementDispatchContract,
@@ -279,7 +282,7 @@ export type GatewayRequestContext = {
   workerEnvironmentService?: WorkerEnvironmentServiceContract;
   /** Durable per-session worker placement; absent only from lightweight in-process contexts. */
   workerSessionPlacementService?: WorkerSessionPlacementReader &
-    Partial<WorkerSessionPlacementRetirementService>;
+    Partial<WorkerSessionPlacementDrainService & WorkerSessionPlacementRetirementService>;
   /** One-way local-to-worker dispatch; absent when cloud workers are disabled. */
   workerPlacementDispatchService?: WorkerPlacementDispatchContract;
   // Operator terminal session store. Absent in local/in-process contexts where

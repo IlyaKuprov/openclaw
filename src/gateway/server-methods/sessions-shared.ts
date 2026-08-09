@@ -68,7 +68,9 @@ export function resolveSessionWorkerPlacementPatchError(params: {
   if (!placement || placement.state === "local") {
     return undefined;
   }
-  if (params.patch.archived !== undefined) {
+  // Archive owns a stronger exact-session fence and runtime drain. Restore keeps
+  // the existing placement guard, and model changes still validate below.
+  if (params.patch.archived === false) {
     return `Session ${params.key} cannot change archive state while cloud worker placement is ${placement.state}.`;
   }
   if (!params.validateModelRuntime || params.patch.model === undefined || !params.entry) {

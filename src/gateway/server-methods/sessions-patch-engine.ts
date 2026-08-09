@@ -7,19 +7,13 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { persistStickyModelSelectionBestEffort } from "../../agents/sticky-model-selection.js";
-import { replyRunRegistry } from "../../auto-reply/reply/reply-run-registry.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { applySessionPatchProjections } from "../../config/sessions/session-accessor.js";
 import { disableCronJobsBoundToSessions } from "../../cron/job-session-bindings.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveMissingAgentHarnessSessionError } from "../../sessions/agent-harness-session-key.js";
-import {
-  isSessionLifecycleMutationActive,
-  isSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-  SESSION_ARCHIVE_ACTIVE_RUN_ERROR,
-} from "../../sessions/session-lifecycle-admission.js";
+import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { ensureSessionGroupRegistered } from "../session-groups.js";
 import { triggerSessionPatchHook } from "../session-patch-hooks.js";
@@ -35,11 +29,14 @@ import {
 } from "../session-utils.js";
 import { projectSessionsPatchEntry } from "../sessions-patch.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
-import { hasVisibleActiveSessionRun } from "./session-active-runs.js";
 import { appendSessionAudit } from "./session-audit.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import {
-  isAgentMainSessionKey,
+  prepareSessionPatchArchive,
+  type SessionPatchArchivePreparation,
+  validateSessionPatchArchiveProjection,
+} from "./sessions-patch-archive.js";
+import {
   resolveGatewaySessionTargetFromKey,
   resolveSessionWorkerPlacementPatchError,
   sessionLog,
@@ -56,6 +53,7 @@ type PatchTargetIdentity = Pick<
 >;
 
 type PreparedPatchTarget = {
+  archivePreparation?: SessionPatchArchivePreparation;
   archiveActor: ReturnType<typeof gatewayClientSessionCreator>;
   canonicalKey: string;
   fullPatch: SessionsPatchParams;
@@ -69,6 +67,23 @@ type PreparedPatchTarget = {
   target: ReturnType<typeof resolveGatewaySessionTargetFromKey>["target"];
   wasArchivedBeforePatch: boolean;
 };
+
+function changedBeforePatchError(key: string): ErrorShape {
+  return errorShape(ErrorCodes.INVALID_REQUEST, `Session ${key} changed before patch. Retry.`);
+}
+
+function nonArchiveTargetChanged(
+  target: PreparedPatchTarget,
+  currentEntry: SessionEntry | undefined,
+): boolean {
+  return (
+    (target.fullPatch.expectedSessionId !== undefined &&
+      currentEntry?.sessionId !== target.fullPatch.expectedSessionId) ||
+    (target.fullPatch.expectedLifecycleRevision !== undefined &&
+      currentEntry?.lifecycleRevision !== target.fullPatch.expectedLifecycleRevision) ||
+    (target.initialEntry !== undefined && currentEntry === undefined)
+  );
+}
 
 type SessionPatchEngineOutcome =
   | {
@@ -133,6 +148,7 @@ export async function executeSessionPatchEngine(params: {
   targets: readonly PatchTargetIdentity[];
 }): Promise<SessionPatchEngineResult> {
   const cfg = params.context.getRuntimeConfig();
+  const pluginOwnerId = params.client?.internal?.pluginRuntimeOwnerId;
   const storeCache = new Map<string, Record<string, SessionEntry>>();
   const targetDiscoveryCache = new Map();
   const preflightTargets = params.targets.map((target) => ({
@@ -224,16 +240,6 @@ export async function executeSessionPatchEngine(params: {
       continue;
     }
     const lifecycleIdentities = [canonicalKey, key, initialEntry?.sessionId];
-    if (
-      fullPatch.archived === true &&
-      isSessionLifecycleMutationActive(storePath, lifecycleIdentities)
-    ) {
-      outcomes[index] = targetFailure(
-        input,
-        errorShape(ErrorCodes.INVALID_REQUEST, SESSION_ARCHIVE_ACTIVE_RUN_ERROR),
-      );
-      continue;
-    }
     prepared.push({
       archiveActor: gatewayClientSessionCreator(params.client),
       canonicalKey,
@@ -265,226 +271,235 @@ export async function executeSessionPatchEngine(params: {
     return catalog;
   };
 
+  const authorizeTarget = (target: PreparedPatchTarget): ErrorShape | undefined => {
+    try {
+      if (params.authorizationMode === "request") {
+        params.sessionMutationAuthorization?.assertCurrent();
+      } else {
+        const inputTarget = params.targets[target.index]!;
+        params.sessionMutationAuthorization?.assertTargetCurrent({
+          sessionKey: target.key,
+          ...(inputTarget.agentId ? { agentId: inputTarget.agentId } : {}),
+        });
+      }
+      return undefined;
+    } catch (error) {
+      return error instanceof SessionMutationAuthorizationChangedError
+        ? error.error
+        : unexpectedPatchError(target.key, error);
+    }
+  };
+
   if (prepared.length > 0) {
-    await runExclusiveSessionLifecycleMutation({
-      targets: prepared.map((target) => ({
-        scope: target.storePath,
-        identities: target.lifecycleIdentities,
-      })),
-      run: async () => {
-        const groups = new Map<string, PreparedPatchTarget[]>();
-        for (const target of prepared) {
-          const groupKey = `${target.storePath}\0${target.target.agentId}`;
-          groups.set(groupKey, [...(groups.get(groupKey) ?? []), target]);
-        }
-        await Promise.all(
-          [...groups.values()].map(async (group) => {
-            try {
-              const projected = await applySessionPatchProjections({
-                agentId: group[0]?.target.agentId,
-                storePath: group[0]?.storePath ?? "",
-                operations: group.map((preparedTarget) => ({
-                  resolveTarget: ({ store }) => {
-                    const { target: migratedTarget, primaryKey } =
-                      resolveCanonicalGatewaySessionStoreKey({
-                        cfg,
-                        key: preparedTarget.key,
-                        store: store as Record<string, SessionEntry>,
-                        agentId: preparedTarget.requestedAgentId,
-                      });
-                    return { primaryKey, candidateKeys: migratedTarget.storeKeys };
-                  },
-                  project: async ({ primaryKey, existingEntry, isLabelInUse }) => {
-                    const ownershipError = pluginOwnershipError({
-                      client: params.client,
-                      entry: existingEntry,
-                      key: preparedTarget.canonicalKey,
-                    });
-                    if (ownershipError) {
-                      return { ok: false as const, error: ownershipError };
-                    }
-                    const initialEntry = preparedTarget.initialEntry;
-                    const expectedSessionChanged =
-                      (preparedTarget.fullPatch.expectedSessionId !== undefined &&
-                        existingEntry?.sessionId !== preparedTarget.fullPatch.expectedSessionId) ||
-                      (preparedTarget.fullPatch.expectedLifecycleRevision !== undefined &&
-                        existingEntry?.lifecycleRevision !==
-                          preparedTarget.fullPatch.expectedLifecycleRevision);
-                    const lifecycleEntryRemoved =
-                      initialEntry !== undefined && existingEntry === undefined;
-                    const archiveTargetChanged =
-                      preparedTarget.fullPatch.archived === true &&
-                      (initialEntry === undefined
-                        ? existingEntry !== undefined
-                        : existingEntry !== undefined &&
-                          (existingEntry.sessionId !== initialEntry.sessionId ||
-                            existingEntry.lifecycleRevision !== initialEntry.lifecycleRevision));
-                    if (expectedSessionChanged || lifecycleEntryRemoved || archiveTargetChanged) {
-                      return {
-                        ok: false as const,
-                        error: errorShape(
-                          ErrorCodes.INVALID_REQUEST,
-                          `Session ${preparedTarget.key} changed before patch. Retry.`,
-                        ),
-                      };
-                    }
-                    if (preparedTarget.fullPatch.archived === true) {
-                      if (
-                        preparedTarget.canonicalKey === "global" ||
-                        isAgentMainSessionKey(cfg, preparedTarget.canonicalKey)
-                      ) {
-                        return {
-                          ok: false as const,
-                          error: errorShape(
-                            ErrorCodes.INVALID_REQUEST,
-                            "Cannot archive an agent's main session.",
-                          ),
-                        };
-                      }
-                      const activeIdentities = [
-                        preparedTarget.canonicalKey,
-                        preparedTarget.key,
-                        existingEntry?.sessionId,
-                      ];
-                      if (
-                        isSessionWorkAdmissionActive(preparedTarget.storePath, activeIdentities) ||
-                        replyRunRegistry.isActive(preparedTarget.canonicalKey) ||
-                        replyRunRegistry.isActive(preparedTarget.key) ||
-                        hasVisibleActiveSessionRun({
-                          context: params.context,
-                          requestedKey: preparedTarget.key,
-                          canonicalKey: preparedTarget.canonicalKey,
-                          sessionId: existingEntry?.sessionId,
-                          defaultAgentId: resolveDefaultAgentId(cfg),
-                        })
-                      ) {
-                        return {
-                          ok: false as const,
-                          error: errorShape(
-                            ErrorCodes.INVALID_REQUEST,
-                            SESSION_ARCHIVE_ACTIVE_RUN_ERROR,
-                          ),
-                        };
-                      }
-                    }
-                    preparedTarget.wasArchivedBeforePatch = existingEntry?.archivedAt !== undefined;
-                    const result = await projectSessionsPatchEntry({
-                      cfg,
-                      existingEntry,
-                      isLabelInUse,
-                      storeKey: primaryKey,
-                      agentId: preparedTarget.requestedAgentId,
-                      patch: preparedTarget.fullPatch,
-                      archivedBy: preparedTarget.archiveActor,
-                      loadGatewayModelCatalog: () => loadModelCatalog(preparedTarget),
-                    });
-                    if (!result.ok) {
-                      return result;
-                    }
-                    const placementPatchError = resolveSessionWorkerPlacementPatchError({
-                      agentId: preparedTarget.target.agentId,
-                      cfg,
-                      context: params.context,
-                      entry: result.entry,
-                      key: preparedTarget.key,
-                      patch: preparedTarget.fullPatch,
-                      sessionKey: preparedTarget.canonicalKey,
-                      validateModelRuntime: true,
-                    });
-                    return placementPatchError
-                      ? {
-                          ok: false as const,
-                          error: errorShape(ErrorCodes.INVALID_REQUEST, placementPatchError),
-                        }
-                      : result;
-                  },
-                  authorize: () => {
-                    try {
-                      if (params.authorizationMode === "request") {
-                        params.sessionMutationAuthorization?.assertCurrent();
-                      } else {
-                        const inputTarget = params.targets[preparedTarget.index]!;
-                        params.sessionMutationAuthorization?.assertTargetCurrent({
-                          sessionKey: preparedTarget.key,
-                          ...(inputTarget.agentId ? { agentId: inputTarget.agentId } : {}),
-                        });
-                      }
-                      return undefined;
-                    } catch (error) {
-                      return {
-                        ok: false as const,
-                        error:
-                          error instanceof SessionMutationAuthorizationChangedError
-                            ? error.error
-                            : unexpectedPatchError(preparedTarget.key, error),
-                      };
-                    }
-                  },
-                  onError: (error) => ({
-                    ok: false as const,
-                    error: unexpectedPatchError(preparedTarget.key, error),
-                  }),
-                })),
-              });
-              for (const [groupIndex, result] of projected.entries()) {
-                const target = group[groupIndex];
-                if (!target || !result) {
-                  continue;
+    try {
+      await runExclusiveSessionLifecycleMutation({
+        targets: prepared.map((target) => ({
+          scope: target.storePath,
+          identities: target.lifecycleIdentities,
+        })),
+        prepare: async () => {
+          const archiveTargets = prepared
+            .filter((target) => target.fullPatch.archived === true)
+            .toSorted((left, right) => left.index - right.index);
+          await Promise.all(
+            archiveTargets.map(async (target) => {
+              try {
+                const result = await prepareSessionPatchArchive({
+                  authorizationMode: params.authorizationMode,
+                  ...(params.sessionMutationAuthorization
+                    ? { authorization: params.sessionMutationAuthorization }
+                    : {}),
+                  cfg,
+                  context: params.context,
+                  inputTarget: params.targets[target.index]!,
+                  loadGatewayModelCatalog: () => loadModelCatalog(target),
+                  ...(pluginOwnerId ? { pluginOwnerId } : {}),
+                  target,
+                });
+                if (result.ok) {
+                  target.archivePreparation = result.value;
+                } else {
+                  outcomes[target.index] = targetFailure(
+                    params.targets[target.index]!,
+                    result.error,
+                  );
                 }
-                outcomes[target.index] = result.ok
-                  ? {
-                      ok: true,
-                      ...targetIdentity(params.targets[target.index]!),
-                      entry: result.entry,
-                      ...(params.authorizationMode === "request"
-                        ? { result: projectPatchResponse(cfg, target, result.entry) }
-                        : {}),
-                    }
-                  : targetFailure(params.targets[target.index]!, result.error);
-              }
-            } catch (error) {
-              for (const target of group) {
+              } catch (error) {
                 outcomes[target.index] = targetFailure(
                   params.targets[target.index]!,
                   unexpectedPatchError(target.key, error),
                 );
               }
-            }
-          }),
-        );
+            }),
+          );
+        },
+        run: async () => {
+          const groups = new Map<string, PreparedPatchTarget[]>();
+          for (const target of prepared) {
+            const groupKey = `${target.storePath}\0${target.target.agentId}`;
+            groups.set(groupKey, [...(groups.get(groupKey) ?? []), target]);
+          }
+          await Promise.all(
+            [...groups.values()].map(async (group) => {
+              const projectableGroup = group.filter(
+                (target) =>
+                  target.fullPatch.archived !== true || target.archivePreparation !== undefined,
+              );
+              if (projectableGroup.length === 0) {
+                return;
+              }
+              try {
+                const projected = await applySessionPatchProjections({
+                  agentId: projectableGroup[0]?.target.agentId,
+                  storePath: projectableGroup[0]?.storePath ?? "",
+                  operations: projectableGroup.map((preparedTarget) => ({
+                    resolveTarget: ({ store }) => {
+                      const { target: migratedTarget, primaryKey } =
+                        resolveCanonicalGatewaySessionStoreKey({
+                          cfg,
+                          key: preparedTarget.key,
+                          store: store as Record<string, SessionEntry>,
+                          agentId: preparedTarget.requestedAgentId,
+                        });
+                      return { primaryKey, candidateKeys: migratedTarget.storeKeys };
+                    },
+                    project: async ({ primaryKey, existingEntry, isLabelInUse }) => {
+                      const archivePreparation = preparedTarget.archivePreparation;
+                      if (preparedTarget.fullPatch.archived === true) {
+                        const archiveError = validateSessionPatchArchiveProjection({
+                          cfg,
+                          existingEntry,
+                          fullPatch: preparedTarget.fullPatch,
+                          key: preparedTarget.key,
+                          ...(pluginOwnerId ? { pluginOwnerId } : {}),
+                          preparation: archivePreparation!,
+                          primaryKey,
+                        });
+                        if (archiveError) {
+                          return { ok: false as const, error: archiveError };
+                        }
+                      } else if (nonArchiveTargetChanged(preparedTarget, existingEntry)) {
+                        return {
+                          ok: false as const,
+                          error: changedBeforePatchError(preparedTarget.key),
+                        };
+                      }
+                      if (preparedTarget.fullPatch.archived !== true) {
+                        const ownershipError = pluginOwnershipError({
+                          client: params.client,
+                          entry: existingEntry,
+                          key: primaryKey,
+                        });
+                        if (ownershipError) {
+                          return { ok: false as const, error: ownershipError };
+                        }
+                      }
+                      preparedTarget.wasArchivedBeforePatch =
+                        existingEntry?.archivedAt !== undefined;
+                      const result = await projectSessionsPatchEntry({
+                        cfg,
+                        existingEntry,
+                        isLabelInUse,
+                        storeKey: primaryKey,
+                        agentId: preparedTarget.requestedAgentId,
+                        patch: preparedTarget.fullPatch,
+                        archivedBy: preparedTarget.archiveActor,
+                        loadGatewayModelCatalog: () => loadModelCatalog(preparedTarget),
+                      });
+                      if (!result.ok) {
+                        return result;
+                      }
+                      const placementPatchError = resolveSessionWorkerPlacementPatchError({
+                        agentId: preparedTarget.target.agentId,
+                        cfg,
+                        context: params.context,
+                        entry: result.entry,
+                        key: preparedTarget.key,
+                        patch: preparedTarget.fullPatch,
+                        sessionKey: preparedTarget.canonicalKey,
+                        validateModelRuntime: true,
+                      });
+                      return placementPatchError
+                        ? {
+                            ok: false as const,
+                            error: errorShape(ErrorCodes.INVALID_REQUEST, placementPatchError),
+                          }
+                        : result;
+                    },
+                    authorize: () => {
+                      const error = authorizeTarget(preparedTarget);
+                      return error ? { ok: false as const, error } : undefined;
+                    },
+                    onError: (error) => ({
+                      ok: false as const,
+                      error: unexpectedPatchError(preparedTarget.key, error),
+                    }),
+                  })),
+                });
+                for (const [groupIndex, result] of projected.entries()) {
+                  const target = projectableGroup[groupIndex];
+                  if (!target || !result) {
+                    continue;
+                  }
+                  outcomes[target.index] = result.ok
+                    ? {
+                        ok: true,
+                        ...targetIdentity(params.targets[target.index]!),
+                        entry: result.entry,
+                        ...(params.authorizationMode === "request"
+                          ? { result: projectPatchResponse(cfg, target, result.entry) }
+                          : {}),
+                      }
+                    : targetFailure(params.targets[target.index]!, result.error);
+                }
+              } catch (error) {
+                for (const target of projectableGroup) {
+                  outcomes[target.index] = targetFailure(
+                    params.targets[target.index]!,
+                    unexpectedPatchError(target.key, error),
+                  );
+                }
+              }
+            }),
+          );
 
-        for (const target of prepared.toSorted((left, right) => left.index - right.index)) {
-          const outcome = outcomes[target.index];
-          if (!outcome?.ok || !target.archiveActor) {
-            continue;
+          for (const target of prepared.toSorted((left, right) => left.index - right.index)) {
+            const outcome = outcomes[target.index];
+            if (!outcome?.ok || !target.archiveActor) {
+              continue;
+            }
+            const archiveStateChanged =
+              typeof target.fullPatch.archived === "boolean" &&
+              target.wasArchivedBeforePatch !== (outcome.entry.archivedAt !== undefined);
+            if (!archiveStateChanged) {
+              continue;
+            }
+            const action = outcome.entry.archivedAt === undefined ? "unarchived" : "archived";
+            try {
+              await appendSessionAudit({
+                cfg,
+                target: {
+                  agentId: target.target.agentId,
+                  entry: outcome.entry,
+                  sessionKey: target.canonicalKey,
+                  storePath: target.storePath,
+                },
+                text: `${action} by ${target.archiveActor.label ?? target.archiveActor.id}`,
+                now: Date.now(),
+              });
+            } catch (error) {
+              sessionLog.warn(
+                `sessions.patch: ${action} audit note failed for ${target.canonicalKey}; archive kept: ${formatErrorMessage(error)}`,
+              );
+            }
           }
-          const archiveStateChanged =
-            typeof target.fullPatch.archived === "boolean" &&
-            target.wasArchivedBeforePatch !== (outcome.entry.archivedAt !== undefined);
-          if (!archiveStateChanged) {
-            continue;
-          }
-          const action = outcome.entry.archivedAt === undefined ? "unarchived" : "archived";
-          try {
-            await appendSessionAudit({
-              cfg,
-              target: {
-                agentId: target.target.agentId,
-                entry: outcome.entry,
-                sessionKey: target.canonicalKey,
-                storePath: target.storePath,
-              },
-              text: `${action} by ${target.archiveActor.label ?? target.archiveActor.id}`,
-              now: Date.now(),
-            });
-          } catch (error) {
-            sessionLog.warn(
-              `sessions.patch: ${action} audit note failed for ${target.canonicalKey}; archive kept: ${formatErrorMessage(error)}`,
-            );
-          }
-        }
-      },
-    });
+        },
+      });
+    } finally {
+      for (const target of prepared.toSorted((left, right) => left.index - right.index)) {
+        target.archivePreparation?.drain.release();
+      }
+    }
   }
 
   const successful = prepared.filter((target) => outcomes[target.index]?.ok);

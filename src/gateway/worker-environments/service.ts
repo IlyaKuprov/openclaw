@@ -1555,6 +1555,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     cancelInference,
     cancelInferenceForSession: (params: { sessionId: string; runId?: string }): string[] =>
       inference.cancelSession(params.sessionId, params.runId),
+    beginInferenceSessionDrain: (sessionId: string) => inference.beginSessionDrain(sessionId),
     hasInferenceForSession: (sessionId: string, runId?: string): boolean =>
       inference.hasSession(sessionId, runId),
     resolveInferenceSessionForRunId: (runId: string): string | undefined =>

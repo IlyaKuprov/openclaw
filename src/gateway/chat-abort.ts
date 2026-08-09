@@ -61,8 +61,12 @@ export type ChatAbortControllerEntry = {
   projectSessionTerminalObservedAt?: number;
   /** In-flight terminal session-store update used by restart shutdown. */
   projectSessionTerminalPersistence?: Promise<void>;
+  /** Terminal persistence failed; lifecycle mutations must not commit past it. */
+  projectSessionTerminalPersistenceError?: unknown;
   /** Caller completion requested cleanup before terminal lifecycle persistence settled. */
   registrationCleanupRequested?: boolean;
+  /** Exact-run drain waiters notified only when this registration is removed. */
+  removalWaiters?: Set<() => void>;
   /** False after the owning reply run commits a terminal outcome. */
   isAbortable?: (entry: ChatAbortControllerEntry) => boolean;
   /** Runs once when this registration is actually removed. */
@@ -564,8 +568,65 @@ export function removeChatAbortControllerEntry(
     entry.onRemoved?.();
   } catch {
     // Removal owns state cleanup even if a caller-provided release hook fails.
+  } finally {
+    const waiters = entry.removalWaiters;
+    entry.removalWaiters = undefined;
+    for (const resolve of waiters ?? []) {
+      resolve();
+    }
   }
   return true;
+}
+
+/** Waits for captured run registrations and their terminal persistence owner to leave. */
+export async function waitForChatAbortControllerRemoval(params: {
+  entries: Map<string, ChatAbortControllerEntry>;
+  targets: ReadonlyArray<{ runId: string; entry: ChatAbortControllerEntry }>;
+  timeoutMs: number;
+}): Promise<boolean> {
+  const registeredWaiters: Array<{ entry: ChatAbortControllerEntry; resolve: () => void }> = [];
+  const removals = params.targets.flatMap(({ runId, entry }) => {
+    if (params.entries.get(runId) !== entry) {
+      return [];
+    }
+    return [
+      new Promise<void>((resolve) => {
+        const waiters = entry.removalWaiters ?? new Set<() => void>();
+        waiters.add(resolve);
+        entry.removalWaiters = waiters;
+        registeredWaiters.push({ entry, resolve });
+      }),
+    ];
+  });
+  if (removals.length === 0) {
+    return true;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const removed = await Promise.race([
+      Promise.all(removals).then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), Math.max(0, params.timeoutMs));
+        timer.unref?.();
+      }),
+    ]);
+    return (
+      removed &&
+      params.targets.every(
+        ({ entry }) => entry.projectSessionTerminalPersistenceError === undefined,
+      )
+    );
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    for (const { entry, resolve } of registeredWaiters) {
+      entry.removalWaiters?.delete(resolve);
+      if (entry.removalWaiters?.size === 0) {
+        entry.removalWaiters = undefined;
+      }
+    }
+  }
 }
 
 export function abortChatRunById(
