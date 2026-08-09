@@ -232,7 +232,7 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: shared transcript credential-safety prompt for plugin-owned agent harnesses.
       // +3: channel streaming config reader re-exports and session-agent scope resolver.
       // +1: canonical PNG QR data URL schema for plugin-owned QR login actions.
-      4844,
+      4845,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
