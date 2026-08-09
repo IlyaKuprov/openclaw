@@ -17,10 +17,7 @@ export function requireWorkerLeaseStatus(value: unknown): WorkerLeaseStatus {
     if (value.sharedHost !== undefined && typeof value.sharedHost !== "boolean") {
       throw new Error("Worker provider returned an invalid inspection result");
     }
-    return {
-      status,
-      ...(value.sharedHost === undefined ? {} : { sharedHost: value.sharedHost }),
-    };
+    return { status, sharedHost: value.sharedHost === true };
   }
   if (value.sharedHost !== undefined) {
     throw new Error("Worker provider returned an invalid inspection result");

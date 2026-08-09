@@ -826,14 +826,12 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       move(draining, "orphaned", { lastError: ORPHANED_LEASE_ERROR });
       return;
     }
-    if (inspection.sharedHost !== undefined) {
-      record = store.reconcileSharedHost({
-        environmentId: record.environmentId,
-        state: record.state,
-        leaseId,
-        sharedHost: inspection.sharedHost,
-      });
-    }
+    record = store.reconcileSharedHost({
+      environmentId: record.environmentId,
+      state: record.state,
+      leaseId,
+      sharedHost: inspection.sharedHost === true,
+    });
     if (record.destroyRequestedAtMs !== null) {
       await finishDestroy(record, provider).catch(() => undefined);
       return;
@@ -1100,6 +1098,12 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
         !record.bootstrapReceipt
       ) {
         throw serviceError("invalid_state", `Cannot start tunnel in state: ${record.state}`);
+      }
+      if (record.sharedHost === null) {
+        throw serviceError(
+          "provider_failure",
+          "Worker lease isolation is not reconciled; retry after provider inspection",
+        );
       }
       const credential = store.getCredential(request.environmentId);
       if (

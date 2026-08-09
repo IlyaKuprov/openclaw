@@ -2225,6 +2225,9 @@ describe("worker environment service", () => {
 
   it("reconciles shared-host isolation for a persisted lease before tunnel startup", async () => {
     seedReady("worker-legacy-shared");
+    database.db
+      .prepare("UPDATE worker_environments SET shared_host = NULL WHERE environment_id = ?")
+      .run("worker-legacy-shared");
     closeOpenClawStateDatabaseForTest();
     database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     store = createWorkerEnvironmentStore({ database, now: () => nowMs });
@@ -2241,12 +2244,24 @@ describe("worker environment service", () => {
       stop: vi.fn(async () => {}),
       stopAll: vi.fn(async () => {}),
     } as unknown as WorkerTunnelManager;
+    let inspectionFails = true;
     const provider = createProvider({
-      inspect: async () => ({ status: "active", sharedHost: true }),
+      inspect: async () => {
+        if (inspectionFails) {
+          throw new Error("provider unavailable");
+        }
+        return { status: "active", sharedHost: true };
+      },
     });
     const workerService = createService(provider, { tunnelManager });
 
-    expect(store.get("worker-legacy-shared")?.sharedHost).toBe(false);
+    expect(store.get("worker-legacy-shared")?.sharedHost).toBeNull();
+    await workerService.reconcileOnce();
+    await expect(
+      workerService.startTunnel({ environmentId: "worker-legacy-shared", ownerEpoch: 1 }),
+    ).rejects.toThrow("isolation is not reconciled");
+    expect(tunnelManager.start).not.toHaveBeenCalled();
+    inspectionFails = false;
     await workerService.reconcileOnce();
     expect(store.get("worker-legacy-shared")?.sharedHost).toBe(true);
     await workerService.startTunnel({ environmentId: "worker-legacy-shared", ownerEpoch: 1 });
