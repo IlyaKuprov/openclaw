@@ -26,7 +26,6 @@ const DEFAULT_CAPTURED_STDOUT_MAX_BYTES = 1024 * 1024;
 const MAX_TIMER_TIMEOUT_MS = 2_147_000_000;
 const AI_RUNTIME_PACKAGE = "@openclaw/ai";
 const AI_RUNTIME_BACKUP_DIR = ".openclaw-ai-package-backup";
-const BUNDLED_WORKSPACE_DEV_DEPENDENCIES = ["@openclaw/session-url-contract"];
 const ACTIVE_CHILD_KILLERS = new Set();
 const PACKAGE_BUILD_PLUGIN_SELECTION_ENV_NAMES = [
   "OPENCLAW_EXTENSIONS",
@@ -661,11 +660,6 @@ export async function prepareBundledAiRuntimePackage(
     await fs.writeFile(stagedPackageJsonPath, `${JSON.stringify(stagedPackageJson, null, 2)}\n`);
 
     packageJson.dependencies[AI_RUNTIME_PACKAGE] = stagedPackageJson.version;
-    // Source builds need these workspace links, while tsdown internalizes their runtime code.
-    // Omit them from the published manifest so package consumers never see private specs.
-    for (const dependency of BUNDLED_WORKSPACE_DEV_DEPENDENCIES) {
-      delete packageJson.devDependencies?.[dependency];
-    }
     const bundleDependencies = packageJson.bundleDependencies ?? [];
     if (!Array.isArray(bundleDependencies)) {
       throw new Error("root package.json bundleDependencies must be an array when present");
@@ -680,14 +674,20 @@ export async function prepareBundledAiRuntimePackage(
   }
 }
 
-async function restorePackageSourceArtifacts(sourceDir, restoreDocsMap, restoreChangelog) {
+async function restorePackageSourceArtifacts(
+  sourceDir,
+  restoreDocsMap,
+  restoreManifest,
+  restoreChangelog,
+) {
   await restoreChangelog(sourceDir);
+  await restoreManifest(sourceDir);
   // Release the lifecycle receipt only after every other source mutation settles.
   await restoreDocsMap(sourceDir);
 }
 
-async function loadSourceDocsMapLifecycle(sourceDir) {
-  const modulePath = path.join(sourceDir, "scripts", "package-docs-map.mjs");
+async function loadSourcePackageLifecycle(sourceDir, moduleName, prepareExport, restoreExport) {
+  const modulePath = path.join(sourceDir, "scripts", moduleName);
   try {
     await fs.access(modulePath);
   } catch (error) {
@@ -698,10 +698,10 @@ async function loadSourceDocsMapLifecycle(sourceDir) {
   }
   const lifecycle = await import(pathToFileURL(modulePath).href);
   if (
-    typeof lifecycle.preparePackageDocsMap !== "function" ||
-    typeof lifecycle.restorePackageDocsMap !== "function"
+    typeof lifecycle[prepareExport] !== "function" ||
+    typeof lifecycle[restoreExport] !== "function"
   ) {
-    throw new Error(`source package docs-map lifecycle is invalid: ${modulePath}`);
+    throw new Error(`source package lifecycle is invalid: ${modulePath}`);
   }
   return lifecycle;
 }
@@ -727,11 +727,33 @@ export async function packOpenClawPackageForDocker(sourceDir, outputDir, options
   const sourceDocsMapLifecycle =
     options.prepareDocsMap && options.restoreDocsMap
       ? null
-      : await loadSourceDocsMapLifecycle(sourceDir);
+      : await loadSourcePackageLifecycle(
+          sourceDir,
+          "package-docs-map.mjs",
+          "preparePackageDocsMap",
+          "restorePackageDocsMap",
+        );
   const prepareDocsMap =
     options.prepareDocsMap ?? sourceDocsMapLifecycle?.preparePackageDocsMap ?? (async () => false);
   const restoreDocsMap =
     options.restoreDocsMap ?? sourceDocsMapLifecycle?.restorePackageDocsMap ?? (async () => false);
+  const sourceManifestLifecycle =
+    options.prepareManifest && options.restoreManifest
+      ? null
+      : await loadSourcePackageLifecycle(
+          sourceDir,
+          "package-manifest.mjs",
+          "preparePackageManifest",
+          "restorePackageManifest",
+        );
+  const prepareManifest =
+    options.prepareManifest ??
+    sourceManifestLifecycle?.preparePackageManifest ??
+    (async () => false);
+  const restoreManifest =
+    options.restoreManifest ??
+    sourceManifestLifecycle?.restorePackageManifest ??
+    (async () => false);
   const prepareBundledAiRuntime = options.prepareBundledAiRuntime ?? prepareBundledAiRuntimePackage;
   const packTool = options.pnpmPack ? "pnpm" : "npm";
   if (options.packJsonPath && options.pnpmPack) {
@@ -741,10 +763,16 @@ export async function packOpenClawPackageForDocker(sourceDir, outputDir, options
   // This receipt is the package lifecycle lock; acquire it before touching CHANGELOG.md.
   await prepareDocsMap(sourceDir);
   try {
+    await prepareManifest(sourceDir);
     await prepareChangelog(sourceDir);
   } catch (error) {
     try {
-      await restorePackageSourceArtifacts(sourceDir, restoreDocsMap, restoreChangelog);
+      await restorePackageSourceArtifacts(
+        sourceDir,
+        restoreDocsMap,
+        restoreManifest,
+        restoreChangelog,
+      );
     } catch (restoreError) {
       throw packagePreparationRestoreError(error, restoreError);
     }
@@ -777,7 +805,12 @@ export async function packOpenClawPackageForDocker(sourceDir, outputDir, options
     try {
       await cleanupBundledAiRuntime();
     } finally {
-      await restorePackageSourceArtifacts(sourceDir, restoreDocsMap, restoreChangelog);
+      await restorePackageSourceArtifacts(
+        sourceDir,
+        restoreDocsMap,
+        restoreManifest,
+        restoreChangelog,
+      );
     }
   }
   // pnpm reports an absolute destination path. The directory was emptied before packing,

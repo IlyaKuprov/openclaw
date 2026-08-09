@@ -1932,6 +1932,7 @@ const EXACT_TOOLING_TARGETS = new Map([
   ["scripts/lib/failed-trailer.mjs", ["run-oxlint", "run-tsgo", "run-vitest", "changed-lanes"]],
   ["scripts/docker-e2e-rerun.mjs", ["docker-e2e-helper-cli"]],
   ["scripts/openclaw-postpack.mjs", [TOOLING_VITEST_CONFIG]],
+  ["scripts/package-manifest.mjs", ["test/openclaw-prepack.test.ts"]],
   ["scripts/openclaw-npm-prepublish-verify.ts", ["test/openclaw-npm-prepublish-verify.test.ts"]],
   ["scripts/lib/docker-e2e-scenarios.mjs", [dockerE2e, pluginPrerelease]],
   ["scripts/e2e/kitchen-sink-rpc-walk.mjs", ["kitchen-sink-rpc-walk", pluginPrerelease]],
