@@ -8,7 +8,15 @@ function isNonEmptyText(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-function hasTextFields(value: unknown, fields: readonly string[]): value is Record<string, string> {
+/** Avoid Array.isArray's any[] narrowing while retaining the runtime boundary check. */
+function isReadonlyArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+function hasTextFields<const Field extends string>(
+  value: unknown,
+  fields: readonly Field[],
+): value is Record<Field, string> {
   if (!isRecord(value)) {
     return false;
   }
@@ -34,7 +42,7 @@ export function resolveActiveConformancePrincipalIds(
   scenario: MemoryAuthorizationConformanceScenario,
 ): ReadonlySet<string> | undefined {
   const refs = scenario.context.principalRefs;
-  if (!Array.isArray(refs) || refs.length === 0 || !Array.isArray(scenario.principals)) {
+  if (!isReadonlyArray(refs) || refs.length === 0 || !isReadonlyArray(scenario.principals)) {
     return undefined;
   }
   const principalIds = new Set<string>();
@@ -79,8 +87,8 @@ export function requiredConformanceMembershipFailure(params: {
   if (
     !hasTextFields(requirement, ["principalId", "groupId", "provider"]) ||
     !activePrincipalIds.has(requirement.principalId) ||
-    !Array.isArray(scenario.context.membershipRefs) ||
-    !Array.isArray(scenario.memberships)
+    !isReadonlyArray(scenario.context.membershipRefs) ||
+    !isReadonlyArray(scenario.memberships)
   ) {
     return "membership-stale";
   }
