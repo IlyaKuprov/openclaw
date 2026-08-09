@@ -154,7 +154,9 @@ export function createReplyRestartRecoveryClaimController(params: {
         sessionLifecyclePatch: options.patch,
       });
       if (!result?.sessionEntry) {
-        throw new Error("session changed before durable user-turn admission");
+        throw new Error(
+          "session changed before durable user-turn admission (recovery claim persistence)",
+        );
       }
       return result.sessionEntry as SessionEntry;
     }
@@ -193,7 +195,9 @@ export function createReplyRestartRecoveryClaimController(params: {
         : undefined;
     const result = await recorder.persistApproved({ target, expectedSessionId: sessionId });
     if (!result) {
-      throw new Error("session changed before durable user-turn admission");
+      throw new Error(
+        "session changed before durable user-turn admission (transcript persistence)",
+      );
     }
     if (result.sessionEntry) {
       params.setEntry(result.sessionEntry as SessionEntry);
@@ -214,7 +218,9 @@ export function createReplyRestartRecoveryClaimController(params: {
         hydrateSkillPromptRefs: false,
       }) ?? params.getEntry();
     if (!entry || entry.sessionId !== sessionId) {
-      throw new Error("session changed before durable user-turn admission");
+      throw new Error(
+        `session changed before durable user-turn admission (binding expected=${sessionId} actual=${entry?.sessionId ?? "missing"})`,
+      );
     }
     const admissionRunId = normalizeOptionalString(params.admissionRunId);
     const sourceTurnId = normalizeOptionalString(params.sourceTurnId);
