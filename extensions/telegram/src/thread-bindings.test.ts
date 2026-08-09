@@ -27,13 +27,15 @@ vi.mock("openclaw/plugin-sdk/acp-runtime", async () => {
 });
 
 import {
-  TELEGRAM_THREAD_BINDINGS_MAX_ENTRIES,
-  TELEGRAM_THREAD_BINDINGS_NAMESPACE,
   testing,
   createTelegramThreadBindingManager as createTelegramThreadBindingManagerImpl,
   setTelegramThreadBindingIdleTimeoutBySessionKey,
   setTelegramThreadBindingMaxAgeBySessionKey,
 } from "./thread-bindings.js";
+import {
+  TELEGRAM_THREAD_BINDINGS_MAX_ENTRIES,
+  TELEGRAM_THREAD_BINDINGS_NAMESPACE,
+} from "./thread-bindings.legacy-state.js";
 
 type ThreadBindingStoreEntry = ReturnType<
   ReturnType<typeof createTelegramThreadBindingManagerImpl>["listBindings"]

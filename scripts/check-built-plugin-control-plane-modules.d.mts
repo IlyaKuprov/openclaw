@@ -17,6 +17,18 @@ export function probeBuiltPluginControlPlaneModules(
   params?: { rootDir?: string; timeoutMs?: number },
 ): BuiltPluginControlPlaneModuleFailure[];
 
+export type BuiltDoctorContractClosureViolation = BuiltPluginControlPlaneModule & {
+  dependency: string;
+  importerPath: string;
+};
+
+export function collectBuiltModuleStaticDependencies(entryPath: string): Map<string, string>;
+
+export function collectBuiltDoctorContractClosureViolations(
+  modules: BuiltPluginControlPlaneModule[],
+  params?: { rootDir?: string },
+): BuiltDoctorContractClosureViolation[];
+
 export function verifyBuiltPluginControlPlaneModules(params?: {
   rootDir?: string;
   timeoutMs?: number;

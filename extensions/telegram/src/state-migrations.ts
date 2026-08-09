@@ -28,18 +28,18 @@ import {
   listTelegramLegacySentMessageCacheEntries,
   TELEGRAM_SENT_MESSAGE_CACHE_MAX_ENTRIES,
   TELEGRAM_SENT_MESSAGE_CACHE_NAMESPACE,
-} from "./sent-message-cache.js";
+} from "./sent-message-cache.legacy-state.js";
 import {
   listTelegramLegacyStickerCacheEntries,
   TELEGRAM_STICKER_CACHE_MAX_ENTRIES,
   TELEGRAM_STICKER_CACHE_NAMESPACE,
-} from "./sticker-cache-store.js";
+} from "./sticker-cache-store.legacy-state.js";
 import {
   listTelegramLegacyThreadBindingEntries,
+  resolveTelegramThreadBindingsPath,
   TELEGRAM_THREAD_BINDINGS_MAX_ENTRIES,
   TELEGRAM_THREAD_BINDINGS_NAMESPACE,
-  testing as telegramThreadBindingTesting,
-} from "./thread-bindings.js";
+} from "./thread-bindings.legacy-state.js";
 import { resolveTelegramToken } from "./token.js";
 import {
   listTelegramLegacyTopicNameCacheEntries,
@@ -388,7 +388,7 @@ function detectTelegramThreadBindingLegacyStateMigration(params: {
     prefix: "thread-bindings-",
     suffix: ".json",
   }).flatMap((accountId) => {
-    const persistedPath = telegramThreadBindingTesting.resolveBindingsPath(accountId, params.env);
+    const persistedPath = resolveTelegramThreadBindingsPath(accountId, params.env);
     if (!fileExists(persistedPath)) {
       return [];
     }

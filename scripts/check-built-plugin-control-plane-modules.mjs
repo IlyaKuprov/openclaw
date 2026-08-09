@@ -17,6 +17,15 @@ const LEGACY_SETUP_PROPERTIES = new Map([
 ]);
 const PROBE_RESULT_MARKER = "__OPENCLAW_PLUGIN_CONTROL_PLANE_PROBE__";
 const DEFAULT_TIMEOUT_MS = 120_000;
+// Doctor enumeration cold-loads every declaring plugin's contract closure, so a
+// doctor artifact must never reach the process-spawn graph. Requiring the artifact
+// cannot prove this: plain Node resolves the whole graph fine, and the cost and the
+// ESM-only transitive deps (execa -> npm-run-path -> unicorn-magic, which has no
+// `require` condition) only surface on source-run hosts whose CJS-flavored resolver
+// rejects them. `doctor-contract-closure-guard.test.ts` owns the same invariant over
+// sources; bundling can merge runtime code into the artifact behind its back, so the
+// built closure is checked here.
+const FORBIDDEN_DOCTOR_CONTRACT_DEPENDENCIES = ["execa"];
 const REQUIRE_PROBE_SOURCE = String.raw`
 const { createRequire } = require("node:module");
 const path = require("node:path");
@@ -139,6 +148,87 @@ export function probeBuiltPluginControlPlaneModules(modules, params = {}) {
   return Array.isArray(payload.failures) ? payload.failures : [];
 }
 
+// Built chunks are plain ESM, so static edges are exactly the import/export
+// declarations. Dynamic `import()` is excluded by construction: a lazy edge is
+// never paid at enumeration time.
+function parseStaticModuleSpecifiers(source, filePath) {
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
+  const specifiers = [];
+  for (const statement of sourceFile.statements) {
+    const moduleSpecifier =
+      ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)
+        ? statement.moduleSpecifier
+        : undefined;
+    if (moduleSpecifier && ts.isStringLiteralLike(moduleSpecifier)) {
+      specifiers.push(moduleSpecifier.text);
+    }
+  }
+  return specifiers;
+}
+
+function resolveBuiltChunkPath(importerPath, specifier) {
+  const target = path.resolve(path.dirname(importerPath), specifier);
+  const candidates = [target, `${target}.js`, `${target}.mjs`, path.join(target, "index.js")];
+  return candidates.find(
+    (candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile(),
+  );
+}
+
+/** Collects the bare dependencies a built artifact reaches through static imports. */
+export function collectBuiltModuleStaticDependencies(entryPath) {
+  const dependencies = new Map();
+  const visited = new Set();
+  const pending = [entryPath];
+  while (pending.length > 0) {
+    const filePath = pending.pop();
+    if (!filePath || visited.has(filePath)) {
+      continue;
+    }
+    visited.add(filePath);
+    let source;
+    try {
+      source = fs.readFileSync(filePath, "utf8");
+    } catch {
+      continue;
+    }
+    for (const reference of parseStaticModuleSpecifiers(source, filePath)) {
+      if (reference.startsWith(".") || reference.startsWith("/")) {
+        const resolved = resolveBuiltChunkPath(filePath, reference);
+        if (resolved) {
+          pending.push(resolved);
+        }
+        continue;
+      }
+      if (!reference.startsWith("node:") && !dependencies.has(reference)) {
+        dependencies.set(reference, filePath);
+      }
+    }
+  }
+  return dependencies;
+}
+
+/** Fails when a built doctor artifact statically reaches a forbidden runtime dependency. */
+export function collectBuiltDoctorContractClosureViolations(modules, params = {}) {
+  const rootDir = path.resolve(params.rootDir ?? ROOT);
+  const violations = [];
+  for (const module of modules.filter((candidate) => candidate.kind === "doctor-contract")) {
+    const dependencies = collectBuiltModuleStaticDependencies(
+      path.join(rootDir, module.relativePath),
+    );
+    for (const dependency of FORBIDDEN_DOCTOR_CONTRACT_DEPENDENCIES) {
+      const importer = dependencies.get(dependency);
+      if (importer) {
+        violations.push({
+          ...module,
+          dependency,
+          importerPath: path.relative(rootDir, importer).split(path.sep).join("/"),
+        });
+      }
+    }
+  }
+  return violations;
+}
+
 /** Fails the build when a generated plugin control-plane module cannot be required natively. */
 export function verifyBuiltPluginControlPlaneModules(params = {}) {
   const modules = listBuiltPluginControlPlaneModules(params);
@@ -146,12 +236,22 @@ export function verifyBuiltPluginControlPlaneModules(params = {}) {
   if (failures.length > 0) {
     const details = failures.map(
       (failure) =>
-        `- ${failure.pluginId} (${failure.kind}) ${failure.relativePath}: ${failure.error}`,
+        `- ${failure.pluginId} (${failure.kind}) ${failure.relativePath} [${failure.host} host]: ${failure.error}`,
     );
     throw new Error(`built plugin control-plane module load failures:\n${details.join("\n")}`);
   }
+  const closureViolations = collectBuiltDoctorContractClosureViolations(modules, params);
+  if (closureViolations.length > 0) {
+    const details = closureViolations.map(
+      (violation) =>
+        `- ${violation.pluginId} ${violation.relativePath} statically reaches ${violation.dependency} through ${violation.importerPath}`,
+    );
+    throw new Error(
+      `built doctor contract closures reach forbidden runtime dependencies:\n${details.join("\n")}`,
+    );
+  }
   console.error(
-    `[plugin-control-plane-loads] verified ${modules.length} built modules with native require`,
+    `[plugin-control-plane-loads] verified ${modules.length} built modules with native require and checked doctor closures`,
   );
 }
 
