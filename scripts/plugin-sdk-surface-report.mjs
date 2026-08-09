@@ -237,7 +237,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +6: MemoryAuthorizationConformanceMount, MemoryContentAccessOperation,
       //     MemoryContentAccessContext, AuthorizedMemoryContentPlan,
       //     AuthorizedMemorySearchParams, and AuthorizedMemoryReadParams.
-      4899,
+      // +1: AuthorizedMemoryPlanForContext preserves operation-specific results from authorize.
+      4900,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(

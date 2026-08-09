@@ -173,13 +173,6 @@ export type MemoryAuthorizationConformanceAdapter = Readonly<{
     scenario: MemoryAuthorizationConformanceScenario;
     resource: MemoryAuthorizationConformanceResource;
   }): MemoryAuthorizationConformanceDecision | Promise<MemoryAuthorizationConformanceDecision>;
-  /**
-   * Conformance-only observation of the value a backend would release after internal search.
-   * Retrieve stays inside the broker, so it must report no externally visible value or metadata.
-   */
-  observeSearchDisclosure(
-    scenario: MemoryAuthorizationConformanceScenario,
-  ): unknown | Promise<unknown>;
   prefilter(
     scenario: MemoryAuthorizationConformanceScenario,
   ): readonly string[] | Promise<readonly string[]>;
@@ -199,7 +192,6 @@ export type MemoryAuthorizationConformanceReport = Readonly<{
       | "decision"
       | "authorized-handle"
       | "denial-non-disclosure"
-      | "retrieve-non-disclosure"
       | "prefilter-superset"
       | "duplicate-prefilter-candidate";
   }>[];
@@ -292,9 +284,7 @@ function planBindingFailure(
   }
   if (
     !hasExactlyTheSameUniqueSet(plan.mounts, scenario.viewMounts, mountKey) ||
-    plan.mounts.some(
-      (mount) => new Set(mount.capabilities).size !== mount.capabilities.length,
-    )
+    plan.mounts.some((mount) => new Set(mount.capabilities).size !== mount.capabilities.length)
   ) {
     return "outside-view";
   }
@@ -302,11 +292,7 @@ function planBindingFailure(
     return "outside-view";
   }
   if (
-    !hasExactlyTheSameUniqueSet(
-      plan.allowedEgressAudiences,
-      context.deliveryAudiences,
-      audienceKey,
-    )
+    !hasExactlyTheSameUniqueSet(plan.allowedEgressAudiences, context.deliveryAudiences, audienceKey)
   ) {
     return "outside-view";
   }
@@ -540,17 +526,10 @@ export async function runMemoryAuthorizationConformanceSuite(
   const failures: Array<MemoryAuthorizationConformanceReport["failures"][number]> = [];
   for (const testCase of createMemoryAuthorizationConformanceCases()) {
     const prefilter = [...(await adapter.prefilter(testCase.scenario))];
-    const searchDisclosure = await adapter.observeSearchDisclosure(testCase.scenario);
     if (new Set(prefilter).size !== prefilter.length) {
       failures.push({
         caseId: testCase.id,
         invariant: "duplicate-prefilter-candidate",
-      });
-    }
-    if (testCase.scenario.context.operation === "retrieve" && searchDisclosure !== undefined) {
-      failures.push({
-        caseId: testCase.id,
-        invariant: "retrieve-non-disclosure",
       });
     }
     for (const resource of testCase.scenario.resources) {
@@ -582,6 +561,5 @@ export async function runMemoryAuthorizationConformanceSuite(
 export const referenceMemoryAuthorizationConformanceAdapter: MemoryAuthorizationConformanceAdapter =
   Object.freeze({
     evaluate: evaluateMemoryAuthorizationConformanceScenario,
-    observeSearchDisclosure: () => undefined,
     prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
   });

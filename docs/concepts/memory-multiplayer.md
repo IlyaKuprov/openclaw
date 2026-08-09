@@ -979,6 +979,13 @@ type MemoryContentAccessContext<Operation extends MemoryContentAccessOperation> 
 type AuthorizedMemoryContentPlan<Operation extends MemoryContentAccessOperation> =
   AuthorizedMemoryPlan & { operation: Operation };
 
+type AuthorizedMemoryPlanForContext<Context extends MemoryAccessContext> =
+  Context extends MemoryAccessContext & { operation: infer Operation extends MemoryOperation }
+    ? Operation extends MemoryContentAccessOperation
+      ? AuthorizedMemoryContentPlan<Operation>
+      : AuthorizedMemoryPlan & { operation: Operation }
+    : never;
+
 type AuthorizedMemorySearchResult = MemorySearchResult & {
   resourceHandle: AuthorizedResourceHandle;
 };
@@ -1017,9 +1024,9 @@ type AuthorizedMemoryWriteParams = {
 
 interface AuthorizedMemoryRuntime {
   authorization: MemoryAuthorizationCapabilities;
-  authorize<Operation extends MemoryOperation>(
-    context: MemoryAccessContext & { operation: Operation },
-  ): Promise<AuthorizedMemoryPlan & { operation: Operation }>;
+  authorize<Context extends MemoryAccessContext>(
+    context: Context,
+  ): Promise<AuthorizedMemoryPlanForContext<Context>>;
   searchAuthorized(
     params: AuthorizedMemorySearchParams<"read">,
   ): Promise<AuthorizedMemoryResultEnvelope<readonly AuthorizedMemorySearchResult[]>>;
@@ -1448,10 +1455,11 @@ conformance result describes an implementation; it does not create a principal,
 mount, grant, or authorization decision. The selected memory plugin implements
 its policy, view, and backend operations from the core-provided context.
 `authorizeActiveMemorySearchHits()` remains a narrow current search-hit filter,
-not the future whole-runtime enforcement boundary. Stage 0 records shadow
-decisions only. A future enforced core path must consume the trusted context and
-admitted capability at the selected-runtime boundary before memory ingress or
-egress.
+not the future whole-runtime enforcement boundary. Stage 0 records bounded
+selected-runtime surface metadata only; it does not evaluate context-free
+authorization decisions. A future enforced core path must consume the trusted
+context and admitted capability at the selected-runtime boundary before memory
+ingress or egress.
 
 `session_members` and the current sharing evaluator remain authoritative only
 for Gateway collaborative-session membership and mode. Native channel and
@@ -1654,20 +1662,21 @@ warns about lost audience metadata, not an automatic fallback.
 Stages are security boundaries, not calendar estimates. A stage is complete
 only when all listed read and write surfaces use the new invariant.
 
-### Stage 0: contracts and shadow decisions
+### Stage 0: contracts and shadow surface inspection
 
 **Deliverables**
 
-- Define core-owned principals, session subjects, delivery facts, and the
-  branded access context; define plugin-owned operations, decisions, plans,
-  mounts, and the pure memory evaluator behind the SDK contract.
+- Define serializable principal, session-subject, delivery, context, operation,
+  plan, mount, and evaluator contract shapes. Stage 0 does not mint a trusted
+  context from caller-provided facts; that core-only issuance path follows the
+  durable identity and subject work in Phase 1A.
 - Add the versioned plugin SDK authorization contract and a reusable backend
   conformance suite.
-- Add lazy additive tables and read-only decision tracing. Do not move content
-  or alter current results.
-- Build core-only context factories for authenticated Gateway calls, channel
-  ingress, autonomous runs, and delegation. Prove that plugin extras and tool
-  JSON cannot override them.
+- Add bounded, read-only selected-runtime surface tracing. Do not move content,
+  alter current results, or create a permanent audit schema.
+- Keep the serializable context DTO distinct from a future trusted context:
+  plugin extras, tool JSON, prompt text, and caller-assembled objects cannot
+  opt into an enforced path during Stage 0 because no such path exists yet.
 - Inventory every memory ingress and egress path and fail the stage if any
   context-free manager call remains unclassified.
 
@@ -1681,11 +1690,14 @@ It adds no public isolation configuration or security claim; see the
 
 - Property tests cover deny precedence, permission implication, view
   intersection, expiry, revision, and lineage.
-- Shadow decisions can be compared with current reads without logging content.
+- Shadow surface metadata is bounded and content-free. It is not a policy
+  decision or a comparison against current reads until Phase 1A supplies a
+  trusted context and Phase 1B supplies a selected policy backend.
 - Single-user behavior and latency stay unchanged.
 - No public isolation claim and no public configuration change.
 
-**Rollback:** stop shadow evaluation and ignore the additive tables.
+**Rollback:** remove the shadow invocation and ignore the additive capability
+declaration while the agent remains unenforced.
 
 ### Stage 1: private and channel read isolation
 

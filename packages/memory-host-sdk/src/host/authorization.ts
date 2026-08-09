@@ -152,10 +152,10 @@ export type MemoryAccessContext = DeepReadonly<{
   hostFactsRevision: string;
 }>;
 
-/** Operations allowed to receive content-bearing search or exact-read results. */
+/** Operations whose authorized results may carry memory content outside broker-internal selection. */
 export type MemoryContentAccessOperation = Extract<MemoryOperation, "read" | "derive">;
 
-/** A context narrowed to an operation that may receive content-bearing search or exact-read results. */
+/** A context narrowed to an operation that may receive content-bearing memory results. */
 export type MemoryContentAccessContext<
   Operation extends MemoryContentAccessOperation = MemoryContentAccessOperation,
 > = MemoryAccessContext &
@@ -190,38 +190,43 @@ export type MemoryAuthorizationCapabilities = Readonly<
 function readMemoryAuthorizationCapabilityValues(
   value: unknown,
 ): Readonly<Record<MemoryAuthorizationCapabilityName, boolean>> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    return undefined;
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const expectedKeys = ["version", ...MEMORY_AUTHORIZATION_CAPABILITY_NAMES] as const;
-  if (
-    Object.getOwnPropertySymbols(value).length > 0 ||
-    Object.keys(descriptors).length !== expectedKeys.length ||
-    !expectedKeys.every((key) => {
-      const descriptor = descriptors[key];
-      return descriptor?.enumerable === true && "value" in descriptor;
-    })
-  ) {
-    return undefined;
-  }
-  if (descriptors.version?.value !== MEMORY_AUTHORIZATION_CONTRACT_VERSION) {
-    return undefined;
-  }
-
-  const capabilities: Partial<Record<MemoryAuthorizationCapabilityName, boolean>> = {};
-  for (const name of MEMORY_AUTHORIZATION_CAPABILITY_NAMES) {
-    const capability = descriptors[name]?.value;
-    if (typeof capability !== "boolean") {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
       return undefined;
     }
-    capabilities[name] = capability;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return undefined;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const expectedKeys = ["version", ...MEMORY_AUTHORIZATION_CAPABILITY_NAMES] as const;
+    if (
+      Object.getOwnPropertySymbols(value).length > 0 ||
+      Object.keys(descriptors).length !== expectedKeys.length ||
+      !expectedKeys.every((key) => {
+        const descriptor = descriptors[key];
+        return descriptor?.enumerable === true && "value" in descriptor;
+      })
+    ) {
+      return undefined;
+    }
+    if (descriptors.version?.value !== MEMORY_AUTHORIZATION_CONTRACT_VERSION) {
+      return undefined;
+    }
+
+    const capabilities: Partial<Record<MemoryAuthorizationCapabilityName, boolean>> = {};
+    for (const name of MEMORY_AUTHORIZATION_CAPABILITY_NAMES) {
+      const capability = descriptors[name]?.value;
+      if (typeof capability !== "boolean") {
+        return undefined;
+      }
+      capabilities[name] = capability;
+    }
+    return capabilities as Readonly<Record<MemoryAuthorizationCapabilityName, boolean>>;
+  } catch {
+    // Capability declarations are plugin-controlled input; a proxy trap is nonconforming, not fatal.
+    return undefined;
   }
-  return capabilities as Readonly<Record<MemoryAuthorizationCapabilityName, boolean>>;
 }
 
 export function isMemoryAuthorizationCapabilities(
@@ -318,13 +323,25 @@ export type AuthorizedMemoryPlan = DeepReadonly<{
   expiresAt: string;
 }>;
 
-/** A plan narrowed to an operation that may receive content-bearing search or exact-read results. */
+/** A plan narrowed to an operation that may receive content-bearing memory results. */
 export type AuthorizedMemoryContentPlan<
   Operation extends MemoryContentAccessOperation = MemoryContentAccessOperation,
 > = AuthorizedMemoryPlan &
   Readonly<{
     operation: Operation;
   }>;
+
+type AuthorizedMemoryPlanForOperation<Operation extends MemoryOperation> =
+  Operation extends MemoryContentAccessOperation
+    ? AuthorizedMemoryContentPlan<Operation>
+    : AuthorizedMemoryPlan & Readonly<{ operation: Operation }>;
+
+/** Preserves a context's operation when its plan crosses the SDK boundary. */
+export type AuthorizedMemoryPlanForContext<Context extends MemoryAccessContext> =
+  Context extends MemoryAccessContext &
+    Readonly<{ operation: infer Operation extends MemoryOperation }>
+    ? AuthorizedMemoryPlanForOperation<Operation>
+    : never;
 
 export type AuthorizedMemorySearchParams<Operation extends MemoryContentAccessOperation> =
   Readonly<{
@@ -459,9 +476,9 @@ export type MemoryExportResult = DeepReadonly<{
 
 export interface AuthorizedMemoryRuntime {
   readonly authorization: MemoryAuthorizationCapabilities;
-  authorize<Operation extends MemoryOperation>(
-    context: MemoryAccessContext & Readonly<{ operation: Operation }>,
-  ): Promise<AuthorizedMemoryPlan & Readonly<{ operation: Operation }>>;
+  authorize<Context extends MemoryAccessContext>(
+    context: Context,
+  ): Promise<AuthorizedMemoryPlanForContext<Context>>;
   searchAuthorized(
     params: AuthorizedMemorySearchParams<"read">,
   ): Promise<AuthorizedMemoryResultEnvelope<readonly AuthorizedMemorySearchResult[]>>;

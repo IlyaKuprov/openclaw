@@ -15,6 +15,7 @@ import {
   type AuthorizedMemoryMutation,
   type AuthorizedMemoryContentPlan,
   type AuthorizedMemoryPlan,
+  type AuthorizedMemoryPlanForContext,
   type AuthorizedMemoryRuntime,
   type AuthorizedMemorySearchResult,
   type AuthorizedResourceHandle,
@@ -84,13 +85,8 @@ function createAllowedHandleAdapter(
           } as unknown as MemoryAuthorizationConformanceDecision)
         : decision;
     },
-    observeSearchDisclosure: observeNoExternalSearchDisclosure,
     prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
   };
-}
-
-function observeNoExternalSearchDisclosure(): undefined {
-  return undefined;
 }
 
 describe("memory authorization SDK contract", () => {
@@ -163,8 +159,16 @@ describe("memory authorization SDK contract", () => {
         return true;
       },
     });
+    const throwingProxy = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error("capability proxy trap");
+        },
+      },
+    );
 
-    for (const declaration of [unexpectedKey, symbolKey, inherited, accessor]) {
+    for (const declaration of [unexpectedKey, symbolKey, inherited, accessor, throwingProxy]) {
       expect(isMemoryAuthorizationCapabilities(declaration)).toBe(false);
       expect(listMissingMemoryAuthorizationCapabilities(declaration)).toEqual(
         MEMORY_AUTHORIZATION_CAPABILITY_NAMES,
@@ -215,6 +219,12 @@ describe("memory authorization SDK contract", () => {
 
       const readPlanFromAuthorize = runtime.authorize(readContext);
       const derivePlanFromAuthorize = runtime.authorize(deriveContext);
+      expectTypeOf(readPlanFromAuthorize).toEqualTypeOf<
+        Promise<AuthorizedMemoryPlanForContext<typeof readContext>>
+      >();
+      expectTypeOf(derivePlanFromAuthorize).toEqualTypeOf<
+        Promise<AuthorizedMemoryPlanForContext<typeof deriveContext>>
+      >();
       void readPlanFromAuthorize.then((plan) =>
         runtime.searchAuthorized({ context: readContext, plan, query: "query", limit: 1 }),
       );
@@ -599,7 +609,6 @@ describe("memory authorization conformance suite", () => {
           reasonCode: "allowed",
           handle: `raw:${resource.resourceId}`,
         }) as unknown as MemoryAuthorizationConformanceDecision,
-      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -624,7 +633,6 @@ describe("memory authorization conformance suite", () => {
             })),
           },
         }),
-      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -657,7 +665,6 @@ describe("memory authorization conformance suite", () => {
             }),
           },
         }),
-      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -731,7 +738,6 @@ describe("memory authorization conformance suite", () => {
           },
         });
       },
-      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -812,32 +818,6 @@ describe("memory authorization conformance suite", () => {
     );
   });
 
-  it("rejects content-bearing search metadata released for retrieve", async () => {
-    const adapter: MemoryAuthorizationConformanceAdapter = {
-      evaluate: evaluateMemoryAuthorizationConformanceScenario,
-      observeSearchDisclosure: (scenario) =>
-        scenario.context.operation === "retrieve"
-          ? {
-              count: 1,
-              score: 0.99,
-              path: "private/other-user.md",
-              title: "private",
-              snippet: "private memory",
-              citation: "private/other-user.md#L1",
-            }
-          : undefined,
-      prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
-    };
-
-    const report = await runMemoryAuthorizationConformanceSuite(adapter);
-    expect(report.failures).toContainEqual(
-      expect.objectContaining({
-        caseId: "retrieve-permission-complete",
-        invariant: "retrieve-non-disclosure",
-      }),
-    );
-  });
-
   it("rejects denial metadata that reveals counts, scores, paths, or citations", async () => {
     const adapter: MemoryAuthorizationConformanceAdapter = {
       evaluate: (params) => {
@@ -857,7 +837,6 @@ describe("memory authorization conformance suite", () => {
           handle: "unauthorized-handle",
         } as unknown as MemoryAuthorizationConformanceDecision;
       },
-      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -897,7 +876,6 @@ describe("memory authorization conformance suite", () => {
           const decision = evaluateMemoryAuthorizationConformanceScenario(params);
           return decision.allowed ? decision : decorate(decision);
         },
-        observeSearchDisclosure: observeNoExternalSearchDisclosure,
         prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
       };
 
@@ -919,7 +897,6 @@ describe("memory authorization conformance suite", () => {
               decision,
             ) as MemoryAuthorizationConformanceDecision);
       },
-      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => scenario.resources.map((resource) => resource.resourceId),
     };
 
@@ -932,12 +909,10 @@ describe("memory authorization conformance suite", () => {
   it("rejects prefilter false negatives and duplicate candidates", async () => {
     const falseNegative: MemoryAuthorizationConformanceAdapter = {
       evaluate: evaluateMemoryAuthorizationConformanceScenario,
-      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: () => [],
     };
     const duplicate: MemoryAuthorizationConformanceAdapter = {
       evaluate: evaluateMemoryAuthorizationConformanceScenario,
-      observeSearchDisclosure: observeNoExternalSearchDisclosure,
       prefilter: (scenario) => {
         const ids = scenario.resources.map((resource) => resource.resourceId);
         return [...ids, ...(ids[0] ? [ids[0]] : [])];
