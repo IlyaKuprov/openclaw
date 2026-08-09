@@ -237,6 +237,17 @@ describe("session menu", () => {
     expect(menuItem(menu, "Delete…").disabled).toBe(true);
   });
 
+  it("keeps batch archive enabled while independently guarding delete", async () => {
+    const menu = await mountMenu({
+      selectionCount: 2,
+      archiveAllowed: false,
+      deleteAllowed: false,
+    });
+
+    expect(menuItem(menu, "Archive 2").disabled).toBe(false);
+    expect(menuItem(menu, "Delete 2…").disabled).toBe(true);
+  });
+
   it("closes before dispatching Pin", async () => {
     const calls: string[] = [];
     const menu = await mountMenu({

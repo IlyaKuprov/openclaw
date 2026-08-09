@@ -589,7 +589,7 @@ class SessionMenu extends OpenClawLightDomElement {
                 aria-keyshortcuts="A"
                 ?disabled=${this.actionDisabled(
                   "toggle-archived",
-                  !session.archived && !this.archiveAllowed,
+                  !batch && !session.archived && !this.archiveAllowed,
                 )}
                 title=${this.actionTitle("toggle-archived")}
               >

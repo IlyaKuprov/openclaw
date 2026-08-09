@@ -3,20 +3,51 @@ import { afterEach, expect, test, vi } from "vitest";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { loadSessionEntry, upsertSessionEntry } from "../config/sessions/session-accessor.js";
 import { onAgentEvent } from "../infra/agent-events.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import {
+  beginSessionWorkAdmission,
+  isSessionLifecycleMutationActive,
+} from "../sessions/session-lifecycle-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { markChatAbortTerminalPersistenceError } from "./chat-abort-lifecycle-internal.js";
 import { registerChatAbortController, removeChatAbortControllerEntry } from "./chat-abort.js";
 import { createChatRunState } from "./server-chat-state.js";
+import type { GatewayClient, GatewayRequestContext, RespondFn } from "./server-methods/types.js";
+import {
+  resolveSessionMutationAuthorization,
+  resolveSessionSharingTarget,
+} from "./session-sharing.js";
 import { embeddedRunMock, writeSessionStore } from "./test-helpers.js";
 import {
   createDeferred,
   directSessionReq,
   expectNoSessionQueueCleanup,
+  getGatewayConfigModule,
+  getSessionsHandlers,
   sessionStoreEntry,
   setupGatewaySessionsHandlerTestHarness,
 } from "./test/server-sessions.test-helpers.js";
 import { registerWorkerInferenceSessionDrain } from "./worker-environments/inference-control-internal.js";
+
+const sessionAuditGate = vi.hoisted(() => ({
+  entered: vi.fn(),
+  wait: undefined as Promise<void> | undefined,
+}));
+
+vi.mock("./server-methods/session-audit.js", async () => {
+  const actual = await vi.importActual<typeof import("./server-methods/session-audit.js")>(
+    "./server-methods/session-audit.js",
+  );
+  return {
+    ...actual,
+    appendSessionAudit: async (...args: Parameters<typeof actual.appendSessionAudit>) => {
+      if (sessionAuditGate.wait) {
+        sessionAuditGate.entered();
+        await sessionAuditGate.wait;
+      }
+      await actual.appendSessionAudit(...args);
+    },
+  };
+});
 
 const {
   createConfiguredGlobalAgentSessionStore,
@@ -90,6 +121,105 @@ function activeRunContext(params: {
   };
 }
 
+function identifiedClient(profileId: string): GatewayClient {
+  return {
+    connId: `${profileId}-connection`,
+    authenticatedUserId: `${profileId}@example.com`,
+    authenticatedUserProfile: {
+      profileId,
+      displayName: profileId,
+      hasAvatar: false,
+      updatedAt: 1,
+    },
+    connect: {
+      minProtocol: 1,
+      maxProtocol: 1,
+      client: {
+        id: "openclaw-control-ui",
+        version: "test",
+        platform: "test",
+        mode: "webchat",
+      },
+      role: "operator",
+      scopes: ["operator.read", "operator.write"],
+    },
+  };
+}
+
+async function archiveLifecycleRequestContext(
+  overrides: Record<string, unknown>,
+): Promise<GatewayRequestContext> {
+  const { getRuntimeConfig } = await getGatewayConfigModule();
+  const loadGatewayModelCatalog = async () => [];
+  return {
+    broadcast: vi.fn(),
+    broadcastToConnIds: vi.fn(),
+    chatAbortControllers: new Map(),
+    chatQueuedTurns: new Map(),
+    dedupe: new Map(),
+    getSessionEventSubscriberConnIds: () => new Set<string>(),
+    getRuntimeConfig,
+    loadGatewayModelCatalog,
+    readPreparedGatewayModelCatalog: loadGatewayModelCatalog,
+    ...overrides,
+  } as unknown as GatewayRequestContext;
+}
+
+type LifecycleHandlerResponse = {
+  ok: boolean;
+  payload?: unknown;
+  error?: Parameters<RespondFn>[2];
+};
+
+async function invokeArchiveHandler(params: {
+  authorization: NonNullable<
+    ReturnType<typeof resolveSessionMutationAuthorization>["authorization"]
+  >;
+  client: GatewayClient;
+  context: GatewayRequestContext;
+  sessionKey: string;
+}): Promise<LifecycleHandlerResponse> {
+  const handlers = await getSessionsHandlers();
+  let response: LifecycleHandlerResponse | undefined;
+  await handlers["sessions.patch"]?.({
+    req: {} as never,
+    params: { key: params.sessionKey, archived: true },
+    client: params.client,
+    context: params.context,
+    isWebchatConnect: () => false,
+    sessionMutationAuthorization: params.authorization,
+    respond: (ok, payload, error) => {
+      response = { ok, payload, error };
+    },
+  } as never);
+  if (!response) {
+    throw new Error("sessions.patch did not respond");
+  }
+  return response;
+}
+
+async function invokeVisibilityHandler(params: {
+  client: GatewayClient;
+  context: GatewayRequestContext;
+  sessionKey: string;
+  visibility: "draft" | "shared";
+}): Promise<LifecycleHandlerResponse> {
+  const handlers = await getSessionsHandlers();
+  let response: LifecycleHandlerResponse | undefined;
+  await handlers["session.visibility.set"]?.({
+    params: { sessionKey: params.sessionKey, visibility: params.visibility },
+    client: params.client,
+    context: params.context,
+    respond: (ok, payload, error) => {
+      response = { ok, payload, error };
+    },
+  } as never);
+  if (!response) {
+    throw new Error("session.visibility.set did not respond");
+  }
+  return response;
+}
+
 test("sessions.patch cancels active work and commits only after admission and terminal persistence drain", async () => {
   const { storePath } = await createSessionStoreDir();
   const sessionKey = "agent:main:archive-active";
@@ -158,6 +288,188 @@ test("sessions.patch cancels active work and commits only after admission and te
     expect(await replacement).toBeInstanceOf(Error);
   } finally {
     admission.release();
+    active.unsubscribe();
+  }
+});
+
+test("sharing revocation fences archive before cancellation and forces fresh authorization", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const sessionKey = "agent:main:archive-sharing-revocation";
+  const sessionId = "session-archive-sharing-revocation";
+  const runId = "run-archive-sharing-revocation";
+  const owner = identifiedClient("archive-owner");
+  const viewer = identifiedClient("archive-viewer");
+  await writeSessionStore({
+    entries: {
+      [sessionKey]: sessionStoreEntry(sessionId, {
+        createdActor: { type: "human", id: "archive-owner" },
+        visibility: "shared",
+      }),
+    },
+  });
+  let interrupted = false;
+  const admission = await beginSessionWorkAdmission({
+    scope: storePath,
+    identities: [sessionKey, sessionId],
+    assertAllowed: () => {},
+    onInterrupt: () => {
+      interrupted = true;
+    },
+  });
+  const persistence = createDeferred<void>();
+  const active = activeRunContext({ runId, sessionId, sessionKey, persistence });
+  const requestContext = await archiveLifecycleRequestContext(active.context);
+  const authorized = resolveSessionMutationAuthorization({
+    client: viewer,
+    method: "sessions.patch",
+    requestParams: { key: sessionKey, archived: true },
+    context: requestContext,
+  });
+  expect(authorized.error).toBeNull();
+  if (!authorized.authorization) {
+    throw new Error("expected captured archive authorization");
+  }
+  const sharingTarget = resolveSessionSharingTarget({
+    cfg: requestContext.getRuntimeConfig(),
+    sessionKey,
+  });
+  if (!sharingTarget) {
+    throw new Error("expected resolved sharing target");
+  }
+
+  const releaseAudit = createDeferred<void>();
+  sessionAuditGate.entered.mockClear();
+  sessionAuditGate.wait = releaseAudit.promise;
+  let sharing: Promise<LifecycleHandlerResponse> | undefined;
+  let archive: Promise<LifecycleHandlerResponse> | undefined;
+
+  try {
+    let sharingSettled = false;
+    sharing = invokeVisibilityHandler({
+      client: owner,
+      context: requestContext,
+      sessionKey,
+      visibility: "draft",
+    }).finally(() => {
+      sharingSettled = true;
+    });
+    await vi.waitFor(() => {
+      expect(sessionAuditGate.entered).toHaveBeenCalledOnce();
+      expect(
+        isSessionLifecycleMutationActive(sharingTarget.storePath, [sessionKey, sessionId]),
+      ).toBe(true);
+    });
+    expect(sharingSettled).toBe(false);
+    expect(loadSessionEntry({ storePath, sessionKey })?.visibility).toBe("draft");
+
+    let archiveSettled = false;
+    archive = invokeArchiveHandler({
+      authorization: authorized.authorization,
+      client: viewer,
+      context: requestContext,
+      sessionKey,
+    }).finally(() => {
+      archiveSettled = true;
+    });
+    await Promise.resolve();
+    expect(archiveSettled).toBe(false);
+    expect(interrupted).toBe(false);
+    expect(active.controller.signal.aborted).toBe(false);
+    expectNoSessionQueueCleanup();
+    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+
+    releaseAudit.resolve();
+    expect(await sharing).toMatchObject({ ok: true });
+    expect(loadSessionEntry({ storePath, sessionKey })?.visibility).toBe("draft");
+
+    expect(await archive).toMatchObject({
+      ok: false,
+      error: { details: { code: "SESSION_PARTICIPATION_REQUIRED" } },
+    });
+    expect(interrupted).toBe(false);
+    expect(active.controller.signal.aborted).toBe(false);
+    expectNoSessionQueueCleanup();
+    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+  } finally {
+    sessionAuditGate.wait = undefined;
+    releaseAudit.resolve();
+    admission.release();
+    await Promise.allSettled([...(sharing ? [sharing] : []), ...(archive ? [archive] : [])]);
+    active.unsubscribe();
+  }
+});
+
+test("archive retains the lifecycle fence until drain and commit before sharing proceeds", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const sessionKey = "agent:main:archive-before-sharing";
+  const sessionId = "session-archive-before-sharing";
+  const runId = "run-archive-before-sharing";
+  const owner = identifiedClient("archive-owner");
+  await writeSessionStore({
+    entries: {
+      [sessionKey]: sessionStoreEntry(sessionId, {
+        createdActor: { type: "human", id: "archive-owner" },
+        visibility: "shared",
+      }),
+    },
+  });
+  const admission = await beginSessionWorkAdmission({
+    scope: storePath,
+    identities: [sessionKey, sessionId],
+    assertAllowed: () => {},
+  });
+  const persistence = createDeferred<void>();
+  const active = activeRunContext({ runId, sessionId, sessionKey, persistence });
+  const requestContext = await archiveLifecycleRequestContext(active.context);
+  const authorized = resolveSessionMutationAuthorization({
+    client: owner,
+    method: "sessions.patch",
+    requestParams: { key: sessionKey, archived: true },
+    context: requestContext,
+  });
+  expect(authorized.error).toBeNull();
+  if (!authorized.authorization) {
+    throw new Error("expected captured archive authorization");
+  }
+  let archive: Promise<LifecycleHandlerResponse> | undefined;
+  let sharing: Promise<LifecycleHandlerResponse> | undefined;
+
+  try {
+    archive = invokeArchiveHandler({
+      authorization: authorized.authorization,
+      client: owner,
+      context: requestContext,
+      sessionKey,
+    });
+    await vi.waitFor(() => expect(active.controller.signal.aborted).toBe(true));
+
+    let sharingSettled = false;
+    sharing = invokeVisibilityHandler({
+      client: owner,
+      context: requestContext,
+      sessionKey,
+      visibility: "draft",
+    }).finally(() => {
+      sharingSettled = true;
+    });
+    await Promise.resolve();
+    expect(sharingSettled).toBe(false);
+    expect(loadSessionEntry({ storePath, sessionKey })?.visibility).toBe("shared");
+    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+
+    admission.release();
+    persistence.resolve();
+    expect(await archive).toMatchObject({ ok: true });
+    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toEqual(expect.any(Number));
+    expect(await sharing).toMatchObject({ ok: true });
+    expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject({
+      archivedAt: expect.any(Number),
+      visibility: "draft",
+    });
+  } finally {
+    admission.release();
+    persistence.resolve();
+    await Promise.allSettled([...(archive ? [archive] : []), ...(sharing ? [sharing] : [])]);
     active.unsubscribe();
   }
 });
