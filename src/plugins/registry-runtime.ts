@@ -7,8 +7,10 @@ import {
   parseSqliteSessionFileMarker,
   sqliteSessionFileMarkerMatchesTarget,
 } from "../config/sessions/legacy-sqlite-marker.js";
+import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   createPluginBlobStore,
   type OpenBlobStoreOptions,
@@ -222,6 +224,38 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
       }
       assertReservedSessionKeyOwned(params.sessionKey, params.action);
     };
+    const resolveStoredSessionOwnershipTarget = (params: {
+      agentId?: string;
+      env?: NodeJS.ProcessEnv;
+      sessionKey: string;
+      storePath?: string;
+    }): { entry?: SessionEntry; sessionKey: string } => {
+      // Logical plugin keys must resolve before the physical SQLite ownership read.
+      // Otherwise a bare key fails before Gateway routing can bind its default agent.
+      if (
+        !parseAgentSessionKey(params.sessionKey) &&
+        params.agentId === undefined &&
+        params.storePath === undefined
+      ) {
+        const target = resolveSessionEntryAccessTarget({
+          // The logical resolver is read-only; the runtime exposes the same config as DeepReadonly.
+          cfg: registryParams.runtime.config.current() as OpenClawConfig,
+          sessionKey: params.sessionKey,
+          ...(params.env !== undefined ? { env: params.env } : {}),
+        });
+        return { entry: target.entry, sessionKey: target.canonicalKey };
+      }
+      return {
+        entry: registryParams.runtime.agent.session.getSessionEntry({
+          sessionKey: params.sessionKey,
+          readConsistency: "latest",
+          ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
+          ...(params.env !== undefined ? { env: params.env } : {}),
+          ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
+        }),
+        sessionKey: params.sessionKey,
+      };
+    };
     const assertStoredSessionEntryOwned = (params: {
       action: string;
       agentId?: string;
@@ -229,15 +263,9 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
       sessionKey: string;
       storePath?: string;
     }): SessionEntry | undefined => {
-      const entry = registryParams.runtime.agent.session.getSessionEntry({
-        sessionKey: params.sessionKey,
-        readConsistency: "latest",
-        ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
-        ...(params.env !== undefined ? { env: params.env } : {}),
-        ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
-      });
-      assertSessionEntryOwned({ action: params.action, entry, sessionKey: params.sessionKey });
-      return entry;
+      const target = resolveStoredSessionOwnershipTarget(params);
+      assertSessionEntryOwned({ action: params.action, ...target });
+      return target.entry;
     };
     const resolveStoredSessionExecutionOwner = (params: {
       action: string;
@@ -245,27 +273,23 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
       sessionKey: string;
       storePath?: string;
     }): string | undefined => {
-      const entry = registryParams.runtime.agent.session.getSessionEntry({
-        sessionKey: params.sessionKey,
-        readConsistency: "latest",
-        ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
-        ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
-      });
+      const target = resolveStoredSessionOwnershipTarget(params);
+      const { entry, sessionKey } = target;
       const locked = entry
-        ? resolveLockedSessionHarnessRegistration(params.sessionKey, entry, params.action)
+        ? resolveLockedSessionHarnessRegistration(sessionKey, entry, params.action)
         : undefined;
       if (!entry || !locked || locked.ownerPluginId === pluginId) {
-        assertSessionEntryOwned({ action: params.action, entry, sessionKey: params.sessionKey });
+        assertSessionEntryOwned({ action: params.action, ...target });
         return undefined;
       }
       const registration = "registration" in locked ? locked.registration : undefined;
       if (!registration) {
         throw new Error(
-          `Locked session "${params.sessionKey}" is owned by plugin "${locked.ownerPluginId}", not "${pluginId}".`,
+          `Locked session "${sessionKey}" is owned by plugin "${locked.ownerPluginId}", not "${pluginId}".`,
         );
       }
       if (!registration.harness.delegatedExecutionPluginIds?.includes(pluginId)) {
-        assertLockedSessionEntryOwned(params.sessionKey, entry, params.action);
+        assertLockedSessionEntryOwned(sessionKey, entry, params.action);
       }
       return locked.ownerPluginId;
     };
