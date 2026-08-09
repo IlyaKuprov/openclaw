@@ -109,8 +109,8 @@ describe("cron edit command", () => {
   });
 
   it.each([
-    ["empty", ""],
-    ["whitespace", "   "],
+    ["empty", "", undefined],
+    ["whitespace", "   ", undefined],
     ["empty with --clear-trigger", "", "--clear-trigger"],
     ["whitespace with --clear-trigger", "   ", "--clear-trigger"],
   ])(
