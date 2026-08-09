@@ -826,11 +826,17 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       move(draining, "orphaned", { lastError: ORPHANED_LEASE_ERROR });
       return;
     }
+    const inspectedSharedHost = inspection.sharedHost === true;
+    if (record.sharedHost !== null && record.sharedHost !== inspectedSharedHost) {
+      // Workspace actions capture isolation at tunnel creation. Fence the old actions before
+      // committing a provider-owned change so no reconciliation can use stale host scope.
+      await tunnels?.stop(record.environmentId);
+    }
     record = store.reconcileSharedHost({
       environmentId: record.environmentId,
       state: record.state,
       leaseId,
-      sharedHost: inspection.sharedHost === true,
+      sharedHost: inspectedSharedHost,
     });
     if (record.destroyRequestedAtMs !== null) {
       await finishDestroy(record, provider).catch(() => undefined);

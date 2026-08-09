@@ -2268,6 +2268,27 @@ describe("worker environment service", () => {
     expect(tunnelManager.start).toHaveBeenCalledWith(expect.objectContaining({ sharedHost: true }));
   });
 
+  it("fences an existing tunnel before changing its shared-host isolation", async () => {
+    seedReady("worker-isolation-change");
+    const stop = vi.fn(async () => {
+      expect(store.get("worker-isolation-change")?.sharedHost).toBe(false);
+    });
+    const tunnelManager = {
+      status: () => "connected" as const,
+      start: vi.fn(),
+      stop,
+      stopAll: vi.fn(async () => {}),
+    } as unknown as WorkerTunnelManager;
+    const provider = createProvider({
+      inspect: async () => ({ status: "active", sharedHost: true }),
+    });
+
+    await createService(provider, { tunnelManager }).reconcileOnce();
+
+    expect(stop).toHaveBeenCalledWith("worker-isolation-change");
+    expect(store.get("worker-isolation-change")?.sharedHost).toBe(true);
+  });
+
   it("fences a draining tunnel before reporting an unavailable provider", async () => {
     seedReady("worker-provider-missing");
     const tunnelManager = {
