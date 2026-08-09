@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runInNewContext } from "node:vm";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -67,6 +68,38 @@ type WorkflowStep = {
 
 function readCiWorkflow() {
   return parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+}
+
+function evaluateWorkflowExpression(
+  expression: unknown,
+  context: {
+    eventName: "pull_request" | "push" | "workflow_dispatch";
+    headRepository?: string;
+    repository: string;
+    runAttempt: number;
+  },
+) {
+  if (typeof expression !== "string") {
+    throw new TypeError("workflow expression must be a string");
+  }
+  const match = expression.match(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/u);
+  if (!match) {
+    throw new Error(`invalid workflow expression: ${expression}`);
+  }
+  return runInNewContext(match[1], {
+    github: {
+      event_name: context.eventName,
+      repository: context.repository,
+      run_attempt: context.runAttempt,
+      event: context.headRepository
+        ? {
+            pull_request: {
+              head: { repo: { full_name: context.headRepository } },
+            },
+          }
+        : {},
+    },
+  });
 }
 
 function runCiGateFixture(requiredResults: string, selectedResults: string) {
@@ -2484,19 +2517,11 @@ NODE
       const stickyCondition = stepWith["sticky-disk"];
       const cacheCondition = stepWith["use-actions-cache"];
       if (jobName === "checks-ui-e2e") {
-        expect(stickyCondition, jobName).toContain(
-          "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)",
-        );
-        expect(stickyCondition, jobName).toContain("&& 'false' ||");
-        expect(cacheCondition, jobName).toContain(
-          "github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)",
-        );
-        expect(cacheCondition, jobName).toContain("&& 'true' ||");
-      } else {
-        expect(stickyCondition, jobName).toContain("github.event_name != 'workflow_dispatch'");
-        expect(cacheCondition, jobName).toContain("github.event_name != 'workflow_dispatch'");
-        expect(cacheCondition, jobName).toContain("&& 'false' || 'true'");
+        continue;
       }
+      expect(stickyCondition, jobName).toContain("github.event_name != 'workflow_dispatch'");
+      expect(cacheCondition, jobName).toContain("github.event_name != 'workflow_dispatch'");
+      expect(cacheCondition, jobName).toContain("&& 'false' || 'true'");
       expect(stickyCondition, jobName).toContain(
         "github.event.pull_request.head.repo.full_name == 'openclaw/openclaw'",
       );
@@ -5053,6 +5078,86 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "use-actions-cache":
         "${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'true' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'false' || 'true') }}",
     });
+    const routingScenarios = [
+      {
+        name: "same-repo pull request first attempt",
+        context: {
+          eventName: "pull_request",
+          headRepository: "openclaw/openclaw",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+        },
+        expected: {
+          runner: "blacksmith-8vcpu-ubuntu-2404",
+          stickyDisk: "true",
+          useActionsCache: "false",
+        },
+      },
+      {
+        name: "same-repo pull request retry",
+        context: {
+          eventName: "pull_request",
+          headRepository: "openclaw/openclaw",
+          repository: "openclaw/openclaw",
+          runAttempt: 2,
+        },
+        expected: {
+          runner: "ubuntu-24.04",
+          stickyDisk: "false",
+          useActionsCache: "true",
+        },
+      },
+      {
+        name: "fork pull request",
+        context: {
+          eventName: "pull_request",
+          headRepository: "contributor/openclaw",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+        },
+        expected: {
+          runner: "ubuntu-24.04",
+          stickyDisk: "false",
+          useActionsCache: "true",
+        },
+      },
+      {
+        name: "workflow dispatch",
+        context: {
+          eventName: "workflow_dispatch",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+        },
+        expected: {
+          runner: "ubuntu-24.04",
+          stickyDisk: "false",
+          useActionsCache: "true",
+        },
+      },
+      {
+        name: "canonical push retry",
+        context: {
+          eventName: "push",
+          repository: "openclaw/openclaw",
+          runAttempt: 2,
+        },
+        expected: {
+          runner: "blacksmith-8vcpu-ubuntu-2404",
+          stickyDisk: "true",
+          useActionsCache: "false",
+        },
+      },
+    ] as const;
+    for (const { context, expected, name } of routingScenarios) {
+      expect(evaluateWorkflowExpression(uiE2e["runs-on"], context), name).toBe(expected.runner);
+      expect(evaluateWorkflowExpression(uiE2eSetup.with?.["sticky-disk"], context), name).toBe(
+        expected.stickyDisk,
+      );
+      expect(
+        evaluateWorkflowExpression(uiE2eSetup.with?.["use-actions-cache"], context),
+        name,
+      ).toBe(expected.useActionsCache);
+    }
 
     const chromiumInstall = expectDefined(
       uiE2e.steps.find((step: WorkflowStep) => step.name === "Install Playwright Chromium"),
