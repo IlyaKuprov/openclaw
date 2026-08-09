@@ -8,10 +8,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
+  inspectPairingConnectivity: vi.fn(),
+  planPairingConnectivity: vi.fn(),
   resolvePairingSetupFromConfig: vi.fn(),
   encodePairingSetupCode: vi.fn(),
   renderQrPngDataUrl: vi.fn(),
   runCommandWithTimeout: vi.fn(),
+  readConfigFileSnapshot: vi.fn(),
+  resolveConfigSnapshotHash: vi.fn(),
+}));
+
+vi.mock("../../config/config.js", () => ({
+  readConfigFileSnapshot: mocks.readConfigFileSnapshot,
+  resolveConfigSnapshotHash: mocks.resolveConfigSnapshotHash,
+}));
+
+vi.mock("../../pairing/connectivity.js", () => ({
+  inspectPairingConnectivity: mocks.inspectPairingConnectivity,
+  planPairingConnectivity: mocks.planPairingConnectivity,
 }));
 
 vi.mock("../../pairing/setup-code.js", () => ({
@@ -25,6 +39,7 @@ vi.mock("../../process/exec.js", () => ({
   runCommandWithTimeout: mocks.runCommandWithTimeout,
 }));
 
+import { createCoreGatewayMethodDescriptors } from "../methods/core-descriptors.js";
 import { devicePairSetupHandlers } from "./device-pair-setup.js";
 
 function createOptions(
@@ -329,5 +344,92 @@ describe("device.pair.setupCode", () => {
     expect(payload.setupCode).toBe("SETUP-CODE-XYZ");
     expect(payload.qrDataUrl).toBeUndefined();
     expect(error).toBeUndefined();
+  });
+});
+
+describe("device pairing connectivity preflight", () => {
+  beforeEach(() => {
+    mocks.inspectPairingConnectivity.mockReset();
+    mocks.planPairingConnectivity.mockReset();
+    mocks.resolvePairingSetupFromConfig.mockReset();
+    mocks.encodePairingSetupCode.mockReset();
+    mocks.renderQrPngDataUrl.mockReset();
+    mocks.readConfigFileSnapshot.mockResolvedValue({ runtimeConfig: {}, raw: null });
+    mocks.resolveConfigSnapshotHash.mockReturnValue(null);
+  });
+
+  it("registers read-only admin methods without advertising them", () => {
+    const descriptors = createCoreGatewayMethodDescriptors(devicePairSetupHandlers);
+    for (const name of ["device.pair.connectivity.inspect", "device.pair.connectivity.plan"]) {
+      expect(descriptors.find((descriptor) => descriptor.name === name)).toMatchObject({
+        scope: "operator.admin",
+        advertise: false,
+      });
+    }
+  });
+
+  it("returns typed inspect facts without issuing a setup code", async () => {
+    const result = {
+      auth: "token",
+      current: { status: "blocked", blocker: "route-unavailable" },
+      lan: { status: "unavailable" },
+      tailscale: { status: "unavailable" },
+      publicUrl: { status: "not-configured" },
+    };
+    mocks.inspectPairingConnectivity.mockResolvedValue(result);
+    mocks.readConfigFileSnapshot.mockResolvedValue({
+      runtimeConfig: { gateway: { auth: { mode: "token", token: "secret" } } },
+      hash: "a".repeat(64),
+    });
+    mocks.resolveConfigSnapshotHash.mockReturnValue("a".repeat(64));
+
+    const { options, respond } = createOptions({});
+    await expectDefined(
+      devicePairSetupHandlers["device.pair.connectivity.inspect"],
+      'devicePairSetupHandlers["device.pair.connectivity.inspect"] test invariant',
+    )(options);
+
+    expect(respond).toHaveBeenCalledWith(true, result, undefined);
+    expect(mocks.inspectPairingConnectivity).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ configHash: "a".repeat(64) }),
+    );
+    expect(mocks.resolvePairingSetupFromConfig).not.toHaveBeenCalled();
+    expect(mocks.encodePairingSetupCode).not.toHaveBeenCalled();
+    expect(mocks.renderQrPngDataUrl).not.toHaveBeenCalled();
+  });
+
+  it("plans from a fresh inspection without issuing a setup code", async () => {
+    const inspected = {
+      auth: "token",
+      current: { status: "blocked", blocker: "route-unavailable" },
+      lan: { status: "available", url: "ws://192.168.1.20:18789", requiresGatewayChange: true },
+      tailscale: { status: "unavailable" },
+      publicUrl: { status: "not-configured" },
+    };
+    const planned = {
+      status: "confirmation-required",
+      mode: "lan",
+      urls: ["ws://192.168.1.20:18789"],
+      exposure: "local-network",
+      auth: "token",
+      access: "limited",
+      accessDowngraded: true,
+      changes: ["expose-gateway-on-local-network"],
+      restartRequired: true,
+      preservesCurrentRoute: false,
+    };
+    mocks.inspectPairingConnectivity.mockResolvedValue(inspected);
+    mocks.planPairingConnectivity.mockReturnValue(planned);
+
+    const { options, respond } = createOptions({ mode: "lan" });
+    await expectDefined(
+      devicePairSetupHandlers["device.pair.connectivity.plan"],
+      'devicePairSetupHandlers["device.pair.connectivity.plan"] test invariant',
+    )(options);
+
+    expect(mocks.planPairingConnectivity).toHaveBeenCalledWith(inspected, { mode: "lan" });
+    expect(respond).toHaveBeenCalledWith(true, planned, undefined);
+    expect(mocks.resolvePairingSetupFromConfig).not.toHaveBeenCalled();
   });
 });

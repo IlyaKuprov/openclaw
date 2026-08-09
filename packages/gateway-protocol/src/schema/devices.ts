@@ -77,6 +77,156 @@ const SetupCodeQrDataUrlSchema = Type.String({
   pattern: "^data:image/png;base64,",
 });
 
+const PairingConnectivityUrlSchema = Type.String({ minLength: 1, maxLength: 2048 });
+const PairingConnectivityUrlsSchema = Type.Array(PairingConnectivityUrlSchema, {
+  minItems: 1,
+  maxItems: 8,
+  uniqueItems: true,
+});
+const PairingConnectivityAuthSchema = Type.Union([
+  Type.Literal("token"),
+  Type.Literal("password"),
+  Type.Literal("missing"),
+  Type.Literal("invalid"),
+]);
+const PairingConnectivityBlockerSchema = Type.Union([
+  Type.Literal("gateway-auth-required"),
+  Type.Literal("gateway-auth-invalid"),
+  Type.Literal("route-unavailable"),
+  Type.Literal("route-insecure"),
+  Type.Literal("lan-unavailable"),
+  Type.Literal("tailscale-unavailable"),
+  Type.Literal("tailscale-login-required"),
+  Type.Literal("tailscale-not-running"),
+  Type.Literal("tailscale-starting"),
+  Type.Literal("tailscale-status-error"),
+  Type.Literal("tailscale-serve-required"),
+  Type.Literal("public-url-required"),
+  Type.Literal("public-url-invalid"),
+  Type.Literal("public-url-insecure"),
+]);
+const PairingConnectivityModeSchema = Type.Union([
+  Type.Literal("lan"),
+  Type.Literal("tailscale"),
+  Type.Literal("public"),
+]);
+const PairingConnectivityAccessSchema = Type.Union([
+  Type.Literal("full"),
+  Type.Literal("limited"),
+  Type.Literal("node"),
+]);
+const PairingConnectivityExposureSchema = Type.Union([
+  Type.Literal("same-host"),
+  Type.Literal("local-network"),
+  Type.Literal("tailnet"),
+  Type.Literal("public-internet"),
+]);
+const PairingConnectivityChangesSchema = Type.Array(
+  Type.Union([
+    Type.Literal("expose-gateway-on-local-network"),
+    Type.Literal("enable-tailscale-serve"),
+  ]),
+  { maxItems: 2, uniqueItems: true },
+);
+const PairingConnectivityConfigHashSchema = Type.String({ minLength: 1, maxLength: 128 });
+
+const TailscalePublishedRouteSchema = Type.Union([
+  closedObject({ status: Type.Literal("ready"), urls: PairingConnectivityUrlsSchema }),
+  closedObject({
+    status: Type.Union([Type.Literal("not-configured"), Type.Literal("error")]),
+  }),
+]);
+
+const TailscaleConnectivityInspectionSchema = Type.Union([
+  closedObject({ status: Type.Literal("unavailable") }),
+  closedObject({ status: Type.Literal("error") }),
+  closedObject({
+    status: Type.Literal("login-required"),
+    backendState: Type.Union([Type.Literal("NeedsLogin"), Type.Literal("NeedsMachineAuth")]),
+  }),
+  closedObject({
+    status: Type.Literal("stopped"),
+    backendState: Type.Union([Type.Literal("NoState"), Type.Literal("Stopped")]),
+  }),
+  closedObject({ status: Type.Literal("starting"), backendState: Type.Literal("Starting") }),
+  closedObject({
+    status: Type.Literal("running"),
+    backendState: Type.Literal("Running"),
+    host: Type.Optional(Type.String({ minLength: 1, maxLength: 253 })),
+    serve: TailscalePublishedRouteSchema,
+    funnel: TailscalePublishedRouteSchema,
+  }),
+]);
+
+/** Read-only, non-secret connectivity inspection before setup-code issuance. */
+export const DevicePairConnectivityInspectParamsSchema = closedObject({});
+export const DevicePairConnectivityInspectResultSchema = closedObject({
+  configHash: Type.Optional(PairingConnectivityConfigHashSchema),
+  auth: PairingConnectivityAuthSchema,
+  current: Type.Union([
+    closedObject({
+      status: Type.Literal("ready"),
+      urls: PairingConnectivityUrlsSchema,
+      source: Type.Union([
+        Type.Literal("manual"),
+        Type.Literal("remote"),
+        Type.Literal("tailscale-serve"),
+        Type.Literal("tailscale-funnel"),
+        Type.Literal("lan"),
+        Type.Literal("tailnet"),
+        Type.Literal("custom"),
+      ]),
+      exposure: PairingConnectivityExposureSchema,
+      access: PairingConnectivityAccessSchema,
+      accessDowngraded: Type.Boolean(),
+    }),
+    closedObject({ status: Type.Literal("blocked"), blocker: PairingConnectivityBlockerSchema }),
+  ]),
+  lan: Type.Union([
+    closedObject({
+      status: Type.Literal("available"),
+      url: PairingConnectivityUrlSchema,
+      requiresGatewayChange: Type.Boolean(),
+    }),
+    closedObject({ status: Type.Literal("unavailable") }),
+  ]),
+  tailscale: TailscaleConnectivityInspectionSchema,
+  publicUrl: Type.Union([
+    closedObject({ status: Type.Literal("ready"), url: PairingConnectivityUrlSchema }),
+    closedObject({ status: Type.Literal("not-configured") }),
+    closedObject({ status: Type.Literal("invalid") }),
+  ]),
+});
+
+/** Selects one connectivity mode for immutable operator confirmation. */
+export const DevicePairConnectivityPlanParamsSchema = closedObject({
+  mode: PairingConnectivityModeSchema,
+  publicUrl: Type.Optional(PairingConnectivityUrlSchema),
+});
+export const DevicePairConnectivityPlanResultSchema = Type.Union([
+  closedObject({
+    status: Type.Literal("blocked"),
+    mode: PairingConnectivityModeSchema,
+    configHash: Type.Optional(PairingConnectivityConfigHashSchema),
+    auth: PairingConnectivityAuthSchema,
+    blocker: PairingConnectivityBlockerSchema,
+    changes: PairingConnectivityChangesSchema,
+  }),
+  closedObject({
+    status: Type.Literal("confirmation-required"),
+    mode: PairingConnectivityModeSchema,
+    configHash: Type.Optional(PairingConnectivityConfigHashSchema),
+    urls: PairingConnectivityUrlsSchema,
+    exposure: PairingConnectivityExposureSchema,
+    auth: Type.Union([Type.Literal("token"), Type.Literal("password")]),
+    access: PairingConnectivityAccessSchema,
+    accessDowngraded: Type.Boolean(),
+    changes: PairingConnectivityChangesSchema,
+    restartRequired: Type.Boolean(),
+    preservesCurrentRoute: Type.Boolean(),
+  }),
+]);
+
 /**
  * Generates a device-pairing setup code (and optional QR) so a mobile/companion
  * client can scan it and connect to this gateway. The embedded setup code mints
@@ -123,6 +273,18 @@ export type DevicePairRejectParams = Static<typeof DevicePairRejectParamsSchema>
 export type DevicePairRemoveParams = Static<typeof DevicePairRemoveParamsSchema>;
 export type DevicePairSetupCodeParams = Static<typeof DevicePairSetupCodeParamsSchema>;
 export type DevicePairSetupCodeResult = Static<typeof DevicePairSetupCodeResultSchema>;
+export type DevicePairConnectivityInspectParams = Static<
+  typeof DevicePairConnectivityInspectParamsSchema
+>;
+export type DevicePairConnectivityInspectResult = Static<
+  typeof DevicePairConnectivityInspectResultSchema
+>;
+export type DevicePairConnectivityPlanParams = Static<
+  typeof DevicePairConnectivityPlanParamsSchema
+>;
+export type DevicePairConnectivityPlanResult = Static<
+  typeof DevicePairConnectivityPlanResultSchema
+>;
 export type DevicePairRenameParams = Static<typeof DevicePairRenameParamsSchema>;
 export type DeviceTokenRotateParams = Static<typeof DeviceTokenRotateParamsSchema>;
 export type DeviceTokenRevokeParams = Static<typeof DeviceTokenRevokeParamsSchema>;

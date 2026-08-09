@@ -14,3 +14,7 @@ export {
   type DeviceBootstrapProfileInput,
   type DeviceBootstrapPurpose,
 } from "../shared/device-bootstrap-profile.js";
+export {
+  resolvePairingSetupConnectivityFromConfig,
+  type PairingSetupConnectivityResolution,
+} from "../pairing/connectivity.js";

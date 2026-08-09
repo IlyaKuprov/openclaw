@@ -231,7 +231,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +4: focused agent scope functions for doctor migration enumeration.
       // +1: shared transcript credential-safety prompt for plugin-owned agent harnesses.
       // +3: channel streaming config reader re-exports and session-agent scope resolver.
-      4843,
+      // +2: canonical non-secret pairing connectivity resolver and typed result.
+      4845,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -284,7 +285,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: simple channel secret contract factory replacing repeated collectors.
       // +4: focused agent scope functions for doctor migration enumeration.
       // +3: channel streaming config reader functions and session-agent scope resolver.
-      2919,
+      // +1: canonical non-secret pairing connectivity resolver.
+      2920,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

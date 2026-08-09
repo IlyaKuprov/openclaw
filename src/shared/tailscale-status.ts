@@ -1,15 +1,17 @@
 // Tailscale status helpers parse and validate status payloads from Tailscale.
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { z } from "zod";
 import { safeParseJsonWithSchema } from "../utils/zod-parse.js";
 
 export type TailscaleStatusCommandResult = {
   code: number | null;
   stdout: string;
+  errorCode?: string;
 };
 
 export type TailscaleStatusCommandRunner = (
   argv: string[],
-  opts: { timeoutMs: number },
+  opts: { timeoutMs: number; env?: NodeJS.ProcessEnv },
 ) => Promise<TailscaleStatusCommandResult>;
 
 const TAILSCALE_STATUS_COMMAND_CANDIDATES = [
@@ -18,6 +20,7 @@ const TAILSCALE_STATUS_COMMAND_CANDIDATES = [
 ];
 
 const TailscaleStatusSchema = z.object({
+  BackendState: z.string().optional(),
   Self: z
     .object({
       DNSName: z.string().optional(),
@@ -25,6 +28,20 @@ const TailscaleStatusSchema = z.object({
     })
     .optional(),
 });
+
+export type TailscaleConnectivityInspection =
+  | { status: "unavailable" }
+  | { status: "error" }
+  | { status: "login-required"; backendState: "NeedsLogin" | "NeedsMachineAuth" }
+  | { status: "stopped"; backendState: "NoState" | "Stopped" }
+  | { status: "starting"; backendState: "Starting" }
+  | {
+      status: "running";
+      backendState: "Running";
+      host?: string;
+      serve: { status: "ready"; urls: string[] } | { status: "not-configured" | "error" };
+      funnel: { status: "ready"; urls: string[] } | { status: "not-configured" | "error" };
+    };
 
 const TailscaleServeTcpHandlerSchema = z.object({
   HTTPS: z.boolean().optional(),
@@ -115,21 +132,141 @@ function collectServeGatewayUrls(
   return urls;
 }
 
-function extractServeGatewayUrls(raw: string, gatewayPort: number): string[] {
+function extractPublishedGatewayUrls(
+  raw: string,
+  gatewayPort: number,
+): { serve: string[]; funnel: string[] } | null {
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start === -1 || end <= start) {
-    return [];
+    return null;
   }
   const parsed = safeParseJsonWithSchema(TailscaleServeConfigSchema, raw.slice(start, end + 1));
   if (!parsed) {
-    return [];
+    return null;
   }
-  // Service entries can load-balance to another node, while Funnel routes are public.
-  // Pairing fallbacks must stay pinned to this node and available only inside the tailnet.
-  return [
-    ...new Set(collectServeGatewayUrls(parsed, gatewayPort, parsed.AllowFunnel ?? {})),
-  ].toSorted();
+  const funnelHosts = parsed.AllowFunnel ?? {};
+  return {
+    serve: [...new Set(collectServeGatewayUrls(parsed, gatewayPort, funnelHosts))].toSorted(),
+    funnel: [
+      ...new Set(
+        collectServeGatewayUrls(parsed, gatewayPort, {}).filter((url) => {
+          try {
+            const parsedUrl = new URL(url);
+            const hostPort = `${parsedUrl.hostname}:${parsedUrl.port || "443"}`;
+            return funnelHosts[hostPort] === true;
+          } catch {
+            return false;
+          }
+        }),
+      ),
+    ].toSorted(),
+  };
+}
+
+function extractServeGatewayUrls(raw: string, gatewayPort: number): string[] {
+  return extractPublishedGatewayUrls(raw, gatewayPort)?.serve ?? [];
+}
+
+function tailscaleCommandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return env.TERM?.trim() ? env : { ...env, TERM: "dumb" };
+}
+
+function commandErrorCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+}
+
+async function runTailscaleCandidate(
+  candidate: string,
+  args: string[],
+  runCommandWithTimeout: TailscaleStatusCommandRunner,
+): Promise<TailscaleStatusCommandResult> {
+  return await runCommandWithTimeout([candidate, ...args], {
+    timeoutMs: 5000,
+    env: tailscaleCommandEnv(),
+  });
+}
+
+/** Inspects local Tailscale backend and published-route state without mutation or diagnostics. */
+export async function inspectTailscaleConnectivityWithRunner(
+  gatewayPort: number,
+  runCommandWithTimeout?: TailscaleStatusCommandRunner,
+): Promise<TailscaleConnectivityInspection> {
+  if (!runCommandWithTimeout) {
+    return { status: "unavailable" };
+  }
+  let sawNonMissingFailure = false;
+  for (const candidate of TAILSCALE_STATUS_COMMAND_CANDIDATES) {
+    let statusResult: TailscaleStatusCommandResult;
+    try {
+      statusResult = await runTailscaleCandidate(
+        candidate,
+        ["status", "--json"],
+        runCommandWithTimeout,
+      );
+    } catch (error) {
+      if (commandErrorCode(error) !== "ENOENT") {
+        sawNonMissingFailure = true;
+      }
+      continue;
+    }
+    if (statusResult.errorCode === "ENOENT") {
+      continue;
+    }
+    if (statusResult.code !== 0) {
+      sawNonMissingFailure = true;
+      continue;
+    }
+    const parsed = parsePossiblyNoisyStatus(statusResult.stdout);
+    const backendState = parsed?.BackendState;
+    if (backendState === "NeedsLogin" || backendState === "NeedsMachineAuth") {
+      return { status: "login-required", backendState };
+    }
+    if (backendState === "NoState" || backendState === "Stopped") {
+      return { status: "stopped", backendState };
+    }
+    if (backendState === "Starting") {
+      return { status: "starting", backendState };
+    }
+    if (backendState !== "Running") {
+      return { status: "error" };
+    }
+    const host = extractTailnetHostFromStatusJson(statusResult.stdout);
+    let serveResult: TailscaleStatusCommandResult;
+    try {
+      serveResult = await runTailscaleCandidate(
+        candidate,
+        ["serve", "status", "--json"],
+        runCommandWithTimeout,
+      );
+    } catch {
+      return {
+        status: "running",
+        backendState,
+        ...(host ? { host } : {}),
+        serve: { status: "error" },
+        funnel: { status: "error" },
+      };
+    }
+    const published =
+      serveResult.code === 0 ? extractPublishedGatewayUrls(serveResult.stdout, gatewayPort) : null;
+    return {
+      status: "running",
+      backendState,
+      ...(host ? { host } : {}),
+      serve: published
+        ? published.serve.length > 0
+          ? { status: "ready", urls: published.serve }
+          : { status: "not-configured" }
+        : { status: "error" },
+      funnel: published
+        ? published.funnel.length > 0
+          ? { status: "ready", urls: published.funnel }
+          : { status: "not-configured" }
+        : { status: "error" },
+    };
+  }
+  return sawNonMissingFailure ? { status: "error" } : { status: "unavailable" };
 }
 
 /** Resolves the host published to clients for tailnet or Tailscale Serve gateway modes. */

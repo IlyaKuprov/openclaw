@@ -18,8 +18,7 @@ const pluginApiMocks = vi.hoisted(() => ({
   })),
   revokeDeviceBootstrapToken: vi.fn(async () => ({ removed: true })),
   renderQrPngDataUrl: vi.fn(async () => "data:image/png;base64,ZmFrZXBuZw=="),
-  resolveGatewayPort: vi.fn(() => 18789),
-  resolveTailscaleServeGatewayUrlsWithRunner: vi.fn(async () => []),
+  resolvePairingSetupConnectivityFromConfig: vi.fn(),
   resolvePreferredOpenClawTmpDir: vi.fn(() => path.join(os.tmpdir(), "openclaw-device-pair-tests")),
   writeQrPngTempFile: vi.fn(async (dataValue: string, opts: { tmpRoot: string }) => {
     const dirPath = await fs.mkdtemp(path.join(opts.tmpRoot, "device-pair-qr-"));
@@ -42,12 +41,8 @@ vi.mock("./api.js", () => ({
   renderQrPngDataUrl: pluginApiMocks.renderQrPngDataUrl,
   revokeDeviceBootstrapToken: pluginApiMocks.revokeDeviceBootstrapToken,
   resolvePreferredOpenClawTmpDir: pluginApiMocks.resolvePreferredOpenClawTmpDir,
-  resolveAdvertisedLanHost: vi.fn(async () => null),
-  resolveGatewayBindUrl: vi.fn(),
-  resolveGatewayPort: pluginApiMocks.resolveGatewayPort,
-  resolveTailnetHostWithRunner: vi.fn(),
-  resolveTailscaleServeGatewayUrlsWithRunner:
-    pluginApiMocks.resolveTailscaleServeGatewayUrlsWithRunner,
+  resolvePairingSetupConnectivityFromConfig:
+    pluginApiMocks.resolvePairingSetupConnectivityFromConfig,
   runPluginCommandWithTimeout: vi.fn(),
   writeQrPngTempFile: pluginApiMocks.writeQrPngTempFile,
 }));
@@ -58,14 +53,7 @@ vi.mock("./notify.js", () => ({
   handleNotifyCommand: vi.fn(async () => ({ text: "notify" })),
 }));
 
-import {
-  approveDevicePairing,
-  listDevicePairing,
-  resolveAdvertisedLanHost,
-  resolveGatewayBindUrl,
-  resolveTailnetHostWithRunner,
-  resolveTailscaleServeGatewayUrlsWithRunner,
-} from "./api.js";
+import { approveDevicePairing, listDevicePairing } from "./api.js";
 import registerDevicePair from "./index.js";
 
 type ListedPendingPairingRequest = Awaited<ReturnType<typeof listDevicePairing>>["pending"][number];
@@ -104,7 +92,6 @@ const FULL_SETUP_REQUEST = {
 const PAIRING_REQUIRED = "⚠️ This command requires operator.pairing.";
 const TALK_SECRETS_REQUIRED =
   "⚠️ Setup code handoff includes Talk secrets and requires operator.talk.secrets.";
-const SECURE_URL_REQUIRED = "Tailscale and public mobile pairing require a secure gateway URL";
 // Tagged tables quote `$name`; a row toString preserves the exact existing test title via `%s`.
 const exactTestTitle = (title: string) => () => title;
 
@@ -177,20 +164,6 @@ async function runDefaultSetup(
     },
     options,
   );
-}
-
-async function expectSetupRejected(
-  options: RegisterPairOptions,
-  expectedText: string,
-  exact = false,
-): Promise<void> {
-  const result = await runDefaultSetup(options);
-  expect(pluginApiMocks.issueDeviceBootstrapToken).not.toHaveBeenCalled();
-  if (exact) {
-    expect(result).toEqual({ text: expectedText });
-  } else {
-    expect(requireText(result)).toContain(expectedText);
-  }
 }
 
 function requireText(result: { text?: unknown } | null | undefined): string {
@@ -295,6 +268,15 @@ beforeEach(async () => {
   pluginApiMocks.issueDeviceBootstrapToken.mockResolvedValue({
     token: "boot-token",
     expiresAtMs: Date.now() + 10 * 60_000,
+  });
+  pluginApiMocks.resolvePairingSetupConnectivityFromConfig.mockResolvedValue({
+    ok: true,
+    urls: ["wss://gateway.example.test"],
+    authLabel: "token",
+    urlSource: "plugins.entries.device-pair.config.publicUrl",
+    access: "full",
+    accessDowngraded: false,
+    bootstrapProfile: FULL_SETUP_REQUEST.profile,
   });
   await fs.mkdir(pluginApiMocks.resolvePreferredOpenClawTmpDir(), { recursive: true });
 });
@@ -507,6 +489,23 @@ describe("device-pair /pair qr", () => {
 });
 
 describe("device-pair /pair default setup code", () => {
+  it("uses the canonical pairing connectivity facade before issuing", async () => {
+    pluginApiMocks.resolvePairingSetupConnectivityFromConfig.mockResolvedValueOnce({
+      ok: true,
+      urls: ["wss://gateway.example.test"],
+      authLabel: "token",
+      urlSource: "manual",
+      access: "full",
+      accessDowngraded: false,
+      bootstrapProfile: FULL_SETUP_REQUEST.profile,
+    });
+
+    await runDefaultSetup({}, { gatewayClientScopes: ["operator.admin"] });
+
+    expect(pluginApiMocks.resolvePairingSetupConnectivityFromConfig).toHaveBeenCalledTimes(1);
+    expect(pluginApiMocks.issueDeviceBootstrapToken).toHaveBeenCalledWith(FULL_SETUP_REQUEST);
+  });
+
   it.each`
     toString                                                                                                        | context                                                                                                   | text
     ${exactTestTitle("rejects setup code issuance for internal gateway callers without operator.pairing")}          | ${{ channel: "webchat", gatewayClientScopes: ["operator.write"] }}                                        | ${PAIRING_REQUIRED}
@@ -536,207 +535,27 @@ describe("device-pair /pair default setup code", () => {
     expect(text).toContain("Pairing setup code generated.");
   });
 
-  it.each`
-    toString                                                                                    | options                                                                                                                                                                  | context                                        | expectedText
-    ${exactTestTitle("normalizes secure bare publicUrl host ports before issuing setup codes")} | ${{ config: { gateway: { tls: { enabled: true }, auth: { mode: "token", token: "gateway-token" } } }, pluginConfig: { publicUrl: "gateway.example.test:18789/setup" } }} | ${{ gatewayClientScopes: ["operator.admin"] }} | ${"Gateway: wss://gateway.example.test:18789"}
-    ${exactTestTitle("allows loopback cleartext setup urls")}                                   | ${{ pluginConfig: { publicUrl: "ws://127.0.0.1:18789" } }}                                                                                                               | ${undefined}                                   | ${"Gateway: ws://127.0.0.1:18789"}
-    ${exactTestTitle("allows mdns cleartext setup urls")}                                       | ${{ pluginConfig: { publicUrl: "ws://openclaw.local:18789" } }}                                                                                                          | ${undefined}                                   | ${"Gateway: ws://openclaw.local:18789"}
-  `("%s", async ({ options, context, expectedText }) => {
-    const text = requireText(await runDefaultSetup(options, context));
-    expect(pluginApiMocks.issueDeviceBootstrapToken).toHaveBeenCalledTimes(1);
-    expect(text).toContain(expectedText);
-  });
+  it("uses the canonical access decision when issuing from the plugin", async () => {
+    pluginApiMocks.resolvePairingSetupConnectivityFromConfig.mockResolvedValueOnce({
+      ok: true,
+      urls: ["ws://192.168.1.20:18789"],
+      authLabel: "token",
+      urlSource: "gateway.bind=lan",
+      access: "limited",
+      accessDowngraded: true,
+      bootstrapProfile: LIMITED_SETUP_REQUEST.profile,
+    });
 
-  it.each([
-    "ws://[fc00::1]:18789",
-    "ws://[fd7a:115c:a1e0::1]:18789",
-    "ws://[fe80::1]:18789",
-    "ws://[febf::1]:18789",
-  ])("allows IPv6 ULA and link-local cleartext setup url %s", async (publicUrl) => {
-    const text = requireText(await runDefaultSetup({ pluginConfig: { publicUrl } }));
-    expect(pluginApiMocks.issueDeviceBootstrapToken).toHaveBeenCalledTimes(1);
-    expect(text).toContain(`Gateway: ${publicUrl}`);
-  });
-
-  it("uses Tailscale Serve MagicDNS as a secure setup url", async () => {
-    vi.mocked(resolveTailnetHostWithRunner).mockResolvedValueOnce("gateway.tailnet.ts.net");
-    const text = requireText(
-      await runDefaultSetup({
-        config: {
-          gateway: {
-            tailscale: { mode: "serve" },
-            auth: { mode: "token", token: "gateway-token" },
-          },
-        },
-        pluginConfig: { publicUrl: undefined },
-      }),
-    );
-    expect(pluginApiMocks.issueDeviceBootstrapToken).toHaveBeenCalledTimes(1);
-    expect(text).toContain("Gateway: wss://gateway.tailnet.ts.net");
-  });
-
-  it("keeps secure setup limited for non-admin gateway callers", async () => {
     const text = requireText(await runDefaultSetup());
-    expect(pluginApiMocks.issueDeviceBootstrapToken).toHaveBeenCalledWith(LIMITED_SETUP_REQUEST);
-    expect(text).toContain("Access: limited");
-    expect(text).not.toContain("Plaintext ws:// was limited for safety");
-  });
 
-  it("allows private LAN cleartext setup urls", async () => {
-    const text = requireText(
-      await runDefaultSetup(
-        { pluginConfig: { publicUrl: "ws://192.168.1.20:18789" } },
-        { gatewayClientScopes: ["operator.admin"] },
-      ),
+    expect(pluginApiMocks.resolvePairingSetupConnectivityFromConfig).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ bootstrapProfile: LIMITED_SETUP_REQUEST.profile }),
     );
     expect(pluginApiMocks.issueDeviceBootstrapToken).toHaveBeenCalledWith(LIMITED_SETUP_REQUEST);
     expect(text).toContain("Gateway: ws://192.168.1.20:18789");
     expect(text).toContain("Access: limited");
     expect(text).toContain("Plaintext ws:// was limited for safety");
-  });
-
-  it("uses the advertised LAN helper for bind-derived setup urls", async () => {
-    vi.mocked(resolveAdvertisedLanHost).mockResolvedValueOnce("10.211.55.3");
-    vi.mocked(resolveGatewayBindUrl).mockImplementationOnce((params) => ({
-      url: `ws://${params.pickLanHost()}:18789`,
-      source: "gateway.bind=lan",
-    }));
-    const text = requireText(
-      await runDefaultSetup({
-        config: {
-          gateway: { bind: "lan", auth: { mode: "token", token: "gateway-token" } },
-        },
-        pluginConfig: { publicUrl: undefined },
-      }),
-    );
-    expect(resolveAdvertisedLanHost).toHaveBeenCalledTimes(1);
-    expect(pluginApiMocks.issueDeviceBootstrapToken).toHaveBeenCalledTimes(1);
-    expect(text).toContain("Gateway: ws://10.211.55.3:18789");
-  });
-
-  it("includes a Tailscale Serve fallback for LAN bind-derived setup urls", async () => {
-    vi.mocked(resolveAdvertisedLanHost).mockResolvedValueOnce("192.168.139.3");
-    vi.mocked(resolveGatewayBindUrl).mockImplementationOnce((params) => ({
-      url: `ws://${params.pickLanHost()}:18789`,
-      source: "gateway.bind=lan",
-    }));
-    vi.mocked(resolveTailscaleServeGatewayUrlsWithRunner).mockResolvedValueOnce([
-      "wss://clawmac.tail.ts.net:8443",
-    ]);
-    const text = requireText(
-      await runDefaultSetup({
-        config: {
-          gateway: { bind: "lan", auth: { mode: "token", token: "gateway-token" } },
-        },
-        pluginConfig: { publicUrl: undefined },
-      }),
-    );
-    expect(text).toContain("Gateway: ws://192.168.139.3:18789");
-    expect(text).toContain("Fallback: wss://clawmac.tail.ts.net:8443");
-  });
-
-  it("does not advertise a loopback Serve route for a custom bind", async () => {
-    vi.mocked(resolveGatewayBindUrl).mockReturnValueOnce({
-      url: "ws://192.168.139.3:18789",
-      source: "gateway.bind=custom",
-    });
-    const text = requireText(
-      await runDefaultSetup({
-        config: {
-          gateway: {
-            bind: "custom",
-            customBindHost: "192.168.139.3",
-            auth: { mode: "token", token: "gateway-token" },
-          },
-        },
-        pluginConfig: { publicUrl: undefined },
-      }),
-    );
-    expect(resolveTailscaleServeGatewayUrlsWithRunner).not.toHaveBeenCalled();
-    expect(text).toContain("Gateway: ws://192.168.139.3:18789");
-    expect(text).not.toContain("Fallback:");
-  });
-
-  it.each(["ws://0.0.0.0:18789", "ws://[::]:18789"])(
-    "rejects unspecified cleartext setup url %s before issuing setup codes",
-    async (publicUrl) => {
-      await expectSetupRejected({ pluginConfig: { publicUrl } }, SECURE_URL_REQUIRED);
-    },
-  );
-
-  it("rejects public cleartext setup urls before issuing setup codes", async () => {
-    await expectSetupRejected(
-      { pluginConfig: { publicUrl: "ws://gateway.example.test:18789" } },
-      SECURE_URL_REQUIRED,
-    );
-  });
-
-  it("rejects tailnet cleartext setup urls before issuing setup codes", async () => {
-    vi.mocked(resolveGatewayBindUrl).mockReturnValueOnce({
-      url: "ws://100.64.0.9:18789",
-      source: "gateway.bind=tailnet",
-    });
-    await expectSetupRejected(
-      {
-        config: {
-          gateway: {
-            bind: "tailnet",
-            auth: { mode: "token", token: "gateway-token" },
-          },
-        },
-        pluginConfig: { publicUrl: undefined },
-      },
-      "prefer gateway.tailscale.mode=serve",
-    );
-  });
-
-  it.each(["ws://[2001:db8::1]:18789", "ws://[fe7f::1]:18789", "ws://[fec0::1]:18789"])(
-    "rejects non-LAN IPv6 cleartext setup url %s before issuing setup codes",
-    async (publicUrl) => {
-      await expectSetupRejected({ pluginConfig: { publicUrl } }, SECURE_URL_REQUIRED);
-    },
-  );
-
-  it("rejects invalid bare publicUrl host ports", async () => {
-    await expectSetupRejected(
-      { pluginConfig: { publicUrl: "localhost:notaport" } },
-      "Error: Configured publicUrl is invalid.",
-      true,
-    );
-  });
-
-  it("rejects invalid gateway.remote.url before falling back to bind-derived setup urls", async () => {
-    await expectSetupRejected(
-      {
-        config: {
-          gateway: {
-            bind: "custom",
-            customBindHost: "127.0.0.1",
-            remote: { url: "http://localhost:notaport" },
-            auth: { mode: "token", token: "gateway-token" },
-          },
-        },
-        pluginConfig: { publicUrl: undefined },
-      },
-      "Error: Configured gateway.remote.url is invalid.",
-      true,
-    );
-  });
-
-  it.each([
-    "http://localhost:notaport",
-    "http:gateway.example.test",
-    "ws:gateway.example.test",
-    "http:/localhost:notaport",
-    "ftp:/gateway.example.test",
-    "mailto:foo@example.com",
-    "ws://user:pass@gateway.example.test:18789",
-  ])("rejects invalid publicUrl %s before issuing setup codes", async (publicUrl) => {
-    await expectSetupRejected(
-      { pluginConfig: { publicUrl } },
-      "Error: Configured publicUrl is invalid.",
-      true,
-    );
   });
 });
 

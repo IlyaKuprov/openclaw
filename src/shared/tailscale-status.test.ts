@@ -1,11 +1,85 @@
 // Tailscale status tests cover status parsing and validation.
 import { describe, expect, it, vi } from "vitest";
 import {
+  inspectTailscaleConnectivityWithRunner,
   resolveTailnetHostWithRunner,
   resolveTailscaleServeGatewayUrlsWithRunner,
 } from "./tailscale-status.js";
 
 describe("shared/tailscale-status", () => {
+  it("distinguishes an unavailable CLI without parsing diagnostics", async () => {
+    const run = vi.fn(async () => {
+      throw Object.assign(new Error("redacted"), { code: "ENOENT" });
+    });
+
+    await expect(inspectTailscaleConnectivityWithRunner(18789, run)).resolves.toEqual({
+      status: "unavailable",
+    });
+  });
+
+  it.each([
+    ["NeedsLogin", "login-required"],
+    ["NeedsMachineAuth", "login-required"],
+    ["Stopped", "stopped"],
+    ["Starting", "starting"],
+  ] as const)("maps BackendState %s to %s", async (backendState, status) => {
+    const run = vi.fn(async () => ({
+      code: 0,
+      stdout: JSON.stringify({ BackendState: backendState }),
+    }));
+
+    await expect(inspectTailscaleConnectivityWithRunner(18789, run)).resolves.toEqual({
+      status,
+      backendState,
+    });
+  });
+
+  it("reports matching private Serve and public Funnel routes separately", async () => {
+    const run = vi.fn(
+      async (argv: string[], _opts: { timeoutMs: number; env?: NodeJS.ProcessEnv }) => ({
+        code: 0,
+        stdout: argv.includes("serve")
+          ? JSON.stringify({
+              TCP: { "443": { HTTPS: true }, "8443": { HTTPS: true } },
+              Web: {
+                "private.tail.ts.net:443": {
+                  Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+                },
+                "public.tail.ts.net:8443": {
+                  Handlers: { "/": { Proxy: "127.0.0.1:18789" } },
+                },
+              },
+              AllowFunnel: { "public.tail.ts.net:8443": true },
+            })
+          : JSON.stringify({
+              BackendState: "Running",
+              Self: { DNSName: "private.tail.ts.net." },
+            }),
+      }),
+    );
+
+    await expect(inspectTailscaleConnectivityWithRunner(18789, run)).resolves.toEqual({
+      status: "running",
+      backendState: "Running",
+      host: "private.tail.ts.net",
+      serve: { status: "ready", urls: ["wss://private.tail.ts.net"] },
+      funnel: { status: "ready", urls: ["wss://public.tail.ts.net:8443"] },
+    });
+    expect(run.mock.calls[0]?.[1]?.env?.TERM).toBeTruthy();
+  });
+
+  it("does not infer login state from command diagnostics", async () => {
+    const run = vi.fn(async () => ({
+      code: 1,
+      stdout: "",
+      stderr: "NeedsLogin AuthURL=https://login.example.test",
+    }));
+
+    await expect(inspectTailscaleConnectivityWithRunner(18789, run)).resolves.toEqual({
+      status: "error",
+    });
+  });
+
   it("returns null when no runner is provided", async () => {
     await expect(resolveTailnetHostWithRunner()).resolves.toBeNull();
   });

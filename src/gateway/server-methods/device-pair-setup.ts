@@ -5,10 +5,14 @@
 import {
   ErrorCodes,
   errorShape,
+  validateDevicePairConnectivityInspectParams,
+  validateDevicePairConnectivityPlanParams,
   validateDevicePairSetupCodeParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { readConfigFileSnapshot, resolveConfigSnapshotHash } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { renderQrPngDataUrl } from "../../media/qr-image.js";
+import { inspectPairingConnectivity, planPairingConnectivity } from "../../pairing/connectivity.js";
 import { encodePairingSetupCode, resolvePairingSetupFromConfig } from "../../pairing/setup-code.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import {
@@ -30,8 +34,66 @@ function readConfiguredDevicePairPublicUrl(config: OpenClawConfig): string | und
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+async function inspectCurrentPairingConnectivity() {
+  const snapshot = await readConfigFileSnapshot({ observe: false });
+  const config = snapshot.runtimeConfig;
+  return inspectPairingConnectivity(config, {
+    configHash: resolveConfigSnapshotHash(snapshot) ?? undefined,
+    configuredPublicUrl: readConfiguredDevicePairPublicUrl(config),
+    env: process.env,
+    runCommandWithTimeout: async (argv, runOpts) =>
+      await runCommandWithTimeout(argv, {
+        timeoutMs: runOpts.timeoutMs,
+        maxOutputBytes: runOpts.maxOutputBytes,
+        env: runOpts.env,
+      }),
+  });
+}
+
 /** Gateway handler for producing a device-pairing setup code + connect QR. */
 export const devicePairSetupHandlers: GatewayRequestHandlers = {
+  "device.pair.connectivity.inspect": async ({ params, respond }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateDevicePairConnectivityInspectParams,
+        "device.pair.connectivity.inspect",
+        respond,
+      )
+    ) {
+      return;
+    }
+    try {
+      respond(true, await inspectCurrentPairingConnectivity(), undefined);
+    } catch (err) {
+      respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
+    }
+  },
+  "device.pair.connectivity.plan": async ({ params, respond }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateDevicePairConnectivityPlanParams,
+        "device.pair.connectivity.plan",
+        respond,
+      )
+    ) {
+      return;
+    }
+    try {
+      const inspected = await inspectCurrentPairingConnectivity();
+      respond(
+        true,
+        planPairingConnectivity(inspected, {
+          mode: params.mode,
+          ...(typeof params.publicUrl === "string" ? { publicUrl: params.publicUrl } : {}),
+        }),
+        undefined,
+      );
+    } catch (err) {
+      respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
+    }
+  },
   "device.pair.setupCode": async ({ params, respond, context }) => {
     if (
       !assertValidParams(

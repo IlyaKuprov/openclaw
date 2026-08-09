@@ -4,18 +4,13 @@ export {
   clearDeviceBootstrapTokens,
   issueDeviceBootstrapToken,
   PAIRING_SETUP_BOOTSTRAP_PROFILE,
+  resolvePairingSetupConnectivityFromConfig,
   listDevicePairing,
   revokeDeviceBootstrapToken,
   type DeviceBootstrapProfile,
+  type PairingSetupConnectivityResolution,
 } from "openclaw/plugin-sdk/device-bootstrap";
 export { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-export {
-  resolveGatewayBindUrl,
-  resolveGatewayPort,
-  resolveTailnetHostWithRunner,
-  resolveTailscaleServeGatewayUrlsWithRunner,
-} from "openclaw/plugin-sdk/core";
-export { resolveAdvertisedLanHost } from "openclaw/plugin-sdk/gateway-runtime";
 export {
   resolvePreferredOpenClawTmpDir,
   runPluginCommandWithTimeout,
