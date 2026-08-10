@@ -491,6 +491,94 @@ describe("killProcessTree", () => {
     });
   });
 
+  it("on Unix does not traverse a PID whose identity this sequence never established", async () => {
+    // Discovery was unavailable when SIGTERM went out, so nothing is known
+    // about the root. If the PID is recycled before the force phase, the tree
+    // visible then belongs to a stranger and must not be signaled.
+    let discoveryAvailable = false;
+    const strangerTable = [
+      mockProcStat({ pid: 7060, ppid: 1, startToken: "900" }),
+      mockProcStat({ pid: 7061, ppid: 7060, startToken: "901" }),
+    ];
+    readdirSyncMock.mockImplementation(() => {
+      if (!discoveryAvailable) {
+        throw new Error("proc unavailable");
+      }
+      return strangerTable.map((entry) => String(entry.pid));
+    });
+    readFileSyncMock.mockImplementation((filePath: unknown) => {
+      if (!discoveryAvailable) {
+        throw new Error("proc unavailable");
+      }
+      const pid = Number(String(filePath).replace("/proc/", "").replace("/stat", ""));
+      const found = strangerTable.find((entry) => entry.pid === pid);
+      if (!found) {
+        throw new Error("proc unavailable");
+      }
+      return found.stat;
+    });
+    spawnSyncMock.mockReturnValue({ status: 1, stdout: "" });
+    killSpy.mockImplementation((() => true) as typeof process.kill);
+
+    await withMockedPlatform("linux", async () => {
+      killProcessTree(7060, { graceMs: 10, detached: false });
+
+      discoveryAvailable = true;
+      await vi.advanceTimersByTimeAsync(10);
+
+      // The legacy direct-PID escalation is kept: liveness is all the evidence
+      // there is, and dropping it would resurrect the orphan this fix closes.
+      expect(killSpy).toHaveBeenCalledWith(7060, "SIGKILL");
+      expect(killSpy).not.toHaveBeenCalledWith(7061, "SIGKILL");
+    });
+  });
+
+  it("on Unix force-kills a descendant forked during the grace window by a survivor", async () => {
+    // The root dies on SIGTERM, so the tree can no longer be walked from it.
+    // A descendant that ignored SIGTERM keeps forking, and those children are
+    // in no snapshot: they must be reached from the survivor itself.
+    let rootAlive = true;
+    const mockProcessTable = () => {
+      const table = rootAlive
+        ? [
+            mockProcStat({ pid: 7070, ppid: 1, startToken: "100" }),
+            mockProcStat({ pid: 7071, ppid: 7070, startToken: "200" }),
+          ]
+        : [
+            mockProcStat({ pid: 7071, ppid: 1, startToken: "200" }),
+            mockProcStat({ pid: 7072, ppid: 7071, startToken: "300" }),
+          ];
+      readdirSyncMock.mockReturnValue(table.map((entry) => String(entry.pid)));
+      readFileSyncMock.mockImplementation((filePath: unknown) => {
+        const pid = Number(String(filePath).replace("/proc/", "").replace("/stat", ""));
+        const found = table.find((entry) => entry.pid === pid);
+        if (!found) {
+          throw new Error("proc unavailable");
+        }
+        return found.stat;
+      });
+    };
+    mockProcessTable();
+    killSpy.mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0 && pid === 7070 && !rootAlive) {
+        throw new Error("ESRCH");
+      }
+      return true;
+    }) as typeof process.kill);
+
+    await withMockedPlatform("linux", async () => {
+      killProcessTree(7070, { graceMs: 10, detached: false });
+      expect(killSpy).toHaveBeenCalledWith(7071, "SIGTERM");
+
+      rootAlive = false;
+      mockProcessTable();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(killSpy).toHaveBeenCalledWith(7071, "SIGKILL");
+      expect(killSpy).toHaveBeenCalledWith(7072, "SIGKILL");
+    });
+  });
+
   it("on Unix never re-signals a remembered descendant that has no start time", async () => {
     // `ps -eo pid=,ppid=` carries no start time. Two empty tokens must not
     // compare equal, or a PID reused during the grace window inherits the kill.

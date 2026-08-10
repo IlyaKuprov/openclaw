@@ -63,7 +63,7 @@ export function killProcessTree(pid: number, opts?: KillProcessTreeOptions): voi
     }
     // A descendant that ignored SIGTERM outlives a root that did not, so the
     // root's own liveness cannot decide whether the tree still needs killing.
-    const { tableAvailable, descendants, rootIdentity } = resolveUnixTree(pid, tracked);
+    const { tableAvailable, descendants, rootIdentity } = resolveUnixTree(pid, tracked, "force");
     if (!tableAvailable) {
       // Nothing can be enumerated on this host; degrade to the direct-PID
       // escalation this function performed before descendants were tracked.
@@ -324,6 +324,7 @@ type TrackedTree = { rootStartToken: string; entries: Array<{ pid: number; start
 function resolveUnixTree(
   pid: number,
   tracked: TrackedTree | undefined,
+  phase: "initial" | "force",
 ): {
   tableAvailable: boolean;
   descendants: number[];
@@ -344,9 +345,13 @@ function resolveUnixTree(
         : trackedRootToken === rootStartToken
           ? "same"
           : "changed";
-  // A root that is no longer the process this sequence signaled must not have
-  // its tree traversed: those descendants belong to whoever holds the PID now.
-  const discovered = rootIdentity === "changed" ? [] : collectDescendants(pid, table);
+  // The tree may only be walked from a root this sequence can vouch for. On the
+  // first pass that is the PID just handed to us; afterwards it must still be
+  // provably the same process. An identity that was never established is not a
+  // licence to traverse — the PID may since have gone to a stranger, and its
+  // children are not ours to kill.
+  const mayTraverseRoot = phase === "initial" || rootIdentity === "same";
+  const discovered = mayTraverseRoot ? collectDescendants(pid, table) : [];
   const merged = new Map(discovered.map((entry) => [entry.pid, entry] as const));
   for (const entry of tracked?.entries ?? []) {
     if (merged.has(entry.pid)) {
@@ -358,6 +363,14 @@ function resolveUnixTree(
       continue;
     }
     merged.set(entry.pid, entry);
+    // A descendant that outlived SIGTERM keeps forking. Those children appear
+    // in no earlier snapshot and cannot be reached from a root that has since
+    // died, so the only way to them is a rescan from the survivor itself.
+    for (const late of collectDescendants(entry.pid, table)) {
+      if (!merged.has(late.pid)) {
+        merged.set(late.pid, late);
+      }
+    }
   }
   const entries = [...merged.values()];
   return {
@@ -408,7 +421,7 @@ function signalProcessTreeUnix(
   // the direct PID alone leaves everything the child forked running, reparented
   // to init with its output already closed, so a timed-out run keeps consuming
   // the machine and can never deliver a result.
-  const resolved = resolveUnixTree(pid, undefined);
+  const resolved = resolveUnixTree(pid, undefined, "initial");
   signalUnixTargets(pid, signal, resolved.descendants);
   return resolved.tracked;
 }
