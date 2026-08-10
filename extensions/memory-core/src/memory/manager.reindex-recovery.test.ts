@@ -324,6 +324,78 @@ describe("memory manager reindex recovery", () => {
     expect(reindexCalls).toEqual([expect.objectContaining({ force: true })]);
   });
 
+  it("rebuilds after a fallback provider is activated during a targeted session sync", async () => {
+    const memoryManager = await openManager(
+      createCfg({
+        provider: "none",
+        sources: ["memory", "sessions"],
+      }),
+    );
+    await memoryManager.sync({ reason: "test", force: true });
+
+    const harness = memoryManager as unknown as ReindexHarness & {
+      hasRequestedTargetSessionSync: (params: unknown) => boolean;
+      resolveTargetSessionSyncPlan: (params: unknown) => Promise<unknown>;
+    };
+    const reindexCalls: Array<{ reason?: string; force?: boolean }> = [];
+    harness.hasRequestedTargetSessionSync = () => true;
+    harness.resolveTargetSessionSyncPlan = async () => ({
+      corpusEntries: [],
+      targetArchiveFiles: new Set(["session-a.jsonl"]),
+    });
+    harness.shouldFallbackOnError = () => true;
+    harness.activateFallbackProvider = async () => true;
+    harness.syncArchiveFiles = async () => {
+      throw new Error("embedding provider failed mid-sync");
+    };
+    harness.runInPlaceReindex = async (params) => {
+      reindexCalls.push(params);
+    };
+
+    await harness.sync({ reason: "sessions" });
+
+    // A targeted sync activates the fallback on its own path and returns before
+    // the source-wide handler. Without recovery here the index keeps the old
+    // provider's identity and every later search reports itself paused.
+    expect(reindexCalls).toEqual([expect.objectContaining({ force: true })]);
+  });
+
+  it("rebuilds after a fallback activated by a targeted sync that also needs a full session reindex", async () => {
+    const memoryManager = await openManager(
+      createCfg({
+        provider: "none",
+        sources: ["memory", "sessions"],
+      }),
+    );
+    await memoryManager.sync({ reason: "test", force: true });
+
+    const harness = memoryManager as unknown as ReindexHarness & {
+      hasRequestedTargetSessionSync: (params: unknown) => boolean;
+      resolveTargetSessionSyncPlan: (params: unknown) => Promise<unknown>;
+    };
+    const reindexCalls: Array<{ reason?: string; force?: boolean }> = [];
+    harness.hasRequestedTargetSessionSync = () => true;
+    harness.resolveTargetSessionSyncPlan = async () => ({
+      corpusEntries: [],
+      targetArchiveFiles: new Set(["session-a.jsonl"]),
+    });
+    // A pending full-session retry sends a targeted request down the
+    // source-wide path instead, where target files used to suppress recovery.
+    harness.sessionsFullRetryDirty = true;
+    harness.shouldFallbackOnError = () => true;
+    harness.activateFallbackProvider = async () => true;
+    harness.syncArchiveFiles = async () => {
+      throw new Error("embedding provider failed mid-sync");
+    };
+    harness.runInPlaceReindex = async (params) => {
+      reindexCalls.push(params);
+    };
+
+    await harness.sync({ reason: "sessions" });
+
+    expect(reindexCalls).toEqual([expect.objectContaining({ force: true })]);
+  });
+
   it("forces source-wide memory sync when retrying a failed full reindex", async () => {
     const memoryManager = await openManager(
       createCfg({
