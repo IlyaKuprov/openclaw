@@ -321,10 +321,25 @@ export const SessionDiffFileSchema = closedObject({
   truncated: Type.Optional(Type.Boolean()),
 });
 
+/** One commit shown in session diff branch metadata. */
+export const SessionDiffCommitSchema = closedObject({
+  sha: NonEmptyString,
+  subject: Type.String(),
+});
+
+/** Selects the session checkout state represented by the diff. */
+export const SessionDiffScopeSchema = Type.Union([
+  Type.Literal("all"),
+  Type.Literal("uncommitted"),
+  Type.Literal("commit"),
+]);
+
 /** Reads the git diff of a session checkout against its base branch. */
 export const SessionsDiffParamsSchema = closedObject({
   sessionKey: NonEmptyString,
   agentId: Type.Optional(NonEmptyString),
+  scope: Type.Optional(SessionDiffScopeSchema),
+  commit: Type.Optional(NonEmptyString),
 });
 
 /** Branch + working-tree diff for one session checkout. */
@@ -334,12 +349,22 @@ export const SessionsDiffResultSchema = closedObject({
   branch: Type.Optional(NonEmptyString),
   /** Display label of the diff base: the default branch name or "HEAD". */
   baseRef: Type.Optional(NonEmptyString),
+  /** Number of commits between the resolved branch merge base and HEAD. */
+  aheadCount: Type.Optional(Type.Integer({ minimum: 0 })),
+  /** Newest-first commits between the resolved branch merge base and HEAD. */
+  commits: Type.Optional(Type.Array(SessionDiffCommitSchema, { maxItems: 50 })),
+  /** The resolved branch merge-base commit. */
+  mergeBase: Type.Optional(SessionDiffCommitSchema),
   files: Type.Array(SessionDiffFileSchema),
   additions: Type.Integer({ minimum: 0 }),
   deletions: Type.Integer({ minimum: 0 }),
   truncated: Type.Optional(Type.Boolean()),
   unavailableReason: Type.Optional(
-    Type.Union([Type.Literal("unknown_session"), Type.Literal("not_git")]),
+    Type.Union([
+      Type.Literal("unknown_session"),
+      Type.Literal("not_git"),
+      Type.Literal("unknown_commit"),
+    ]),
   ),
 });
 
@@ -582,13 +607,6 @@ export const SessionsCompactionListParamsSchema = closedObject({
   agentId: Type.Optional(NonEmptyString),
 });
 
-/** Reads one compaction checkpoint by id. */
-export const SessionsCompactionGetParamsSchema = closedObject({
-  key: NonEmptyString,
-  agentId: Type.Optional(NonEmptyString),
-  checkpointId: NonEmptyString,
-});
-
 /** Creates a new branch from a compaction checkpoint. */
 export const SessionsCompactionBranchParamsSchema = closedObject({
   key: NonEmptyString,
@@ -665,13 +683,6 @@ export const SessionsCompactionListResultSchema = closedObject({
   ok: Type.Literal(true),
   key: NonEmptyString,
   checkpoints: Type.Array(SessionCompactionCheckpointSchema),
-});
-
-/** Get response for a single compaction checkpoint. */
-export const SessionsCompactionGetResultSchema = closedObject({
-  ok: Type.Literal(true),
-  key: NonEmptyString,
-  checkpoint: SessionCompactionCheckpointSchema,
 });
 
 /** Branch response with the newly created session key and entry metadata. */
@@ -784,11 +795,9 @@ export type SessionsCompanionStateResult = Static<typeof SessionsCompanionStateR
 export type SessionsCompanionResetParams = Static<typeof SessionsCompanionResetParamsSchema>;
 export type SessionsCompanionResetResult = Static<typeof SessionsCompanionResetResultSchema>;
 export type SessionsCompactionListParams = Static<typeof SessionsCompactionListParamsSchema>;
-export type SessionsCompactionGetParams = Static<typeof SessionsCompactionGetParamsSchema>;
 export type SessionsCompactionBranchParams = Static<typeof SessionsCompactionBranchParamsSchema>;
 export type SessionsCompactionRestoreParams = Static<typeof SessionsCompactionRestoreParamsSchema>;
 export type SessionsCompactionListResult = Static<typeof SessionsCompactionListResultSchema>;
-export type SessionsCompactionGetResult = Static<typeof SessionsCompactionGetResultSchema>;
 export type SessionsCompactionBranchResult = Static<typeof SessionsCompactionBranchResultSchema>;
 export type SessionsCompactionRestoreResult = Static<typeof SessionsCompactionRestoreResultSchema>;
 export type SessionsRewindParams = Static<typeof SessionsRewindParamsSchema>;
@@ -839,5 +848,7 @@ export type SessionsFilesRevealParams = Static<typeof SessionsFilesRevealParamsS
 export type SessionsFilesRevealResult = Static<typeof SessionsFilesRevealResultSchema>;
 export type SessionDiffFileStatus = Static<typeof SessionDiffFileStatusSchema>;
 export type SessionDiffFile = Static<typeof SessionDiffFileSchema>;
+export type SessionDiffCommit = Static<typeof SessionDiffCommitSchema>;
+export type SessionDiffScope = Static<typeof SessionDiffScopeSchema>;
 export type SessionsDiffParams = Static<typeof SessionsDiffParamsSchema>;
 export type SessionsDiffResult = Static<typeof SessionsDiffResultSchema>;

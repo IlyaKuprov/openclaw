@@ -3,11 +3,9 @@ import * as sessions from "./sessions.js";
 
 export const SessionLifecycleProtocolSchemas = {
   SessionsCompactionListParams: sessions.SessionsCompactionListParamsSchema,
-  SessionsCompactionGetParams: sessions.SessionsCompactionGetParamsSchema,
   SessionsCompactionBranchParams: sessions.SessionsCompactionBranchParamsSchema,
   SessionsCompactionRestoreParams: sessions.SessionsCompactionRestoreParamsSchema,
   SessionsCompactionListResult: sessions.SessionsCompactionListResultSchema,
-  SessionsCompactionGetResult: sessions.SessionsCompactionGetResultSchema,
   SessionsCompactionBranchResult: sessions.SessionsCompactionBranchResultSchema,
   SessionsCompactionRestoreResult: sessions.SessionsCompactionRestoreResultSchema,
   SessionsRewindParams: sessions.SessionsRewindParamsSchema,
@@ -35,6 +33,8 @@ export const SessionLifecycleProtocolSchemas = {
   SessionsFilesSetResult: sessions.SessionsFilesSetResultSchema,
   SessionDiffFileStatus: sessions.SessionDiffFileStatusSchema,
   SessionDiffFile: sessions.SessionDiffFileSchema,
+  SessionDiffCommit: sessions.SessionDiffCommitSchema,
+  SessionDiffScope: sessions.SessionDiffScopeSchema,
   SessionsDiffParams: sessions.SessionsDiffParamsSchema,
   SessionsDiffResult: sessions.SessionsDiffResultSchema,
   SessionWorktreeInfo: sessions.SessionWorktreeInfoSchema,

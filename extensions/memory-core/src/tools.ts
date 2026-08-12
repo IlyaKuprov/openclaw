@@ -26,8 +26,7 @@ import {
   resolveMemoryDeepDreamingConfig,
 } from "openclaw/plugin-sdk/memory-core-host-status";
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
-import type { PluginStateLeaseRunner } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { asRecord } from "./dreaming-shared.js";
+import { asNullableRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { MemoryCoreAcquireLocalService } from "./memory/embedding-local-service.js";
 import {
   DEFAULT_MEMORY_SEARCH_TIMEOUT_MS,
@@ -162,7 +161,7 @@ const PAUSED_MEMORY_INDEX_ACTION =
   "Tell the user to run: openclaw memory status --index or openclaw memory index --force.";
 
 function resolvePausedMemoryIndexIdentityReason(status: { custom?: unknown }): string | undefined {
-  const indexIdentity = asRecord(asRecord(status.custom)?.indexIdentity);
+  const indexIdentity = asNullableRecord(asNullableRecord(status.custom)?.indexIdentity);
   if (indexIdentity?.status !== "mismatched" && indexIdentity?.status !== "missing") {
     return undefined;
   }
@@ -411,7 +410,6 @@ export function createMemorySearchTool(options: {
   conversationRecall?: OpenClawPluginToolContext["conversationRecall"];
   activeProjectKeys?: readonly string[];
   acquireLocalService?: MemoryCoreAcquireLocalService;
-  withLease?: PluginStateLeaseRunner;
 }) {
   return createMemoryTool({
     options,
@@ -505,7 +503,6 @@ export function createMemorySearchTool(options: {
                           agentId,
                           purpose: memoryManagerPurpose,
                           acquireLocalService: options.acquireLocalService,
-                          withLease: options.withLease,
                         }),
                       );
                       return { context };
@@ -618,7 +615,6 @@ export function createMemorySearchTool(options: {
                         agentId,
                         purpose: memoryManagerPurpose,
                         acquireLocalService: options.acquireLocalService,
-                        withLease: options.withLease,
                       }),
                     ),
                   );
@@ -634,37 +630,6 @@ export function createMemorySearchTool(options: {
                   resolvePausedMemoryIndexIdentityReason(statusBeforeRetry);
                 if (pausedIndexIdentityReason) {
                   return;
-                }
-                // Retry once after an empty result so the builtin index can finish bootstrap.
-                if (
-                  rawResults.length === 0 &&
-                  !runtimeDebug.some((entry) => entry.embeddingBootstrap) &&
-                  activeMemory.manager.sync
-                ) {
-                  // A transient one-shot manager runs no watcher and no startup
-                  // catch-up, so only the "cli" reason discovers session
-                  // transcripts that changed since the persisted index was
-                  // written. A long-lived manager already tracks them.
-                  const retrySyncReason = memoryManagerPurpose === "cli" ? "cli" : "search";
-                  await runWithDefaultDeadline(async () => {
-                    // Sync may join shared/background manager maintenance and has
-                    // no request-cancellation contract. Bound only this tool's wait.
-                    // Not forced: `force` means "rebuild the whole index", which an
-                    // ordinary query that simply matched nothing must not trigger.
-                    // An unbuilt, missing-identity or dirty index still rebuilds or
-                    // catches up here, which is all this retry needs.
-                    await activeMemory.manager.sync?.({ reason: retrySyncReason, force: false });
-                  });
-                  rawResults = await searchActiveMemory();
-                  // A provider switch during that sync is recovered by the sync
-                  // owner itself, so an identity that is still mismatched here
-                  // is a real paused index rather than a transient one.
-                  pausedIndexIdentityReason = resolvePausedMemoryIndexIdentityReason(
-                    activeMemory.manager.status(),
-                  );
-                  if (pausedIndexIdentityReason) {
-                    return;
-                  }
                 }
                 rawResults = await runWithDefaultDeadline(
                   async () =>
@@ -811,7 +776,6 @@ export function createMemoryGetTool(options: {
   agentSessionKey?: string;
   sandboxed?: boolean;
   acquireLocalService?: MemoryCoreAcquireLocalService;
-  withLease?: PluginStateLeaseRunner;
 }) {
   return createMemoryTool({
     options,

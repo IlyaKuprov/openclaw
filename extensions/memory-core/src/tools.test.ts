@@ -8,12 +8,10 @@ import {
   getMemorySearchManagerMockConfigs,
   getMemorySearchManagerMockParams,
   getMemorySyncMockCalls,
-  getMemorySyncMockParams,
   resetMemoryToolMockState,
   setMemoryCloseImpl,
   setMemoryCustomStatus,
   setMemorySearchImpl,
-  setMemorySyncImpl,
   setMemorySearchManagerImpl,
   setMemoryStatusDirty,
 } from "./memory-tool-manager.test-mocks.js";
@@ -238,23 +236,6 @@ describe("memory_search unavailable payloads", () => {
     expect(getMemorySearchManagerMockParams()).toEqual([
       expect.objectContaining({ acquireLocalService }),
     ]);
-  });
-
-  it("passes the host SQLite lease hook to tool memory managers", async () => {
-    const withLease = vi.fn();
-    const tool = createMemorySearchTool({
-      config: asOpenClawConfig({
-        agents: { list: [{ id: "main", default: true }] },
-      }),
-      withLease,
-    });
-    if (!tool) {
-      throw new Error("tool missing");
-    }
-
-    await tool.execute("sqlite-lease-hook", { query: "hello" });
-
-    expect(getMemorySearchManagerMockParams()).toEqual([expect.objectContaining({ withLease })]);
   });
 
   it("returns explicit unavailable metadata for quota failures", async () => {
@@ -539,23 +520,11 @@ describe("memory_search unavailable payloads", () => {
     expect(getMemoryCloseMockCalls()).toBe(1);
   });
 
-  it("syncs without a full reindex and retries once when the first search has zero hits", async () => {
+  it("returns a zero-hit search without tool-owned sync or retry", async () => {
     let searchCalls = 0;
     setMemorySearchImpl(async () => {
       searchCalls += 1;
-      if (searchCalls === 1) {
-        return [];
-      }
-      return [
-        {
-          path: "MEMORY.md",
-          startLine: 1,
-          endLine: 1,
-          score: 0.9,
-          snippet: "Thread-hidden codename: ORBIT-22.",
-          source: "memory" as const,
-        },
-      ];
+      return [];
     });
 
     const tool = createMemorySearchToolOrThrow({
@@ -566,66 +535,12 @@ describe("memory_search unavailable payloads", () => {
     });
     const result = await tool.execute("zero-hit-retry", { query: "hidden thread codename" });
 
-    expect((result.details as { results?: Array<{ path: string }> }).results?.[0]?.path).toBe(
-      "MEMORY.md",
-    );
-    expect(searchCalls).toBe(2);
-    // A query that matched nothing is not evidence that the index is wrong, so
-    // the retry must not request a full rebuild of an already valid index.
-    expect(getMemorySyncMockParams()).toEqual([{ reason: "search", force: false }]);
+    expect((result.details as { results?: unknown[] }).results).toEqual([]);
+    expect(searchCalls).toBe(1);
+    expect(getMemorySyncMockCalls()).toBe(0);
   });
 
-  it("asks a one-shot CLI manager for session catch-up before declaring zero hits", async () => {
-    let searchCalls = 0;
-    setMemorySearchImpl(async () => {
-      searchCalls += 1;
-      return [];
-    });
-
-    const tool = createMemorySearchToolOrThrow({
-      config: {
-        agents: { list: [{ id: "main", default: true }] },
-        memory: { citations: "off" },
-      },
-      oneShotCliRun: true,
-    });
-    await tool.execute("cli-zero-hit-retry", { query: "hidden thread codename" });
-
-    expect(searchCalls).toBe(2);
-    // A transient CLI manager runs no watcher and no startup catch-up, so only
-    // the "cli" reason discovers transcripts changed since the persisted index.
-    expect(getMemorySyncMockParams()).toEqual([{ reason: "cli", force: false }]);
-  });
-
-  it("leaves fallback-provider recovery to the sync owner", async () => {
-    let searchCalls = 0;
-    setMemorySearchImpl(async () => {
-      searchCalls += 1;
-      return [];
-    });
-    // The sync owner rebuilds when it activates a fallback, so an identity that
-    // is still mismatched afterwards is a genuinely paused index: the tool must
-    // report it rather than launching a second, forced sync of its own.
-    setMemorySyncImpl(async () => {
-      setMemoryCustomStatus({
-        indexIdentity: { status: "mismatched", reason: "embedding provider changed" },
-      });
-    });
-
-    const tool = createMemorySearchToolOrThrow({
-      config: {
-        agents: { list: [{ id: "main", default: true }] },
-        memory: { citations: "off" },
-      },
-    });
-    const result = await tool.execute("paused-after-sync", { query: "hidden thread codename" });
-
-    expect(getMemorySyncMockParams()).toEqual([{ reason: "search", force: false }]);
-    expect(searchCalls).toBe(2);
-    expect(result.details).toMatchObject({ unavailable: true });
-  });
-
-  it("qualifies empty results when the index remains dirty after retry", async () => {
+  it("qualifies empty results when the manager reports a dirty index", async () => {
     setMemoryStatusDirty(true);
     setMemorySearchImpl(async () => []);
     const tool = createMemorySearchToolOrThrow({
@@ -643,7 +558,7 @@ describe("memory_search unavailable payloads", () => {
       warning: "Memory index is dirty. Search results may be incomplete.",
       action: "Run: openclaw memory status --index --agent main",
     });
-    expect(getMemorySyncMockCalls()).toBe(1);
+    expect(getMemorySyncMockCalls()).toBe(0);
   });
 
   it("surfaces embedding bootstrap degradation when keyword search has no hits", async () => {

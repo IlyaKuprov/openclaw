@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { resolveDefaultAgentId } from "../../agents/agent-scope-config.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { getRuntimeConfig } from "../io.js";
-import { resolveStorePath } from "./paths.js";
+import { resolveSessionStorePathCore } from "./paths.js";
 import { updateSessionEntry } from "./session-accessor.entry-mutation.js";
 import {
   loadSessionEntryReadOnly,
@@ -10,11 +10,11 @@ import {
   resolveSessionEntrySelection,
 } from "./session-accessor.entry.js";
 import {
-  readCommittedSqliteTranscriptMessageSequence,
-  rememberCommittedSqliteTranscriptMessageSequences,
+  readCommittedTranscriptMessageSequence,
+  rememberCommittedTranscriptMessageSequences,
 } from "./session-accessor.sqlite-transcript-sequences.js";
 import { redactTranscriptMessageForStorage } from "./session-accessor.sqlite-transcript-store.js";
-import { appendSqliteExpectedSessionTranscriptTurn } from "./session-accessor.sqlite.js";
+import { appendExpectedSessionTranscriptTurn } from "./session-accessor.sqlite-transcript-write.js";
 import { appendTranscriptMessage, emitTranscriptUpdate } from "./session-accessor.transcript.js";
 import type {
   SessionTranscriptWriteScope,
@@ -25,7 +25,10 @@ import type {
   SessionTranscriptTurnPersistOptions,
   SessionTranscriptTurnPersistResult,
 } from "./session-accessor.types.js";
-import { runWithOwnedSessionTranscriptWriteLock } from "./transcript-write-context.js";
+import {
+  getOwnedSessionTranscriptWriterFence,
+  runWithOwnedSessionTranscriptWrite,
+} from "./transcript-write-context.js";
 import type { SessionEntry } from "./types.js";
 
 /** Appends one prepared ordered group in the existing transcript turn transaction. */
@@ -106,7 +109,7 @@ export async function persistSessionTranscriptTurn(
       },
     );
   }
-  const appendedMessages = await runWithOwnedSessionTranscriptWriteLock(
+  const appendedMessages = await runWithOwnedSessionTranscriptWrite(
     {
       sessionFile: target.sessionKey,
       sessionKey: target.sessionKey,
@@ -161,7 +164,7 @@ async function appendTranscriptTurnMessages(
     }
   }
   // Resolve cursors only after the last explicit parent has chosen the branch.
-  rememberCommittedSqliteTranscriptMessageSequences(target, appendedMessages);
+  rememberCommittedTranscriptMessageSequences(target, appendedMessages);
   return appendedMessages;
 }
 
@@ -232,14 +235,19 @@ async function persistExpectedSessionTranscriptTurn(
     sessionKey: resolved.normalizedKey,
     storePath,
   };
-  const turn = await runWithOwnedSessionTranscriptWriteLock(
+  const inheritedWriterFence = getOwnedSessionTranscriptWriterFence({
+    sessionFile: target.sessionKey,
+    sessionKey: target.sessionKey,
+    sessionTarget: target,
+  });
+  const turn = await runWithOwnedSessionTranscriptWrite(
     {
       sessionFile: target.sessionKey,
       sessionKey: target.sessionKey,
       sessionTarget: target,
     },
     () =>
-      appendSqliteExpectedSessionTranscriptTurn(
+      appendExpectedSessionTranscriptTurn(
         {
           agentId,
           sessionKey: resolved.normalizedKey,
@@ -249,8 +257,10 @@ async function persistExpectedSessionTranscriptTurn(
         {
           config: options.config,
           cwd: options.cwd,
-          expectedLifecycleRevision: options.expectedLifecycleRevision,
-          expectedWriterRunId: options.expectedWriterRunId,
+          expectedLifecycleRevision:
+            options.expectedLifecycleRevision ?? inheritedWriterFence?.expectedLifecycleRevision,
+          expectedWriterRunId:
+            options.expectedWriterRunId ?? inheritedWriterFence?.expectedWriterRunId,
           expectedSessionState: options.expectedSessionState,
           expectedSessionId,
           atomicGroup: options.atomicGroup,
@@ -313,7 +323,7 @@ async function resolveTranscriptTurnTarget(
   }
   const storePath =
     scope.storePath ??
-    resolveStorePath(getRuntimeConfig().session?.store, {
+    resolveSessionStorePathCore(getRuntimeConfig().session?.store, {
       agentId,
       env: scope.env,
     });
@@ -418,7 +428,7 @@ async function publishTranscriptTurnUpdate(params: {
   }
   const sequencedMessages = appendedMessages.map((message) => ({
     message,
-    messageSeq: readCommittedSqliteTranscriptMessageSequence(message),
+    messageSeq: readCommittedTranscriptMessageSequence(message),
   }));
   if (
     sequencedMessages.length > 1 &&

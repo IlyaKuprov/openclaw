@@ -8,7 +8,7 @@ import { hasResolvedThinkingCatalogEntry } from "../../agents/thinking-runtime.j
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
 import {
-  resolveSessionFilePath,
+  resolveSessionFilePathCore,
   resolveSessionFilePathOptions,
 } from "../../config/sessions/paths.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
@@ -68,7 +68,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     workspaceDir,
     isMainSession,
     inboundUserContextPromptJoiner,
-    heartbeatRunScope,
     effectiveQueueMode,
     effectiveResetTriggered,
     explicitThinkingLevelOverride,
@@ -132,7 +131,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       : undefined;
   const drainedSystemEventBlocks: string[] = [];
   const rebuildPromptBodies = async () => {
-    if (!useFastReplyRuntime && heartbeatRunScope !== "commitment-only") {
+    if (!useFastReplyRuntime) {
       const eventsBlock = await drainFormattedSystemEvents({
         cfg,
         agentId,
@@ -321,7 +320,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     opts?.onSessionPrepared?.({ sessionKey, sessionId: latestSessionId, storePath });
     const sessionFile = storePath
       ? formatSqliteSessionFileMarker({ agentId, sessionId: latestSessionId, storePath })
-      : resolveSessionFilePath(latestSessionId, latestSessionEntry, sessionFilePathOptions);
+      : resolveSessionFilePathCore(latestSessionId, latestSessionEntry, sessionFilePathOptions);
     return { sessionEntry: latestSessionEntry, sessionId: latestSessionId, sessionFile };
   };
   let preparedSessionState = resolvePreparedSessionState();

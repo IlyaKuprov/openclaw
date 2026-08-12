@@ -56,6 +56,11 @@ const schemaNames = new Map<string, string>([
   ["QuestionListResult", "QuestionListResult"],
   ["SessionObserverPlanProgress", "SessionObserverPlanProgress"],
   ["SessionObserverDigest", "SessionObserverDigest"],
+  ["WorkerDesktopObserveParams", "WorkerDesktopObserveParams"],
+  ["WorkerDesktopObserveResult", "WorkerDesktopObserveResult"],
+  ["WorkerDesktopLaunchParams", "WorkerDesktopLaunchParams"],
+  ["WorkerDesktopLaunchResult", "WorkerDesktopLaunchResult"],
+  ["ProjectsListResult", "ProjectsListResult"],
 ]);
 
 const androidEnums: EnumSpec[] = [

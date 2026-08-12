@@ -36,7 +36,7 @@ import {
   listSessionsFromStore,
   listSessionsFromStoreAsync,
   loadSessionEntry,
-  loadSessionEntryReadOnly,
+  loadGatewaySessionEntryReadOnly,
   resolveCanonicalGatewaySessionStoreKey,
   resolveDeletedAgentIdFromSessionKey,
   resolveGatewayModelSupportsImages,
@@ -400,7 +400,7 @@ describe("gateway session utils", () => {
     const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
     const store: Record<string, SessionEntry> = {
       recent: { sessionId: "recent", updatedAt: 30 },
-      pinned: { sessionId: "pinned", updatedAt: 10, pinnedAt: 40, icon: "name:spark" },
+      pinned: { sessionId: "pinned", updatedAt: 10, pinnedAt: 40 },
       archived: { sessionId: "archived", updatedAt: 20, archivedAt: 50 },
     } satisfies Record<string, SessionEntry>;
 
@@ -409,7 +409,6 @@ describe("gateway session utils", () => {
     expect(active.sessions[0]).toMatchObject({
       pinned: true,
       pinnedAt: 40,
-      icon: "name:spark",
       archived: false,
     });
 
@@ -2211,7 +2210,7 @@ describe("gateway session utils", () => {
     }
   });
 
-  test("loadSessionEntryReadOnly does not materialize a missing configured agent", async () => {
+  test("loadGatewaySessionEntryReadOnly does not materialize a missing configured agent", async () => {
     resetConfigRuntimeState();
     try {
       await withStateDirEnv("session-utils-load-entry-read-only-", async ({ stateDir }) => {
@@ -2224,7 +2223,7 @@ describe("gateway session utils", () => {
         } as OpenClawConfig;
         setRuntimeConfigSnapshot(cfg, cfg);
 
-        const loaded = loadSessionEntryReadOnly("agent:missing:main");
+        const loaded = loadGatewaySessionEntryReadOnly("agent:missing:main");
 
         expect(loaded.entry).toBeUndefined();
         expect(fs.existsSync(path.join(stateDir, "agents", "missing"))).toBe(false);
@@ -2234,7 +2233,7 @@ describe("gateway session utils", () => {
     }
   });
 
-  test("loadSessionEntryReadOnly clones only the selected row and direct children", async () => {
+  test("loadGatewaySessionEntryReadOnly clones only the selected row and direct children", async () => {
     resetConfigRuntimeState();
     try {
       await withStateDirEnv("session-utils-exact-read-only-", async ({ stateDir }) => {
@@ -2262,7 +2261,7 @@ describe("gateway session utils", () => {
         ).toContain(childKey);
         const cloneSpy = vi.spyOn(globalThis, "structuredClone");
         try {
-          expect(loadSessionEntryReadOnly(childKey, { clone: false }).entry).toMatchObject({
+          expect(loadGatewaySessionEntryReadOnly(childKey, { clone: false }).entry).toMatchObject({
             sessionId: "child",
             spawnedBy: parentKey,
           });
@@ -2274,7 +2273,7 @@ describe("gateway session utils", () => {
               storePath,
             }).map((item) => item.sessionKey),
           ).toEqual([childKey]);
-          const loaded = loadSessionEntryReadOnly("main", {
+          const loaded = loadGatewaySessionEntryReadOnly("main", {
             includeStoreChildEntries: true,
           });
 
@@ -2323,7 +2322,7 @@ describe("gateway session utils", () => {
     expect(spawnedByReads).toBe(1);
   });
 
-  test("loadSessionEntryReadOnly rejects a persisted main alias", async () => {
+  test("loadGatewaySessionEntryReadOnly rejects a persisted main alias", async () => {
     resetConfigRuntimeState();
     try {
       await withStateDirEnv("session-utils-exact-alias-children-", async ({ stateDir }) => {
@@ -2346,7 +2345,7 @@ describe("gateway session utils", () => {
         setRuntimeConfigSnapshot(cfg, cfg);
 
         expect(() =>
-          loadSessionEntryReadOnly("main", {
+          loadGatewaySessionEntryReadOnly("main", {
             clone: false,
             includeStoreChildEntries: true,
           }),

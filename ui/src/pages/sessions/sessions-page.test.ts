@@ -107,18 +107,27 @@ describe("sessions page lifecycle", () => {
     document.body.append(toast);
     await toast.updateComplete;
 
-    await page.archiveSessionWithUndo({ key, pinned: true } as GatewaySessionRow);
+    await page.archiveSessionWithUndo({
+      key,
+      sessionId: "session-pinned",
+      pinned: true,
+    } as GatewaySessionRow);
     await toast.updateComplete;
     toast.querySelector<HTMLButtonElement>(".app-toast__action")?.click();
     await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
     expect(mutableGateway.setSessionKey).not.toHaveBeenCalled();
 
-    expect(patch).toHaveBeenNthCalledWith(1, key, { archived: true }, { agentId: undefined });
+    expect(patch).toHaveBeenNthCalledWith(
+      1,
+      key,
+      { archived: true },
+      { agentId: undefined, expectedSessionId: "session-pinned" },
+    );
     expect(patch).toHaveBeenNthCalledWith(
       2,
       key,
       { archived: false, pinned: true },
-      { agentId: undefined },
+      { agentId: undefined, expectedSessionId: "session-pinned" },
     );
   });
 
@@ -340,6 +349,31 @@ describe("sessions page lifecycle", () => {
     await menu.updateComplete;
     expect(menu.forkDisabled).toBe(true);
     expect(menu.querySelector<HTMLButtonElement>('[data-shortcut="f"]')?.disabled).toBe(true);
+  });
+
+  it("enables Archive but keeps Delete disabled for an active non-main row", async () => {
+    const row = {
+      key: "agent:main:running",
+      sessionId: "session-running",
+      kind: "direct",
+      hasActiveRun: true,
+    } as GatewaySessionRow;
+    const result = { count: 1, sessions: [row] } as SessionsListResult;
+    const { gateway } = createGateway({} as GatewayBrowserClient);
+    const page = await createRenderedPage(createContext(gateway, createSessions()), result);
+
+    page.openSessionMenu(row, { x: 10, y: 20 }, document.createElement("button"));
+    await page.updateComplete;
+
+    const menu = page.querySelector<TestSessionMenu>("openclaw-session-menu");
+    if (!menu) {
+      throw new Error("Expected sessions page menu");
+    }
+    await menu.updateComplete;
+    expect(menu.querySelector<HTMLButtonElement>('[value="toggle-archived"]')?.disabled).toBe(
+      false,
+    );
+    expect(menu.querySelector<HTMLButtonElement>('[value="delete"]')?.disabled).toBe(true);
   });
 
   it.each([
@@ -786,13 +820,16 @@ describe("sessions page lifecycle", () => {
     const context = createContext(mutableGateway.gateway, sessions);
     getWorkboardState(context.workboard).loaded = true;
     const page = await createPage(context);
-    page.result = { count: 1, sessions: [{ key: "main" }] } as SessionsListResult;
+    page.result = {
+      count: 1,
+      sessions: [{ key: "main", sessionId: "session-main" }],
+    } as SessionsListResult;
     page.selectedKeys = new Set(["main"]);
     vi.mocked(showConfirmDialog).mockResolvedValue(true);
 
     const requests = [
       page.deleteSelected(),
-      page.patchSession("main", { archived: true }),
+      page.patchSession("main", { archived: true }, undefined, "session-main"),
       page.forkSession("main"),
       page.branchCheckpoint("main", "branch-checkpoint"),
       page.restoreCheckpoint("main", "restore-checkpoint"),

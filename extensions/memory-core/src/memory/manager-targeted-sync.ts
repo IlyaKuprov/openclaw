@@ -41,6 +41,7 @@ export async function runMemoryTargetedSessionSync(params: {
   reason?: string;
   progress?: TargetedSyncProgress;
   sessionsFullRetryDirty?: boolean;
+  sessionsReconcileDirty?: boolean;
   sessionsDirtyFiles: Set<string>;
   syncArchiveFiles: (params: {
     needsFullReindex: boolean;
@@ -50,10 +51,12 @@ export async function runMemoryTargetedSessionSync(params: {
   shouldFallbackOnError: (err: unknown) => boolean;
   activateFallbackProvider: (reason: string) => Promise<boolean>;
 }): Promise<{ handled: boolean; sessionsDirty: boolean; fallbackActivated: boolean }> {
+  const hasPendingSessionWork = (hasDirtyFiles = params.sessionsDirtyFiles.size > 0) =>
+    params.sessionsFullRetryDirty || params.sessionsReconcileDirty || hasDirtyFiles;
   if (!params.hasSessionSource || !params.targetArchiveFiles) {
     return {
       handled: false,
-      sessionsDirty: Boolean(params.sessionsFullRetryDirty) || params.sessionsDirtyFiles.size > 0,
+      sessionsDirty: hasPendingSessionWork(),
       fallbackActivated: false,
     };
   }
@@ -70,7 +73,7 @@ export async function runMemoryTargetedSessionSync(params: {
     });
     return {
       handled: true,
-      sessionsDirty: Boolean(params.sessionsFullRetryDirty) || remainingSessionsDirty,
+      sessionsDirty: hasPendingSessionWork(remainingSessionsDirty),
       fallbackActivated: false,
     };
   } catch (err) {
@@ -88,7 +91,7 @@ export async function runMemoryTargetedSessionSync(params: {
     // index identity, and this path returns before the source-wide handler.
     return {
       handled: true,
-      sessionsDirty: Boolean(params.sessionsFullRetryDirty) || remainingSessionsDirty,
+      sessionsDirty: hasPendingSessionWork(remainingSessionsDirty),
       fallbackActivated: true,
     };
   }

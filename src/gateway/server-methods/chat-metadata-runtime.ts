@@ -13,8 +13,9 @@ import {
   getPreparedModelCatalogOwnerSnapshot,
   type LoadPreparedModelCatalogParams,
 } from "../../agents/prepared-model-catalog.js";
+import { getPreparedModelRuntimeAuthMaterializations } from "../../agents/prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.js";
-import { resolveSwarmConfig } from "../../agents/swarm-config.js";
+import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js";
 import { resolveRuntimeConfigCacheKey } from "../../config/runtime-snapshot.js";
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -117,7 +118,7 @@ function createMetadataReplacement(): MetadataReplacement {
   return { promise, reject, resolve };
 }
 
-class ChatMetadataSnapshotUnavailableError extends Error {
+export class ChatMetadataSnapshotUnavailableError extends Error {
   constructor(message = "prepared chat metadata snapshot is unavailable") {
     super(message);
     this.name = "ChatMetadataSnapshotUnavailableError";
@@ -234,14 +235,20 @@ async function defaultBuildProjection(params: {
 }): Promise<{ modelCatalog: ModelCatalogEntry[]; models?: unknown[] }> {
   const { buildModelsListResult, createGatewayAgentModelCatalogProjector } =
     await import("./models-list-result.js");
+  // Chat metadata must stay on process-published facts. Live discovery belongs to explicit
+  // models.list control-plane reads so a slow provider cannot delay chat startup.
+  const snapshot = params.facts.owner.modelCatalog;
   const projector = createGatewayAgentModelCatalogProjector({
     cfg: params.facts.owner.config,
     agentId: params.facts.agentId,
-    snapshot: params.facts.owner.modelCatalog,
+    snapshot,
     metadataSnapshot: params.facts.owner.metadataSnapshot,
     preparedAuthStore: params.facts.authStore,
     // The owner records usable auth at discovery; metadata must share that exact generation fact.
     preparedRuntimeAuthModes: params.facts.owner.authModes,
+    preparedRuntimeAuthMaterializations: getPreparedModelRuntimeAuthMaterializations(
+      params.facts.owner,
+    ),
     ...(params.preferredProfileId ? { preferredProfileId: params.preferredProfileId } : {}),
     ...(params.lockedProfileId ? { lockedProfileId: params.lockedProfileId } : {}),
   });
@@ -254,13 +261,13 @@ async function defaultBuildProjection(params: {
       preloadedCatalog: {
         agentId: params.facts.agentId,
         config: params.facts.owner.config,
-        snapshot: params.facts.owner.modelCatalog,
+        snapshot,
       },
       preloadedOnly: true,
       catalogProjector: projector,
     }),
   ]);
-  return { modelCatalog, ...metadata };
+  return { modelCatalog, models: metadata.models };
 }
 
 export function createGatewayChatMetadataRuntime(params: {

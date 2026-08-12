@@ -398,7 +398,7 @@ export function createTelegramBotCore(
     telegramDeps,
   });
 
-  registerTelegramNativeCommands({
+  const nativeCommandCallbackDispatcher = registerTelegramNativeCommands({
     bot,
     cfg,
     runtime,
@@ -431,9 +431,29 @@ export function createTelegramBotCore(
     resolveGroupRequireMention,
     resolveTelegramGroupConfig,
     shouldSkipUpdate,
-    processMessage,
+    processMessage: async ({
+      ctx,
+      allMedia,
+      storeAllowFrom,
+      turnContext,
+      options,
+      replyMedia,
+      replyChain,
+      promptContext,
+    }) =>
+      await processMessage(
+        ctx,
+        allMedia,
+        storeAllowFrom,
+        turnContext,
+        options,
+        replyMedia,
+        replyChain,
+        promptContext,
+      ),
     logger,
     telegramDeps,
+    nativeCommandCallbackDispatcher,
   });
 
   const originalStop = bot.stop.bind(bot);

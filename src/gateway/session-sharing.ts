@@ -11,7 +11,7 @@ import {
   resolveAllAgentSessionStoreTargetsSync,
   type SessionEntry,
 } from "../config/sessions.js";
-import { listSessionEntries } from "../config/sessions/session-accessor.js";
+import { listSessionEntriesCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { verifyBoardViewTicket } from "./board-view-ticket.js";
@@ -36,13 +36,12 @@ import {
   resolveGatewaySessionStoreTargetWithStore,
 } from "./session-utils.js";
 
-const ADMIN_SCOPE = "operator.admin";
-
 type SessionSharingTarget = {
   agentId: string;
   canonicalKey: string;
   entry: SessionEntry;
   storeKey: string;
+  storeKeys: string[];
   storePath: string;
 };
 
@@ -80,7 +79,7 @@ export function resolveSessionVisibility(
 export function isGatewayAdmin(client: Pick<GatewayClient, "connect"> | null): boolean {
   // Internal/plugin-runtime runs reach authorization with a client that has no
   // connect handshake; treat a connect-less client as a non-admin, never a crash.
-  return client?.connect?.scopes?.includes(ADMIN_SCOPE) === true;
+  return client?.connect?.scopes?.includes("operator.admin") === true;
 }
 
 export function allowedSessionVisibilities(cfg: OpenClawConfig): SessionVisibility[] {
@@ -124,6 +123,7 @@ export function resolveSessionSharingTarget(params: {
         canonicalKey: target.canonicalKey,
         entry: match.entry,
         storeKey: match.key,
+        storeKeys: target.storeKeys,
         storePath: target.storePath,
       }
     : null;
@@ -367,7 +367,7 @@ function resolveSessionGroupMutationTargets(params: {
     return undefined;
   }
   return resolveAllAgentSessionStoreTargetsSync(params.getCfg()).flatMap((storeTarget) =>
-    listSessionEntries({
+    listSessionEntriesCore({
       agentId: storeTarget.agentId,
       storePath: storeTarget.storePath,
     }).flatMap(({ sessionKey, entry }) =>

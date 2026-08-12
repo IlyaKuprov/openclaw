@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DOCKER_SELECTED_PLUGIN_BUILD_IDS_ENV } from "./lib/bundled-plugin-build-entries.mjs";
+import { toErrorObject } from "./lib/error-format.mts";
 import { terminateManagedChild } from "./lib/managed-child-process.mts";
 import { resolveNpmJsonEntries } from "./lib/npm-json-output.mts";
 import { isRecord } from "./lib/record-shared.mjs";
@@ -27,6 +28,7 @@ const DEFAULT_CAPTURED_STDOUT_MAX_BYTES = 1024 * 1024;
 const MAX_TIMER_TIMEOUT_MS = 2_147_000_000;
 const AI_RUNTIME_PACKAGE = "@openclaw/ai";
 const AI_RUNTIME_BACKUP_DIR = ".openclaw-ai-package-backup";
+
 type KillChild = (signal: NodeJS.Signals) => void;
 type RunOptions = {
   captureStdout?: boolean;
@@ -60,6 +62,10 @@ type DocsMapLifecycle = {
   preparePackageDocsMap: (cwd: string) => Promise<unknown>;
   restorePackageDocsMap: (cwd: string) => Promise<unknown>;
 };
+type PackageManifestLifecycle = {
+  preparePackageManifest: (cwd: string) => Promise<unknown>;
+  restorePackageManifest: (cwd: string) => Promise<unknown>;
+};
 type PackageOptions = RunOptions & {
   allowUnreleasedChangelog?: unknown;
   extractAiRuntime?: (tarballPath: string, destination: string) => Promise<unknown>;
@@ -69,8 +75,10 @@ type PackageOptions = RunOptions & {
   prepareBundledAiRuntime?: typeof prepareBundledAiRuntimePackage;
   prepareChangelog?: (cwd: string) => Promise<unknown>;
   prepareDocsMap?: (cwd: string) => Promise<unknown>;
+  prepareManifest?: (cwd: string) => Promise<unknown>;
   restoreChangelog?: (cwd: string) => Promise<unknown>;
   restoreDocsMap?: (cwd: string) => Promise<unknown>;
+  restoreManifest?: (cwd: string) => Promise<unknown>;
   runCaptureImpl?: RunImpl;
   runImpl?: CommandRunner;
 };
@@ -81,6 +89,14 @@ function isDocsMapLifecycle(value: unknown): value is DocsMapLifecycle {
     isRecord(value) &&
     typeof value.preparePackageDocsMap === "function" &&
     typeof value.restorePackageDocsMap === "function"
+  );
+}
+
+function isPackageManifestLifecycle(value: unknown): value is PackageManifestLifecycle {
+  return (
+    isRecord(value) &&
+    typeof value.preparePackageManifest === "function" &&
+    typeof value.restorePackageManifest === "function"
   );
 }
 
@@ -150,7 +166,10 @@ function numericTimerValueMs(valueMs: unknown) {
   return Number.isFinite(value) ? Math.floor(value) : undefined;
 }
 
-function resolveTimerTimeoutMs(valueMs: unknown, fallbackMs: unknown = MAX_TIMER_TIMEOUT_MS) {
+function resolvePackageBuildTimeoutMs(
+  valueMs: unknown,
+  fallbackMs: unknown = MAX_TIMER_TIMEOUT_MS,
+) {
   const value = numericTimerValueMs(valueMs) ?? numericTimerValueMs(fallbackMs);
   return Math.min(Math.max(value ?? MAX_TIMER_TIMEOUT_MS, 1), MAX_TIMER_TIMEOUT_MS);
 }
@@ -159,7 +178,7 @@ function resolveOptionalTimerTimeoutMs(valueMs: unknown) {
   if (valueMs === undefined) {
     return undefined;
   }
-  return resolveTimerTimeoutMs(valueMs, 1);
+  return resolvePackageBuildTimeoutMs(valueMs, 1);
 }
 
 function readOptionValue(argv: string[], index: number, optionName: string) {
@@ -288,7 +307,7 @@ export function parseArgs(argv: string[]) {
 function run(command: string, args: string[], cwd: string, options: RunOptions = {}) {
   return new Promise<string>((resolve, reject) => {
     const resolvedTimeoutMs = resolveOptionalTimerTimeoutMs(options.timeoutMs);
-    const resolvedKillAfterMs = resolveTimerTimeoutMs(
+    const resolvedKillAfterMs = resolvePackageBuildTimeoutMs(
       options.killAfterMs,
       DEFAULT_TIMEOUT_KILL_AFTER_MS,
     );
@@ -342,7 +361,7 @@ function run(command: string, args: string[], cwd: string, options: RunOptions =
         process.exit(forwardedSignalExitCode);
       }
       if (error) {
-        reject(toLintErrorObject(error, "Non-Error rejection"));
+        reject(toErrorObject(error, "Non-Error rejection"));
         return;
       }
       resolve(value);
@@ -450,11 +469,10 @@ function run(command: string, args: string[], cwd: string, options: RunOptions =
 const PACKAGE_ARTIFACT_BUILD_STEPS = [
   {
     label: "Building OpenClaw package artifacts",
-    command: "node",
-    // The full profile keeps canonical declaration emission; ciArtifacts is a
-    // PR-CI-only profile whose step env forces dts off and would clobber the
-    // OPENCLAW_RUN_NODE_SKIP_DTS_BUILD=0 this packaging path requires.
-    args: ["--import", "tsx", "scripts/build-all.mts", "full"],
+    command: "pnpm",
+    // Let the frozen source own its build entrypoint while the packaging env
+    // keeps canonical declaration emission enabled.
+    args: ["run", "build"],
   },
 ];
 
@@ -698,7 +716,7 @@ export async function prepareBundledAiRuntimePackage(
     originalAiRuntimeMoved = false;
     packedAiTarballs = [];
     if (cleanupError) {
-      throw toLintErrorObject(cleanupError, "Package cleanup failed.");
+      throw toErrorObject(cleanupError, "Package cleanup failed.");
     }
   };
 
@@ -751,11 +769,16 @@ export async function prepareBundledAiRuntimePackage(
       if (typeof version !== "string") {
         throw new Error(`packed @openclaw/ai dependency ${name} must declare a string version`);
       }
-      if (packageJson.dependencies?.[name] !== version) {
+      if (version === "0.0.0-private") {
+        continue;
+      }
+      const rootVersion = packageJson.dependencies?.[name];
+      if (rootVersion !== version && rootVersion !== `workspace:${version}`) {
         throw new Error(
           `root package.json must declare ${name}@${version} to bundle @openclaw/ai without duplicate dependencies`,
         );
       }
+      packageJson.dependencies![name] = version;
     }
     // Root owns these exact dependencies. Removing them from the staged copy keeps npm from
     // recursively bundling duplicate packages alongside the one private workspace runtime.
@@ -780,15 +803,21 @@ export async function prepareBundledAiRuntimePackage(
 async function restorePackageSourceArtifacts(
   sourceDir: string,
   restoreDocsMap: (cwd: string) => Promise<unknown>,
+  restoreManifest: (cwd: string) => Promise<unknown>,
   restoreChangelog: (cwd: string) => Promise<unknown>,
 ) {
   await restoreChangelog(sourceDir);
+  await restoreManifest(sourceDir);
   // Release the lifecycle receipt only after every other source mutation settles.
   await restoreDocsMap(sourceDir);
 }
 
-async function loadSourceDocsMapLifecycle(sourceDir: string) {
-  const modulePath = path.join(sourceDir, "scripts", "package-docs-map.mjs");
+async function loadSourcePackageLifecycle(
+  sourceDir: string,
+  moduleName: string,
+  validate: (value: unknown) => boolean,
+) {
+  const modulePath = path.join(sourceDir, "scripts", moduleName);
   try {
     await fs.access(modulePath);
   } catch (error) {
@@ -798,13 +827,10 @@ async function loadSourceDocsMapLifecycle(sourceDir: string) {
     throw error;
   }
   const lifecycle: unknown = await import(pathToFileURL(modulePath).href);
-  if (!isDocsMapLifecycle(lifecycle)) {
-    throw new Error(`source package docs-map lifecycle is invalid: ${modulePath}`);
+  if (!validate(lifecycle)) {
+    throw new Error(`source package lifecycle is invalid: ${modulePath}`);
   }
-  return {
-    preparePackageDocsMap: lifecycle.preparePackageDocsMap,
-    restorePackageDocsMap: lifecycle.restorePackageDocsMap,
-  };
+  return lifecycle;
 }
 
 function packagePreparationRestoreError(error: unknown, restoreError: unknown) {
@@ -832,7 +858,11 @@ export async function packOpenClawPackageForDocker(
   const sourceDocsMapLifecycle =
     packageOptions.prepareDocsMap && packageOptions.restoreDocsMap
       ? null
-      : await loadSourceDocsMapLifecycle(sourcePath);
+      : ((await loadSourcePackageLifecycle(
+          sourcePath,
+          "package-docs-map.mjs",
+          isDocsMapLifecycle,
+        )) as DocsMapLifecycle | null);
   const prepareDocsMap =
     packageOptions.prepareDocsMap ??
     sourceDocsMapLifecycle?.preparePackageDocsMap ??
@@ -840,6 +870,22 @@ export async function packOpenClawPackageForDocker(
   const restoreDocsMap =
     packageOptions.restoreDocsMap ??
     sourceDocsMapLifecycle?.restorePackageDocsMap ??
+    (async () => false);
+  const sourceManifestLifecycle =
+    packageOptions.prepareManifest && packageOptions.restoreManifest
+      ? null
+      : ((await loadSourcePackageLifecycle(
+          sourcePath,
+          "package-manifest.mjs",
+          isPackageManifestLifecycle,
+        )) as PackageManifestLifecycle | null);
+  const prepareManifest =
+    packageOptions.prepareManifest ??
+    sourceManifestLifecycle?.preparePackageManifest ??
+    (async () => false);
+  const restoreManifest =
+    packageOptions.restoreManifest ??
+    sourceManifestLifecycle?.restorePackageManifest ??
     (async () => false);
   const prepareBundledAiRuntime =
     packageOptions.prepareBundledAiRuntime ?? prepareBundledAiRuntimePackage;
@@ -851,10 +897,16 @@ export async function packOpenClawPackageForDocker(
   // This receipt is the package lifecycle lock; acquire it before touching CHANGELOG.md.
   await prepareDocsMap(sourcePath);
   try {
+    await prepareManifest(sourcePath);
     await prepareChangelog(sourcePath);
   } catch (error) {
     try {
-      await restorePackageSourceArtifacts(sourcePath, restoreDocsMap, restoreChangelog);
+      await restorePackageSourceArtifacts(
+        sourcePath,
+        restoreDocsMap,
+        restoreManifest,
+        restoreChangelog,
+      );
     } catch (restoreError) {
       throw packagePreparationRestoreError(error, restoreError);
     }
@@ -887,7 +939,12 @@ export async function packOpenClawPackageForDocker(
     try {
       await cleanupBundledAiRuntime();
     } finally {
-      await restorePackageSourceArtifacts(sourcePath, restoreDocsMap, restoreChangelog);
+      await restorePackageSourceArtifacts(
+        sourcePath,
+        restoreDocsMap,
+        restoreManifest,
+        restoreChangelog,
+      );
     }
   }
   // pnpm reports an absolute destination path. The directory was emptied before packing,
@@ -983,18 +1040,4 @@ if (
       error && typeof error === "object" && "exitCode" in error ? error.exitCode : undefined;
     process.exit(typeof exitCode === "number" && Number.isInteger(exitCode) ? exitCode : 1);
   });
-}
-
-function toLintErrorObject(value: unknown, fallbackMessage: string) {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return new Error(value);
-  }
-  const error = new Error(fallbackMessage, { cause: value });
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
-  }
-  return error;
 }

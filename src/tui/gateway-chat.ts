@@ -1,5 +1,6 @@
 // Bridges TUI chat requests to gateway session APIs.
 import { randomUUID } from "node:crypto";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { gatewayOriginScope } from "../../packages/gateway-client/src/gateway-origin-scope.js";
 import {
   GATEWAY_CLIENT_CAPS,
@@ -12,15 +13,18 @@ import {
 } from "../../packages/gateway-protocol/src/connect-error-details.js";
 import {
   type HelloOk,
+  GATEWAY_SERVER_CAPS,
   MIN_CLIENT_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
   type CommandEntry,
   type CommandsListParams,
   type CommandsListResult,
+  type EnvironmentsListResult,
   type SessionsListParams,
   type SessionsPatchResult,
   type SessionsPatchParams,
   type TaskSuggestionsAcceptResult,
+  type TaskSuggestionsAcceptParams,
   type TaskSuggestionsListResult,
 } from "../../packages/gateway-protocol/src/index.js";
 import { getRuntimeConfig } from "../config/config.js";
@@ -52,6 +56,7 @@ import type {
   TuiSessionCreateOptions,
   TuiSessionMutationResult,
   TuiChatSendResult,
+  TuiTaskSuggestionAcceptMode,
 } from "./tui-backend.js";
 
 type GatewayConnectionOptions = {
@@ -108,10 +113,6 @@ function resolveStartupRetryDelayMs(err: GatewayClientRequestError): number {
   const retryAfterMs =
     typeof err.retryAfterMs === "number" ? err.retryAfterMs : STARTUP_CHAT_HISTORY_DEFAULT_RETRY_MS;
   return Math.min(Math.max(retryAfterMs, 100), STARTUP_CHAT_HISTORY_MAX_RETRY_MS);
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function hasStoredOriginDeviceAuth(deviceAuthScope: string): boolean {
@@ -302,8 +303,8 @@ export class GatewayChatClient implements TuiBackend {
       timeoutMs: opts.timeoutMs,
       idempotencyKey: runId,
     });
-    const acceptedRunId = nonEmptyString(response?.runId) ?? runId;
-    const status = nonEmptyString(response?.status);
+    const acceptedRunId = normalizeOptionalString(response?.runId) ?? runId;
+    const status = normalizeOptionalString(response?.status);
     return status ? { runId: acceptedRunId, status } : { runId: acceptedRunId };
   }
 
@@ -440,6 +441,7 @@ export class GatewayChatClient implements TuiBackend {
   getTaskSuggestionActionCapabilities() {
     const auth = this.hello?.auth;
     const methods = this.hello?.features?.methods;
+    const capabilities = this.hello?.features?.capabilities;
     const allows = (method: string, scope: "operator.admin" | "operator.write") =>
       Array.isArray(methods) &&
       methods.includes(method) &&
@@ -453,6 +455,9 @@ export class GatewayChatClient implements TuiBackend {
       );
     return {
       canAccept: allows("taskSuggestions.accept", "operator.admin"),
+      canAcceptModes:
+        Array.isArray(capabilities) &&
+        capabilities.includes(GATEWAY_SERVER_CAPS.TASK_SUGGESTIONS_ACCEPT_MODES),
       canDismiss: allows("taskSuggestions.dismiss", "operator.write"),
     };
   }
@@ -469,10 +474,29 @@ export class GatewayChatClient implements TuiBackend {
     return result.suggestions;
   }
 
-  async acceptTaskSuggestion(taskId: string) {
-    return await this.client.request<TaskSuggestionsAcceptResult>("taskSuggestions.accept", {
-      taskId,
-    });
+  async listCloudWorkerProfiles() {
+    if (this.hello?.features?.methods?.includes("environments.list") !== true) {
+      return [];
+    }
+    try {
+      const result = await this.client.request<EnvironmentsListResult>("environments.list", {});
+      return result.profiles?.map((profile) => profile.id) ?? [];
+    } catch {
+      // Cloud placement is optional; older or temporarily failing gateways stay quiet.
+      return [];
+    }
+  }
+
+  async acceptTaskSuggestion(
+    taskId: string,
+    mode?: TuiTaskSuggestionAcceptMode,
+    cloudProfileId?: string,
+  ) {
+    const params: TaskSuggestionsAcceptParams =
+      !mode || mode === "worktree"
+        ? { taskId }
+        : { taskId, mode, ...(cloudProfileId ? { cloudProfileId } : {}) };
+    return await this.client.request<TaskSuggestionsAcceptResult>("taskSuggestions.accept", params);
   }
 
   async dismissTaskSuggestion(taskId: string) {
@@ -549,7 +573,7 @@ async function resolveGatewayConnection(
     resolveTlsFingerprint: async ({ urlSource, explicitTlsFingerprint }) =>
       explicitTlsFingerprint ??
       (urlSource === "config gateway.remote.url"
-        ? nonEmptyString(config.gateway?.remote?.tlsFingerprint)
+        ? normalizeOptionalString(config.gateway?.remote?.tlsFingerprint)
         : undefined),
   });
   const hasStoredOriginAuth = Boolean(

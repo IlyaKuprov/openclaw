@@ -34,6 +34,13 @@
       "kind": "object-property",
       "name": "label",
       "path": "ui/src/app/lazy-custom-element.ts",
+      "text": "desktop panel"
+    },
+    {
+      "count": 1,
+      "kind": "object-property",
+      "name": "label",
+      "path": "ui/src/app/lazy-custom-element.ts",
       "text": "terminal panel"
     },
     {
@@ -441,48 +448,6 @@
       "name": "text",
       "path": "ui/src/pages/channels/view.nostr.ts",
       "text": "NIP-05"
-    },
-    {
-      "count": 1,
-      "kind": "html-text",
-      "name": "text",
-      "path": "ui/src/pages/chat/components/chat-composer-skill-menu.ts",
-      "text": "Enter"
-    },
-    {
-      "count": 1,
-      "kind": "html-text",
-      "name": "text",
-      "path": "ui/src/pages/chat/components/chat-composer-skill-menu.ts",
-      "text": "Esc"
-    },
-    {
-      "count": 1,
-      "kind": "html-text",
-      "name": "text",
-      "path": "ui/src/pages/chat/components/chat-composer-skill-menu.ts",
-      "text": "Tab"
-    },
-    {
-      "count": 2,
-      "kind": "html-text",
-      "name": "text",
-      "path": "ui/src/pages/chat/components/chat-composer-slash-menu.ts",
-      "text": "Enter"
-    },
-    {
-      "count": 2,
-      "kind": "html-text",
-      "name": "text",
-      "path": "ui/src/pages/chat/components/chat-composer-slash-menu.ts",
-      "text": "Esc"
-    },
-    {
-      "count": 2,
-      "kind": "html-text",
-      "name": "text",
-      "path": "ui/src/pages/chat/components/chat-composer-slash-menu.ts",
-      "text": "Tab"
     },
     {
       "count": 2,
