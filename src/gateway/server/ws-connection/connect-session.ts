@@ -30,9 +30,13 @@ import {
   isBrowserCopilotClient,
   isEphemeralGatewayClient,
 } from "../../../utils/message-channel.js";
-import { resolveRuntimeServiceVersion } from "../../../version.js";
+import { resolveRuntimeServiceBuildId, resolveRuntimeServiceVersion } from "../../../version.js";
 import { verifyAgentRuntimeIdentityToken } from "../../agent-runtime-identity-token.js";
 import { buildAuthenticatedPresenceUser } from "../../authenticated-presence-user.js";
+import {
+  attachGatewayLocalUserIngress,
+  prepareGatewayLocalUserIngress,
+} from "../../local-user-ingress.js";
 import { APPROVALS_SCOPE } from "../../method-scopes.js";
 import { serializeEventPayload } from "../../node-registry.js";
 import { isOperatorApprovalRuntimeToken } from "../../operator-approval-runtime-token.js";
@@ -50,8 +54,10 @@ import { truncateCloseReason } from "../close-reason.js";
 import { incrementPresenceVersion } from "../health-state.js";
 import { broadcastPresenceSnapshot } from "../presence-events.js";
 import type { GatewayWsClient } from "../ws-types.js";
+import { resolveEffectiveConnectionScopes } from "./connect-admission.js";
 import { sendGatewayHello } from "./connect-hello.js";
 import { prepareGatewayNodeConnect } from "./connect-node-session.js";
+import { resolveControlUiBuildMismatch } from "./control-ui-build-admission.js";
 import type {
   DeviceAuthorizedGatewayConnect,
   GatewayConnectPhaseContext,
@@ -97,6 +103,8 @@ export async function attachAuthenticatedGatewayConnect(
     setCloseCause,
     logGateway,
     logWsControl,
+    requestHost,
+    requestOrigin,
   } = context.handler;
   const {
     connectParams,
@@ -115,7 +123,7 @@ export async function attachAuthenticatedGatewayConnect(
     maxProtocol,
     usesLegacyNodeProtocol,
     role,
-    scopes,
+    scopes: deviceScopes,
     device,
     devicePublicKey,
     deviceToken,
@@ -186,6 +194,23 @@ export async function attachAuthenticatedGatewayConnect(
     authResult.tailscaleIdentity &&
     classifyTailscaleLogin(authResult.tailscaleIdentity.login).kind === "provider",
   );
+  // Device pairing owns persistent access. Verified identity grants only shape
+  // this connection, after device-less self-declared scopes have been cleared.
+  const effectiveScopes = resolveEffectiveConnectionScopes({
+    role,
+    deviceScopes,
+    verifiedIdentity: authenticatedUserId,
+    identityScopes: context.configSnapshot.gateway?.auth?.identityScopes,
+    upgradeReq: context.handler.upgradeReq,
+  });
+  const scopes = effectiveScopes.scopes;
+  state.scopes = scopes;
+  connectParams.scopes = scopes;
+  if (authenticatedUserId && effectiveScopes.addedIdentityScopes.length > 0) {
+    logGateway.warn(
+      `security audit: identity scope grant elevated connection identity=${formatForLog(authenticatedUserId)} addedScopes=${effectiveScopes.addedIdentityScopes.join(",")} conn=${connId}`,
+    );
+  }
 
   if (isClosed()) {
     await releasePendingNodePairingCleanup();
@@ -289,6 +314,33 @@ export async function attachAuthenticatedGatewayConnect(
       return;
     }
   }
+  const controlUiBuildMismatch = resolveControlUiBuildMismatch({
+    clientId: connectParams.client.id,
+    clientBuildId: connectParams.client.buildId,
+    gatewayBuildId: resolveRuntimeServiceBuildId(),
+    configuredControlUiRoot: context.configSnapshot.gateway?.controlUi?.root,
+    requestHost,
+    requestOrigin,
+  });
+  if (controlUiBuildMismatch) {
+    // Build identity predates this rejection. Frozen clients recognize the shipped
+    // protocol-mismatch signal and surface its literal reload guidance.
+    const message = "protocol mismatch: Control UI updated; reload this page to continue";
+    markHandshakeFailure("control-ui-build-mismatch", {
+      clientBuildId: controlUiBuildMismatch.clientBuildId ?? "legacy",
+      gatewayBuildId: controlUiBuildMismatch.gatewayBuildId,
+    });
+    sendHandshakeErrorResponse(ErrorCodes.UNAVAILABLE, message, {
+      retryable: false,
+      details: { code: ConnectErrorDetailCodes.PROTOCOL_MISMATCH },
+    });
+    logWsControl.warn(
+      `control ui build rejected conn=${connId} clientBuild=${formatForLog(controlUiBuildMismatch.clientBuildId ?? "legacy")} gatewayBuild=${formatForLog(controlUiBuildMismatch.gatewayBuildId)}; reload required`,
+    );
+    await releasePendingNodePairingCleanup();
+    close(1008, truncateCloseReason(message));
+    return;
+  }
   const internal =
     isLocalClient || isTrustedApprovalRuntime || trustedAgentRuntimeIdentity
       ? {
@@ -299,6 +351,20 @@ export async function attachAuthenticatedGatewayConnect(
             : {}),
         }
       : undefined;
+  const localUserIngress = prepareGatewayLocalUserIngress({
+    authMethod,
+    authenticatedUserExpected: Boolean(authenticatedUserId),
+    ...(authenticatedUserProfile
+      ? {
+          profile: {
+            profileId: authenticatedUserProfile.profileId,
+            displayName: authenticatedUserProfile.displayName,
+          },
+        }
+      : {}),
+    ...(device?.id ? { pairedDeviceId: device.id } : {}),
+    isLocalClient,
+  });
   if (usesLegacyNodeProtocol) {
     logWsControl.warn(
       `legacy node protocol accepted conn=${connId} client=${formatForLog(clientLabel)} v${formatForLog(connectParams.client.version)} min=${minProtocol} max=${maxProtocol} current=${PROTOCOL_VERSION}; upgrade recommended`,
@@ -334,6 +400,7 @@ export async function attachAuthenticatedGatewayConnect(
       ? { pluginNodeCapabilitySurfaces }
       : {}),
   };
+  attachGatewayLocalUserIngress(nextClient, localUserIngress);
   for (const entry of pendingPluginNodeCapabilities) {
     setClientPluginNodeCapability({
       client: nextClient,
@@ -453,8 +520,9 @@ export async function attachAuthenticatedGatewayConnect(
   }
 
   if (isWebchatConnect(connectParams)) {
+    const clientBuildId = connectParams.client.buildId?.trim();
     logWsControl.info(
-      `webchat connected conn=${connId} remote=${remoteAddr ?? "?"} client=${clientLabel} ${connectParams.client.mode} v${connectParams.client.version}`,
+      `webchat connected conn=${connId} remote=${remoteAddr ?? "?"} client=${clientLabel} ${connectParams.client.mode} v${connectParams.client.version} build=${formatForLog(clientBuildId ?? "legacy")}`,
     );
   }
 
@@ -557,7 +625,7 @@ export async function attachAuthenticatedGatewayConnect(
     );
   }
 
-  await sendGatewayHello(context, state, pluginSurfaceUrls);
+  await sendGatewayHello(context, state, pluginSurfaceUrls, authenticatedUserProfile?.profileId);
 
   const tailscaleProfilePic = authResult.tailscaleIdentity?.profilePic;
   const tailscaleProfileId = authenticatedUserProfile?.profileId;

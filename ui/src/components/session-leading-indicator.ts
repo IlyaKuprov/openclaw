@@ -1,4 +1,4 @@
-import { html, nothing } from "lit";
+import { html, nothing, type TemplateResult } from "lit";
 import { t } from "../i18n/index.ts";
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
 import { icons } from "./icons.ts";
@@ -12,7 +12,6 @@ import {
   renderSessionUnreadBadge,
   type SessionGlyphContent,
 } from "./session-glyph.ts";
-import { resolveSessionIcon } from "./session-icon-registry.ts";
 import type { SessionPullRequestIndicatorState } from "./session-menu-work.ts";
 import { renderSessionOwnerChip, type SessionCreatedActor } from "./session-owner-chip.ts";
 
@@ -107,7 +106,13 @@ export function renderSessionLeadingState(
   pullRequestState: SessionPullRequestIndicatorState,
   ownerActor: SessionCreatedActor | null | undefined,
   attribution: "created" | "archived",
-) {
+  ownerViewing?: boolean,
+): {
+  running: boolean;
+  leadingIndicator: TemplateResult | typeof nothing;
+  trailingIndicator: TemplateResult | typeof nothing;
+  renderedOwnerId?: string;
+} {
   const running = session.hasActiveRun;
   const trailingIndicator = session.isChild
     ? nothing
@@ -118,19 +123,6 @@ export function renderSessionLeadingState(
         running,
         leadingIndicator: renderSessionGlyph({
           content: renderSessionAttentionIcon(session.attention),
-          running,
-          badge: renderGlyphBadge(session, pullRequestState),
-        }),
-        trailingIndicator,
-      };
-    }
-    if (session.pinned) {
-      return {
-        running,
-        leadingIndicator: renderSessionGlyph({
-          content: html`<span class="sidebar-pinned-session__icon" aria-hidden="true"
-            >${resolveSessionIcon(session.icon)}</span
-          >`,
           running,
           badge: renderGlyphBadge(session, pullRequestState),
         }),
@@ -169,27 +161,18 @@ export function renderSessionLeadingState(
       trailingIndicator,
     };
   }
-  if (session.pinned) {
-    return {
-      running,
-      leadingIndicator: renderSessionGlyph({
-        content: html`<span class="sidebar-pinned-session__icon" aria-hidden="true"
-          >${resolveSessionIcon(session.icon)}</span
-        >`,
-        running: false,
-      }),
-      trailingIndicator,
-    };
-  }
   if (!session.isChild && ownerActor?.id?.trim()) {
     return {
       running,
       leadingIndicator: renderSessionGlyph({
-        content: renderSessionOwnerChip(ownerActor, "row", attribution),
+        content: renderSessionOwnerChip(ownerActor, "row", attribution, ownerViewing),
         running: false,
         circular: true,
       }),
       trailingIndicator,
+      // Single source for facepile dedup: only the identity actually shown in
+      // the lead may be excluded, else attention/archived rows hide a viewer.
+      renderedOwnerId: ownerActor.id,
     };
   }
   return {

@@ -623,39 +623,25 @@ describe("resolveSlackMedia", () => {
     expectFetchCalledWithUrl(mockFetch, "https://files.slack.com/fresh.jpg");
   });
 
-  it("skips id-only files when files.info returns no private URL", async () => {
+  it.each([
+    { name: "skips id-only files when files.info returns no private URL", fails: false },
+    { name: "skips id-only files when files.info fails", fails: true },
+  ])("$name", async ({ fails }) => {
+    const info = vi.fn();
+    if (fails) {
+      info.mockRejectedValue(new Error("files.info failed"));
+    } else {
+      info.mockResolvedValue({ file: { id: "F123" } });
+    }
     const mockClient = {
-      files: {
-        info: vi.fn().mockResolvedValue({ file: { id: "F123" } }),
-      },
+      files: { info },
     } as unknown as WebClient & { files: { info: ReturnType<typeof vi.fn> } };
-
     const result = await resolveSlackMedia({
       files: [{ id: "F123", name: "test.jpg" }],
       client: mockClient,
       token: "xoxb-test-token",
       maxBytes: 1024 * 1024,
     });
-
-    expect(result).toBeNull();
-    expect(mockClient.files.info).toHaveBeenCalledWith({ file: "F123" });
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("skips id-only files when files.info fails", async () => {
-    const mockClient = {
-      files: {
-        info: vi.fn().mockRejectedValue(new Error("files.info failed")),
-      },
-    } as unknown as WebClient & { files: { info: ReturnType<typeof vi.fn> } };
-
-    const result = await resolveSlackMedia({
-      files: [{ id: "F123", name: "test.jpg" }],
-      client: mockClient,
-      token: "xoxb-test-token",
-      maxBytes: 1024 * 1024,
-    });
-
     expect(result).toBeNull();
     expect(mockClient.files.info).toHaveBeenCalledWith({ file: "F123" });
     expect(mockFetch).not.toHaveBeenCalled();
@@ -1192,6 +1178,7 @@ describe("resolveSlackAttachmentContent", () => {
     expect(result).toEqual({
       text: "[Forwarded message from Bob]\nPlease review this",
       media: [],
+      unavailableImageCount: 0,
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -1204,7 +1191,7 @@ describe("resolveSlackAttachmentContent", () => {
       maxBytes: 1024 * 1024,
     });
 
-    expect(result).toEqual({ text: "", media: [], files: [file] });
+    expect(result).toEqual({ text: "", media: [], unavailableImageCount: 0, files: [file] });
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
@@ -1245,12 +1232,31 @@ describe("resolveSlackAttachmentContent", () => {
           placeholder: "[Forwarded image: forwarded.jpg]",
         },
       ],
+      unavailableImageCount: 0,
     });
     const firstCall = requireMockCall(mockFetch, 0, "fetch");
     expect(firstCall[0]).toBe("https://files.slack.com/forwarded.jpg");
     const firstInit = requireRecord(firstCall[1], "fetch init") as RequestInit;
     expect(firstInit.redirect).toBe("manual");
     expect(new Headers(firstInit.headers).get("Authorization")).toBe("Bearer xoxb-test-token");
+  });
+
+  it("reports Slack-hosted forwarded image download failures", async () => {
+    mockFetch.mockResolvedValueOnce(new Response("Not Found", { status: 404 }));
+
+    const result = await resolveSlackAttachmentContent({
+      attachments: [{ is_share: true, image_url: "https://files.slack.com/forwarded.jpg" }],
+      token: "xoxb-test-token",
+      maxBytes: 1024 * 1024,
+    });
+
+    expect(result).toEqual({
+      text: "",
+      media: [],
+      unavailableImageCount: 1,
+    });
+    expect(saveMediaBufferMock).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledOnce();
   });
 
   it.each([

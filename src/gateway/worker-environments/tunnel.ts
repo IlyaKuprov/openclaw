@@ -4,8 +4,10 @@ import { withTimeout } from "../../infra/fs-safe.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { WorkerSshEndpoint } from "../../plugins/types.js";
 import type { SpawnResult } from "../../process/exec.js";
-import { createDeferred, type Deferred } from "../../shared/deferred.js";
-import { boundedWorkerError } from "./service-validation.js";
+import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
+import { completeWorkerLaunchDescriptor } from "../../worker/launch-descriptor.js";
+import type { DesktopSessionRegistry } from "../desktop/session-registry.js";
+import { createWorkerDesktopTunnels } from "./desktop-tunnel.js";
 import {
   advanceWorkerSshAfterTransportExit,
   prepareWorkerSsh,
@@ -28,6 +30,7 @@ import {
   workerSshProcessError,
   WORKER_TUNNEL_READY_MARKER,
 } from "./tunnel-ssh-runner.js";
+import { boundedWorkerError } from "./worker-error.js";
 import { stableWorkerPathComponent } from "./workspace-sync-helpers.js";
 import { createWorkerWorkspaceActions } from "./workspace-sync.js";
 
@@ -76,6 +79,7 @@ directory=$2
 rm -f -- "$socket"
 rmdir -- "$directory" 2>/dev/null || true
 `;
+const WORKER_LAUNCH_SCRIPT = 'exec node "$HOME/.openclaw-worker/$1/openclaw.mjs" worker';
 
 type WorkerTunnelStartRequest = WorkerTunnelRequest & {
   bundleHash: string;
@@ -107,6 +111,7 @@ type TunnelEntry = {
 
 type WorkerTunnelManagerOptions = {
   runner?: WorkerSshRunner;
+  desktopSessionRegistry?: DesktopSessionRegistry;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   backoff?: BackoffPolicy;
   now?: () => number;
@@ -144,6 +149,10 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
   const backoff = options.backoff ?? DEFAULT_BACKOFF;
   const now = options.now ?? Date.now;
   const stableConnectionMs = options.stableConnectionMs ?? DEFAULT_STABLE_CONNECTION_MS;
+  const desktop = createWorkerDesktopTunnels({
+    runner,
+    ...(options.desktopSessionRegistry ? { registry: options.desktopSessionRegistry } : {}),
+  });
   const entries = new Map<string, TunnelEntry>();
   const claimedOwnerEpochs = new Map<string, number>();
 
@@ -223,11 +232,8 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
     ).catch(() => undefined);
   };
 
-  const createHandle = (entry: TunnelEntry): WorkerTunnelHandle => ({
-    environmentId: entry.environmentId,
-    ownerEpoch: entry.ownerEpoch,
-    remoteSocketPath: entry.remoteSocketPath,
-    ...createWorkerWorkspaceActions({
+  const createHandle = (entry: TunnelEntry): WorkerTunnelHandle => {
+    const workspace = createWorkerWorkspaceActions({
       environmentId: entry.environmentId,
       sharedHost: entry.sharedHost,
       ownerSignal: entry.abortController.signal,
@@ -236,9 +242,28 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
       runner,
       tasks: entry.workspaceTasks,
       bundleHash: entry.bundleHash,
-    }),
-    stop: () => stop(entry.environmentId, entry.ownerEpoch),
-  });
+    });
+    return {
+      environmentId: entry.environmentId,
+      ownerEpoch: entry.ownerEpoch,
+      launchTurn: (request) =>
+        workspace.runWorkspaceCommand({
+          transportRetry: "never",
+          argv: ["sh", "-c", WORKER_LAUNCH_SCRIPT, "openclaw-worker", entry.bundleHash],
+          input: JSON.stringify(
+            completeWorkerLaunchDescriptor(request.plan, {
+              kind: "unix",
+              socketPath: entry.remoteSocketPath,
+            }),
+          ),
+          timeoutMs: request.timeoutMs,
+          signal: request.signal,
+          onDispatchReady: request.onDispatchReady,
+        }),
+      ...workspace,
+      stop: () => stop(entry.environmentId, entry.ownerEpoch),
+    };
+  };
 
   const connect = async (
     entry: TunnelEntry,
@@ -312,7 +337,7 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
             // Each established child owns one readiness barrier. Replace it as soon as that child
             // is lost so same-owner callers wait for the reconnect instead of using a stale handle.
             entry.status = "reconnecting";
-            const readiness = createDeferred<WorkerTunnelHandle>();
+            const readiness = createDeferredCore<WorkerTunnelHandle>();
             void readiness.promise.catch(() => undefined);
             entry.readiness = readiness;
           }
@@ -416,7 +441,7 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
 
     const environmentKey = stableWorkerPathComponent(request.environmentId, 16);
     const remoteDirectory = `/tmp/ocw-${environmentKey}-${request.ownerEpoch}`;
-    const readiness = createDeferred<WorkerTunnelHandle>();
+    const readiness = createDeferredCore<WorkerTunnelHandle>();
     void readiness.promise.catch(() => undefined);
     const entry: TunnelEntry = {
       environmentId: request.environmentId,
@@ -469,10 +494,10 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
 
   async function stop(environmentId: string, ownerEpoch?: number): Promise<void> {
     const entry = entries.get(environmentId);
-    if (!entry || (ownerEpoch !== undefined && ownerEpoch !== entry.ownerEpoch)) {
-      return;
+    if (entry && (ownerEpoch === undefined || ownerEpoch === entry.ownerEpoch)) {
+      await stopEntry(entry);
     }
-    await stopEntry(entry);
+    await desktop.stop(environmentId, ownerEpoch);
   }
 
   async function stopAll(): Promise<void> {
@@ -481,10 +506,11 @@ export function createWorkerTunnelManager(options: WorkerTunnelManagerOptions = 
       entries.delete(entry.environmentId);
       entry.abortController.abort(new Error("Worker tunnel manager stopped"));
     }
-    await Promise.all(current.map(stopEntry));
+    await Promise.all([...current.map(stopEntry), desktop.stopAll()]);
   }
 
   return {
+    desktop,
     start,
     stop,
     stopAll,

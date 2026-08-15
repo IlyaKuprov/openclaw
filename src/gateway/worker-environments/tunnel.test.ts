@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  WORKER_PROTOCOL_FEATURES,
+  WORKER_RPC_SET_VERSION,
+} from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
+import { parseWorkerLaunchPlan } from "../../worker/launch-descriptor.js";
 import { createWorkerSshRunner } from "./tunnel-ssh-runner.js";
 import { createWorkerTunnelManager } from "./tunnel.js";
 import {
@@ -17,6 +22,37 @@ import {
 import { sshArgvPort } from "./worker-ssh-argv.test-support.js";
 
 describe("worker tunnel manager", () => {
+  it("cascades only an epoch-matched environment stop into the desktop tunnel owner", async () => {
+    const fake = fakeRunner();
+    const manager = createWorkerTunnelManager({ runner: fake.runner });
+    const starting = manager.desktop.acquire({
+      environmentId: "worker:desktop-cascade",
+      ownerEpoch: 2,
+      ssh: SSH,
+      desktop: { protocol: "rfb", port: 5900 },
+      resolveIdentity,
+    });
+    await waitForStarts(fake.starts, 1);
+    fake.starts[0]?.process.becomeReady();
+    await starting;
+    const close = vi.fn();
+    manager.desktop.attachObserver("worker:desktop-cascade", {
+      control: false,
+      ownerEpoch: 2,
+      close,
+    });
+
+    await manager.stop("worker:desktop-cascade", 1);
+
+    expect(fake.starts[0]?.process.stopCount).toBe(0);
+    expect(close).not.toHaveBeenCalled();
+
+    await manager.stop("worker:desktop-cascade", 2);
+
+    expect(fake.starts[0]?.process.stopCount).toBe(1);
+    expect(close).toHaveBeenCalledWith(1012, "desktop tunnel closed");
+  });
+
   it("establishes a pinned reverse socket with keepalives and a separate workspace connection", async () => {
     const fake = fakeRunner();
     const { manager, handle, start: tunnel } = await startConnectedTunnel(fake, "worker:one", 3);
@@ -37,6 +73,51 @@ describe("worker tunnel manager", () => {
     expect(workspace?.argv).toContain("ControlPath=none");
     expect(workspace?.argv.at(-1)).toContain("pwd");
     expect(fake.starts).toHaveLength(1);
+    const plan = parseWorkerLaunchPlan({
+      version: 3,
+      admission: {
+        environmentId: "worker:one",
+        credential: "worker-credential-fixture",
+        sessionId: "session-1",
+        ownerEpoch: 3,
+        rpcSetVersion: WORKER_RPC_SET_VERSION,
+        handshake: {
+          bundleHash: BUNDLE_HASH,
+          openclawVersion: "2026.8.13",
+          protocolFeatures: [...WORKER_PROTOCOL_FEATURES],
+        },
+      },
+      assignment: {
+        agentId: "main",
+        operationalRunInstance: { instanceId: "instance-1", runId: "run-1" },
+        agentRuntimeIdentityToken: "runtime-token",
+        runId: "run-1",
+        turnId: "turn-1",
+        prompt: "inspect",
+        suppressPromptTranscript: true,
+        workspaceDir: "/worker/workspace",
+        modelRef: { provider: "openai", model: "gpt-5.6-luna" },
+        inferenceOptions: {},
+        initialMessages: [],
+        transcript: { baseLeafId: null, nextSeq: 1 },
+        liveEvents: { ackedSeq: 0, nextSeq: 1 },
+        toolAuthority: { allowedToolNames: [] },
+      },
+    });
+    const onDispatchReady = vi.fn();
+    await expect(
+      handle.launchTurn({ plan, placementGeneration: 1, timeoutMs: 123, onDispatchReady }),
+    ).resolves.toEqual(success());
+    expect(onDispatchReady).toHaveBeenCalledOnce();
+    const launch = fake.runs.at(-1);
+    const remoteLaunchCommand = launch?.argv.at(-1) ?? "";
+    expect(remoteLaunchCommand).toContain("'sh' '-c'");
+    expect(remoteLaunchCommand).toContain(
+      'exec node "$HOME/.openclaw-worker/$1/openclaw.mjs" worker',
+    );
+    expect(remoteLaunchCommand).toContain(`'${BUNDLE_HASH}'`);
+    expect(launch?.options.input).toContain('"connectionEndpoint":{"kind":"unix"');
+    expect(launch?.options.timeoutMs).toBe(123);
     await handle.stop();
     expect(tunnel?.process.stopCount).toBe(1);
     expect(manager.status("worker:one")).toBe("stopped");

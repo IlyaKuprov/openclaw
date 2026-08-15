@@ -1,11 +1,63 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { TerminalSessionManager } from "./session-manager.js";
-import { baseOpenRequest, makeFakePty } from "./session-manager.test-helpers.js";
+import { baseOpenRequest, makeFakePty, taskAgentOwner } from "./session-manager.test-helpers.js";
 
 const TERMINAL_EVENT_EXIT = "terminal.exit";
 
 describe("TerminalSessionManager task lifecycle", () => {
+  it("aborts a matching pending task open and kills its late backend", async () => {
+    let resolveSpawn!: (pty: ReturnType<typeof makeFakePty>) => void;
+    const spawn = new Promise<ReturnType<typeof makeFakePty>>((resolve) => {
+      resolveSpawn = resolve;
+    });
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: () => spawn });
+    const opening = manager.open(
+      baseOpenRequest({
+        owner: taskAgentOwner("agent:main:cron:job-1:run:run-1", "task-1"),
+      }),
+    );
+
+    expect(manager.closeAgentSessions("task-1")).toBe(0);
+    const latePty = makeFakePty();
+    resolveSpawn(latePty);
+
+    await expect(opening).resolves.toEqual({
+      ok: false,
+      code: "closed",
+      message: "terminal closed because its task ended",
+    });
+    expect(latePty.killed).toBe(true);
+    expect(manager.size).toBe(0);
+  });
+
+  it("does not authorize interactive access through a colliding task id", async () => {
+    const fake = makeFakePty();
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => fake });
+    const owner = {
+      kind: "agent",
+      agentSessionKey: "agent:ops:main",
+      agentId: "ops",
+      taskId: "agent:research:main",
+    } as const;
+    const opened = await manager.open(baseOpenRequest({ owner }));
+    if (!opened.ok) {
+      throw new Error("expected terminal session");
+    }
+
+    expect(manager.writeAgent("agent:research:main", opened.sessionId, "nope", "research")).toBe(
+      false,
+    );
+    expect(manager.resizeAgent("agent:research:main", opened.sessionId, 90, 30, "research")).toBe(
+      false,
+    );
+    expect(
+      manager.snapshotAgent("agent:research:main", opened.sessionId, "research"),
+    ).toBeUndefined();
+    expect(manager.closeAgent("agent:research:main", opened.sessionId, "research")).toBe(false);
+    expect(fake.killed).toBe(false);
+  });
+
   it("closes one task owner with viewer cleanup while preserving persistent owners", async () => {
     const emit = vi.fn();
     const runPtys = [makeFakePty(), makeFakePty()];
@@ -20,6 +72,7 @@ describe("TerminalSessionManager task lifecycle", () => {
     const runOwner = {
       kind: "agent",
       agentSessionKey: "agent:main:cron:job-1:run:run-1",
+      taskId: "task-1",
     } as const;
     const persistentOwner = { kind: "agent", agentSessionKey: "agent:main:main" } as const;
     const first = await manager.open(baseOpenRequest({ owner: runOwner }));
@@ -35,7 +88,7 @@ describe("TerminalSessionManager task lifecycle", () => {
     manager.attach("viewer-2", second.sessionId);
     emit.mockClear();
 
-    expect(manager.closeAgentSessions(runOwner.agentSessionKey)).toBe(2);
+    expect(manager.closeAgentSessions(runOwner.taskId)).toBe(2);
     expect(runPtys.every((pty) => pty.killed)).toBe(true);
     expect(persistentPty.killed).toBe(false);
     expect(connectionPty.killed).toBe(false);

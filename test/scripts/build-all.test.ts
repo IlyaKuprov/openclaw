@@ -22,11 +22,11 @@ import {
   resolveBuildAllSteps,
   restoreBuildAllStepCacheOutputs,
   writeBuildAllStepCacheStamp,
-} from "../../scripts/build-all.mjs";
+} from "../../scripts/build-all.mts";
 import {
   listPluginSdkDeclarationOutputs,
   pluginSdkEntrypoints,
-} from "../../scripts/lib/plugin-sdk-entries.mjs";
+} from "../../scripts/lib/plugin-sdk-entries.mts";
 
 function getBuildAllStep(label: string) {
   const step = BUILD_ALL_STEPS.find((entry) => entry.label === label);
@@ -267,7 +267,23 @@ describe("resolveBuildAllStep", () => {
 
     expect(result).toEqual({
       command: "/custom/node",
-      args: ["scripts/bundled-plugin-assets.mjs", "--phase", "build"],
+      args: ["--import", "tsx", "scripts/bundled-plugin-assets.mts", "--phase", "build"],
+      options: {
+        stdio: "inherit",
+        env: { OPENCLAW_BUILD_ALL_NO_PNPM: "1" },
+      },
+    });
+  });
+
+  it("routes no-pnpm UI builds through the canonical validation wrapper", () => {
+    expect(
+      resolveBuildAllStep(getBuildAllStep("ui:build"), {
+        nodeExecPath: "/custom/node",
+        env: { OPENCLAW_BUILD_ALL_NO_PNPM: "1" },
+      }),
+    ).toEqual({
+      command: "/custom/node",
+      args: ["scripts/ui.js", "build"],
       options: {
         stdio: "inherit",
         env: { OPENCLAW_BUILD_ALL_NO_PNPM: "1" },
@@ -305,24 +321,32 @@ describe("resolveBuildAllSteps", () => {
 
   it("prints CLI help without starting build steps", () => {
     for (const args of [["--help"], ["cliStartup", "--help"]]) {
-      const result = spawnSync(process.execPath, ["scripts/build-all.mjs", ...args], {
-        cwd: process.cwd(),
-        encoding: "utf8",
-      });
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", "scripts/build-all.mts", ...args],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+        },
+      );
 
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain("Usage: node scripts/build-all.mjs [profile]");
+      expect(result.stdout).toContain("Usage: node --import tsx scripts/build-all.mts [profile]");
       expect(result.stdout).toContain("cliStartup");
       expect(result.stdout).not.toContain("[build-all]");
     }
   });
 
   it("rejects unknown CLI args without starting build steps", () => {
-    const result = spawnSync(process.execPath, ["scripts/build-all.mjs", "cliStartup", "--bogus"], {
-      cwd: process.cwd(),
-      encoding: "utf8",
-    });
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/build-all.mts", "cliStartup", "--bogus"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      },
+    );
 
     expect(result.status).toBe(2);
     expect(result.stdout).toBe("");
@@ -359,7 +383,13 @@ describe("resolveBuildAllSteps", () => {
     const packages = getBuildAllStep("tsdown-packages");
     const unified = getBuildAllStep("tsdown-unified");
 
-    expect(ai.args).toEqual(["scripts/tsdown-build.mjs", "--config", "tsdown.ai.config.ts"]);
+    expect(ai.args).toEqual([
+      "--import",
+      "tsx",
+      "scripts/tsdown-build.mts",
+      "--config",
+      "tsdown.ai.config.ts",
+    ]);
     expect(packages.args).toEqual(
       expect.arrayContaining(["--config", "tsdown.config.ts", "--filter", "openclaw-packages"]),
     );
@@ -748,15 +778,15 @@ describe("build-all timing output", () => {
 });
 
 describe("resolveBuildAllStepCacheState", () => {
-  it("shares content-addressed outputs across checkout roots", () => {
+  it("restores exact declaration snapshots across checkout roots", () => {
     const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-shared-build-cache-"));
     const firstRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-build-cache-source-"));
     const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-build-cache-target-"));
     const step = {
-      label: "cached",
+      label: "tsdown-unified",
       cache: {
         inputs: ["src"],
-        outputs: ["dist"],
+        outputs: [{ path: "dist", extensions: [".d.ts", ".d.mts", ".d.cts"] }],
         restore: "always" as const,
       },
     };
@@ -765,10 +795,18 @@ describe("resolveBuildAllStepCacheState", () => {
     try {
       for (const rootDir of [firstRoot, secondRoot]) {
         fs.mkdirSync(path.join(rootDir, "src"), { recursive: true });
+        fs.mkdirSync(path.join(rootDir, "dist/plugin-sdk"), { recursive: true });
         fs.writeFileSync(path.join(rootDir, "src/input.ts"), "same input");
       }
-      fs.mkdirSync(path.join(firstRoot, "dist"), { recursive: true });
-      fs.writeFileSync(path.join(firstRoot, "dist/output.js"), "cached output");
+      const currentDts = path.join(secondRoot, "dist/plugin-sdk/current.d.ts");
+      const removedDts = path.join(secondRoot, "dist/plugin-sdk/removed-facade.d.ts");
+      const removedJs = path.join(secondRoot, "dist/plugin-sdk/removed-facade.js");
+      fs.writeFileSync(
+        path.join(firstRoot, "dist/plugin-sdk/current.d.ts"),
+        "export declare const current: true;",
+      );
+      fs.writeFileSync(removedDts, "export declare const removed: true;");
+      fs.writeFileSync(removedJs, "export const removed = true;");
 
       const sourceState = resolveBuildAllStepCacheState(step, { rootDir: firstRoot, env });
       writeBuildAllStepCacheStamp(
@@ -779,11 +817,19 @@ describe("resolveBuildAllStepCacheState", () => {
 
       const targetState = resolveBuildAllStepCacheState(step, { rootDir: secondRoot, env });
       expect(targetState).toMatchObject({ fresh: true, restorable: true });
-      expect(targetState.outputRoot).toBe(path.join(cacheRoot, "cached", "outputs"));
+      expect(targetState.outputRoot).toBe(path.join(cacheRoot, "tsdown-unified", "outputs"));
       expect(restoreBuildAllStepCacheOutputs(targetState, { rootDir: secondRoot })).toBe(true);
-      expect(fs.readFileSync(path.join(secondRoot, "dist/output.js"), "utf8")).toBe(
-        "cached output",
-      );
+      fs.rmSync(removedJs);
+
+      expect({
+        current: fs.readFileSync(currentDts, "utf8"),
+        declaration: fs.existsSync(removedDts),
+        runtime: fs.existsSync(removedJs),
+      }).toEqual({
+        current: "export declare const current: true;",
+        declaration: false,
+        runtime: false,
+      });
     } finally {
       fs.rmSync(cacheRoot, { force: true, recursive: true });
       fs.rmSync(firstRoot, { force: true, recursive: true });
