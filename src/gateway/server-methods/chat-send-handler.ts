@@ -6,7 +6,10 @@ import { emitDiagnosticsTimelineEvent } from "../../infra/diagnostics-timeline.j
 import type { ChatRunTiming } from "../server-chat-state.js";
 import { terminalizeRestartSafeChatAdmission } from "./chat-restart-recovery.js";
 import { startChatDispatch } from "./chat-send-agent-dispatch.js";
-import { prepareChatSendAttachments } from "./chat-send-attachments.js";
+import {
+  discardPreparedChatSendAttachments,
+  prepareChatSendAttachments,
+} from "./chat-send-attachments.js";
 import { handleChatSendSetupError } from "./chat-send-dispatch-errors.js";
 import type { ChatSendExternalAuthorityAdmission } from "./chat-send-external-authority-contract.js";
 import {
@@ -24,14 +27,16 @@ import {
 import { createGatewayChatUserTurnController } from "./chat-user-turn-recorder.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
-export async function handleChatSend(
+async function handleChatSendWithOptions(
   { params, respond, context, client }: GatewayRequestHandlerOptions,
   onAdmissionOwned?: () => Promise<boolean>,
   externalAuthorityAdmission?: ChatSendExternalAuthorityAdmission,
+  options?: { trustedSystemInput?: boolean },
 ): Promise<void> {
   const setup = await prepareAndAdmitChatSend(
     { params, respond, context, client },
     onAdmissionOwned,
+    options,
   );
   if (!setup) {
     return;
@@ -69,12 +74,14 @@ export async function handleChatSend(
     return;
   }
   if (activeRunAbort.controller.signal.aborted) {
+    void discardPreparedChatSendAttachments(preparedAttachments.value.offloadedRefs);
     finishAbortedChatSend();
     return;
   }
   // Attachment preparation can suspend. Recheck immediately before the
   // synchronous ACK path so aborts and hot routing reloads cannot cross it.
   if (sessionRoutingChanged(context.getRuntimeConfig())) {
+    void discardPreparedChatSendAttachments(preparedAttachments.value.offloadedRefs);
     admitted.value.rejectSessionRoutingChanged();
     return;
   }
@@ -281,4 +288,22 @@ export async function handleChatSend(
       terminalizeRestartSafeAdmission,
     });
   }
+}
+
+export async function handleChatSend(
+  options: GatewayRequestHandlerOptions,
+  onAdmissionOwned?: () => Promise<boolean>,
+  externalAuthorityAdmission?: ChatSendExternalAuthorityAdmission,
+): Promise<void> {
+  await handleChatSendWithOptions(options, onAdmissionOwned, externalAuthorityAdmission);
+}
+
+/** Dispatches Gateway-authored system input without widening the public chat-send contract. */
+export async function handleTrustedInternalChatSend(
+  options: GatewayRequestHandlerOptions,
+  onAdmissionOwned?: () => Promise<boolean>,
+): Promise<void> {
+  await handleChatSendWithOptions(options, onAdmissionOwned, undefined, {
+    trustedSystemInput: true,
+  });
 }

@@ -1,6 +1,10 @@
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { AgentsListResult } from "../../api/types.ts";
 import { fetchAssistantIdentity } from "../../app/assistant-identity.ts";
+import {
+  dispatchCommandClientPresentation,
+  type CommandClientPresentationAction,
+} from "../../app/command-client-presentation.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import {
   autoPromptNotificationsOnSend,
@@ -199,6 +203,7 @@ export function createPageState(
     chatModelsLoading: false,
     chatMetadataRequestVersion: 0,
     chatModelCatalog: [],
+    chatModelCatalogError: null,
     modelAuthStatusResult: null,
     modelAuthStatusError: null,
     sessionsResult: null,
@@ -222,6 +227,8 @@ export function createPageState(
     chatSendingScopeKey: null,
     chatMessagesBySession,
     eventLogBuffer: [],
+    dispatchClientPresentation: (action: CommandClientPresentationAction) =>
+      dispatchCommandClientPresentation(context, action),
     basePath: context.basePath,
     chatNewMessagesBelow: false,
     chatLocalInputHistoryBySession: {},
@@ -261,7 +268,6 @@ export function createPageState(
   } as unknown as ChatPageHost;
 
   state.resetToolStream = () => resetToolStream(state as never);
-  state.onModelChanged = () => undefined;
   state.resetChatInputHistoryNavigation = () => resetChatInputHistoryNavigation(state);
   state.resetChatScroll = () => resetChatScroll(state);
   state.scrollToBottom = (options) => {

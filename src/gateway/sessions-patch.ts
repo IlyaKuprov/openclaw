@@ -207,7 +207,11 @@ export async function projectSessionsPatchEntry(params: {
   ): string => {
     // ACP metadata can own canonical agent keys (for example agent:main:main),
     // so key shape alone cannot identify the runtime that validates thinking.
-    const acpMeta = readAcpSessionMetaForEntry({ sessionKey: storeKey, entry });
+    const acpMeta = readAcpSessionMetaForEntry({
+      sessionKey: storeKey,
+      agentId: sessionAgentId,
+      entry,
+    });
     return (
       acpMeta?.backend ??
       resolveEffectiveAgentRuntime({
@@ -574,14 +578,20 @@ export async function projectSessionsPatchEntry(params: {
       if (!params.loadGatewayModelCatalog) {
         return {
           ok: false,
-          error: errorShape(ErrorCodes.UNAVAILABLE, "model catalog unavailable"),
+          error: errorShape(
+            ErrorCodes.UNAVAILABLE,
+            "model catalog is still loading; retry in a few seconds",
+          ),
         };
       }
       const catalog = await loadPreparedModelCatalogForPatch();
       if (!catalog) {
         return {
           ok: false,
-          error: errorShape(ErrorCodes.UNAVAILABLE, "model catalog unavailable"),
+          error: errorShape(
+            ErrorCodes.UNAVAILABLE,
+            "model catalog is still loading; retry in a few seconds",
+          ),
         };
       }
       const resolved = resolveSessionPatchModelSelection({

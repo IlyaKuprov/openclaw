@@ -2,7 +2,10 @@
 // Tracks pending operator decisions and short-lived resolved approval records.
 import { randomUUID } from "node:crypto";
 import { expectDefined } from "@openclaw/normalization-core";
-import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/number-coercion";
+import {
+  resolveExpiresAtMsFromDurationMs,
+  resolveTimerTimeoutMs,
+} from "@openclaw/normalization-core/number-coercion";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { ExecutionIdentityAdmissionToken } from "../audit/execution-identity-admission.js";
 import { buildApprovalPresentation } from "../infra/approval-presentation.js";
@@ -11,7 +14,6 @@ import type {
   ExecApprovalDecision,
   ExecApprovalRequestPayload as InfraExecApprovalRequestPayload,
 } from "../infra/exec-approvals.js";
-import { resolveTimerTimeoutMs } from "../shared/number-coercion.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import type { AgentRuntimeDelegatedAuthority } from "./agent-runtime-identity-token.js";
 import {
@@ -126,6 +128,11 @@ type ExecApprovalManagerOptions<TPayload> = {
     context: { approvalId: string; approvalKind: OperatorApprovalKind; operation: "expire" },
   ) => void;
   onLifecycle?: (event: OperatorApprovalLifecycleEvent) => void;
+  /** Timer-driven timeout expiry. The gateway owns the approval clock, so this
+   * is the only place reviewer surfaces can learn an approval expired without
+   * trusting their own (skewed) clocks; resolve/authority-close paths publish
+   * through their own callers. */
+  onExpired?: (record: OperatorApprovalRecord, liveRecord: ExecApprovalRecord<TPayload>) => void;
   validateAgentRuntimeDelegatedAuthority?: (authority: AgentRuntimeDelegatedAuthority) => boolean;
 };
 
@@ -896,7 +903,15 @@ export class ExecApprovalManager<TPayload = ExecApprovalRequestPayload> {
       this.scheduleExpiryTimer(entry);
       return false;
     }
-    return result.outcome === "denied" || result.outcome === "expired";
+    const expired = result.outcome === "denied" || result.outcome === "expired";
+    if (expired && "record" in result && result.liveRecord) {
+      try {
+        this.options.onExpired?.(result.record, result.liveRecord);
+      } catch (error) {
+        this.reportError(error, { approvalId: recordId, operation: "expire" });
+      }
+    }
+    return expired;
   }
 
   private resolveLocal(
