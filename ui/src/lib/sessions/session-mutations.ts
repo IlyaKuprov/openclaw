@@ -1,8 +1,15 @@
 import type {
+  SessionOwner,
+  SessionsAssignOwnerParams,
+  SessionsAssignOwnerResult,
+} from "../../../../packages/gateway-protocol/src/index.js";
+import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import type {
   GatewaySessionRow,
   SessionsListResult,
   SessionsPatchResult,
 } from "../../api/types.ts";
+import { formatUiError } from "../format-error.ts";
 import {
   requestSessionCreate,
   resolveSessionCreateParams,
@@ -43,6 +50,26 @@ type SessionMutationsHost = {
   notifyCreated: (key: string) => void;
   retirePullRequestSummary: (key: string) => void;
 };
+
+function scheduleDeletedComposerDraftRetirement(
+  client: GatewayBrowserClient,
+  key: string,
+  agentId?: string | null,
+) {
+  if (!client?.recoveryScopeReady || !client.recoveryScope) {
+    return;
+  }
+  const target = {
+    gatewayUrl: client.gatewayUrl,
+    recoveryScope: client.recoveryScope,
+    sessionKey: key,
+    ...(agentId ? { agentId } : {}),
+  };
+  void import("../chat/composer-draft-store.runtime.ts").then(
+    ({ retireDeletedComposerDraft }) => retireDeletedComposerDraft(target),
+    () => undefined,
+  );
+}
 
 export function createSessionMutations(host: SessionMutationsHost) {
   const pendingModelPatches = new Map<
@@ -154,7 +181,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
       if (options.reconciliation === "background") {
         void reconciliation.catch((error: unknown) => {
           if (host.connection.isCurrent(scope)) {
-            host.publish({ ...host.readState(), error: String(error) }, "operation");
+            host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
           }
         });
       } else {
@@ -166,7 +193,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
       return result;
     } catch (error) {
       if (host.connection.isCurrent(scope)) {
-        host.publish({ ...host.readState(), error: String(error) }, "operation");
+        host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
       }
       return null;
     }
@@ -190,7 +217,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
       return host.connection.isCurrent(scope) ? result : null;
     } catch (error) {
       if (host.connection.isCurrent(scope)) {
-        host.publish({ ...host.readState(), error: String(error) }, "operation");
+        host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
       }
       return null;
     }
@@ -213,7 +240,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
     let previousModelOverride: string | null | undefined;
     let modelPatchStarted = false;
     let modelPatchRevision = 0;
-    const modelPatchToken = Symbol();
+    const modelPatchToken = Symbol("session-model-patch");
     const ownsModelOverride = () => options.ownsModelOverride?.() !== false;
     const startModelPatch = () => {
       if (!managesModelOverride || modelPatchStarted || !ownsModelOverride()) {
@@ -233,7 +260,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
       modelPatchRevision = pendingModelPatches.get(normalizedKey)?.revision ?? 0;
     };
     const nextPinned = patchParams.pinned === true;
-    const pinPatchToken = Symbol();
+    const pinPatchToken = Symbol("session-pin-patch");
     let pinPatchStarted = false;
     // Sidebar rows read `pinned` straight off the snapshot, so a pin/unpin has
     // no visible outcome until this flip; the Gateway patch and its list
@@ -388,7 +415,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
         return null;
       }
       if (ownsModelOverride()) {
-        host.publish({ ...host.readState(), error: String(error) }, "operation");
+        host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
       }
       throw error;
     }
@@ -407,6 +434,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
       if (!host.connection.isCurrent(scope) || !confirmsSessionDeletion(response)) {
         return { deleted: false };
       }
+      scheduleDeletedComposerDraftRetirement(scope.client, key, options.agentId);
       host.retirePullRequestSummary(key);
       confirmedArchives.delete(key.trim());
       preparedWorkSessionKeys.delete(key.trim());
@@ -421,7 +449,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
       if (!host.connection.isCurrent(scope)) {
         return { deleted: false };
       }
-      host.publish({ ...host.readState(), error: String(error) }, "operation");
+      host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
       throw error;
     }
   };
@@ -447,12 +475,13 @@ export function createSessionMutations(host: SessionMutationsHost) {
         }
         if (confirmsSessionDeletion(response)) {
           deleted.push(target.key);
+          scheduleDeletedComposerDraftRetirement(scope.client, target.key, target.agentId);
           if (response.worktreePreserved) {
             preservedWorktrees.push(response.worktreePreserved);
           }
         }
       } catch (error) {
-        errors.push(String(error));
+        errors.push(formatUiError(error));
       }
     }
     if (deleted.length > 0 && host.connection.isCurrent(scope)) {
@@ -488,10 +517,38 @@ export function createSessionMutations(host: SessionMutationsHost) {
       return host.connection.isCurrent(scope) ? "completed" : "uncertain";
     } catch (error) {
       if (host.connection.isCurrent(scope)) {
-        host.publish({ ...host.readState(), error: String(error) }, "operation");
+        host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
       }
       // Reset can commit before awaited lifecycle work rejects; never infer safe retry.
       return "uncertain";
+    }
+  };
+
+  const assignOwner = async (
+    key: string,
+    owner: SessionsAssignOwnerParams["owner"],
+    options: { agentId?: string | null } = {},
+  ): Promise<SessionOwner | null> => {
+    const scope = host.connection.capture();
+    if (!scope) {
+      return null;
+    }
+    try {
+      const result = await scope.client.request<SessionsAssignOwnerResult>("sessions.assignOwner", {
+        key,
+        owner,
+        ...(options.agentId ? { agentId: options.agentId } : {}),
+      });
+      if (!host.connection.isCurrent(scope)) {
+        return null;
+      }
+      patchRowLocal(result.key, { owner: result.owner });
+      return result.owner;
+    } catch (error) {
+      if (host.connection.isCurrent(scope)) {
+        host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
+      }
+      return null;
     }
   };
 
@@ -502,6 +559,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
     delete: remove,
     deleteMany: removeMany,
     patch,
+    assignOwner,
     patchRowLocal,
     /**
      * Re-asserts in-flight pin intents over canonical Gateway rows: every

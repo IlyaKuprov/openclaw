@@ -17,13 +17,13 @@ import {
 } from "./apply-transition.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
 import { stripProposalFrontmatterForSkill } from "./frontmatter.js";
+import { isWorkshopOwnedSkillDir } from "./ownership.js";
 import { createSkillProposalEvent, dispatchSkillProposalChanged } from "./plugin-hooks.js";
 import {
   nextProposalVersion,
   prepareSkillProposalDraft,
   resolveUpdateProposalDescription,
 } from "./proposal-draft.js";
-export { readSkillProposalDraftDirectory, readSkillProposalDraftFile } from "./proposal-draft.js";
 import { hashSkillProposalRevision } from "./revision-hash.js";
 import {
   assertExpectedRevisionHash,
@@ -42,14 +42,6 @@ import {
   withSkillProposalTargetLock,
   type PreparedSkillProposalSupportFile,
 } from "./store.js";
-import { assertWritableSkillTarget } from "./workspace-skill-read.js";
-export {
-  getSkillProposalRunProgress,
-  inspectSkillProposal,
-  listSkillProposals,
-  resolvePendingSkillProposal,
-} from "./service-query.js";
-export { evaluateSkillProposal, listSkillProposalEvents } from "./service-evaluation.js";
 import {
   MAX_SKILL_PROPOSAL_ORIGIN_RUN_IDS,
   SKILL_WORKSHOP_SCHEMA,
@@ -63,6 +55,15 @@ import {
   type SkillProposalSupportFile,
   type SkillProposalUpdateInput,
 } from "./types.js";
+import { assertWritableSkillTarget } from "./workspace-skill-read.js";
+export { readSkillProposalDraftDirectory, readSkillProposalDraftFile } from "./proposal-draft.js";
+export {
+  getSkillProposalRunProgress,
+  inspectSkillProposal,
+  listSkillProposals,
+  resolvePendingSkillProposal,
+} from "./service-query.js";
+export { evaluateSkillProposal, listSkillProposalEvents } from "./service-evaluation.js";
 
 type SkillWorkshopWorkspaceOptions = {
   config?: OpenClawConfig;
@@ -263,6 +264,15 @@ export async function proposeUpdateSkill(
     throw new Error(`Skill not found: ${skillName}`);
   }
   assertWritableSkillTarget(input.workspaceDir, targetSkill);
+  if (
+    !isWorkshopOwnedSkillDir(
+      input.workspaceDir,
+      targetSkill.baseDir,
+      proposalStoreOptions(input.env),
+    )
+  ) {
+    throw new Error(`Skill Workshop does not own this skill path: ${targetSkill.skillKey}`);
+  }
   const currentContent = await readWorkspaceSkillFile(targetSkill.filePath);
   if (currentContent === null) {
     throw new Error(`Skill file is missing: ${targetSkill.filePath}`);

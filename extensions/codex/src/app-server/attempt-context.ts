@@ -27,8 +27,7 @@ import type {
 import { readNonBlankString as readNonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import type { CodexDynamicToolFunctionSpec, CodexDynamicToolSpec, JsonValue } from "./protocol.js";
-import { flattenCodexDynamicToolFunctions } from "./protocol.js";
-import { isJsonObject } from "./protocol.js";
+import { flattenCodexDynamicToolFunctions, isJsonObject } from "./protocol.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
 import { readCodexMirroredSessionHistoryMessages } from "./session-history.js";
 import {
@@ -169,6 +168,7 @@ export function resolveContextEngineBootstrapProjectionDecision(params: {
 export async function buildCodexWorkspaceBootstrapContext(params: {
   params: EmbeddedRunAttemptParams;
   resolvedWorkspace: string;
+  executionWorkspace?: string;
   effectiveWorkspace: string;
   sessionKey: string;
   sessionAgentId: string;
@@ -176,12 +176,17 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
   sandboxed?: boolean;
 }): Promise<CodexWorkspaceBootstrapContext> {
   try {
+    const executionWorkspace = params.executionWorkspace ?? params.resolvedWorkspace;
+    const inheritsAgentWorkspace = executionWorkspace !== params.resolvedWorkspace;
+    const promptWorkspace = inheritsAgentWorkspace
+      ? params.resolvedWorkspace
+      : params.effectiveWorkspace;
     const memoryToolsAvailable =
       params.memoryToolNames.length > 0 &&
       canRouteCodexWorkspaceMemoryThroughTools({
         config: params.params.config,
         agentId: params.params.agentId ?? params.sessionAgentId,
-        workspaceDir: params.effectiveWorkspace,
+        workspaceDir: inheritsAgentWorkspace ? params.resolvedWorkspace : params.effectiveWorkspace,
       });
     // Native Codex turns should read workspace MEMORY.md through tools when
     // possible; pasting it into every prompt turns durable memory into policy.
@@ -206,7 +211,7 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
       remapCodexContextFilePath({
         file: toCodexEmbeddedContextFile(file),
         sourceWorkspaceDir: params.resolvedWorkspace,
-        targetWorkspaceDir: params.effectiveWorkspace,
+        targetWorkspaceDir: promptWorkspace,
       }),
     );
     const contextFiles = buildBootstrapContextForFiles(
@@ -228,7 +233,7 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
       remapCodexContextFilePath({
         file,
         sourceWorkspaceDir: params.resolvedWorkspace,
-        targetWorkspaceDir: params.effectiveWorkspace,
+        targetWorkspaceDir: promptWorkspace,
       }),
     );
     const promptContextFiles = selectCodexWorkspacePromptContextFiles(contextFiles, {
@@ -238,7 +243,10 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
     const turnScopedDeveloperInstructionFiles = shouldInjectCodexOpenClawPromptContext(
       params.params,
     )
-      ? selectCodexWorkspaceTurnScopedDeveloperInstructionFiles(contextFiles)
+      ? selectCodexWorkspaceTurnScopedDeveloperInstructionFiles(contextFiles, {
+          agentWorkspaceDir: params.resolvedWorkspace,
+          includeAgentProjectDocs: inheritsAgentWorkspace,
+        })
       : [];
     return {
       bootstrapFiles,
@@ -676,7 +684,7 @@ function renderCodexWorkspaceBootstrapPromptContext(
     return undefined;
   }
   const lines = [
-    "OpenClaw loaded these user-editable workspace files for the current turn. Codex loads AGENTS.md natively. SOUL.md, IDENTITY.md, and USER.md are provided as turn-scoped collaboration instructions so native Codex subagents do not inherit them. Those files are not repeated here.",
+    "OpenClaw loaded these user-editable workspace files for the current turn. Codex loads project-local AGENTS.md natively. When execution uses another folder, the agent workspace AGENTS.md is inherited with SOUL.md, IDENTITY.md, and USER.md as turn-scoped collaboration instructions. Those files are not repeated here.",
     "",
     "# Project Context",
     "",
@@ -714,10 +722,24 @@ function selectCodexWorkspacePromptContextFiles(
 
 function selectCodexWorkspaceTurnScopedDeveloperInstructionFiles(
   contextFiles: EmbeddedContextFile[],
+  options: { agentWorkspaceDir: string; includeAgentProjectDocs?: boolean },
 ): EmbeddedContextFile[] {
-  return selectCodexWorkspaceDeveloperInstructionFiles(
+  const files = selectCodexWorkspaceDeveloperInstructionFiles(
     contextFiles,
-    CODEX_TURN_SCOPED_WORKSPACE_DEVELOPER_CONTEXT_BASENAMES,
+    options.includeAgentProjectDocs
+      ? new Set([
+          ...CODEX_TURN_SCOPED_WORKSPACE_DEVELOPER_CONTEXT_BASENAMES,
+          ...CODEX_NATIVE_PROJECT_DOC_BASENAMES,
+        ])
+      : CODEX_TURN_SCOPED_WORKSPACE_DEVELOPER_CONTEXT_BASENAMES,
+  );
+  const agentProjectDocPath = path.join(path.resolve(options.agentWorkspaceDir), "AGENTS.md");
+  // Native Codex discovery owns execution-directory project docs. OpenClaw only
+  // inherits the configured agent workspace's AGENTS.md through this channel.
+  return files.filter(
+    (file) =>
+      !CODEX_NATIVE_PROJECT_DOC_BASENAMES.has(getCodexContextFileBasename(file.path)) ||
+      path.resolve(file.path) === agentProjectDocPath,
   );
 }
 

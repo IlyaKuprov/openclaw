@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 334391,
-  "reason": "cumulative 2026-08-15 UI growth plus folder group defaults catalog and lazy New Session route resolution",
-  "updatedAt": "2026-08-15"
+  "startupJsGzipBytes": 343289,
+  "reason": "Typed update recovery state, failure projection, and sidebar review routing",
+  "updatedAt": "2026-08-18"
 }

@@ -1,19 +1,30 @@
 import { html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
 import { keyed } from "lit/directives/keyed.js";
+import { ref } from "lit/directives/ref.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import { sessionRefFromPath } from "../../../app-session-route-paths.ts";
 import { icons } from "../../../components/icons.ts";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
-import { handleMarkdownCodeBlockCopy } from "../../../components/markdown-code-blocks.ts";
+import {
+  handleMarkdownCodeBlockClick,
+  initializeMarkdownCodeBlocks,
+} from "../../../components/markdown-code-blocks.ts";
 import {
   markdownFileLinkFromEvent,
   markdownFileLinkFromKeyboardEvent,
 } from "../../../components/markdown-file-links.ts";
-import "../../../components/web-awesome.ts";
+import {
+  markdownSessionHref,
+  markdownSessionLinkFromEvent,
+  markdownSessionLinkFromKeyboardEvent,
+  type SessionLinkTarget,
+} from "../../../components/markdown-session-links.ts";
 import { toSanitizedMarkdownHtml } from "../../../components/markdown.ts";
+import "../../../components/web-awesome.ts";
 import { t } from "../../../i18n/index.ts";
-import "../../../components/tooltip.ts";
 import { extractRawText } from "../../../lib/chat/message-extract.ts";
+import "../../../components/tooltip.ts";
 import {
   resolveCanvasIframeUrl,
   resolveEmbedSandbox,
@@ -21,6 +32,8 @@ import {
 } from "../../../lib/chat/tool-display.ts";
 import { copyToClipboard } from "../../../lib/clipboard.ts";
 import { type EditorId, openEditor } from "../../../lib/editor-links.ts";
+import { formatUiError } from "../../../lib/format-error.ts";
+import { shouldHandleNavigationClick } from "../../../lib/navigation-click.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import { openInlineChatImage } from "./chat-image-lightbox.ts";
 import { openResolvedImage } from "./chat-message-image-open.ts";
@@ -138,16 +151,19 @@ function setRetainedFileDraft(content: FileSidebarContent, draft: RetainedFileDr
   retainedFileDrafts.set(key, draft);
 }
 
-type ChatDetailContent =
+export type SidebarContent =
   | MarkdownSidebarContent
   | CanvasSidebarContent
   | ImageSidebarContent
   | FileSidebarContent
-  | SessionDiffSidebarContent;
+  | SessionDiffSidebarContent
+  | { kind: "task"; taskId: string };
 
-export type SidebarContent = ChatDetailContent | { kind: "task"; taskId: string };
+type ChatDetailPanelContent = Exclude<SidebarContent, { kind: "task" }>;
 
-function hasFullMessageRequest(content: ChatDetailContent): content is ChatDetailContent & {
+function hasFullMessageRequest(
+  content: ChatDetailPanelContent,
+): content is ChatDetailPanelContent & {
   fullMessageRequest: SidebarFullMessageRequest;
 } {
   return Boolean(
@@ -183,8 +199,8 @@ function toPlainTextCodeFence(value: string, language = ""): string {
 }
 
 function buildRawSidebarContent(
-  content: ChatDetailContent | null | undefined,
-): ChatDetailContent | null {
+  content: ChatDetailPanelContent | null | undefined,
+): ChatDetailPanelContent | null {
   if (!content) {
     return null;
   }
@@ -492,7 +508,7 @@ function renderFileSidebarContent(
 }
 
 function resolveSidebarCanvasSandbox(
-  content: ChatDetailContent,
+  content: ChatDetailPanelContent,
   embedSandboxMode: EmbedSandboxMode,
 ): string {
   return content.kind === "canvas"
@@ -501,7 +517,7 @@ function resolveSidebarCanvasSandbox(
 }
 
 type MarkdownSidebarProps = {
-  content: ChatDetailContent | null;
+  content: ChatDetailPanelContent | null;
   error: string | null;
   fileView?: FileViewControls;
   onClose: () => void;
@@ -518,8 +534,10 @@ function renderMarkdownSidebar(props: MarkdownSidebarProps) {
   const markdownHtml =
     content?.kind === "markdown" && content.content.trim()
       ? toSanitizedMarkdownHtml(content.content, {
+          codeBlockInteraction: "interactive",
           fileLinks: true,
           interactiveImages: props.onOpenImage !== undefined,
+          sessionLinks: true,
         })
       : "";
   const canvasSandbox =
@@ -689,8 +707,9 @@ function renderMarkdownSidebar(props: MarkdownSidebarProps) {
 }
 
 class ChatDetailPanel extends OpenClawLightDomElement {
-  @property({ attribute: false }) content: ChatDetailContent | null = null;
+  @property({ attribute: false }) content: ChatDetailPanelContent | null = null;
   @property({ attribute: false }) loadFullMessage?: SidebarFullMessageLoader | null = null;
+  @property() basePath = "";
   @property() canvasPluginSurfaceUrl: string | null = null;
   @property() embedSandboxMode: EmbedSandboxMode = "scripts";
   @property({ type: Boolean }) allowExternalEmbedUrls = false;
@@ -698,10 +717,12 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   @property({ attribute: false }) onOpenWorkspaceFile?:
     | ((target: { path: string; line?: number | null }) => void)
     | null = null;
+  @property({ attribute: false }) onOpenSessionLink?: ((target: SessionLinkTarget) => void) | null =
+    null;
   @property({ attribute: false }) onRevealInWorkspace?: ((path: string) => void) | null = null;
   @property({ attribute: false }) onOpenImage?: ((item: ImageLightboxItem) => void) | null = null;
 
-  @state() private visibleContent: ChatDetailContent | null = null;
+  @state() private visibleContent: ChatDetailPanelContent | null = null;
   @state() private error: string | null = null;
   @state() private fileSearchOpen = false;
   @state() private fileSearchQuery = "";
@@ -1127,7 +1148,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
         if (version === this.fileOperationVersion) {
           this.fileSaveNotice = {
             kind: "error",
-            message: error instanceof Error ? error.message : String(error),
+            message: formatUiError(error),
           };
         }
       })
@@ -1177,7 +1198,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
         if (version === this.fileOperationVersion) {
           this.fileSaveNotice = {
             kind: "error",
-            message: error instanceof Error ? error.message : String(error),
+            message: formatUiError(error),
           };
         }
       })
@@ -1220,7 +1241,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
         if (version === this.fileOperationVersion) {
           this.fileSaveNotice = {
             kind: "error",
-            message: error instanceof Error ? error.message : String(error),
+            message: formatUiError(error),
           };
         }
       })
@@ -1231,7 +1252,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       });
   };
 
-  private async upgradeToFullMessage(content: ChatDetailContent, version: number) {
+  private async upgradeToFullMessage(content: ChatDetailPanelContent, version: number) {
     if (!hasFullMessageRequest(content) || !this.loadFullMessage) {
       return;
     }
@@ -1276,7 +1297,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
         return;
       }
       this.error = t("chat.detailPanel.fullContentLoadFailed", {
-        error: error instanceof Error ? error.message : String(error),
+        error: formatUiError(error),
       });
     }
   }
@@ -1296,14 +1317,22 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     this.error = null;
   };
 
-  private readonly handlePanelClick = (event: Event) => {
+  private readonly handlePanelClick = (event: MouseEvent) => {
     if (openInlineChatImage(event, this.onOpenImage ?? undefined)) {
       return;
     }
-    handleMarkdownCodeBlockCopy(event);
+    handleMarkdownCodeBlockClick(event);
     const target = markdownFileLinkFromEvent(event);
     if (target) {
       this.onOpenWorkspaceFile?.(target);
+      return;
+    }
+    const sessionTarget =
+      markdownSessionLinkFromEvent(event) ??
+      markdownSessionHref(event, sessionRefFromPath, this.basePath);
+    if (sessionTarget && shouldHandleNavigationClick(event)) {
+      event.preventDefault();
+      this.onOpenSessionLink?.(sessionTarget);
     }
   };
 
@@ -1311,6 +1340,16 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     const target = markdownFileLinkFromKeyboardEvent(event);
     if (target) {
       this.onOpenWorkspaceFile?.(target);
+      return;
+    }
+    const sessionTarget =
+      markdownSessionLinkFromKeyboardEvent(event) ??
+      (event.key === "Enter"
+        ? markdownSessionHref(event, sessionRefFromPath, this.basePath)
+        : null);
+    if (sessionTarget) {
+      event.preventDefault();
+      this.onOpenSessionLink?.(sessionTarget);
     }
   };
 
@@ -1328,6 +1367,11 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     return html`
       <div
         class=${fillHost ? "sidebar-panel-host--fill" : ""}
+        ${ref((element) => {
+          if (element instanceof HTMLElement) {
+            initializeMarkdownCodeBlocks(element);
+          }
+        })}
         @click=${this.handlePanelClick}
         @keydown=${this.handlePanelKeyDown}
       >

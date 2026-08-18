@@ -18,6 +18,7 @@ import {
 import {
   resolveCodexContextEngineProjectionMaxChars,
   resolveCodexContextEngineProjectionReserveTokens,
+  resolveCodexContinuityProjectionMaxChars,
   type CodexProjectedContextRange,
 } from "./context-engine-projection.js";
 import type { CodexAttemptRuntime } from "./run-attempt-runtime.js";
@@ -140,7 +141,8 @@ export async function prepareCodexAttemptContext(
   const memoryToolNames = getCodexWorkspaceMemoryToolNames(toolBridge.availableSpecs);
   const workspaceBootstrapContext = await buildCodexWorkspaceBootstrapContext({
     params: runtimeParams,
-    resolvedWorkspace,
+    resolvedWorkspace: runtimeParams.bootstrapWorkspaceDir ?? resolvedWorkspace,
+    executionWorkspace: resolvedWorkspace,
     effectiveWorkspace,
     sessionKey: contextSessionKey,
     sessionAgentId,
@@ -172,12 +174,20 @@ export async function prepareCodexAttemptContext(
     contextEngineProjection: undefined as CodexContextEngineThreadBootstrapProjection | undefined,
     precomputedStaleBindingContinuityProjectionApplied: false,
     staleBindingContinuityForcedFreshStart: false,
+    // Set by the no-engine continuity appliers; gates calibration recording so a
+    // dense direct or active-engine prompt can never persist a density sample
+    // that later shrinks continuity history it did not measure.
+    noEngineContinuityProjectionApplied: false,
     inactiveThreadBootstrapBindingForcedFreshStart:
       initialInactiveThreadBootstrapBindingForcedFreshStart,
   };
   const codexContextProjectionMaxChars = resolveCodexContextEngineProjectionMaxChars({
     contextTokenBudget: effectiveContextTokenBudget,
     reserveTokens: resolveCodexContextEngineProjectionReserveTokens(),
+  });
+  const codexContinuityProjectionMaxChars = resolveCodexContinuityProjectionMaxChars({
+    contextTokenBudget: effectiveContextTokenBudget,
+    calibration: connection.mutable.continuityCalibration,
   });
   return {
     runtime,
@@ -194,6 +204,7 @@ export async function prepareCodexAttemptContext(
     skillsCollaborationInstructions,
     promptState,
     codexContextProjectionMaxChars,
+    codexContinuityProjectionMaxChars,
   };
 }
 

@@ -44,6 +44,7 @@ suite.define(() => {
       featureMethods: [
         "chat.metadata",
         "chat.startup",
+        "projects.list",
         "sessions.create",
         "sessions.dispatch",
         "sessions.reclaim",
@@ -65,9 +66,33 @@ suite.define(() => {
           mainKey: "main",
           scope: "agent",
         },
+        "projects.list": {
+          projects: [
+            {
+              id: "openclaw",
+              displayName: "OpenClaw",
+              repoRoot: TARGET_REPO,
+              source: "registered",
+            },
+          ],
+        },
         "environments.list": {
           environments: [],
-          profiles: [{ id: "aws", providerId: "crabbox" }],
+          profiles: [
+            {
+              id: "aws",
+              providerId: "crabbox",
+              machines: [
+                {
+                  id: "standard",
+                  label: "Standard",
+                  description: "Balanced capacity",
+                  default: true,
+                },
+                { id: "fast", label: "Fast", description: "More compute" },
+              ],
+            },
+          ],
         },
         "fs.listDir": {
           path: WORKSPACE,
@@ -118,6 +143,7 @@ suite.define(() => {
 
     try {
       await page.goto(`${suite.server.baseUrl}new`);
+      await gateway.waitForRequest("projects.list");
       expect(
         await page.evaluate(() => ({
           hasSubtleCrypto: Boolean(globalThis.crypto.subtle),
@@ -130,6 +156,12 @@ suite.define(() => {
       await place.getByRole("button", { name: "Cloud · aws" }).click();
       const trigger = page.locator("#new-session-where-trigger");
       await expect.poll(() => trigger.getAttribute("data-cloud-profile")).toBe("aws");
+      await trigger.click();
+      await place.getByText("Machine", { exact: true }).waitFor();
+      await place.getByRole("button", { name: /Fast/ }).click();
+      await expect.poll(() => trigger.getAttribute("data-machine-class")).toBe("fast");
+      await pollLocatorText(trigger.locator(".new-session-page__trigger-label")).toBe("aws · Fast");
+      await page.keyboard.press("Escape");
       const detailTrigger = page.locator("#new-session-detail-trigger");
       await detailTrigger.click();
       const detail = page.locator("wa-popover.new-session-page__detail-popover");
@@ -162,8 +194,7 @@ suite.define(() => {
         .poll(() => effortSelect.evaluate((element) => element.closest("details")?.open ?? false))
         .toBe(false);
 
-      // Picking a Gateway repo keeps the cloud selection: that folder is what
-      // the managed worktree checks out and dispatch syncs to the worker.
+      // Both Gateway folders and registered projects remain eligible cloud sources.
       const projectTrigger = page.locator("#new-session-project-trigger");
       const project = page.locator("wa-popover.new-session-page__project-popover");
       await projectTrigger.click();
@@ -175,6 +206,25 @@ suite.define(() => {
       await detailTrigger.click();
       await pollLocatorText(detail.locator(".new-session-page__menu-note").last()).toContain(
         "Syncs target-repo to the cloud worker",
+      );
+      await page.keyboard.press("Escape");
+      await expect
+        .poll(() => detail.evaluate((element) => (element as HTMLElement & { open: boolean }).open))
+        .toBe(false);
+
+      await projectTrigger.click();
+      await expect
+        .poll(() =>
+          project.evaluate((element) => (element as HTMLElement & { open: boolean }).open),
+        )
+        .toBe(true);
+      await project.getByRole("button", { name: "OpenClaw", exact: true }).click();
+      await expect.poll(() => projectTrigger.getAttribute("data-project-id")).toBe("openclaw");
+      await expect.poll(() => trigger.getAttribute("data-cloud-profile")).toBe("aws");
+      await expect.poll(() => detailTrigger.getAttribute("data-worktree")).toBe("true");
+      await detailTrigger.click();
+      await pollLocatorText(detail.locator(".new-session-page__menu-note").last()).toContain(
+        "Syncs OpenClaw to the cloud worker",
       );
       await captureUiProof(page, "01-cloud-worker-target.png");
       await page.keyboard.press("Escape");
@@ -211,16 +261,23 @@ suite.define(() => {
       expect(create.params).toMatchObject({
         agentId: "cloud",
         message: "",
+        projectId: "openclaw",
         worktree: true,
         worktreeBaseRef: "main",
-        cwd: TARGET_REPO,
         thinkingLevel: "high",
       });
       expect(create.params).not.toHaveProperty("attachments");
+      expect(create.params).not.toHaveProperty("cwd");
       await expect.poll(() => runtimeRequested).toBe(true);
       const startupStatus = await expectPendingCloudStartupBeforeRuntime(page, gateway, sessionKey);
       runtimeLoad.resolve();
-      await gateway.waitForRequest("sessions.dispatch");
+      const dispatch = await gateway.waitForRequest("sessions.dispatch");
+      expect(dispatch.params).toMatchObject({
+        key: sessionKey,
+        agentId: "cloud",
+        profileId: "aws",
+        machineClass: "fast",
+      });
       const describeRequestsAfterNavigation = (await gateway.getRequests("sessions.describe"))
         .length;
       await expect.poll(() => page.url()).toContain(controlUiSessionPath(sessionKey));
