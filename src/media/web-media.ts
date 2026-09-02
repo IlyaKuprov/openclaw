@@ -188,6 +188,9 @@ const HOST_READ_ALLOWED_DOCUMENT_MIMES = new Set([
   "text/csv",
   "text/markdown",
   "text/plain",
+  "text/x-matlab",
+  "text/x-tex",
+  "text/x-bibtex",
   "application/json",
   "application/yaml",
 ]);
@@ -198,6 +201,10 @@ const HOST_READ_TEXT_PLAIN_ALIASES = new Set([
   "text/csv",
   "text/markdown",
   "text/plain",
+  // HF-04: MATLAB, LaTeX and BibTeX sources decode as plain text
+  "text/x-matlab",
+  "text/x-tex",
+  "text/x-bibtex",
   "application/json",
   "application/yaml",
 ]);

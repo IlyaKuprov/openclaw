@@ -64,6 +64,10 @@ const EXT_BY_MIME: Record<string, string> = {
   "text/html": ".html",
   "text/xml": ".xml",
   "text/css": ".css",
+  // HF-04: scientific plain-text documents (MATLAB, LaTeX, BibTeX)
+  "text/x-matlab": ".m",
+  "text/x-tex": ".tex",
+  "text/x-bibtex": ".bib",
   "application/xml": ".xml",
 };
 
@@ -99,6 +103,11 @@ const MIME_BY_EXT: Record<string, string> = {
   ".tsv": "text/tab-separated-values",
   ".xml": "text/xml",
   ".yml": "application/yaml",
+  // HF-04: extension aliases for the scientific text types
+  ".matlab": "text/x-matlab",
+  ".latex": "text/x-tex",
+  ".sty": "text/x-tex",
+  ".cls": "text/x-tex",
 };
 
 const AMBIGUOUS_VIDEO_MIME_BY_AUDIO_MIME: Readonly<Record<string, string>> = {

@@ -7,6 +7,11 @@ describe("mimeFromExtension", () => {
     expect(mimeFromExtension("foo.png")).toBe("image/png");
     expect(mimeFromExtension("/abs/path/bar.JPG")).toBe("image/jpeg");
     expect(mimeFromExtension("doc.pdf")).toBe("application/pdf");
+    // HF-04 scientific text types
+    expect(mimeFromExtension("script.m")).toBe("text/x-matlab");
+    expect(mimeFromExtension("paper.tex")).toBe("text/x-tex");
+    expect(mimeFromExtension("refs.bib")).toBe("text/x-bibtex");
+    expect(mimeFromExtension("style.sty")).toBe("text/x-tex");
     expect(mimeFromExtension("notes.md")).toBe("text/markdown");
     expect(mimeFromExtension("trace.log")).toBe("text/plain");
     expect(mimeFromExtension("bitmap.bmp")).toBe("image/bmp");
