@@ -420,6 +420,13 @@ When the key is unset, nothing changes from earlier releases: `memory_search`,
 deadline, and a primary-only `memory_get` (no `corpus`, or `corpus: "memory"`)
 stays unbounded. Setting the key applies the same deadline to all of them.
 
+One wait sits outside the deadline: when the embedding provider is a managed
+local service that is still starting, the call pauses its deadline while the
+service becomes ready. That wait is bounded separately by the provider's
+`localService.readyTimeoutMs`; once the service is up, the call receives its full
+`timeoutSeconds` budget. A low `timeoutSeconds` therefore caps the lookup itself,
+not a cold start of the embedding service.
+
 Hybrid retrieval remains enabled. The builtin engine always applies a fixed
 30-day recency half-life to dated daily notes and a fixed importance
 multiplier after hybrid relevance, then applies MMR diversity ordering with a

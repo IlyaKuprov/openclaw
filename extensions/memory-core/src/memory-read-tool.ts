@@ -88,24 +88,25 @@ export async function executeMemoryReadResult(
           unavailableValue: null,
           run: params.read,
         });
+        if (memory.outcome === "ok") {
+          return jsonResult(memory.value);
+        }
         // Only the deadline is this tool's own failure; an ordinary read error
         // keeps the shipped error result and its code.
-        if (memory.outcome === "unavailable" && !memory.deadline) {
+        if (!memory.deadline) {
           return jsonResult(readError(memory.code, memory.error));
         }
-        return jsonResult(
-          attemptValue(memory) ?? {
-            path: params.relPath,
-            text: "",
-            disabled: true,
-            ...composeMemoryCorpusMetadata(
-              [memory],
-              [
-                "Retry memory_get after a short wait, or raise memory.search.query.timeoutSeconds if reads keep timing out.",
-              ],
-            ),
-          },
-        );
+        return jsonResult({
+          path: params.relPath,
+          text: "",
+          disabled: true,
+          ...composeMemoryCorpusMetadata(
+            [memory],
+            [
+              "Retry memory_get after a short wait, or raise memory.search.query.timeoutSeconds if reads keep timing out.",
+            ],
+          ),
+        });
       },
     });
   }

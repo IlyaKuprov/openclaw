@@ -558,6 +558,41 @@ describe("memory_search unavailable payloads", () => {
     }
   });
 
+  it("keeps a memory_search running past the built-in 15 s when a longer deadline is configured", async () => {
+    vi.useFakeTimers();
+    try {
+      setMemorySearchImpl(async () => await new Promise(() => {}));
+      const tool = createMemorySearchToolOrThrow({
+        config: asOpenClawConfig({
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { search: { query: { timeoutSeconds: 45 } } },
+        }),
+      });
+
+      const pending = tool.execute("configured-search-timeout", { query: "hello" });
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(result.details).toMatchObject({
+        error: "memory_search timed out after 45s",
+        unavailable: true,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("re-resolves the manager once when a cached sqlite handle was closed", async () => {
     let searchCalls = 0;
     setMemorySearchImpl(async () => {
