@@ -1,5 +1,6 @@
-import type { MemorySearchRuntimeDebug } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 // Memory Core tests cover tools plugin behavior.
+import { MEMORY_SEARCH_DEADLINE_CONTROL } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import type { MemorySearchRuntimeDebug } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 import {
   clearMemoryPluginState,
   registerMemoryCorpusSupplement,
@@ -516,6 +517,60 @@ describe("memory_search unavailable payloads", () => {
       const pending = tool.execute("cleanup-budget", { query: "hello" });
       // The search used 800 ms of a 1 s budget; a hanging close gets the remaining 200 ms, not a fresh second.
       await vi.advanceTimersByTimeAsync(1_000);
+
+      const result = await pending;
+      expect((result.details as { results?: unknown[] }).results).toHaveLength(1);
+    } finally {
+      setMemoryCloseImpl(async () => {});
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a managed-readiness pause out of the one-shot cleanup budget", async () => {
+    vi.useFakeTimers();
+    try {
+      setMemorySearchImpl(async (opts) => {
+        const control = opts?.[MEMORY_SEARCH_DEADLINE_CONTROL];
+        control?.report("pause");
+        await new Promise((resolve) => {
+          setTimeout(resolve, 1_000);
+        });
+        control?.report("resume");
+        return [
+          {
+            path: "MEMORY.md",
+            startLine: 1,
+            endLine: 1,
+            score: 0.9,
+            snippet: "result after readiness",
+            source: "memory",
+          },
+        ];
+      });
+      setMemoryCloseImpl(async () => await new Promise(() => {}));
+      const tool = createMemorySearchToolOrThrow({
+        oneShotCliRun: true,
+        config: asOpenClawConfig({
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { search: { query: { timeoutSeconds: 1 } } },
+        }),
+      });
+
+      const pending = tool.execute("cleanup-after-readiness", { query: "hello" });
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      // Readiness took the whole second, but it was paused out of the budget:
+      // a hanging close still gets the unspent second rather than nothing.
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
 
       const result = await pending;
       expect((result.details as { results?: unknown[] }).results).toHaveLength(1);

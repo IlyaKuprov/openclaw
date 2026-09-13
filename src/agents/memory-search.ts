@@ -2,7 +2,10 @@
  * Resolves memory-search source, sync, and ranking configuration.
  */
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
-import { clampTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
+import {
+  clampTimerTimeoutMs,
+  MAX_TIMER_TIMEOUT_SECONDS,
+} from "@openclaw/normalization-core/number-coercion";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   normalizeConfiguredMemoryExtraPaths,
@@ -99,8 +102,11 @@ function getConfiguredMemoryEmbeddingProvider(providerId: string, cfg: OpenClawC
  * absent, so an unset key changes no shipped behaviour.
  */
 function resolveQueryTimeoutMs(timeoutSeconds: number | undefined): { timeoutMs?: number } {
+  // Bound the seconds first: a schema-valid 1e308 overflows to Infinity in milliseconds.
   const timeoutMs =
-    timeoutSeconds === undefined ? undefined : clampTimerTimeoutMs(timeoutSeconds * 1000);
+    timeoutSeconds === undefined
+      ? undefined
+      : clampTimerTimeoutMs(Math.min(timeoutSeconds, MAX_TIMER_TIMEOUT_SECONDS) * 1000);
   return timeoutMs === undefined ? {} : { timeoutMs };
 }
 

@@ -120,6 +120,8 @@ export async function runMemoryCorpusDeadline<T>(params: {
   /** Deadline for the whole call; defaults to DEFAULT_MEMORY_SEARCH_TIMEOUT_MS. */
   timeoutMs?: number;
   parentSignal?: AbortSignal;
+  /** Budget left when the call settles, paused readiness excluded; cleanup may spend it. */
+  onSettled?: (remainingMs: number) => void;
   run: (signal: AbortSignal, deadlineControl: MemorySearchDeadlineControl) => Promise<T>;
 }): Promise<T> {
   if (params.parentSignal?.aborted) {
@@ -193,6 +195,9 @@ export async function runMemoryCorpusDeadline<T>(params: {
     if (timer) {
       clearTimeout(timer);
     }
+    params.onSettled?.(
+      paused ? remainingMs : Math.max(0, remainingMs - (performance.now() - segmentStartedAt)),
+    );
     memoryCorpusDeadlineChecks.delete(controller.signal);
     params.parentSignal?.removeEventListener("abort", onParentAbort);
   }

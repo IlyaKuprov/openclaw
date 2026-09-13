@@ -601,6 +601,13 @@ describe("memory search config", () => {
     expect(resolveMemorySearchConfig(cfg, "main")?.query.timeoutMs).toBe(2_147_000_000);
   });
 
+  it("caps a query deadline whose millisecond conversion would overflow", () => {
+    const cfg = asConfig({
+      memory: { search: { query: { timeoutSeconds: 1e308 } } },
+    });
+    expect(resolveMemorySearchConfig(cfg, "main")?.query.timeoutMs).toBe(2_147_000_000);
+  });
+
   it("leaves the query deadline unset when it is not configured", () => {
     const cfg = asConfig({ memory: { search: {} }, agents: { defaults: {} } });
     expect(resolveMemorySearchConfig(cfg, "main")?.query.timeoutMs).toBeUndefined();

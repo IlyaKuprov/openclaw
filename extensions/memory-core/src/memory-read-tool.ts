@@ -6,8 +6,10 @@ import {
   composeMemoryCorpusMetadata,
   readMemoryCorpusSupplements,
   runMemoryCorpusDeadline,
+  unavailableMemoryCorpus,
   type MemoryCorpusAttempt,
 } from "./memory-corpus.js";
+import { isMemorySearchDeadlineError } from "./memory/search-deadline.js";
 
 type MemoryReadRequest = {
   requestedCorpus?: "memory" | "wiki" | "all";
@@ -77,38 +79,48 @@ export async function executeMemoryReadResult(
         return jsonResult(readError(extractErrorCode(error), formatErrorMessage(error)));
       }
     }
-    return await runMemoryCorpusDeadline({
-      operation: "memory_get",
-      timeoutMs: params.timeoutMs,
-      parentSignal: params.signal,
-      run: async (signal) => {
-        const memory = await attemptMemoryCorpus({
-          corpus: "memory",
-          signal,
-          unavailableValue: null,
-          run: params.read,
-        });
-        if (memory.outcome === "ok") {
-          return jsonResult(memory.value);
-        }
-        // Only the deadline is this tool's own failure; an ordinary read error
-        // keeps the shipped error result and its code.
-        if (!memory.deadline) {
-          return jsonResult(readError(memory.code, memory.error));
-        }
-        return jsonResult({
-          path: params.relPath,
-          text: "",
-          disabled: true,
-          ...composeMemoryCorpusMetadata(
-            [memory],
-            [
-              "Retry memory_get after a short wait, or raise memory.search.query.timeoutSeconds if reads keep timing out.",
-            ],
-          ),
-        });
-      },
-    });
+    const timedOut = (memory: MemoryCorpusAttempt<MemoryReadResult | null>) =>
+      jsonResult({
+        path: params.relPath,
+        text: "",
+        disabled: true,
+        ...composeMemoryCorpusMetadata(
+          [memory],
+          [
+            "Retry memory_get after a short wait, or raise memory.search.query.timeoutSeconds if reads keep timing out.",
+          ],
+        ),
+      });
+    try {
+      return await runMemoryCorpusDeadline({
+        operation: "memory_get",
+        timeoutMs: params.timeoutMs,
+        parentSignal: params.signal,
+        run: async (signal) => {
+          const memory = await attemptMemoryCorpus({
+            corpus: "memory",
+            signal,
+            unavailableValue: null,
+            run: params.read,
+          });
+          if (memory.outcome === "ok") {
+            return jsonResult(memory.value);
+          }
+          // Only the deadline is this tool's own failure; an ordinary read error
+          // keeps the shipped error result and its code.
+          return memory.deadline
+            ? timedOut(memory)
+            : jsonResult(readError(memory.code, memory.error));
+        },
+      });
+    } catch (error) {
+      // A read that fails after the deadline passed, but before the overdue timer
+      // ran, surfaces as the owner's own deadline error rather than a read result.
+      if (!isMemorySearchDeadlineError(error)) {
+        throw error;
+      }
+      return timedOut(unavailableMemoryCorpus("memory", null, error));
+    }
   }
   return await runMemoryCorpusDeadline({
     operation: "memory_get",

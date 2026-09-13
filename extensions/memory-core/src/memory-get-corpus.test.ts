@@ -387,6 +387,34 @@ describe("memory_get corpus outcomes", () => {
     });
   });
 
+  it("reports a read that fails after the deadline as a timeout, not a rejection", async () => {
+    const startedAt = performance.now();
+    const now = vi.spyOn(performance, "now");
+    setMemoryReadFileImpl(async () => {
+      // The clock is past the deadline before the overdue timer is serviced.
+      now.mockReturnValue(startedAt + 5_000);
+      throw Object.assign(new Error("late failure"), { code: "MEMORY_READ_FAILED" });
+    });
+    const result = await createMemoryGetToolOrThrow(
+      asOpenClawConfig({
+        agents: { list: [{ id: "main", default: true }] },
+        memory: { search: { query: { timeoutSeconds: 1 } } },
+      }),
+    )
+      .execute("call_get_primary_late_failure", { path: lookup })
+      .finally(() => now.mockRestore());
+
+    expect(result.details).toMatchObject({
+      path: lookup,
+      text: "",
+      disabled: true,
+      error: "memory_get timed out after 1s",
+      corpora: [
+        { corpus: "memory", outcome: "unavailable", error: "memory_get timed out after 1s" },
+      ],
+    });
+  });
+
   it("cuts a hanging primary read at the configured deadline", async () => {
     vi.useFakeTimers();
     setMemoryReadFileImpl(async () => await new Promise<never>(() => {}));

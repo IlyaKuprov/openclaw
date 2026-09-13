@@ -414,15 +414,18 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
             },
           };
         };
-        // Cleanup after the search spends what is left of the same call budget,
-        // measured on the monotonic clock the deadline itself uses.
+        // Cleanup after the search spends what is left of the same call budget, as
+        // the deadline owner counts it: a managed-readiness pause is outside both.
         const timeoutMs = settings.query.timeoutMs ?? DEFAULT_MEMORY_SEARCH_TIMEOUT_MS;
-        const callStartedAt = performance.now();
+        let remainingTimeoutMs = timeoutMs;
         try {
           return await runMemoryCorpusDeadline({
             operation: "memory_search",
             timeoutMs,
             parentSignal: callerSignal,
+            onSettled: (remainingMs) => {
+              remainingTimeoutMs = remainingMs;
+            },
             run: async (signal, deadlineControl) => {
               searchSignal = signal;
               const [memory, wiki] = await Promise.all([
@@ -559,7 +562,6 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
           );
         } finally {
           cleanupStarted = true;
-          const remainingTimeoutMs = Math.max(0, timeoutMs - (performance.now() - callStartedAt));
           if (searchSignal?.aborted) {
             // Admitted searches retain their leases until they settle; teardown
             // must not add another cleanup timeout to an already expired reply.
