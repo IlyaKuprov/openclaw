@@ -146,6 +146,7 @@ function isActiveMemoryManagerContext(
 async function closeMemoryManagers(
   managers: Iterable<ActiveMemoryManagerContext["manager"]>,
   parentSignal?: AbortSignal,
+  timeoutMs: number = DEFAULT_MEMORY_SEARCH_TIMEOUT_MS,
 ): Promise<void> {
   const pending = Array.from(managers, async (manager) => await manager.close?.());
   if (pending.length === 0) {
@@ -153,7 +154,7 @@ async function closeMemoryManagers(
   }
   try {
     await runMemorySearchWithDeadline({
-      timeoutMs: DEFAULT_MEMORY_SEARCH_TIMEOUT_MS,
+      timeoutMs,
       parentSignal,
       run: async () => {
         await Promise.allSettled(pending);
@@ -413,9 +414,14 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
             },
           };
         };
+        // Cleanup after the search spends what is left of the same call budget,
+        // measured on the monotonic clock the deadline itself uses.
+        const timeoutMs = settings.query.timeoutMs ?? DEFAULT_MEMORY_SEARCH_TIMEOUT_MS;
+        const callStartedAt = performance.now();
         try {
           return await runMemoryCorpusDeadline({
             operation: "memory_search",
+            timeoutMs,
             parentSignal: callerSignal,
             run: async (signal, deadlineControl) => {
               searchSignal = signal;
@@ -424,6 +430,7 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
                 searchesWiki
                   ? runMemoryCorpusDeadline({
                       operation: "memory_search",
+                      timeoutMs,
                       parentSignal: callerSignal,
                       // Managed memory readiness must not extend concurrent wiki work.
                       run: (wikiSignal) =>
@@ -552,12 +559,13 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
           );
         } finally {
           cleanupStarted = true;
+          const remainingTimeoutMs = Math.max(0, timeoutMs - (performance.now() - callStartedAt));
           if (searchSignal?.aborted) {
             // Admitted searches retain their leases until they settle; teardown
             // must not add another cleanup timeout to an already expired reply.
-            void closeMemoryManagers(memoryManagersToClose);
+            void closeMemoryManagers(memoryManagersToClose, undefined, remainingTimeoutMs);
           } else {
-            await closeMemoryManagers(memoryManagersToClose, callerSignal);
+            await closeMemoryManagers(memoryManagersToClose, callerSignal, remainingTimeoutMs);
           }
         }
       },
@@ -569,14 +577,15 @@ export function createMemoryGetTool(options: MemoryToolOptions) {
     options,
     contract: MEMORY_GET_TOOL_CONTRACT,
     execute:
-      ({ cfg, agentId }) =>
+      ({ cfg, agentId, settings }) =>
       async (_toolCallId, params, callerSignal) => {
         const rawParams = asToolParamsRecord(params);
         const relPath = readStringParam(rawParams, "path", { required: true });
         const from = readPositiveIntegerParam(rawParams, "from");
         const lines = readPositiveIntegerParam(rawParams, "lines");
         const requestedCorpus = readCorpusParam(rawParams, ["memory", "wiki", "all"]);
-        const { readAgentMemoryFile } = await loadMemoryToolRuntime();
+        // Left undefined when unset: the read paths apply their own shipped defaults.
+        const timeoutMs = settings.query.timeoutMs;
         if (requestedCorpus === "wiki") {
           return await executeWikiMemoryReadResult({
             relPath,
@@ -587,17 +596,21 @@ export function createMemoryGetTool(options: MemoryToolOptions) {
             sandboxed: options.sandboxed,
             requestedCorpus,
             signal: callerSignal,
+            timeoutMs,
           });
         }
         return await executeMemoryReadResult({
-          read: async () =>
-            await readAgentMemoryFile({
+          // The lazy runtime import runs inside the read so a cold start is part of the same deadline.
+          read: async () => {
+            const { readAgentMemoryFile } = await loadMemoryToolRuntime();
+            return await readAgentMemoryFile({
               cfg,
               agentId,
               relPath,
               from: from ?? undefined,
               lines: lines ?? undefined,
-            }),
+            });
+          },
           requestedCorpus,
           relPath,
           from: from ?? undefined,
@@ -606,6 +619,7 @@ export function createMemoryGetTool(options: MemoryToolOptions) {
           agentSessionKey: options.agentSessionKey,
           sandboxed: options.sandboxed,
           signal: callerSignal,
+          timeoutMs,
         });
       },
   });

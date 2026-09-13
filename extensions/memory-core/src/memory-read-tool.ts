@@ -18,6 +18,11 @@ type MemoryReadRequest = {
   agentSessionKey?: string;
   sandboxed?: boolean;
   signal?: AbortSignal;
+  /**
+   * Configured deadline for the whole read. When absent, wiki and combined reads keep
+   * the built-in memory search timeout and a primary-only read stays unbounded.
+   */
+  timeoutMs?: number;
 };
 
 function readWiki(params: MemoryReadRequest, signal: AbortSignal) {
@@ -39,6 +44,7 @@ function attemptValue<T>(attempt: MemoryCorpusAttempt<T>): T | null {
 export async function executeWikiMemoryReadResult(params: MemoryReadRequest) {
   return await runMemoryCorpusDeadline({
     operation: "memory_get",
+    timeoutMs: params.timeoutMs,
     parentSignal: params.signal,
     run: async (signal) => {
       const wiki = await readWiki(params, signal);
@@ -56,20 +62,56 @@ export async function executeMemoryReadResult(
   params: MemoryReadRequest & { read: () => Promise<MemoryReadResult> },
 ) {
   if (params.requestedCorpus !== "all") {
-    try {
-      return jsonResult(await params.read());
-    } catch (error) {
-      return jsonResult({
-        path: params.relPath,
-        text: "",
-        status: "error",
-        code: extractErrorCode(error) ?? "MEMORY_READ_FAILED",
-        error: formatErrorMessage(error),
-      });
+    const readError = (code: string | undefined, error: string) => ({
+      path: params.relPath,
+      text: "",
+      status: "error",
+      code: code ?? "MEMORY_READ_FAILED",
+      error,
+    });
+    if (params.timeoutMs === undefined) {
+      // Shipped behaviour: a primary-only read has no deadline unless one is configured.
+      try {
+        return jsonResult(await params.read());
+      } catch (error) {
+        return jsonResult(readError(extractErrorCode(error), formatErrorMessage(error)));
+      }
     }
+    return await runMemoryCorpusDeadline({
+      operation: "memory_get",
+      timeoutMs: params.timeoutMs,
+      parentSignal: params.signal,
+      run: async (signal) => {
+        const memory = await attemptMemoryCorpus({
+          corpus: "memory",
+          signal,
+          unavailableValue: null,
+          run: params.read,
+        });
+        // Only the deadline is this tool's own failure; an ordinary read error
+        // keeps the shipped error result and its code.
+        if (memory.outcome === "unavailable" && !memory.deadline) {
+          return jsonResult(readError(memory.code, memory.error));
+        }
+        return jsonResult(
+          attemptValue(memory) ?? {
+            path: params.relPath,
+            text: "",
+            disabled: true,
+            ...composeMemoryCorpusMetadata(
+              [memory],
+              [
+                "Retry memory_get after a short wait, or raise memory.search.query.timeoutSeconds if reads keep timing out.",
+              ],
+            ),
+          },
+        );
+      },
+    });
   }
   return await runMemoryCorpusDeadline({
     operation: "memory_get",
+    timeoutMs: params.timeoutMs,
     parentSignal: params.signal,
     run: async (signal) => {
       const [memory, wiki] = await Promise.all([

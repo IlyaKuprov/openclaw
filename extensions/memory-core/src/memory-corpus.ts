@@ -11,6 +11,7 @@ import {
 import {
   createMemorySearchDeadlineError,
   DEFAULT_MEMORY_SEARCH_TIMEOUT_MS,
+  formatMemorySearchDeadline,
   isMemorySearchDeadlineError,
   resolveMemorySearchAbortError,
 } from "./memory/search-deadline.js";
@@ -110,19 +111,22 @@ export async function attemptMemoryCorpus<T>(params: {
 
 export async function runMemoryCorpusDeadline<T>(params: {
   operation: "memory_search" | "memory_get";
+  /** Deadline for the whole call; defaults to DEFAULT_MEMORY_SEARCH_TIMEOUT_MS. */
+  timeoutMs?: number;
   parentSignal?: AbortSignal;
   run: (signal: AbortSignal, deadlineControl: MemorySearchDeadlineControl) => Promise<T>;
 }): Promise<T> {
   if (params.parentSignal?.aborted) {
     throw resolveMemorySearchAbortError(params.parentSignal);
   }
+  const timeoutMs = params.timeoutMs ?? DEFAULT_MEMORY_SEARCH_TIMEOUT_MS;
   const controller = new AbortController();
   const timeoutError = createMemorySearchDeadlineError(
-    `${params.operation} timed out after ${DEFAULT_MEMORY_SEARCH_TIMEOUT_MS / 1000}s`,
+    `${params.operation} timed out after ${formatMemorySearchDeadline(timeoutMs)}`,
   );
   const expire = () => controller.abort(timeoutError);
   // Managed readiness has its own deadline; preserve the remaining search budget.
-  let remainingMs = DEFAULT_MEMORY_SEARCH_TIMEOUT_MS;
+  let remainingMs = timeoutMs;
   let segmentStartedAt = performance.now();
   let paused = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
