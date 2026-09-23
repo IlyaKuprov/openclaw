@@ -339,6 +339,8 @@ type CliPreparedBackend = {
   /** Exact process cleanup retained across attempt copies and natural registry removal. */
   closeLiveSession?: (
     reason: import("../../plugins/cli-backend.types.js").CliBackendLiveSessionCloseReason,
+    /** Optional cause forwarded to the plugin handle so the kill stays diagnosable. */
+    error?: unknown,
   ) => Promise<void>;
   /** Transfer process-owned native skill artifacts without claiming turn-scoped MCP/auth state. */
   claimLiveSessionResources?: () => (() => Promise<void>) | undefined;
