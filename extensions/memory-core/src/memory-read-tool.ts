@@ -18,6 +18,8 @@ type MemoryReadRequest = {
   agentSessionKey?: string;
   sandboxed?: boolean;
   signal?: AbortSignal;
+  /** Configured deadline (memory.search.query.timeoutSeconds); the shipped default when unset. */
+  timeoutMs?: number;
 };
 
 function readWiki(params: MemoryReadRequest, signal: AbortSignal) {
@@ -39,6 +41,7 @@ function attemptValue<T>(attempt: MemoryCorpusAttempt<T>): T | null {
 export async function executeWikiMemoryReadResult(params: MemoryReadRequest) {
   return await runMemoryCorpusDeadline({
     operation: "memory_get",
+    timeoutMs: params.timeoutMs,
     parentSignal: params.signal,
     run: async (signal) => {
       const wiki = await readWiki(params, signal);
@@ -70,6 +73,7 @@ export async function executeMemoryReadResult(
   }
   return await runMemoryCorpusDeadline({
     operation: "memory_get",
+    timeoutMs: params.timeoutMs,
     parentSignal: params.signal,
     run: async (signal) => {
       const [memory, wiki] = await Promise.all([

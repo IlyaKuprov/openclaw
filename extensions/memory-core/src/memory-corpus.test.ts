@@ -45,6 +45,34 @@ it.each(["timer", "event-loop"] as const)(
   },
 );
 
+it("expires at a configured deadline and names it in the failure", async () => {
+  vi.useFakeTimers();
+  let signal: AbortSignal | undefined;
+  const result = runMemoryCorpusDeadline({
+    operation: "memory_get",
+    timeoutMs: 2_000,
+    run: async (currentSignal) => {
+      signal = currentSignal;
+      return await attemptMemoryCorpus({
+        corpus: "memory",
+        signal: currentSignal,
+        unavailableValue: null,
+        run: () => new Promise<never>(() => {}),
+      });
+    },
+  });
+  await vi.advanceTimersByTimeAsync(1_999);
+  expect(signal?.aborted).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(await result).toMatchObject({
+    outcome: "unavailable",
+    deadline: true,
+    timeoutMs: 2_000,
+    error: "memory_get timed out after 2s",
+  });
+  expect(signal?.aborted).toBe(true);
+});
+
 it.each(["provider", "caller"] as const)(
   "does not replace a %s failure with partial results",
   async (source) => {

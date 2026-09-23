@@ -340,6 +340,38 @@ describe("memory_search unavailable payloads", () => {
     expect(searchCalls).toBe(1);
   });
 
+  it("waits for a configured memory.search.query.timeoutSeconds deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let searchSignal: AbortSignal | undefined;
+      setMemorySearchImpl(async (opts) => {
+        searchSignal = opts?.signal;
+        return await new Promise(() => {});
+      });
+      const tool = createMemorySearchToolOrThrow({
+        config: {
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { citations: "off", search: { query: { timeoutSeconds: 60 } } },
+        },
+      });
+
+      const resultPromise = tool.execute("search-configured-timeout", { query: "hello" });
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(searchSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      const result = await resultPromise;
+      expect(result.details).toMatchObject({
+        timedOut: true,
+        timeoutMs: 60_000,
+        error: "memory_search timed out after 60s",
+      });
+      expect(searchSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns unavailable metadata when memory search does not settle", async () => {
     vi.useFakeTimers();
     try {

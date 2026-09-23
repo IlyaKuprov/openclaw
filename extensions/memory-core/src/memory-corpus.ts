@@ -12,6 +12,7 @@ import {
   createMemorySearchDeadlineError,
   DEFAULT_MEMORY_SEARCH_TIMEOUT_MS,
   isMemorySearchDeadlineError,
+  readMemorySearchDeadlineTimeoutMs,
   resolveMemorySearchAbortError,
 } from "./memory/search-deadline.js";
 
@@ -26,7 +27,13 @@ type MemorySupplementReadResult = Omit<MemorySupplementGetResult, "content"> & {
   text: string;
 };
 
-export type MemoryCorpusFailure = { error: string; code?: string; deadline: boolean };
+export type MemoryCorpusFailure = {
+  error: string;
+  code?: string;
+  deadline: boolean;
+  /** Configured deadline behind a deadline failure (ms). */
+  timeoutMs?: number;
+};
 type UnavailableMemoryCorpus<T> = {
   corpus: MemoryCorpus;
   outcome: "unavailable";
@@ -53,6 +60,7 @@ export function unavailableMemoryCorpus<T>(
   deadline = isMemorySearchDeadlineError(error),
 ): UnavailableMemoryCorpus<T> {
   const code = extractErrorCode(error);
+  const timeoutMs = deadline ? readMemorySearchDeadlineTimeoutMs(error) : undefined;
   return {
     corpus,
     outcome: "unavailable",
@@ -60,6 +68,7 @@ export function unavailableMemoryCorpus<T>(
     error: formatErrorMessage(error),
     deadline,
     ...(code ? { code } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   };
 }
 
@@ -110,6 +119,8 @@ export async function attemptMemoryCorpus<T>(params: {
 
 export async function runMemoryCorpusDeadline<T>(params: {
   operation: "memory_search" | "memory_get";
+  /** Configured deadline (memory.search.query.timeoutSeconds); the shipped default when unset. */
+  timeoutMs?: number;
   parentSignal?: AbortSignal;
   run: (signal: AbortSignal, deadlineControl: MemorySearchDeadlineControl) => Promise<T>;
 }): Promise<T> {
@@ -117,12 +128,14 @@ export async function runMemoryCorpusDeadline<T>(params: {
     throw resolveMemorySearchAbortError(params.parentSignal);
   }
   const controller = new AbortController();
+  const timeoutMs = params.timeoutMs ?? DEFAULT_MEMORY_SEARCH_TIMEOUT_MS;
   const timeoutError = createMemorySearchDeadlineError(
-    `${params.operation} timed out after ${DEFAULT_MEMORY_SEARCH_TIMEOUT_MS / 1000}s`,
+    `${params.operation} timed out after ${timeoutMs / 1000}s`,
+    timeoutMs,
   );
   const expire = () => controller.abort(timeoutError);
   // Managed readiness has its own deadline; preserve the remaining search budget.
-  let remainingMs = DEFAULT_MEMORY_SEARCH_TIMEOUT_MS;
+  let remainingMs = timeoutMs;
   let segmentStartedAt = performance.now();
   let paused = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -206,6 +219,10 @@ export function composeMemoryCorpusMetadata(
   });
   warnings.push(...extraWarnings);
   const errors = ordered.flatMap((attempt) => ("error" in attempt ? [attempt.error] : []));
+  const deadlineAttempt = ordered.find(
+    (attempt): attempt is Extract<typeof attempt, { deadline: boolean }> =>
+      "deadline" in attempt && attempt.deadline,
+  );
   return {
     corpora: ordered.map((attempt) =>
       "error" in attempt
@@ -214,8 +231,8 @@ export function composeMemoryCorpusMetadata(
     ),
     ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
     ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
-    ...(ordered.some((attempt) => "deadline" in attempt && attempt.deadline)
-      ? { timedOut: true, timeoutMs: DEFAULT_MEMORY_SEARCH_TIMEOUT_MS }
+    ...(deadlineAttempt
+      ? { timedOut: true, timeoutMs: deadlineAttempt.timeoutMs ?? DEFAULT_MEMORY_SEARCH_TIMEOUT_MS }
       : {}),
   };
 }
