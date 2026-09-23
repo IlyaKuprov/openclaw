@@ -517,7 +517,10 @@ export function registerModelCapabilityCommands(capability: Command): void {
     .description("Run a one-shot model turn")
     .requiredOption("--prompt <text>", "Prompt text")
     .option("--file <path>", "Image file", collectOption, [])
-    .option("--model <provider/model>", "Model override")
+    .option(
+      "--model <provider/model|alias>",
+      "Model override: provider/model, or a bare alias configured under agents.defaults.models",
+    )
     .option("--thinking <level>", "Thinking level override")
     .option("--local", "Force local execution", false)
     .option("--gateway", "Force gateway execution", false)
@@ -565,7 +568,10 @@ export function registerModelCapabilityCommands(capability: Command): void {
   model
     .command("inspect")
     .description("Inspect one model catalog entry")
-    .requiredOption("--model <provider/model>", "Model id")
+    .requiredOption(
+      "--model <provider/model|alias>",
+      "Model id: provider/model, a catalog id, or a bare alias configured under agents.defaults.models",
+    )
     .option("--json", "Output JSON", false)
     .action(async (opts, command) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
