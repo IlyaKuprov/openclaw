@@ -330,9 +330,13 @@ export function shouldPersistRestartRecoveryCleanup(
   sessionId: string,
   runId: string,
 ): boolean {
+  // Ownership only: a stale abortedLastRun left by an earlier run must not strand
+  // the recovery context this run armed. Whether a finishing run keeps its own
+  // context is decided by the caller, which knows why the run ended.
   return (
-    shouldPersistCurrentRunSessionCleanup(current, sessionId) &&
-    current?.restartRecoveryDeliveryRunId === runId
+    current !== undefined &&
+    current.sessionId === sessionId &&
+    current.restartRecoveryDeliveryRunId === runId
   );
 }
 
