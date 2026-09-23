@@ -584,14 +584,18 @@ export function registerModelCapabilityCommands(capability: Command): void {
           agentId: resolveInspectionAgentId(cfg, rawAgentId),
         });
         const catalog = await loadModelCatalogForInspection(cfg, rawAgentId);
-        const entry =
-          (aliasRef
-            ? catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === aliasRef)
-            : undefined) ??
-          catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === target) ??
-          catalog.find((candidate) => candidate.id === target);
+        // A resolved alias names exactly one target: never fall back to reading the
+        // alias text as a catalog id, which could silently report another model.
+        const entry = aliasRef
+          ? catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === aliasRef)
+          : (catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === target) ??
+            catalog.find((candidate) => candidate.id === target));
         if (!entry) {
-          throw new Error(`Model not found: ${target}`);
+          throw new Error(
+            aliasRef
+              ? `Model not found: ${target} (configured alias for ${aliasRef}, which is not in the selected catalog)`
+              : `Model not found: ${target}`,
+          );
         }
         emitJsonOrText(defaultRuntime, Boolean(opts.json), entry, (value) =>
           JSON.stringify(value, null, 2),

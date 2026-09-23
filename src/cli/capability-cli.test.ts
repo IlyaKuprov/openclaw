@@ -1793,6 +1793,21 @@ describe("capability cli", () => {
     expect(mocks.runtime.writeJson).toHaveBeenCalledWith(catalogEntry);
   });
 
+  it("fails a configured alias whose target is absent instead of reading the alias as a catalog id", async () => {
+    mockConfiguredModelAlias();
+    // Another provider exposes an id equal to the alias text; the alias must not fall back to it.
+    mocks.loadModelCatalog.mockResolvedValueOnce([
+      { id: "gpt-5.5-codex", provider: "github-copilot", name: "Copilot Codex" },
+    ] as never);
+
+    await expect(
+      runCap("capability", "model", "inspect", "--model", "gpt-5.5-codex", "--json"),
+    ).rejects.toThrow("exit 1");
+
+    expectRuntimeErrorContains("configured alias for openai/gpt-5.5");
+    expect(mocks.runtime.writeJson).not.toHaveBeenCalled();
+  });
+
   it("keeps an explicit profile suffix out of configured alias resolution for model inspection", async () => {
     mockConfiguredModelAlias();
     mocks.loadModelCatalog.mockResolvedValueOnce([
