@@ -59,17 +59,44 @@ export async function executeMemoryReadResult(
   params: MemoryReadRequest & { read: () => Promise<MemoryReadResult> },
 ) {
   if (params.requestedCorpus !== "all") {
-    try {
-      return jsonResult(await params.read());
-    } catch (error) {
-      return jsonResult({
-        path: params.relPath,
-        text: "",
-        status: "error",
-        code: extractErrorCode(error) ?? "MEMORY_READ_FAILED",
-        error: formatErrorMessage(error),
-      });
+    // Unset timeoutSeconds keeps the shipped unbounded primary read.
+    if (params.timeoutMs === undefined) {
+      try {
+        return jsonResult(await params.read());
+      } catch (error) {
+        return jsonResult({
+          path: params.relPath,
+          text: "",
+          status: "error",
+          code: extractErrorCode(error) ?? "MEMORY_READ_FAILED",
+          error: formatErrorMessage(error),
+        });
+      }
     }
+    return await runMemoryCorpusDeadline({
+      operation: "memory_get",
+      timeoutMs: params.timeoutMs,
+      parentSignal: params.signal,
+      run: async (signal) => {
+        const memory = await attemptMemoryCorpus({
+          corpus: "memory",
+          signal,
+          unavailableValue: null,
+          run: params.read,
+        });
+        const result = attemptValue(memory);
+        if (result !== null) {
+          return jsonResult(result);
+        }
+        return jsonResult({
+          path: params.relPath,
+          text: "",
+          status: "error",
+          code: ("code" in memory ? memory.code : undefined) ?? "MEMORY_READ_FAILED",
+          ...composeMemoryCorpusMetadata([memory]),
+        });
+      },
+    });
   }
   return await runMemoryCorpusDeadline({
     operation: "memory_get",

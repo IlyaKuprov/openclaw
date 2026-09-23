@@ -247,6 +247,7 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
         const query = readStringParam(rawParams, "query", { required: true });
         // Configured deadline for this call; undefined keeps the shipped default.
         const timeoutMs = settings.query.timeoutMs;
+        const callStartedAt = performance.now();
         const maxResults = readPositiveIntegerParam(rawParams, "maxResults");
         const minScore = readFiniteNumberParam(rawParams, "minScore");
         const modelRequestedCorpus = readCorpusParam(rawParams, [
@@ -593,7 +594,16 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
             // must not add another cleanup timeout to an already expired reply.
             void closeMemoryManagers(memoryManagersToClose);
           } else {
-            await closeMemoryManagers(memoryManagersToClose, callerSignal, timeoutMs);
+            // Cleanup shares the call's deadline: only the budget the search left over.
+            await closeMemoryManagers(
+              memoryManagersToClose,
+              callerSignal,
+              Math.max(
+                0,
+                (timeoutMs ?? DEFAULT_MEMORY_SEARCH_TIMEOUT_MS) -
+                  (performance.now() - callStartedAt),
+              ),
+            );
           }
         }
       },

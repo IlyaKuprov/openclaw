@@ -372,6 +372,40 @@ describe("memory_search unavailable payloads", () => {
     }
   });
 
+  it("gives cleanup only the budget the search left under the configured deadline", async () => {
+    // The remaining budget is measured on performance.now(), so the clock must be faked too.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    try {
+      setMemorySearchImpl(async () => {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 8_000);
+        });
+        return [];
+      });
+      setMemoryCloseImpl(async () => await new Promise<never>(() => {}));
+      const tool = createMemorySearchToolOrThrow({
+        config: {
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { citations: "off", search: { query: { timeoutSeconds: 10 } } },
+        },
+        oneShotCliRun: true,
+      });
+      let settled = false;
+      const resultPromise = tool.execute("search-cleanup-budget", { query: "hello" }).then((r) => {
+        settled = true;
+        return r;
+      });
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await resultPromise;
+      expect(settled).toBe(true);
+      expect(result.details).toMatchObject({ results: [] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns unavailable metadata when memory search does not settle", async () => {
     vi.useFakeTimers();
     try {

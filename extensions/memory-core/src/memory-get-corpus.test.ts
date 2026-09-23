@@ -333,6 +333,39 @@ describe("memory_get corpus outcomes", () => {
     });
   });
 
+  it("bounds a memory-only read by the configured timeoutSeconds", async () => {
+    vi.useFakeTimers();
+    try {
+      let readSignalSeen = false;
+      setMemoryReadFileImpl(async () => {
+        readSignalSeen = true;
+        return await new Promise<never>(() => {});
+      });
+      const tool = createMemoryGetToolOrThrow(
+        asOpenClawConfig({
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { search: { query: { timeoutSeconds: 2 } } },
+        }),
+      );
+      const pending = tool.execute("call_get_memory_deadline", { path: lookup });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(pending).resolves.toMatchObject({
+        details: {
+          path: lookup,
+          status: "error",
+          code: "MEMORY_READ_FAILED",
+          timedOut: true,
+          timeoutMs: 2_000,
+          error: "memory_get timed out after 2s",
+          corpora: [{ corpus: "memory", outcome: "unavailable" }],
+        },
+      });
+      expect(readSignalSeen).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("cancels a hanging exact supplement read", async () => {
     registerMemoryCorpusSupplement("memory-wiki", {
       search: async () => [],
