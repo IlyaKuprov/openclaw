@@ -48,7 +48,7 @@ import type {
   PreparedHeartbeatRun,
   ReadyHeartbeatWake,
 } from "./heartbeat-runner-execution.js";
-import { truncateHeartbeatPreview } from "./heartbeat-runner-prompt.js";
+import { HEARTBEAT_ALERT_MARKER, truncateHeartbeatPreview } from "./heartbeat-runner-prompt.js";
 import { restoreHeartbeatUpdatedAt } from "./heartbeat-runner-session.js";
 import { publishHeartbeatSessionReply } from "./heartbeat-session-publication.js";
 import {
@@ -67,8 +67,7 @@ import { buildOutboundSessionContext } from "./outbound/session-context.js";
 import { withSystemEventOwner } from "./system-event-ownership.js";
 import { consumeSelectedSystemEventEntries, enqueueSystemEvent } from "./system-events.js";
 
-/** A plain-text heartbeat reply is an owner alert only when it opens with this marker. */
-export const HEARTBEAT_ALERT_MARKER = "ALERT:";
+export { HEARTBEAT_ALERT_MARKER };
 
 /** Does a heartbeat reply open with the alert marker, past any prefix or markdown decoration? */
 export function hasHeartbeatAlertMarker(text: string, responsePrefix?: string): boolean {
@@ -83,7 +82,9 @@ export function hasHeartbeatAlertMarker(text: string, responsePrefix?: string): 
 /**
  * Plain scheduled polls (no exec completion, cron events or scheduled tasks)
  * whose configured prompt names the alert marker opt into marker-gated text
- * delivery. Relays and task runs keep their unconditional delivery policy.
+ * delivery. The opt-in is read from the configured prompt only: appended
+ * monitor scratch that happens to contain the marker never enables the gate.
+ * Relays and task runs keep their unconditional delivery policy.
  */
 function requiresHeartbeatAlertMarker(
   prepared: PreparedHeartbeatRun,
@@ -93,7 +94,7 @@ function requiresHeartbeatAlertMarker(
     !prepared.hasExecCompletion &&
     !prepared.hasCronEvents &&
     scheduledTasks.length === 0 &&
-    prepared.prompt.includes(HEARTBEAT_ALERT_MARKER)
+    prepared.configuredPromptOptsIntoAlertMarker
   );
 }
 
