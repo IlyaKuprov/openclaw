@@ -297,6 +297,7 @@ async function prepareHeartbeatDispatchReply(
   const outcome =
     classified.kind === "delivery" &&
     !classified.response &&
+    !classified.hasStructuredReplyContent &&
     !classified.normalized.shouldSkip &&
     !classified.normalized.hasMedia &&
     classified.mediaUrls.length === 0 &&
