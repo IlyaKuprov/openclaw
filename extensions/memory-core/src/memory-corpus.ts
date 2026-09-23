@@ -122,6 +122,8 @@ export async function runMemoryCorpusDeadline<T>(params: {
   /** Configured deadline (memory.search.query.timeoutSeconds); the shipped default when unset. */
   timeoutMs?: number;
   parentSignal?: AbortSignal;
+  /** Receives the unspent active budget (ms) when the run settles; paused readiness time is not spent. */
+  onRemainingBudget?: (remainingMs: number) => void;
   run: (signal: AbortSignal, deadlineControl: MemorySearchDeadlineControl) => Promise<T>;
 }): Promise<T> {
   if (params.parentSignal?.aborted) {
@@ -196,6 +198,13 @@ export async function runMemoryCorpusDeadline<T>(params: {
     if (timer) {
       clearTimeout(timer);
     }
+    params.onRemainingBudget?.(
+      controller.signal.aborted
+        ? 0
+        : paused
+          ? remainingMs
+          : Math.max(0, remainingMs - (performance.now() - segmentStartedAt)),
+    );
     memoryCorpusDeadlineChecks.delete(controller.signal);
     params.parentSignal?.removeEventListener("abort", onParentAbort);
   }
