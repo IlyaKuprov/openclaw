@@ -6,10 +6,12 @@ import type {
   SessionsListResult,
 } from "../../api/types.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
-import type {
-  SessionCapability,
-  SessionListOptions,
-  SessionListSnapshot,
+import {
+  SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+  SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
+  type SessionCapability,
+  type SessionListOptions,
+  type SessionListSnapshot,
 } from "../../lib/sessions/index.ts";
 import { createSessionArchiveState } from "../../lib/sessions/session-archive-state.ts";
 import type { SessionRefreshOptions } from "../../lib/sessions/session-capability.ts";
@@ -238,7 +240,8 @@ export async function createRenderedPage(
   expandedSessionKey: string | null = null,
 ): Promise<TestSessionsPage> {
   const query = buildSessionsListQuery(context, {
-    limit: 50,
+    limit: SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
+    activeMinutes: SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
     includeGlobal: true,
     includeUnknown: false,
     statusFilter,
