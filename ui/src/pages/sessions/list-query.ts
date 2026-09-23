@@ -24,11 +24,17 @@ export function buildSessionsListQuery(
   const scopeAgentId =
     parseAgentSessionKey(deepLinkSessionKey)?.agentId ??
     context.agentSelection.state.scopeId?.trim();
+  // The activity window is a browsing default: an explicit search must find an
+  // active session however old it is, so a nonblank search drops the window.
   const activeMinutes =
-    !deepLinkSessionKey && filters.statusFilter === "active" ? filters.activeMinutes : undefined;
+    !deepLinkSessionKey && !filters.search?.trim() && filters.statusFilter === "active"
+      ? filters.activeMinutes
+      : undefined;
   return {
     limit: deepLinkSessionKey ? SESSIONS_PAGE_DEFAULT_LIMIT : filters.limit,
-    ...(activeMinutes ? { activeMinutes } : {}),
+    // The window means real activity (last run or user input), not the
+    // updatedAt bookkeeping timestamp, while the pin-first ordering is kept.
+    ...(activeMinutes ? { activeMinutes, activeMinutesBy: "activity" as const } : {}),
     ...(deepLinkSessionKey || filters.search?.trim()
       ? { search: deepLinkSessionKey ?? filters.search!.trim() }
       : {}),
