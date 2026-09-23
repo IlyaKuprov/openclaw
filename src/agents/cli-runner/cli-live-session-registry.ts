@@ -94,10 +94,15 @@ export function formatCliLiveSessionClose(
   reason: CliBackendLiveSessionCloseReason,
   error?: unknown,
 ): string {
-  return (
-    `cli live session close: reason=${reason}` +
-    (error === undefined ? "" : ` detail=${formatErrorMessage(error)}`)
-  );
+  let detail = "";
+  if (error !== undefined) {
+    try {
+      detail = ` detail=${formatErrorMessage(error)}`;
+    } catch {
+      detail = " detail=unavailable";
+    }
+  }
+  return `cli live session close: reason=${reason}${detail}`;
 }
 
 /**
@@ -106,12 +111,24 @@ export function formatCliLiveSessionClose(
  * hides, and the message distinguishes those causes from an injected abort.
  */
 export function formatCliLiveTurnFailure(error: unknown): string {
-  const name = error instanceof Error ? error.name : "unknown";
-  const failoverReason = isFailoverError(error) ? error.reason : "";
+  // Best-effort diagnostics on the catch path: a backend error whose `name`,
+  // `reason` or message accessors throw must never replace the original failure.
+  let name = "unknown";
+  let failoverReason = "";
+  let detail = "unavailable";
+  try {
+    name = error instanceof Error ? String(error.name) : "unknown";
+  } catch {}
+  try {
+    failoverReason = isFailoverError(error) ? String(error.reason ?? "") : "";
+  } catch {}
+  try {
+    detail = formatErrorMessage(error);
+  } catch {}
   return (
     `cli live session turn failed: error=${name}` +
     (failoverReason ? ` failoverReason=${failoverReason}` : "") +
-    ` detail=${formatErrorMessage(error)}`
+    ` detail=${detail}`
   );
 }
 
