@@ -201,14 +201,18 @@ it.each(["secrets", "ask_user"] as const)(
       });
       await vi.advanceTimersByTimeAsync(10_000);
       const id = await request(tool);
-      await vi.advanceTimersByTimeAsync(920_000);
+      // Cross the 30-minute stalled-embedded-run abort floor
+      // (MIN_STALLED_EMBEDDED_RUN_ABORT_MS in diagnostic.ts) with margin.
+      await vi.advanceTimersByTimeAsync(1_850_000);
       expect(recovery).toHaveBeenCalledWith(
         expect.objectContaining({ allowActiveAbort: true, queueDepth: 0 }),
       );
       expect(abort).not.toHaveBeenCalled();
       expect(manager.get(id)?.status).toBe("pending");
       const answer = manager.waitAnswer(id);
-      await vi.advanceTimersByTimeAsync(2_500_000);
+      // Stay under the one-hour question expiry (request + 3_600_000 at
+      // t=10_000) with the same 180s margin the original timeline used.
+      await vi.advanceTimersByTimeAsync(1_570_000);
       expect(abort).not.toHaveBeenCalled();
       expect(
         (
@@ -226,8 +230,10 @@ it.each(["secrets", "ask_user"] as const)(
       });
       await vi.advanceTimersByTimeAsync(30_000);
       expect(abort).not.toHaveBeenCalled();
-      // Resolution is real progress, but a tool that stays hung is still recovered.
-      await vi.advanceTimersByTimeAsync(900_000);
+      // Resolution is real progress, but a tool that stays hung is still
+      // recovered once it crosses the 30-minute stalled-embedded-run abort
+      // floor (MIN_STALLED_EMBEDDED_RUN_ABORT_MS in diagnostic.ts) again.
+      await vi.advanceTimersByTimeAsync(1_830_000);
       expect(abort).toHaveBeenCalledTimes(1);
     });
   },
@@ -573,7 +579,9 @@ it.each(["pending", "answered", "cancelled", "expired", "requester-inactive"] as
       toolName: "ask_user",
       toolCallId: "queued-call",
     });
-    await vi.advanceTimersByTimeAsync(930_000);
+    // Cross the 30-minute stalled-embedded-run abort floor
+    // (MIN_STALLED_EMBEDDED_RUN_ABORT_MS in diagnostic.ts) with margin.
+    await vi.advanceTimersByTimeAsync(1_830_000);
     expect(recovery).toHaveBeenCalledTimes(1);
     const id = await request("ask_user");
     if (terminal === "cancelled") {
