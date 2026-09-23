@@ -431,9 +431,16 @@ class SessionsPage extends OpenClawLightDomElement {
       this.searchQuery = "";
       this.page = 0;
       this.selectedKeys = new Set();
-    } else {
+    } else if (data.statusFilter === "active") {
+      // Compact roster defaults apply to the active view only; the archived and
+      // all-status views keep the documented page limit and no time window.
       this.activeMinutes = String(SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES);
       this.limit = String(SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT);
+      this.includeGlobal = true;
+      this.includeUnknown = false;
+    } else {
+      this.activeMinutes = "";
+      this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
       this.includeGlobal = true;
       this.includeUnknown = false;
     }

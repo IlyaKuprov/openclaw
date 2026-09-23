@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApplicationContext } from "../../app/context.ts";
 import {
   SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+  SESSIONS_PAGE_DEFAULT_LIMIT,
   SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
   type SessionListOptions,
 } from "../../lib/sessions/index.ts";
@@ -49,9 +50,14 @@ async function loadSessionsRoute(options: {
       deepLinkSessionKey: data.expandedSessionKey,
       includeGlobal: true,
       includeUnknown: false,
-      // The roster defaults the mounted page opens with.
-      activeMinutes: SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
-      limit: SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
+      // The defaults the mounted page opens with: the compact roster window
+      // for the active view, the documented page limit for archived/all.
+      activeMinutes:
+        data.statusFilter === "active" ? SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES : undefined,
+      limit:
+        data.statusFilter === "active"
+          ? SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT
+          : SESSIONS_PAGE_DEFAULT_LIMIT,
     }),
   ).toEqual(options.expectedQuery);
 }
@@ -78,7 +84,7 @@ describe("sessions route", () => {
       search: "?status=archived",
       scopeId: null,
       expectedQuery: {
-        limit: 20,
+        limit: 50,
         includeGlobal: true,
         includeUnknown: false,
         includeDerivedTitles: false,
@@ -91,7 +97,7 @@ describe("sessions route", () => {
       search: "?status=all",
       scopeId: "main",
       expectedQuery: {
-        limit: 20,
+        limit: 50,
         includeGlobal: true,
         includeUnknown: false,
         includeDerivedTitles: false,
