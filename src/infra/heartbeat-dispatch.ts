@@ -67,6 +67,36 @@ import { buildOutboundSessionContext } from "./outbound/session-context.js";
 import { withSystemEventOwner } from "./system-event-ownership.js";
 import { consumeSelectedSystemEventEntries, enqueueSystemEvent } from "./system-events.js";
 
+/** A plain-text heartbeat reply is an owner alert only when it opens with this marker. */
+export const HEARTBEAT_ALERT_MARKER = "ALERT:";
+
+/** Does a heartbeat reply open with the alert marker, past any prefix or markdown decoration? */
+export function hasHeartbeatAlertMarker(text: string, responsePrefix?: string): boolean {
+  let body = text.trimStart();
+  if (responsePrefix && body.startsWith(responsePrefix)) {
+    body = body.slice(responsePrefix.length).trimStart();
+  }
+  body = body.replace(/^[*_`>#\s-]+/, "");
+  return body.toUpperCase().startsWith(HEARTBEAT_ALERT_MARKER);
+}
+
+/**
+ * Plain scheduled polls (no exec completion, cron events or scheduled tasks)
+ * whose configured prompt names the alert marker opt into marker-gated text
+ * delivery. Relays and task runs keep their unconditional delivery policy.
+ */
+function requiresHeartbeatAlertMarker(
+  prepared: PreparedHeartbeatRun,
+  scheduledTasks: ReadyHeartbeatWake["scheduledTasks"],
+): boolean {
+  return (
+    !prepared.hasExecCompletion &&
+    !prepared.hasCronEvents &&
+    scheduledTasks.length === 0 &&
+    prepared.prompt.includes(HEARTBEAT_ALERT_MARKER)
+  );
+}
+
 type HeartbeatDispatch = {
   opts: HeartbeatRunOptions;
   wake: ReadyHeartbeatWake;
@@ -230,7 +260,7 @@ async function prepareHeartbeatDispatchReply(
     prepared.replyPrefix.responsePrefix,
     prepared.replyPrefix.responsePrefixContextProvider(),
   );
-  const outcome = classifyHeartbeatAgentOutcome({
+  const classified = classifyHeartbeatAgentOutcome({
     agentRun: {
       agentRunFailed: execution === "failed",
       heartbeatToolResponse: response,
@@ -246,6 +276,24 @@ async function prepareHeartbeatDispatchReply(
     responsePrefix,
     ackMaxChars: DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
   });
+  // An opted-in plain poll answers prose instead of the quiet token when nothing
+  // needs attention; only marked text is an alert, unmarked prose stays a silent
+  // ack with its preview. Media, failures and the structured tool path are stock.
+  const outcome =
+    classified.kind === "delivery" &&
+    !classified.response &&
+    !classified.normalized.shouldSkip &&
+    !classified.normalized.hasMedia &&
+    classified.mediaUrls.length === 0 &&
+    requiresHeartbeatAlertMarker(prepared, scheduledTasks) &&
+    !hasHeartbeatAlertMarker(classified.normalized.text, responsePrefix)
+      ? ({
+          kind: "ack",
+          eventStatus: "ok-token",
+          silent: true,
+          preview: truncateHeartbeatPreview(classified.normalized.text),
+        } as const)
+      : classified;
   const scratch =
     outcome.kind === "failure" || !heartbeatResponse
       ? undefined
