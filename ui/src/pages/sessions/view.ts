@@ -58,7 +58,10 @@ import {
 } from "../../lib/sessions/route-navigation.ts";
 import { formatSessionArchiveReason } from "../../lib/sessions/session-archive-reason.ts";
 import { parseAgentSessionKey, parseSessionKeyParts } from "../../lib/sessions/session-key.ts";
-import { SESSIONS_PAGE_DEFAULT_LIMIT } from "../../lib/sessions/session-requests.ts";
+import {
+  SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+  SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
+} from "../../lib/sessions/session-requests.ts";
 
 type TranscriptSearchState =
   | { status: "idle" }
@@ -1107,8 +1110,8 @@ function renderSessionsAdvancedFilters(props: SessionsProps) {
     value: string | boolean,
   ) => props.onFiltersChange({ activeMinutes, limit, includeGlobal, includeUnknown, [key]: value });
   const active =
-    activeMinutes.trim() !== "" ||
-    limit.trim() !== String(SESSIONS_PAGE_DEFAULT_LIMIT) ||
+    activeMinutes.trim() !== String(SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES) ||
+    limit.trim() !== String(SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT) ||
     !includeGlobal ||
     includeUnknown ||
     props.groupBy !== "none";

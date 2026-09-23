@@ -3,7 +3,11 @@
 import type { RouteLoaderOptions } from "@openclaw/uirouter";
 import { describe, expect, it, vi } from "vitest";
 import type { ApplicationContext } from "../../app/context.ts";
-import type { SessionListOptions } from "../../lib/sessions/index.ts";
+import {
+  SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+  SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
+  type SessionListOptions,
+} from "../../lib/sessions/index.ts";
 import { buildSessionsListQuery } from "./list-query.ts";
 import { page, type SessionsRouteData } from "./route.ts";
 
@@ -45,7 +49,9 @@ async function loadSessionsRoute(options: {
       deepLinkSessionKey: data.expandedSessionKey,
       includeGlobal: true,
       includeUnknown: false,
-      limit: 50,
+      // The roster defaults the mounted page opens with.
+      activeMinutes: SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+      limit: SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
     }),
   ).toEqual(options.expectedQuery);
 }
@@ -57,7 +63,8 @@ describe("sessions route", () => {
       search: "",
       scopeId: "writer",
       expectedQuery: {
-        limit: 50,
+        limit: 20,
+        activeMinutes: 2880,
         includeGlobal: true,
         includeUnknown: false,
         includeDerivedTitles: false,
@@ -71,7 +78,7 @@ describe("sessions route", () => {
       search: "?status=archived",
       scopeId: null,
       expectedQuery: {
-        limit: 50,
+        limit: 20,
         includeGlobal: true,
         includeUnknown: false,
         includeDerivedTitles: false,
@@ -84,7 +91,7 @@ describe("sessions route", () => {
       search: "?status=all",
       scopeId: "main",
       expectedQuery: {
-        limit: 50,
+        limit: 20,
         includeGlobal: true,
         includeUnknown: false,
         includeDerivedTitles: false,
