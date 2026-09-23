@@ -59,8 +59,11 @@ export async function clearCommandRecoveryClaim(params: {
   sessionEntry?: SessionEntry;
   runOwnedSessionId: string;
   sessionReboundDuringRun: boolean;
-  /** Whether this run armed a recovery claim, and the signal it ran under. */
-  claim: { tracked: boolean; abortSignal?: AbortSignal };
+  /**
+   * Whether this run armed a recovery claim, the signal it ran under, and the
+   * error it ended with (a deferred lifecycle restart is thrown, not signalled).
+   */
+  claim: { tracked: boolean; abortSignal?: AbortSignal; terminalError?: unknown };
   terminalDeliveryEvidence?: RestartRecoveryTerminalDeliveryEvidenceResult;
 }): Promise<void> {
   const { sessionStore, sessionKey, storePath, runId } = params.prepared;
@@ -70,6 +73,7 @@ export async function clearCommandRecoveryClaim(params: {
   if (
     params.sessionReboundDuringRun ||
     isAgentRunRestartAbortReason(params.claim.abortSignal?.reason) ||
+    isAgentRunRestartAbortReason(params.claim.terminalError) ||
     !params.claim.tracked ||
     !sessionStore ||
     !sessionKey
