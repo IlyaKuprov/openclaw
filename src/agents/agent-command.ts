@@ -145,11 +145,9 @@ async function agentCommandInternal(
   // the parent a human interjected on every spawn, for embedded and ACP children alike.
   const isSubagentLaneTurn = normalizeOptionalString(opts.lane) === AGENT_LANE_SUBAGENT;
   let sessionReboundDuringRun = false;
-  let trackedRestartRecoveryDeliveryClaim = false;
+  let trackedRecoveryClaim = false;
   let currentRunDeliveryContext: DeliveryContext | undefined;
-  let restartRecoveryTerminalDeliveryEvidence:
-    | RestartRecoveryTerminalDeliveryEvidenceResult
-    | undefined;
+  let terminalDeliveryEvidence: RestartRecoveryTerminalDeliveryEvidenceResult | undefined;
   const preparedSessionId = sessionEntry?.sessionId;
   const { track: trackInternalModelRunTarget, cleanup: cleanupInternalModelRunTargets } =
     createInternalSessionEffectsCleanup({
@@ -163,7 +161,7 @@ async function agentCommandInternal(
     });
 
   let sessionWorkAdmission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
-  let releaseForeground: (() => void) | undefined;
+  let releaseForeground: (() => void) | undefined, terminalError: unknown;
   let maintenanceRequest: SessionMaintenanceRequest | undefined;
   let preparedRunAdmission: ReturnType<typeof prepareAgentCommandExecutionIdentity> | undefined;
   try {
@@ -366,7 +364,7 @@ async function agentCommandInternal(
         // The commit already happened. Cleanup must retain ownership even if
         // cancellation invalidates the task during the awaited session write.
         sessionEntry = persisted;
-        trackedRestartRecoveryDeliveryClaim = persisted?.restartRecoveryDeliveryRunId === runId;
+        trackedRecoveryClaim = persisted?.restartRecoveryDeliveryRunId === runId;
         opts = bindCommandHarnessCompletionAssertion({
           claim: guardedHarnessCompletion,
           persisted,
@@ -565,7 +563,7 @@ async function agentCommandInternal(
           compactionSessionIdReporter.onCompactionCommitted(committedCompactionSessionId);
         },
         onTerminalDeliveryEvidenceChanged: (evidence) => {
-          restartRecoveryTerminalDeliveryEvidence = evidence;
+          terminalDeliveryEvidence = evidence;
         },
       });
       sessionEntry = finalized.sessionEntry;
@@ -574,6 +572,9 @@ async function agentCommandInternal(
       maintenanceRequest = finalized.maintenance;
       return finalized.deliveryResult;
     });
+  } catch (error) {
+    // A deferred lifecycle restart is thrown, not placed on the abort signal.
+    throw (terminalError = error);
   } finally {
     try {
       compactionSessionIdReporter.reportCommitted();
@@ -587,8 +588,8 @@ async function agentCommandInternal(
         sessionReboundDuringRun,
         // Why this run ended decides whether it keeps the context it armed; the
         // signal composes the caller's abort with this run's lifecycle abort.
-        claim: { tracked: trackedRestartRecoveryDeliveryClaim, abortSignal: opts.abortSignal },
-        terminalDeliveryEvidence: restartRecoveryTerminalDeliveryEvidence,
+        claim: { tracked: trackedRecoveryClaim, abortSignal: opts.abortSignal, terminalError },
+        terminalDeliveryEvidence,
       });
     } finally {
       clearAgentRunContext(runId, lifecycleGeneration);
