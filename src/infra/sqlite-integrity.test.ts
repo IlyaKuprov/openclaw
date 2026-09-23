@@ -13,6 +13,7 @@ import { SqliteIntegrityWorkerInterruptedError } from "./sqlite-integrity-worker
 import { assertSqliteIntegrityInWorker } from "./sqlite-integrity-worker.js";
 import {
   assertSqliteIntegrity,
+  assertSqliteIntegrityExcept,
   confirmSqliteFileIntegrity,
   isTerminalSqliteIntegrityError,
   runSqliteIntegrityOperationSync,
@@ -28,6 +29,111 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+/**
+ * Detach an index from the rows it indexes without damaging any page: the
+ * stored CREATE INDEX text is rewritten in place to name a different column of
+ * the same width, so the file stays well formed and only the table-scoped
+ * integrity_check can see the mismatch.
+ */
+function repointIndexColumn(
+  databasePath: string,
+  indexName: string,
+  fromColumn: string,
+  toColumn: string,
+): void {
+  if (fromColumn.length !== toColumn.length) {
+    throw new Error("Rewriting the schema in place requires equal-width column names");
+  }
+  const buffer = fs.readFileSync(databasePath);
+  const named = buffer.indexOf(Buffer.from(indexName, "latin1"));
+  const target = buffer.indexOf(Buffer.from(`(${fromColumn}`, "latin1"), named);
+  if (named < 0 || target < 0) {
+    throw new Error(`Could not locate ${indexName}(${fromColumn}) in ${databasePath}`);
+  }
+  buffer.write(`(${toColumn}`, target, "latin1");
+  fs.writeFileSync(databasePath, buffer);
+}
+
+describe("assertSqliteIntegrityExcept", () => {
+  it("accepts a consistent database and still enforces foreign keys", () => {
+    const sqlite = requireNodeSqlite();
+    const database = new sqlite.DatabaseSync(":memory:");
+    try {
+      database.exec(`
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE parents (id INTEGER PRIMARY KEY);
+        CREATE TABLE children (
+          id INTEGER PRIMARY KEY,
+          parent_id INTEGER NOT NULL REFERENCES parents(id)
+        );
+        INSERT INTO parents (id) VALUES (1);
+        INSERT INTO children (id, parent_id) VALUES (1, 1);
+      `);
+      expect(assertSqliteIntegrityExcept(database, "quick database", ["children"])).toEqual({
+        integrityCheck: "ok",
+      });
+      database.exec("PRAGMA foreign_keys = OFF; DELETE FROM parents;");
+      expect(() => assertSqliteIntegrityExcept(database, "quick database", [])).toThrow(
+        /foreign_key_check failed for quick database/u,
+      );
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each([
+    {
+      name: "defers a corrupt index on the named ledger table",
+      index: "idx_ledger_payload",
+      from: "payload",
+      to: "id     ",
+      refused: false,
+    },
+    {
+      name: "still refuses a corrupt index on every other table",
+      index: "idx_live_name",
+      from: "name",
+      to: "id  ",
+      refused: true,
+    },
+  ])("$name", ({ index, from, to, refused }) => {
+    const sqlite = requireNodeSqlite();
+    const databasePath = path.join(tempDirs.make("sqlite-deferred-ledger-"), "database.sqlite");
+    const seed = new sqlite.DatabaseSync(databasePath);
+    seed.exec(`
+      CREATE TABLE ledger (id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+      CREATE INDEX idx_ledger_payload ON ledger(payload);
+      CREATE TABLE live (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+      CREATE INDEX idx_live_name ON live(name);
+      INSERT INTO ledger (id, payload) VALUES (1, 'x'), (2, 'y');
+      INSERT INTO live (id, name) VALUES (1, 'a'), (2, 'b');
+    `);
+    seed.close();
+    repointIndexColumn(databasePath, index, from, to);
+
+    const database = new sqlite.DatabaseSync(databasePath);
+    try {
+      // The whole-file page structure stays provable; only index content drifted.
+      expect(database.prepare("PRAGMA quick_check;").all()).toEqual([{ quick_check: "ok" }]);
+      // The deferred full check still proves the damage for the background verifier.
+      expect(() => assertSqliteIntegrity(database, "state database")).toThrow(
+        new RegExp(`integrity_check failed for state database.*${index}`, "u"),
+      );
+      if (refused) {
+        expect(() => assertSqliteIntegrityExcept(database, "state database", ["ledger"])).toThrow(
+          new RegExp(`integrity_check failed for state database.*${index}`, "u"),
+        );
+      } else {
+        expect(assertSqliteIntegrityExcept(database, "state database", ["ledger"])).toEqual({
+          integrityCheck: "ok",
+        });
+      }
+    } finally {
+      database.close();
+    }
+  });
+});
 
 describe("assertSqliteIntegrity", () => {
   it("accepts structurally and referentially consistent databases", () => {

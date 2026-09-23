@@ -123,7 +123,7 @@ export type SqliteIntegrityConfirmation =
   | { status: "failed"; error: Error; generation: SqliteFileGeneration; terminal: true }
   | { status: "healthy"; generation: SqliteFileGeneration };
 
-type SqliteCheckPragma = "integrity_check";
+type SqliteCheckPragma = "integrity_check" | "quick_check";
 type SqliteForeignKeyViolation = {
   fkid: bigint;
   parent: string;
@@ -176,6 +176,32 @@ export function assertSqliteIntegrity(
   const integrityCheck = runSqliteCheck(database, databaseLabel, "integrity_check");
   runSqliteForeignKeyCheck(database, databaseLabel);
   return { integrityCheck };
+}
+
+/**
+ * Per-open proof that keeps index verification for every table the open path
+ * may read, while deferring the named append-only ledgers to the background
+ * verifier (5 min after boot, then daily). quick_check proves the page
+ * structure of the whole file; the table-scoped integrity_check proves each
+ * remaining table against its indexes. On a 42 MB audit ledger the deferred
+ * table is 1.07 s of a 1.27 s full check and is never read on the open path.
+ */
+export function assertSqliteIntegrityExcept(
+  database: DatabaseSync,
+  databaseLabel: string,
+  deferredTables: readonly string[],
+): SqliteIntegrityChecks {
+  runSqliteCheck(database, databaseLabel, "quick_check");
+  const tables = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    .all() as Array<{ name: string }>;
+  for (const { name } of tables) {
+    if (!deferredTables.includes(name)) {
+      runSqliteCheck(database, databaseLabel, "integrity_check", name);
+    }
+  }
+  runSqliteForeignKeyCheck(database, databaseLabel);
+  return { integrityCheck: "ok" };
 }
 
 /** Run integrity checks and preserve whether a failure proves persistent damage. */
