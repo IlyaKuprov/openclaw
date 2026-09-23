@@ -29,7 +29,10 @@ import type { AcceptedCompactionSuccessor } from "../embedded-agent-runner/compa
 import { buildMainSessionRecoveryClearPatch } from "../main-session-recovery/main-session-recovery-clear.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
 import type { AgentRunSessionTarget } from "../run-session-target.js";
-import { throwAgentRunRestartAbortReason } from "../run-termination.js";
+import {
+  isAgentRunRestartAbortReason,
+  throwAgentRunRestartAbortReason,
+} from "../run-termination.js";
 import type { SessionMaintenanceRequest } from "../session-maintenance/run.js";
 import { persistAssistantTranscriptRepairRecord } from "./assistant-transcript-repair.js";
 import { persistAgentSession } from "./attempt-execution.shared.js";
@@ -56,13 +59,18 @@ export async function clearCommandRecoveryClaim(params: {
   sessionEntry?: SessionEntry;
   runOwnedSessionId: string;
   sessionReboundDuringRun: boolean;
-  trackedRestartRecoveryDeliveryClaim: boolean;
+  /** Whether this run armed a recovery claim, and the signal it ran under. */
+  claim: { tracked: boolean; abortSignal?: AbortSignal };
   terminalDeliveryEvidence?: RestartRecoveryTerminalDeliveryEvidenceResult;
 }): Promise<void> {
   const { sessionStore, sessionKey, storePath, runId } = params.prepared;
+  // The claim is cleared by ownership, so retention is decided here: this run
+  // keeps the context it armed only when it ended because the process is
+  // restarting. A success, a user abort and an ordinary failure all clear it.
   if (
     params.sessionReboundDuringRun ||
-    !params.trackedRestartRecoveryDeliveryClaim ||
+    isAgentRunRestartAbortReason(params.claim.abortSignal?.reason) ||
+    !params.claim.tracked ||
     !sessionStore ||
     !sessionKey
   ) {

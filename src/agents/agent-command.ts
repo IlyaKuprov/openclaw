@@ -585,7 +585,9 @@ async function agentCommandInternal(
         sessionEntry,
         runOwnedSessionId,
         sessionReboundDuringRun,
-        trackedRestartRecoveryDeliveryClaim,
+        // Why this run ended decides whether it keeps the context it armed; the
+        // signal composes the caller's abort with this run's lifecycle abort.
+        claim: { tracked: trackedRestartRecoveryDeliveryClaim, abortSignal: opts.abortSignal },
         terminalDeliveryEvidence: restartRecoveryTerminalDeliveryEvidence,
       });
     } finally {
