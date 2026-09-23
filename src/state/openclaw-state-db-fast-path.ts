@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { assertSqliteIntegrityExcept } from "../infra/sqlite-integrity.js";
 import {
   collectSqliteSchemaIssues,
   createSqliteTableContractReader,
@@ -24,6 +24,8 @@ import {
   isOpenClawStateStartupRepairableSchemaIssue,
   STATE_PERSISTENT_SCHEMA_COMPATIBILITY,
 } from "./openclaw-state-schema-compatibility.js";
+
+const OPEN_PATH_DEFERRED_LEDGER_TABLES = ["audit_events"] as const;
 
 export function needsOpenClawStateDatabaseSchemaRepair(pathname: string): boolean {
   let database: DatabaseSync | undefined;
@@ -63,7 +65,9 @@ export function isOpenClawStateSchemaFastPathEligible(
     if (readStateSchemaMigrationVersion(database) !== OPENCLAW_STATE_SCHEMA_VERSION) {
       return false;
     }
-    assertSqliteIntegrity(database, pathname);
+    // HF-40: the audit ledger is append-only and never read on the open path; its
+    // index verification belongs to the background verifier, not to every open.
+    assertSqliteIntegrityExcept(database, pathname, OPEN_PATH_DEFERRED_LEDGER_TABLES);
     // Both policies see this read transaction; repair must collect fresh facts after it ends.
     const readTable = createSqliteTableContractReader(database);
     assertCurrentStateRuntimeSchema(database, pathname, readTable);
