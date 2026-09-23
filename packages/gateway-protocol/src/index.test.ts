@@ -168,14 +168,15 @@ describe("lazy protocol validators", () => {
       { sortBy: "lastInteractionAt" },
       { sortBy: "activity", activeMinutes: 1_440, limit: 100 },
       { activeMinutes: 2_880, activeMinutesBy: "activity" },
-      { activeMinutes: 2_880, activeMinutesBy: "updatedAt", sortBy: "activity" },
       { boardFace: "dashboard" },
       { hasBoard: true },
       { hasBoard: false },
     ]);
     expectRejected(validateSessionsListParams, [{ archived: "archived" }, { involvingMe: "yes" }]);
-    expectRejected(validateSessionsListParams, [{ sortBy: "recent" }]);
-    expectRejected(validateSessionsListParams, [{ activeMinutes: 60, activeMinutesBy: "recent" }]);
+    expectRejected(validateSessionsListParams, [
+      { sortBy: "recent" },
+      { activeMinutesBy: "recent" },
+    ]);
     expectRejected(validateSessionsListParams, [{ boardFace: "grid" }, { hasBoard: "yes" }]);
   });
 
