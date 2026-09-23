@@ -8,6 +8,7 @@ import type {
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
 import {
   SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+  SESSIONS_PAGE_DEFAULT_LIMIT,
   SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
   type SessionCapability,
   type SessionListOptions,
@@ -239,9 +240,12 @@ export async function createRenderedPage(
   statusFilter: "active" | "archived" | "all" = "active",
   expandedSessionKey: string | null = null,
 ): Promise<TestSessionsPage> {
+  // Mirror the defaults the mounted page opens with: the compact roster window
+  // for the active view, the documented page limit for archived/all.
   const query = buildSessionsListQuery(context, {
-    limit: SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
-    activeMinutes: SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+    limit:
+      statusFilter === "active" ? SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT : SESSIONS_PAGE_DEFAULT_LIMIT,
+    activeMinutes: statusFilter === "active" ? SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES : undefined,
     includeGlobal: true,
     includeUnknown: false,
     statusFilter,
