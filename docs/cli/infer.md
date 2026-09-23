@@ -111,6 +111,7 @@ Reasons to prefer it over a one-off provider wrapper:
 - `model run --file` attaches image files (auto-detected MIME type) to the prompt; repeat `--file` for multiple images. Non-image files are rejected — use `infer audio transcribe` or `infer video describe` instead.
 - `model run --gateway` exercises Gateway routing, saved auth, provider selection, and the embedded runtime, but stays a raw model probe: no prior session transcript, bootstrap/AGENTS context, tools, or bundled MCP servers.
 - `model run --gateway --model <provider/model>` requires a trusted-operator gateway credential, because it asks the Gateway to run a one-off provider/model override.
+- `model run` and `model inspect` also accept a bare alias configured under `agents.defaults.models` (for example `--model opus` when that alias is declared); the alias is resolved through the same alias index as normal model selection before validation. Provider-qualified refs, catalog ids, and explicit `@profile` suffixes are unchanged.
 
 ## Model
 
