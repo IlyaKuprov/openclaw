@@ -86,13 +86,20 @@ export function hasHeartbeatAlertMarker(text: string, responsePrefix?: string): 
  * monitor scratch that happens to contain the marker never enables the gate.
  * Relays and task runs keep their unconditional delivery policy.
  */
-function requiresHeartbeatAlertMarker(
-  prepared: PreparedHeartbeatRun,
+export function requiresHeartbeatAlertMarker(
+  prepared: Pick<
+    PreparedHeartbeatRun,
+    | "hasExecCompletion"
+    | "hasCronEvents"
+    | "hasTaskContinuation"
+    | "configuredPromptOptsIntoAlertMarker"
+  >,
   scheduledTasks: ReadyHeartbeatWake["scheduledTasks"],
 ): boolean {
   return (
     !prepared.hasExecCompletion &&
     !prepared.hasCronEvents &&
+    !prepared.hasTaskContinuation &&
     scheduledTasks.length === 0 &&
     prepared.configuredPromptOptsIntoAlertMarker
   );

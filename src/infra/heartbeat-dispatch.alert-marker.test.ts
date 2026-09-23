@@ -1,7 +1,7 @@
 // Covers the opt-in ALERT: marker gate on plain scheduled heartbeat polls.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import { hasHeartbeatAlertMarker } from "./heartbeat-dispatch.js";
+import { hasHeartbeatAlertMarker, requiresHeartbeatAlertMarker } from "./heartbeat-dispatch.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
 import { runHeartbeatOnce, type HeartbeatDeps } from "./heartbeat-runner.js";
 import { installHeartbeatRunnerTestRuntime } from "./heartbeat-runner.test-harness.js";
@@ -137,6 +137,25 @@ describe("heartbeat ALERT: marker gate", () => {
       expect(sendWhatsApp.mock.calls[0]?.[1]).toContain(UNMARKED_PROSE);
       expect(getLastHeartbeatEvent()?.status).toBe("sent");
     });
+  });
+
+  it("gates only plain polls: relays, task continuations and scheduled tasks stay ungated", () => {
+    const plain = {
+      hasExecCompletion: false,
+      hasCronEvents: false,
+      hasTaskContinuation: false,
+      configuredPromptOptsIntoAlertMarker: true,
+    };
+    expect(requiresHeartbeatAlertMarker(plain, [])).toBe(true);
+    expect(requiresHeartbeatAlertMarker({ ...plain, hasTaskContinuation: true }, [])).toBe(false);
+    expect(requiresHeartbeatAlertMarker({ ...plain, hasExecCompletion: true }, [])).toBe(false);
+    expect(requiresHeartbeatAlertMarker({ ...plain, hasCronEvents: true }, [])).toBe(false);
+    expect(
+      requiresHeartbeatAlertMarker(plain, [{ name: "rotate", prompt: "rotate logs" }] as never),
+    ).toBe(false);
+    expect(
+      requiresHeartbeatAlertMarker({ ...plain, configuredPromptOptsIntoAlertMarker: false }, []),
+    ).toBe(false);
   });
 
   it("delivers an unmarked cron relay even when the prompt names the marker", async () => {
