@@ -71,6 +71,7 @@ describe("sessions route", () => {
       expectedQuery: {
         limit: 20,
         activeMinutes: 2880,
+        activeMinutesBy: "activity" as const,
         includeGlobal: true,
         includeUnknown: false,
         includeDerivedTitles: false,

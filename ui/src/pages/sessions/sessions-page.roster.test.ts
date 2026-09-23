@@ -373,6 +373,7 @@ describe("sessions page managed roster", () => {
     expect(selectedQuery).toEqual({
       limit: 20,
       activeMinutes: 2880,
+      activeMinutesBy: "activity",
       includeGlobal: true,
       includeUnknown: false,
       includeDerivedTitles: false,

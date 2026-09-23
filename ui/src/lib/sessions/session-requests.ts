@@ -136,6 +136,9 @@ export function buildSessionListParams(options: SessionListOptions = {}): Record
         : 0;
   if (activeMinutes > 0) {
     params.activeMinutes = activeMinutes;
+    if (options.activeMinutesBy) {
+      params.activeMinutesBy = options.activeMinutesBy;
+    }
   }
   const agentId = options.agentId?.trim();
   const spawnedBy = options.spawnedBy?.trim();
