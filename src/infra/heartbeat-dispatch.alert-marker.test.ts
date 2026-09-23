@@ -55,6 +55,7 @@ describe("heartbeat ALERT: marker gate", () => {
     prompt?: string;
     event?: { text: string; contextKey?: string };
     reason?: string;
+    replyPayload?: Record<string, unknown>;
   }) {
     const cfg = createConfig(params);
     const sessionKey = await seedMainSessionStore(params.storePath, cfg, {
@@ -68,7 +69,7 @@ describe("heartbeat ALERT: marker gate", () => {
         ...(params.event.contextKey ? { contextKey: params.event.contextKey } : {}),
       });
     }
-    params.replySpy.mockResolvedValue({ text: params.replyText });
+    params.replySpy.mockResolvedValue({ text: params.replyText, ...params.replyPayload });
     const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "m1", toJid: "jid" });
     await runHeartbeatOnce({
       cfg,
@@ -170,6 +171,22 @@ describe("heartbeat ALERT: marker gate", () => {
     }
     expect(gated(plain, [{ name: "rotate", prompt: "rotate logs" }] as never)).toBe(false);
     expect(gated({ ...plain, configuredPromptOptsIntoAlertMarker: false })).toBe(false);
+  });
+
+  it("delivers unmarked text that carries structured content even when the prompt names the marker", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const { sendWhatsApp } = await runPoll({
+        tmpDir,
+        storePath,
+        replySpy,
+        replyText: UNMARKED_PROSE,
+        prompt: MARKER_PROMPT,
+        replyPayload: {
+          presentation: { blocks: [{ type: "text", text: "Queue: 3 running, 0 stalled." }] },
+        },
+      });
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("delivers an unmarked cron relay even when the prompt names the marker", async () => {
