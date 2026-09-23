@@ -26,6 +26,7 @@ import { normalizeToolPolicyName } from "../tool-policy.js";
 import {
   restartCliLiveSession,
   createCliLiveSessionCapability,
+  formatCliLiveTurnFailure,
   getCliLiveSessionApprovalGrants,
 } from "./cli-live-session-registry.js";
 import {
@@ -36,6 +37,7 @@ import { createCliAbortError } from "./execute-node-claude.js";
 import { createCliPluginWatchdog } from "./execute-plugin-watchdog.js";
 import { createCliRunCurrentAssertion } from "./execution-target.js";
 import { createCliFailoverError as failover } from "./exit-error.js";
+import { cliBackendLog } from "./log.js";
 import * as noOutputPolicy from "./no-output-timeout-policy.js";
 import type { PreparedCliRunContext } from "./types.js";
 
@@ -613,6 +615,9 @@ export async function executePluginOwnedProcess(params: {
       throw new Error("CLI plugin runtime completed without a terminal result.");
     }
   } catch (error) {
+    // Say why the live turn ended before the abort and exit handling below
+    // rewrite it into a generic outcome.
+    cliBackendLog.warn(formatCliLiveTurnFailure(error));
     if (run.abortSignal?.aborted || termination.reason === "manual-cancel") {
       const reason = isSignalTimeoutReason(run.abortSignal?.reason) ? "timeout" : "aborted";
       if (!params.onInterrupted?.(reason)) {
