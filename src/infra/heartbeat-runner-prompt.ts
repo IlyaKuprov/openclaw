@@ -190,8 +190,16 @@ export async function resolveHeartbeatPreflight(params: {
   return basePreflight;
 }
 
+/** A plain-text heartbeat reply is an owner alert only when it opens with this marker. */
+export const HEARTBEAT_ALERT_MARKER = "ALERT:";
+
 type HeartbeatPromptResolution = {
   prompt: string;
+  /**
+   * True only when the operator's configured (or default) heartbeat prompt
+   * itself names the alert marker; appended monitor scratch never opts in.
+   */
+  configuredPromptOptsIntoAlertMarker: boolean;
   hasTaskContinuation: boolean;
   hasExecCompletion: boolean;
   hasRelayableExecCompletion: boolean;
@@ -263,6 +271,7 @@ ${completionInstruction}`;
     const prompt = appendHeartbeatScratch(taskPrompt, params.heartbeatScratchContent);
     return {
       prompt,
+      configuredPromptOptsIntoAlertMarker: false,
       hasTaskContinuation: hasBackgroundTaskEvent,
       hasExecCompletion: false,
       hasRelayableExecCompletion: false,
@@ -299,6 +308,7 @@ ${completionInstruction}`;
   );
   return {
     prompt: basePromptWithDirectives,
+    configuredPromptOptsIntoAlertMarker: basePrompt.includes(HEARTBEAT_ALERT_MARKER),
     hasTaskContinuation:
       hasExecCompletion ||
       hasBackgroundTaskEvent ||
