@@ -902,6 +902,35 @@ describe("live-turn kill diagnostics", () => {
     );
   });
 
+  it("never throws on the catch path when an error's accessors throw", () => {
+    const hostile = new Error("backend rejected the turn");
+    Object.defineProperty(hostile, "name", {
+      get() {
+        throw new Error("name getter exploded");
+      },
+    });
+    Object.defineProperty(hostile, "message", {
+      get() {
+        throw new Error("message getter exploded");
+      },
+    });
+    expect(() => formatCliLiveTurnFailure(hostile)).not.toThrow();
+    expect(formatCliLiveTurnFailure(hostile)).toMatch(
+      /^cli live session turn failed: error=unknown detail=/,
+    );
+    expect(() => formatCliLiveSessionClose("abort", hostile)).not.toThrow();
+    expect(formatCliLiveSessionClose("abort", hostile)).toMatch(
+      /^cli live session close: reason=abort detail=/,
+    );
+    const serializedFailover = {
+      name: "FailoverError",
+      get reason(): string {
+        throw new Error("reason getter exploded");
+      },
+    };
+    expect(() => formatCliLiveTurnFailure(serializedFailover)).not.toThrow();
+  });
+
   it("forwards a close cause to the plugin-owned process", async () => {
     const owner = await createOwner();
     owner.register();
