@@ -92,14 +92,21 @@ export function requiresHeartbeatAlertMarker(
     | "hasExecCompletion"
     | "hasCronEvents"
     | "hasTaskContinuation"
+    | "genericEvents"
     | "configuredPromptOptsIntoAlertMarker"
   >,
   scheduledTasks: ReadyHeartbeatWake["scheduledTasks"],
+  intent: HeartbeatRunOptions["intent"],
 ): boolean {
+  // Only a scheduled poll with nothing queued is a plain poll: immediate, event,
+  // task and manual wakes, and any pending generic system event, are relays
+  // whose reply the owner asked for.
   return (
+    (intent === undefined || intent === "scheduled") &&
     !prepared.hasExecCompletion &&
     !prepared.hasCronEvents &&
     !prepared.hasTaskContinuation &&
+    prepared.genericEvents.length === 0 &&
     scheduledTasks.length === 0 &&
     prepared.configuredPromptOptsIntoAlertMarker
   );
@@ -293,7 +300,7 @@ async function prepareHeartbeatDispatchReply(
     !classified.normalized.shouldSkip &&
     !classified.normalized.hasMedia &&
     classified.mediaUrls.length === 0 &&
-    requiresHeartbeatAlertMarker(prepared, scheduledTasks) &&
+    requiresHeartbeatAlertMarker(prepared, scheduledTasks, opts.intent) &&
     !hasHeartbeatAlertMarker(classified.normalized.text, responsePrefix)
       ? ({
           kind: "ack",

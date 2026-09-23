@@ -144,18 +144,32 @@ describe("heartbeat ALERT: marker gate", () => {
       hasExecCompletion: false,
       hasCronEvents: false,
       hasTaskContinuation: false,
+      genericEvents: [],
       configuredPromptOptsIntoAlertMarker: true,
     };
-    expect(requiresHeartbeatAlertMarker(plain, [])).toBe(true);
-    expect(requiresHeartbeatAlertMarker({ ...plain, hasTaskContinuation: true }, [])).toBe(false);
-    expect(requiresHeartbeatAlertMarker({ ...plain, hasExecCompletion: true }, [])).toBe(false);
-    expect(requiresHeartbeatAlertMarker({ ...plain, hasCronEvents: true }, [])).toBe(false);
+    const gated = (
+      prepared: Parameters<typeof requiresHeartbeatAlertMarker>[0],
+      tasks: Parameters<typeof requiresHeartbeatAlertMarker>[1] = [],
+      intent: Parameters<typeof requiresHeartbeatAlertMarker>[2] = "scheduled",
+    ) => requiresHeartbeatAlertMarker(prepared, tasks, intent);
+    expect(gated(plain)).toBe(true);
+    expect(gated(plain, [], undefined)).toBe(true);
+    expect(gated({ ...plain, hasTaskContinuation: true })).toBe(false);
+    expect(gated({ ...plain, hasExecCompletion: true })).toBe(false);
+    expect(gated({ ...plain, hasCronEvents: true })).toBe(false);
+    // A pending generic system event (for example an explicit "other" wake asking
+    // to report an overdue delivery) is a relay, never a plain poll.
     expect(
-      requiresHeartbeatAlertMarker(plain, [{ name: "rotate", prompt: "rotate logs" }] as never),
+      gated({
+        ...plain,
+        genericEvents: [{ text: "Reef: delivery overdue", contextKey: "reef:overdue" }] as never,
+      }),
     ).toBe(false);
-    expect(
-      requiresHeartbeatAlertMarker({ ...plain, configuredPromptOptsIntoAlertMarker: false }, []),
-    ).toBe(false);
+    for (const intent of ["immediate", "event", "task", "manual"] as const) {
+      expect(gated(plain, [], intent)).toBe(false);
+    }
+    expect(gated(plain, [{ name: "rotate", prompt: "rotate logs" }] as never)).toBe(false);
+    expect(gated({ ...plain, configuredPromptOptsIntoAlertMarker: false })).toBe(false);
   });
 
   it("delivers an unmarked cron relay even when the prompt names the marker", async () => {
