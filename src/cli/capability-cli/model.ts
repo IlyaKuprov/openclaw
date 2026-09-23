@@ -19,7 +19,12 @@ import {
 import { updateAuthProfileStoreWithLock } from "../../agents/auth-profiles/store-runtime.js";
 import { buildExplicitSessionIdSessionKey } from "../../agents/command/session.js";
 import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
-import { canonicalizeCaseOnlyCatalogModelRef } from "../../agents/model-selection.js";
+import {
+  buildModelAliasIndex,
+  canonicalizeCaseOnlyCatalogModelRef,
+  resolveDefaultModelForAgent,
+  resolveModelRefFromString,
+} from "../../agents/model-selection.js";
 import { readPreparedModelCatalog } from "../../agents/prepared-model-catalog.js";
 import {
   acquireSimpleCompletionModelForAgent,
@@ -63,13 +68,45 @@ const HEIC_MODEL_RUN_MIMES = new Set([
   "image/heif-sequence",
 ]);
 
+function resolveInspectionAgentId(cfg: OpenClawConfig, rawAgentId?: string): string | undefined {
+  return rawAgentId === undefined ? undefined : resolveCapabilityProviderAgentId(cfg, rawAgentId);
+}
+
 async function loadModelCatalogForInspection(cfg: OpenClawConfig, rawAgentId?: string) {
-  const agentId =
-    rawAgentId === undefined ? undefined : resolveCapabilityProviderAgentId(cfg, rawAgentId);
+  const agentId = resolveInspectionAgentId(cfg, rawAgentId);
   const prepared = await readPreparedModelCatalog({ config: cfg, agentId, readOnly: true });
   return prepared.toSorted(
     (a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id),
   );
+}
+
+/**
+ * Resolve a bare configured alias (`opus`) through the same alias index normal
+ * model selection uses. Only alias hits are returned: other bare refs keep the
+ * existing catalog/provider inference, and alias lookup drops auth-profile
+ * suffixes, so profile-qualified refs are left untouched.
+ */
+function resolveConfiguredModelAliasRef(params: {
+  raw: string | undefined;
+  cfg: OpenClawConfig;
+  agentId?: string;
+}): string | undefined {
+  const raw = normalizeOptionalString(params.raw);
+  if (!raw || raw.includes("/") || raw.includes("@")) {
+    return undefined;
+  }
+  const defaultProvider = resolveDefaultModelForAgent({
+    cfg: params.cfg,
+    agentId: params.agentId,
+  }).provider;
+  const resolved = resolveModelRefFromString({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    raw,
+    defaultProvider,
+    aliasIndex: buildModelAliasIndex({ cfg: params.cfg, agentId: params.agentId, defaultProvider }),
+  });
+  return resolved?.alias ? `${resolved.ref.provider}/${resolved.ref.model}` : undefined;
 }
 
 async function canonicalizeModelRunRef(params: {
@@ -78,6 +115,10 @@ async function canonicalizeModelRunRef(params: {
   agentId: string;
   preserveAuthProfile: boolean;
 }): Promise<string | undefined> {
+  const aliasRef = resolveConfiguredModelAliasRef(params);
+  if (aliasRef) {
+    return aliasRef;
+  }
   return await canonicalizeCaseOnlyCatalogModelRef({
     cfg: params.cfg,
     raw: params.raw,
@@ -169,7 +210,6 @@ async function runModelRun(params: {
   transport: CapabilityTransport;
   agent?: string;
 }) {
-  const explicitModelOverride = requireProviderModelOverride(params.model);
   const cfg =
     params.transport === "local"
       ? await resolveLocalCapabilityRuntimeConfig({
@@ -184,7 +224,9 @@ async function runModelRun(params: {
     agentId,
     preserveAuthProfile: params.transport === "local",
   });
-  const hasExplicitProviderModelOverride = Boolean(explicitModelOverride);
+  // Validated after canonicalization so a configured bare alias resolves first;
+  // every other override still has to arrive as <provider/model>.
+  const hasExplicitProviderModelOverride = Boolean(requireProviderModelOverride(modelRef));
   const imageFiles = await readModelRunImageFiles(params.files);
   const messageContent =
     imageFiles.length > 0
@@ -528,11 +570,18 @@ export function registerModelCapabilityCommands(capability: Command): void {
     .action(async (opts, command) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const target = normalizeStringifiedOptionalString(opts.model) ?? "";
-        const catalog = await loadModelCatalogForInspection(
-          getRuntimeConfig(),
-          resolveCapabilityAgentOption(command, opts.agent),
-        );
+        const cfg = getRuntimeConfig();
+        const rawAgentId = resolveCapabilityAgentOption(command, opts.agent);
+        const aliasRef = resolveConfiguredModelAliasRef({
+          raw: target,
+          cfg,
+          agentId: resolveInspectionAgentId(cfg, rawAgentId),
+        });
+        const catalog = await loadModelCatalogForInspection(cfg, rawAgentId);
         const entry =
+          (aliasRef
+            ? catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === aliasRef)
+            : undefined) ??
           catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === target) ??
           catalog.find((candidate) => candidate.id === target);
         if (!entry) {

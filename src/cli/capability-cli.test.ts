@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import type { inspectLocalAudioSelection } from "../media-understanding/local-audio.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { registerCapabilityCli } from "./capability-cli.js";
 import { CAPABILITY_METADATA } from "./capability-cli/metadata.js";
 
@@ -84,7 +85,9 @@ const mocks = vi.hoisted(() => ({
     typeof import("../agents/auth-profiles.js").listProfilesForProvider
   >(() => []),
   resolveApiKeyForProviderCore: vi.fn(),
-  loadManifestMetadataSnapshot: vi.fn(() => ({ manifestRegistry: { plugins: [] } })),
+  // Alias resolution hands this snapshot to manifest-backed model-id normalization,
+  // which needs the complete snapshot contract, not just the manifest registry.
+  loadManifestMetadataSnapshot: vi.fn(() => createPluginMetadataSnapshotFixture()),
   planEffectiveModelCatalogRows: vi.fn<
     typeof import("../model-catalog/index.js").planEffectiveModelCatalogRows
   >(() => ({ rows: [], entries: [], conflicts: [] })),
@@ -631,7 +634,7 @@ describe("capability cli", () => {
     mocks.resolveApiKeyForProviderCore.mockReset().mockRejectedValue(new Error("no auth profile"));
     mocks.loadManifestMetadataSnapshot
       .mockReset()
-      .mockReturnValue({ manifestRegistry: { plugins: [] } });
+      .mockReturnValue(createPluginMetadataSnapshotFixture());
     mocks.planEffectiveModelCatalogRows
       .mockReset()
       .mockReturnValue({ rows: [], entries: [], conflicts: [] });
@@ -1746,6 +1749,87 @@ describe("capability cli", () => {
     await runModelRunWithModel("custom/MyModel@work", "local");
 
     expectModelRunDispatch("local", "custom/MyModel@work");
+  });
+
+  function mockConfiguredModelAlias(): void {
+    mocks.loadConfig.mockReturnValue({
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.4" },
+          models: { "openai/gpt-5.5": { alias: "gpt-5.5-codex" } },
+        },
+      },
+    });
+  }
+
+  it.each(["local", "gateway"] as const)(
+    "resolves configured bare model aliases before %s dispatch",
+    async (transport) => {
+      mockConfiguredModelAlias();
+
+      await runModelRunWithModel("gpt-5.5-codex", transport);
+
+      expectModelRunDispatch(transport, "openai/gpt-5.5");
+    },
+  );
+
+  it("keeps an explicit profile suffix out of configured alias resolution before dispatch", async () => {
+    mockConfiguredModelAlias();
+
+    await expect(runModelRunWithModel("gpt-5.5-codex@work", "gateway")).rejects.toThrow("exit 1");
+
+    expectRuntimeErrorContains("Model overrides must use the form <provider/model>.");
+    expect(mocks.acquireSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+    expect(mocks.callGateway).not.toHaveBeenCalled();
+  });
+
+  it("resolves configured bare aliases for model inspection", async () => {
+    const catalogEntry = { id: "gpt-5.5", provider: "openai", name: "GPT-5.5" };
+    mockConfiguredModelAlias();
+    mocks.loadModelCatalog.mockResolvedValueOnce([catalogEntry] as never);
+
+    await runCap("capability", "model", "inspect", "--model", "gpt-5.5-codex", "--json");
+
+    expect(mocks.runtime.writeJson).toHaveBeenCalledWith(catalogEntry);
+  });
+
+  it("keeps an explicit profile suffix out of configured alias resolution for model inspection", async () => {
+    mockConfiguredModelAlias();
+    mocks.loadModelCatalog.mockResolvedValueOnce([
+      { id: "gpt-5.5", provider: "openai", name: "GPT-5.5" },
+    ] as never);
+
+    await expect(
+      runCap("capability", "model", "inspect", "--model", "gpt-5.5-codex@work", "--json"),
+    ).rejects.toThrow("exit 1");
+
+    expectRuntimeErrorContains("Model not found: gpt-5.5-codex@work");
+    expect(mocks.runtime.writeJson).not.toHaveBeenCalled();
+  });
+
+  it("keeps resolving a bare catalog id for model inspection", async () => {
+    const catalogEntry = { id: "gpt-5.6-sol", provider: "openai", name: "GPT-5.6 Sol" };
+    mocks.loadConfig.mockReturnValue({
+      agents: { defaults: { model: { primary: "anthropic/claude-opus-5" } } },
+    });
+    mocks.loadModelCatalog.mockResolvedValueOnce([catalogEntry] as never);
+
+    await runCap("capability", "model", "inspect", "--model", "gpt-5.6-sol", "--json");
+
+    expect(mocks.runtime.writeJson).toHaveBeenCalledWith(catalogEntry);
+  });
+
+  it("reports the original unknown model name after alias lookup misses", async () => {
+    mocks.loadConfig.mockReturnValue({
+      agents: { defaults: { model: { primary: "openai/gpt-5.4" } } },
+    });
+    mocks.loadModelCatalog.mockResolvedValueOnce([] as never);
+
+    await expect(
+      runCap("capability", "model", "inspect", "--model", "missing-model", "--json"),
+    ).rejects.toThrow("exit 1");
+
+    expectRuntimeErrorContains("Model not found: missing-model");
   });
 
   it("passes thinking overrides to gateway model probes", async () => {
