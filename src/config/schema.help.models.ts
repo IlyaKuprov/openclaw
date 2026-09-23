@@ -253,7 +253,7 @@ export const MODEL_FIELD_HELP: Record<string, string> = {
   "memory.search.query.minScore":
     "Minimum relevance score threshold for including memory results in final recall output. Increase to reduce weak/noisy matches, or lower when you need more permissive retrieval.",
   "memory.search.query.timeoutSeconds":
-    "Seconds one memory_search or memory_get call may take before it is cut off, including cleanup of the search managers. Unset keeps the built-in 30 s deadline; raise it for large memory indexes whose first search after a restart takes longer.",
+    "Seconds one memory_search or memory_get call may take before it is cut off, including cleanup of the search managers. Unset keeps the shipped behaviour: a 30 s deadline on memory_search and on wiki or combined memory_get reads, and no deadline on a memory-only memory_get read. Raise it for large memory indexes whose first search after a restart takes longer.",
   "memory.search.cache.enabled":
     "Caches computed chunk embeddings in SQLite so reindexing and incremental updates run faster (default: true). Keep this enabled unless investigating cache correctness or minimizing disk usage.",
   memory: "Built-in memory configuration (global).",
