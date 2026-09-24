@@ -1,6 +1,12 @@
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import { formatSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
+import {
+  listSessionEntriesReadOnly,
+  loadSessionEntryReadOnly,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withTempHome } from "../plugin-sdk/test-env.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
@@ -10,6 +16,84 @@ import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 
 describe("plugin registry SQLite session ownership", () => {
+  it("admits a plugin-owned recall child under a hidden internal-effects parent", async () => {
+    await withTempHome(async (home) => {
+      const agentId = "main";
+      const sessionKey = "agent:main:internal-session-effects:review-1:active-memory:recall-1";
+      const sessionId = "active-memory-test-recall";
+      const storePath = resolveSessionStorePathCore(undefined, { agentId });
+      const sessionFile = formatSqliteSessionFileMarker({ agentId, sessionId, storePath });
+      try {
+        await replaceSessionEntry(
+          { agentId, sessionKey, storePath },
+          { sessionId, sessionFile, pluginOwnerId: "active-memory", updatedAt: 1 },
+        );
+        expect(listSessionEntriesReadOnly({ agentId, storePath })).toEqual([]);
+        expect(loadSessionEntryReadOnly({ agentId, sessionKey, storePath })?.sessionId).toBe(
+          sessionId,
+        );
+        const runtime = createPluginRuntime();
+        const runEmbeddedAgent = vi.fn(async () => ({
+          ok: true,
+        })) as unknown as PluginRuntime["agent"]["runEmbeddedAgent"];
+        Object.defineProperty(runtime.agent, "runEmbeddedAgent", {
+          configurable: true,
+          value: runEmbeddedAgent,
+        });
+        const registry = createRuntimeTestRegistry(runtime);
+        const api = registry.createApi(
+          createPluginRecord({
+            id: "active-memory",
+            source: "/plugins/active-memory/index.js",
+            origin: "bundled",
+            enabled: true,
+            configSchema: false,
+          }),
+          { config: {} as OpenClawConfig },
+        );
+        const target = { agentId, sessionKey, sessionId, storePath };
+        const params = {
+          ...target,
+          sessionTarget: target,
+          sessionFile,
+          workspaceDir: path.join(home, "workspace"),
+          prompt: "recall",
+          timeoutMs: 1000,
+          runId: sessionId,
+        } as Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0];
+        await expect(api.runtime.agent.runEmbeddedAgent(params)).resolves.toEqual({ ok: true });
+        expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+        const otherApi = registry.createApi(
+          createPluginRecord({
+            id: "other-plugin",
+            source: "/plugins/other-plugin/index.js",
+            origin: "bundled",
+            enabled: true,
+            configSchema: false,
+          }),
+          { config: {} as OpenClawConfig },
+        );
+        await expect(otherApi.runtime.agent.runEmbeddedAgent(params)).rejects.toThrow(
+          'owned by plugin "active-memory"',
+        );
+        expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+        await expect(
+          api.runtime.agent.runEmbeddedAgent({
+            ...params,
+            sessionFile: formatSqliteSessionFileMarker({
+              agentId,
+              sessionId: "not-the-recall-session",
+              storePath,
+            }),
+          }),
+        ).rejects.toThrow("only with its exact session target identity");
+        expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("does not read runtime config before a logical session requires it", () => {
     const runtime = createPluginRuntime();
     const readConfig = vi.fn(() => {

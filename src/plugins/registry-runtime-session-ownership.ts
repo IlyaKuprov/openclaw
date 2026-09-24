@@ -3,6 +3,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { normalizeOptionalAgentRuntimeId } from "../agents/agent-runtime-id.js";
 import { resolveInitialEmbeddedRunModel } from "../agents/embedded-agent-runner/run/runtime-resolution.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
+import { isInternalSessionEffectsKey } from "../config/sessions/internal-session-key.js";
 import {
   parseSqliteSessionFileMarker,
   sqliteSessionFileMarkerMatchesTarget,
@@ -345,6 +346,30 @@ export function createPluginSessionOwnership(
         readOnly: true,
       });
       const matches = markerEntries.filter(({ entry }) => entry.sessionId === marker.sessionId);
+      if (matches.length === 0) {
+        // Full listings deliberately hide internal-effects rows. A plugin child
+        // nested under such a parent must still prove its exact persisted key.
+        for (const sessionKey of sessionKeys) {
+          if (!isInternalSessionEffectsKey(sessionKey)) {
+            continue;
+          }
+          const entry = registryParams.runtime.agent.session.getSessionEntry({
+            agentId: marker.agentId,
+            sessionKey,
+            storePath: marker.storePath,
+            readConsistency: "latest",
+          });
+          if (entry?.sessionId === marker.sessionId) {
+            const ownerPluginId = normalizeOptionalString(entry.pluginOwnerId);
+            if (ownerPluginId !== pluginId) {
+              throw new Error(
+                `Plugin "${pluginId}" cannot ${params.action} internal session owned by plugin "${ownerPluginId ?? "unknown"}".`,
+              );
+            }
+            matches.push({ entry, sessionKey });
+          }
+        }
+      }
       if (matches.length === 0) {
         throw new Error(`Plugin session ownership target not found: ${marker.sessionId}`);
       }
