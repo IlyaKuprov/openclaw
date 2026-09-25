@@ -586,12 +586,16 @@ export function createPluginSessionOwnership(
     sessionKey: string;
   }): void => {
     const ownerPluginId = normalizeOptionalString(params.before?.pluginOwnerId);
-    if (
-      isInternalEffectsStoreKey(params.sessionKey) &&
-      ownerPluginId &&
-      normalizeOptionalString(params.entry.pluginOwnerId) !== ownerPluginId
-    ) {
-      throw new Error(`Plugin "${pluginId}" cannot change the owner of an internal session.`);
+    if (isInternalEffectsStoreKey(params.sessionKey)) {
+      const incomingOwner = normalizeOptionalString(params.entry.pluginOwnerId);
+      if (ownerPluginId && incomingOwner !== ownerPluginId) {
+        throw new Error(`Plugin "${pluginId}" cannot change the owner of an internal session.`);
+      }
+      if (incomingOwner && incomingOwner !== pluginId) {
+        throw new Error(
+          `Internal session "${params.sessionKey}" is owned by plugin "${incomingOwner}", not "${pluginId}".`,
+        );
+      }
     }
     if (params.entry.modelSelectionLocked === true) {
       assertLockedSessionEntryOwned(params.sessionKey, params.entry, params.action);

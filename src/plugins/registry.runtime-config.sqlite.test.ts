@@ -16,6 +16,38 @@ import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 
 describe("plugin registry SQLite session ownership", () => {
+  it("does not let a foreign plugin forge a new internal child's ownership proof", async () => {
+    await withTempHome(async () => {
+      const agentId = "main";
+      const sessionKey = "agent:main:internal-session-effects:review-6:active-memory:recall-6";
+      const storePath = resolveSessionStorePathCore(undefined, { agentId });
+      try {
+        const registry = createRuntimeTestRegistry(createPluginRuntime());
+        const otherApi = registry.createApi(
+          createPluginRecord({
+            id: "other-plugin",
+            source: "/plugins/other-plugin/index.js",
+            origin: "bundled",
+            enabled: true,
+            configSchema: false,
+          }),
+          { config: {} as OpenClawConfig },
+        );
+        await expect(
+          otherApi.runtime.agent.session.upsertSessionEntry({
+            agentId,
+            sessionKey,
+            storePath,
+            entry: { sessionId: "forged-child", pluginOwnerId: "active-memory", updatedAt: 1 },
+          }),
+        ).rejects.toThrow('owned by plugin "active-memory"');
+        expect(loadSessionEntryReadOnly({ agentId, sessionKey, storePath })).toBeUndefined();
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("does not let a foreign plugin claim an owned internal child through a folded alias", async () => {
     await withTempHome(async () => {
       const agentId = "main";
