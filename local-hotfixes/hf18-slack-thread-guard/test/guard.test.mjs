@@ -89,6 +89,26 @@ describe("pure declarative route decision", () => {
     );
   });
 
+  for (const [kind, key, target] of [
+    ["group", "agent:main:slack:group:c123", "channel:C123"],
+    ["direct user", "agent:main:slack:direct:u123", "user:U123"],
+    ["direct bot", "agent:main:slack:direct:b123", "user:B123"],
+    ["qualified direct user", "agent:main:slack:direct:team:t123:user:u123", "team:T123:user:U123"],
+    ["direct DM channel", "agent:main:slack:dm:d123", "channel:D123"],
+  ]) {
+    it(`requests the exact persisted ${kind} peer`, () => {
+      rows.set(key, { deliveryContext: { channel: "slack", to: target, accountId: "work" } });
+      const { hooks, adapterLoads } = makeApi();
+      assert.deepEqual(route(hooks, key), {
+        channel: "slack",
+        to: target,
+        accountId: "work",
+        threadPolicy: "root",
+      });
+      assert.equal(adapterLoads(), 0);
+    });
+  }
+
   it("returns no route for an ordinary session", () => {
     const { hooks, reads } = makeApi();
     assert.equal(route(hooks, "agent:main:main"), undefined);
@@ -109,9 +129,9 @@ describe("pure declarative route decision", () => {
 
   it("fails closed on a missing canonical row or persisted Slack account, without key fallback", () => {
     const { hooks, adapterLoads } = makeApi();
-    assert.throws(() => route(hooks), /matching persisted channel and account/);
+    assert.throws(() => route(hooks), /matching persisted peer and account/);
     rows.set(SESSION, { deliveryContext: { channel: "slack", to: TARGET } });
-    assert.throws(() => route(hooks), /matching persisted channel and account/);
+    assert.throws(() => route(hooks), /matching persisted peer and account/);
     assert.equal(adapterLoads(), 0);
   });
 
@@ -121,10 +141,10 @@ describe("pure declarative route decision", () => {
     rows.get(SESSION).lastTo = "channel:C999WRONG";
     rows.get(SESSION).lastAccountId = "work";
     const { hooks } = makeApi();
-    assert.throws(() => route(hooks), /matching persisted channel and account/);
+    assert.throws(() => route(hooks), /matching persisted peer and account/);
     rows.get(SESSION).lastTo = TARGET;
     rows.get(SESSION).lastAccountId = "other";
-    assert.throws(() => route(hooks), /matching persisted channel and account/);
+    assert.throws(() => route(hooks), /matching persisted peer and account/);
   });
 
   it("rejects a persisted target that conflicts with the canonical session key", () => {
@@ -132,18 +152,39 @@ describe("pure declarative route decision", () => {
       deliveryContext: { channel: "slack", to: "channel:C999WRONG", accountId: "work" },
     });
     const { hooks } = makeApi();
-    assert.throws(() => route(hooks), /matching persisted channel and account/);
+    assert.throws(() => route(hooks), /matching persisted peer and account/);
   });
 
-  it("rejects noncanonical targets and non-channel Slack sessions", () => {
+  it("rejects a direct key with a conflicting persisted account", () => {
+    const key = "agent:main:slack:work:direct:u123";
+    rows.set(key, { deliveryContext: { channel: "slack", to: "user:U123", accountId: "other" } });
+    const { hooks } = makeApi();
+    assert.throws(() => route(hooks, key), /matching persisted/);
+    const defaultKey = "agent:main:slack:default:direct:u123";
+    rows.set(defaultKey, {
+      deliveryContext: { channel: "slack", to: "user:U123", accountId: "other" },
+    });
+    assert.throws(() => route(hooks, defaultKey), /matching persisted/);
+  });
+
+  it("fails closed for an ACP Slack binding without host-verified binding proof", () => {
+    const key = "agent:codex:acp:binding:slack:default:c123";
+    rows.set(key, {
+      deliveryContext: { channel: "slack", to: "channel:C123", accountId: "default" },
+    });
+    const { hooks } = makeApi();
+    assert.throws(() => route(hooks, key), /matching persisted/);
+  });
+
+  it("rejects noncanonical targets and unrelated direct peers", () => {
     rows.set(SESSION, {
       deliveryContext: { channel: "slack", to: "C012AUDIT", accountId: "work" },
     });
     const { hooks } = makeApi();
-    assert.throws(() => route(hooks), /canonical persisted channel target/);
+    assert.throws(() => route(hooks), /canonical persisted peer target/);
     const dm = "agent:main:slack:direct:u123";
-    rows.set(dm, { deliveryContext: { channel: "slack", to: "user:U123", accountId: "work" } });
-    assert.throws(() => route(hooks, dm), /matching persisted channel and account/);
+    rows.set(dm, { deliveryContext: { channel: "slack", to: "user:U999", accountId: "work" } });
+    assert.throws(() => route(hooks, dm), /matching persisted peer and account/);
   });
 
   it("does not send if the host discards a decision after a deadline", async () => {
@@ -159,6 +200,20 @@ describe("pure declarative route decision", () => {
 });
 
 describe("message-tool root and identity guard", () => {
+  it("still rewrites a non-decodable ACP Slack binding from its canonical row", async () => {
+    const key = "agent:codex:acp:binding:slack:default:c123";
+    rows.set(key, {
+      deliveryContext: { channel: "slack", to: "channel:C123", accountId: "default" },
+    });
+    const { hooks } = makeApi();
+    const result = await hooks.get("before_tool_call")(
+      { toolName: "message", params: { action: "send", channel: "slack", message: "x" } },
+      { sessionKey: key },
+    );
+    assert.equal(result.params.target, "C123");
+    assert.equal(result.params.topLevel, true);
+  });
+
   it("rewrites target, account, and all inherited thread fields", async () => {
     persisted();
     const { hooks } = makeApi();

@@ -75,7 +75,7 @@ describe("outbound_route_decision pure route contract", () => {
     ["null result", event, persisted, null],
     ["missing route field", event, persisted, { channel: "slack", to: "channel:C123" }],
     [
-      "session not a channel",
+      "unrelated peer kind",
       { ...event, sessionKey: "agent:main:slack:direct:u123" },
       persisted,
       root,
@@ -232,5 +232,65 @@ describe("outbound_route_decision pure route contract", () => {
         lowerPersisted,
       ),
     ).resolves.toEqual({ ...root, to: lower });
+  });
+
+  it.each([
+    ["group", "agent:main:slack:group:c123", "channel:C123"],
+    ["direct user", "agent:main:slack:direct:u123", "user:U123"],
+    ["direct bot", "agent:main:slack:direct:b123", "user:B123"],
+    ["qualified direct user", "agent:main:slack:direct:team:t123:user:u123", "team:T123:user:U123"],
+    ["direct DM channel", "agent:main:slack:dm:d123", "channel:D123"],
+  ])("accepts the persisted %s Slack peer only when the key agrees", async (_kind, key, to) => {
+    const input = { sessionKey: key, original: { channel: "webchat", to: "web-user" } };
+    const stored = { sessionKey: key, channel: "slack", to, accountId: "work" };
+    const decision = { ...root, to };
+    await expect(
+      routeRunner(() => decision).runOutboundRouteDecision(input, context, stored),
+    ).resolves.toEqual(decision);
+    await expect(
+      routeRunner(() => decision).runOutboundRouteDecision(input, context, {
+        ...stored,
+        to: "channel:C999",
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects the account encoded in a direct key when the stored account differs", async () => {
+    const key = "agent:main:slack:work:direct:u123";
+    const input = { sessionKey: key, original: { channel: "webchat", to: "web-user" } };
+    const stored = { sessionKey: key, channel: "slack", to: "user:U123", accountId: "other" };
+    await expect(
+      routeRunner(() => ({
+        ...root,
+        to: stored.to,
+        accountId: stored.accountId,
+      })).runOutboundRouteDecision(input, context, stored),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a direct user's id when the stored route changes its target kind", async () => {
+    const key = "agent:main:slack:direct:u123";
+    const input = { sessionKey: key, original: { channel: "webchat", to: "web-user" } };
+    const stored = { sessionKey: key, channel: "slack", to: "channel:U123", accountId: "work" };
+    await expect(
+      routeRunner(() => ({ ...root, to: stored.to })).runOutboundRouteDecision(
+        input,
+        context,
+        stored,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed for an opaque ACP Slack binding without host-verified conversation authority", async () => {
+    const key = "agent:codex:acp:binding:slack:default:c123";
+    const input = { sessionKey: key, original: { channel: "webchat", to: "web-user" } };
+    const stored = { sessionKey: key, channel: "slack", to: "channel:C123", accountId: "default" };
+    await expect(
+      routeRunner(() => ({ ...root, accountId: "default" })).runOutboundRouteDecision(
+        input,
+        context,
+        stored,
+      ),
+    ).rejects.toThrow();
   });
 });

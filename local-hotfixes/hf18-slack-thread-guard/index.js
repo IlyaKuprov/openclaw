@@ -70,7 +70,7 @@ export function normalizeSlackTarget(value) {
       : undefined;
   }
   target = target.replace(/^(?:channel|group|direct|dm|user|slack):/i, "");
-  if (/^[cdgu][a-z0-9]+$/i.test(target)) {
+  if (/^[bcdguw][a-z0-9]+$/i.test(target)) {
     return target.toUpperCase();
   }
   if (target.startsWith("#") && target.length > 1) {
@@ -111,6 +111,7 @@ export function parseSlackRouteFromSessionKey(sessionKey) {
       channel: "slack",
       target,
       accountId: accountId ?? DEFAULT_SLACK_ACCOUNT_ID,
+      accountIdExplicit: accountId !== undefined,
       peerKind,
       source: "session-key",
     };
@@ -297,22 +298,34 @@ export function decideOutboundRoute(event, record) {
   }
   const keyRoute = parseSlackRouteFromSessionKey(sessionKey);
   const persisted = resolveSlackRouteFromSessionRecord(record);
+  const peerKind = keyRoute?.peerKind;
+  const canonicalTarget = persisted?.persistedTo;
+  const expectedKind =
+    peerKind === "channel" || peerKind === "group"
+      ? "channel"
+      : peerKind === "direct" || peerKind === "dm"
+        ? /^[BUW]/.test(keyRoute.target.split(":").at(-1))
+          ? "user"
+          : "channel"
+        : undefined;
   if (
-    keyRoute?.peerKind !== "channel" ||
+    !expectedKind ||
     !persisted ||
     persisted.conflict ||
     keyRoute.target !== persisted.target ||
+    (keyRoute.accountIdExplicit && keyRoute.accountId !== persisted.accountId) ||
     !collectPersistedSlackRoutes(record).some((route) => route.accountId)
   ) {
-    throw new Error("Slack outbound route lacks matching persisted channel and account");
+    throw new Error("Slack outbound route lacks matching persisted peer and account");
   }
-  // The host accepts only canonical channel-prefixed targets, not aliases.
+  // The host accepts only canonical typed targets, not aliases.
   if (
-    !/^(?:team:(?:T[A-Z0-9]+|t[a-z0-9]+):)?channel:(?:[CDG][A-Z0-9]+|[cdg][a-z0-9]+)$/.test(
-      persisted.persistedTo,
-    )
+    !new RegExp(
+      `^(?:team:T[A-Z0-9]+:)?${expectedKind}:${expectedKind === "user" ? "[BUW]" : "[CDG]"}[A-Z0-9]+$`,
+      "i",
+    ).test(canonicalTarget)
   ) {
-    throw new Error("Slack outbound route lacks a canonical persisted channel target");
+    throw new Error("Slack outbound route lacks a canonical persisted peer target");
   }
   return {
     channel: "slack",

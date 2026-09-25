@@ -1,14 +1,21 @@
 # HF-18: local Slack session and thread guard
 
-This standalone local plugin requests the persisted Slack channel, account,
-and channel-root policy for Slack channel sessions through the synchronous
-`outbound_route_decision` hook. Its callback reads the canonical session row
+This standalone local plugin requests the persisted Slack peer, account,
+and root policy for decodable Slack channel, group, and direct sessions
+through the synchronous `outbound_route_decision` hook. Its callback reads the canonical session row
 and returns a route request; it never acquires an outbound adapter, sends a
 reply, or keeps a delivery ledger. The host independently validates the row
 before taking custody. The message-tool guard still enforces root sends and
 the per-run answer-repetition gate still suppresses immediate paraphrases.
 It imports only Node built-ins. The source is preserved for reapplication and
 review, **not** registered as a bundled plugin or automatically installed.
+
+An ACP binding key such as `agent:codex:acp:binding:slack:default:<hash>`
+does not encode its conversation target. A session row alone cannot prove the
+target belongs to that configured binding; the pure route hook fails closed for
+this key shape until the host supplies verified binding-to-route authority. The
+message-tool guard retains its earlier persisted-row behavior, which is not
+authority for the pure host route decision.
 
 To reapply to a Gateway, the operator should copy this directory into its
 local OpenClaw extension directory, preserve the installed config/consent,

@@ -73,10 +73,13 @@ Use message hooks for channel-level routing and delivery policy:
 `outbound_route_decision` is a declarative, pre-custody route request, not a
 transport send. Its event contains only the canonical `sessionKey` and the
 original `{ channel, to, accountId, threadId }`; no message, media reader, or
-transport authority is supplied. For an eligible Slack channel session, return
+transport authority is supplied. For a Slack session whose canonical key decodes
+the persisted channel, group, or direct peer, return
 `{ channel: "slack", to: "channel:C123", accountId: "work", threadPolicy: "root" }`
-(workspace-qualified `team:T123:channel:C123` and normalized lowercase IDs are
-also supported). The host must
+(direct user peers use `user:U123`; workspace-qualified targets and normalized
+lowercase IDs are also supported). An opaque ACP binding key does not encode its
+peer, so its session row alone cannot authorize a reroute; it requires a separate
+host-verified binding proof. The host must
 read the **exact** session entry's persisted delivery route and call
 `runOutboundRouteDecision(event, { channelId: "slack" }, persistedRoute)` before
 either direct or durable delivery takes custody. The runner requires matching
