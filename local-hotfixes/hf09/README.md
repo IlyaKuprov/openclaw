@@ -10,8 +10,10 @@ incomplete package directories from the verified stage (including scoped and
 nested zod packages), but leaves complete and different-version packages alone.
 A2UI packages receive their own nested zod v3 only when their installed
 versions match the validated stage; different installed versions remain
-untouched. An absent or non-v4 root zod rejects application before any mutation,
-and staged zod is never copied into the root.
+untouched. An incompatible nested zod under a matching A2UI package rejects
+application before copying; an absent or non-v4 root zod does likewise. Staged
+zod is never copied into the root. The success check imports both A2UI `v0_9`
+entrypoints and resolves the jsonc-parser ESM subpath used by oc-path.
 
 Before installing the 2026.9.5 core, stage an offline cache with
 `bash overlay.sh --build-cache` if package-registry access at cutover is uncertain;

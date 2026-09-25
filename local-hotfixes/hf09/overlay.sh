@@ -147,6 +147,24 @@ try {
 NODE
 }
 
+compatible_nested_zod() {
+  node - "$1/package.json" "$2/package.json" <<'NODE'
+const fs = require('node:fs');
+try {
+  const parent = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+  const nested = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+  const minimum = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(parent.dependencies?.zod);
+  const actual = /^(\d+)\.(\d+)\.(\d+)$/.exec(nested.version);
+  const fits = minimum && actual && Number(actual[1]) === Number(minimum[1]) &&
+    (Number(actual[2]) > Number(minimum[2]) ||
+      (Number(actual[2]) === Number(minimum[2]) && Number(actual[3]) >= Number(minimum[3])));
+  process.exit(fits ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
 added=0
 repaired=0
 copy_package() {
@@ -174,6 +192,15 @@ copy_package() {
   [ -z "$backup" ] || rm -rf "$backup"
 }
 
+for p in @a2ui/lit @a2ui/web_core; do
+  if [ -d "$NM/$p" ] && same_package_version "$STAGE/node_modules/$p" "$NM/$p" &&
+     [ -d "$NM/$p/node_modules/zod" ] &&
+     ! compatible_nested_zod "$STAGE/node_modules/$p" "$NM/$p/node_modules/zod"; then
+    echo "HF-09 refuses incompatible nested zod under $p" >&2
+    exit 1
+  fi
+done
+
 for d in "$STAGE"/node_modules/*/; do
   name=$(basename "$d")
   case "$name" in .bin|zod) continue ;; esac
@@ -193,4 +220,4 @@ for p in @a2ui/lit @a2ui/web_core; do
 done
 
 cd "$(dirname "$NM")"
-node -e 'Promise.all([import("lit"),import("jsonc-parser"),import("markdown-it"),import("@a2ui/lit"),import("@lit/context"),import("mdast-util-from-markdown")]).then(()=>console.log("HF-09 overlay OK (added '"$added"' dirs, repaired '"$repaired"')")).catch(e=>{console.error("HF-09 overlay FAILED:",e.message);process.exit(1)})'
+node -e 'Promise.all([import("lit"),import("jsonc-parser"),import("markdown-it"),import("@a2ui/lit/v0_9"),import("@a2ui/web_core/v0_9"),import("@lit/context"),import("mdast-util-from-markdown")]).then(()=>{require.resolve("jsonc-parser/lib/esm/main.js");console.log("HF-09 overlay OK (added '"$added"' dirs, repaired '"$repaired"')")}).catch(e=>{console.error("HF-09 overlay FAILED:",e.message);process.exit(1)})'
