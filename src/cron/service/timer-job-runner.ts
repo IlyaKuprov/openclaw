@@ -294,10 +294,18 @@ async function executeJobCoreWithTimeoutUnfinalized(
         watchdog && resolveHeartbeatTimeoutMs
           ? (heartbeat) => {
               const heartbeatTimeoutMs = resolveHeartbeatTimeoutMs(heartbeat);
-              // The queue owns admission and retries; only attempts spend the deadline.
+              // Keep one wall-clock deadline across queueing, retries, and execution.
+              // Restarting (or removing) the timer on each queue transition can leave a
+              // scheduled heartbeat permanently running without ever starting a session.
+              const deadlineAt =
+                heartbeatTimeoutMs === undefined
+                  ? undefined
+                  : performance.now() + heartbeatTimeoutMs;
+              const remainingMs = () =>
+                deadlineAt === undefined ? undefined : Math.max(1, deadlineAt - performance.now());
               return {
-                onAttemptStarted: () => watchdog.replaceTimeout(heartbeatTimeoutMs),
-                onQueued: () => watchdog.replaceTimeout(undefined),
+                onAttemptStarted: () => watchdog.replaceTimeout(remainingMs()),
+                onQueued: () => watchdog.replaceTimeout(remainingMs()),
               };
             }
           : undefined,

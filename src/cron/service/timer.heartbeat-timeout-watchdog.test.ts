@@ -25,6 +25,74 @@ function requireJob(state: { store?: { jobs?: CronJob[] } | null }, id: string):
 
 describe("cron heartbeat watchdog", () => {
   it.each([
+    { name: "queued", transitions: [] as { atMs: number; phase: "attempt" | "queue" }[] },
+    {
+      name: "requeued",
+      transitions: [
+        { atMs: 20 * 60_000, phase: "attempt" as const },
+        { atMs: 25 * 60_000, phase: "queue" as const },
+      ],
+    },
+  ])("times out a $name scheduled heartbeat at its original deadline", async ({ transitions }) => {
+    vi.useFakeTimers();
+    try {
+      const store = heartbeatWatchdogFixtures.makeStorePath();
+      const scheduledAt = Date.parse("2026-09-02T12:00:00.000Z");
+      const cronJob = createIsolatedRegressionJob({
+        id: "queued-heartbeat-deadline",
+        name: "queued heartbeat deadline",
+        scheduledAt,
+        schedule: { kind: "every", everyMs: 60_000, anchorMs: scheduledAt - 60_000 },
+        payload: { kind: "heartbeat" },
+        state: { nextRunAtMs: scheduledAt },
+      });
+      cronJob.sessionTarget = "main";
+      cronJob.wakeMode = "next-heartbeat";
+      await saveCronStore(store.storePath, { version: 1, jobs: [cronJob] });
+
+      vi.setSystemTime(scheduledAt);
+      const heartbeatQueued = createDeferred();
+      let transition: { onQueued?: () => void; onAttemptStarted?: () => void } | undefined;
+      const state = createCronRegressionState({
+        storePath: store.storePath,
+        nowMs: () => Date.now(),
+        defaultAgentId: "main",
+        resolveHeartbeatTimeoutMs: vi.fn(() => 30 * 60_000),
+        requestHeartbeatAndWait: vi.fn(
+          async (_wake, { onQueued, onAttemptStarted, abortSignal }) => {
+            transition = { onQueued, onAttemptStarted };
+            onQueued?.();
+            heartbeatQueued.resolve();
+            return await new Promise((resolve) => {
+              abortSignal?.addEventListener(
+                "abort",
+                () => resolve({ status: "failed" as const, reason: "heartbeat wake cancelled" }),
+                { once: true },
+              );
+            });
+          },
+        ),
+        runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+      });
+      const timerPromise = onTimer(state);
+      await heartbeatQueued.promise;
+      let elapsedMs = 0;
+      for (const { atMs, phase } of transitions) {
+        await vi.advanceTimersByTimeAsync(atMs - elapsedMs);
+        if (phase === "attempt") transition?.onAttemptStarted?.();
+        else transition?.onQueued?.();
+        elapsedMs = atMs;
+      }
+      await vi.advanceTimersByTimeAsync(30 * 60_000 + 1 - elapsedMs);
+      await timerPromise;
+      expect(requireJob(state, cronJob.id).state.lastStatus).toBe("error");
+      expect(requireJob(state, cronJob.id).state.lastError).toContain("timed out");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
     {
       name: "monitor",
       payload: { kind: "heartbeat" } as const,
