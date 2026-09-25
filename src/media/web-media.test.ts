@@ -342,6 +342,20 @@ describe("loadWebMedia", () => {
   }
 
   it.each([
+    { fileName: "spin.m", body: "function y = spin(x)\ny = x;\nend\n", mime: "text/x-matlab" },
+    { fileName: "paper.tex", body: "\\documentclass{article}\n", mime: "text/x-tex" },
+    { fileName: "refs.bib", body: "@article{k1, title={T}}\n", mime: "text/x-bibtex" },
+    { fileName: "macros.sty", body: "\\ProvidesPackage{macros}\n", mime: "text/x-tex" },
+  ])(
+    "HF-04: host-read accepts $fileName as a plain-text document",
+    async ({ fileName, body, mime }) => {
+      const loaded = await loadDocumentWithHostRead(fileName, body);
+      expect(loaded.kind).toBe("document");
+      expect(loaded.contentType).toBe(mime);
+    },
+  );
+
+  it.each([
     {
       name: "allows localhost file URLs for local files",
       createUrl: () => {
