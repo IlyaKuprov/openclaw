@@ -56,7 +56,7 @@ For a PR created directly with `gh pr create`, include `## Worked on by` only wh
 
 URLs work directly: `gh pr view https://github.com/owner/repo/pull/55`.
 
-For `github_publish`, omit `## Worked on by` and the team-session footer from the supplied body; the Gateway broker owns canonical contributor credit, publisher exclusion, and that footer.
+For `github_publish`, omit `## Worked on by` and the team-session footer from the supplied body; the Gateway broker owns canonical contributor credit, publisher exclusion, and that footer. On every later `gh pr edit --body-file` refresh, including from the authoring session, retain any existing verified credit and its exact final footer.
 
 When refreshing an existing PR from a different session, preserve its verified
 `## Worked on by` section and exact canonical footer. Keep the new session's
