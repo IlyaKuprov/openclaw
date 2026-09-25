@@ -3,9 +3,16 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { validateSlackSessionRoutePeer } from "../../../extensions/slack/src/outbound-route-peer.js";
+import type { TrustedMessageAuditEvent } from "../../audit/message-audit-events.js";
+import { onTrustedMessageAuditEventForTest } from "../../audit/message-audit-events.test-support.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { loadPendingDeliveries } from "../../infra/outbound/delivery-queue.test-helpers.js";
+import {
+  emitOutboundAuditTerminals,
+  uniformOutboundAuditTerminals,
+} from "../../infra/outbound/outbound-audit.js";
+import type { OutboundSessionContext } from "../../infra/outbound/session-context.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
@@ -125,6 +132,105 @@ describe("channel lifecycle outbound route decision", () => {
     });
     return runOutboundRouteDecision;
   }
+
+  it.each([
+    {
+      name: "source direct to channel",
+      sourceKind: "direct",
+      sessionKey: slackSessionKey,
+      to: "channel:C123",
+      expectedKind: "channel",
+      expectedPolicyType: "group",
+      expectedConversationId: "C123",
+    },
+    {
+      name: "source group to direct",
+      sourceKind: "group",
+      sessionKey: "agent:main:slack:direct:U123",
+      to: "user:U123",
+      expectedKind: "direct",
+      expectedPolicyType: "direct",
+      expectedConversationId: "U123",
+    },
+    {
+      name: "source direct to direct",
+      sourceKind: "direct",
+      sessionKey: "agent:main:slack:direct:U123",
+      to: "user:U123",
+      expectedKind: "direct",
+      expectedPolicyType: "direct",
+      expectedConversationId: "U123",
+    },
+  ])("uses the chosen destination, not the $name chat kind for durable audit", async (sample) => {
+    const decided = {
+      channel: "slack",
+      to: sample.to,
+      accountId: "work",
+      threadPolicy: "root",
+    } as const;
+    getGlobalHookRunner.mockReturnValue({
+      hasHooks: (name: string) => name === "outbound_route_decision",
+      runOutboundRouteDecision: async () => decided,
+    });
+    loadExactSessionEntryReadOnly.mockReturnValue({
+      sessionKey: sample.sessionKey,
+      entry: {
+        delivery: {
+          kind: "external",
+          context: {
+            ...decided,
+            ...(sample.sessionKey === slackSessionKey ? { threadId: "1712345678.123456" } : {}),
+          },
+        },
+      },
+    });
+    sendDurableMessageBatch.mockResolvedValue(createDurableSendResult(["sent"]));
+    const sourceSessionKey = `agent:main:webchat:${sample.sourceKind}:source`;
+    const source = createCtx({
+      SessionKey: sourceSessionKey,
+      ChatType: sample.sourceKind,
+      Surface: "webchat",
+    });
+    await dispatchRoutedChannelTurn({
+      cfg,
+      channel: "webchat",
+      route: { agentId: "main", sessionKey: sample.sessionKey },
+      ctxPayload: source,
+      delivery: { deliver: vi.fn() },
+    });
+    const sent = latestDurableSendRequest();
+    expect(sent).toMatchObject({
+      channel: "slack",
+      to: sample.to,
+      session: {
+        key: sourceSessionKey,
+        conversationType: sample.expectedPolicyType,
+        conversationKind: sample.expectedKind,
+      },
+    });
+    const events: TrustedMessageAuditEvent[] = [];
+    const unsubscribe = onTrustedMessageAuditEventForTest((event) => events.push(event));
+    try {
+      emitOutboundAuditTerminals({
+        context: {
+          channel: "slack",
+          to: sample.to,
+          session: sent.session as OutboundSessionContext | undefined,
+          payloads: [{ text: "x" }],
+        },
+        terminals: uniformOutboundAuditTerminals(1, {
+          outcome: "sent",
+          results: [{ channel: "slack", messageId: "sent" }],
+        }),
+        startedAt: Date.now(),
+      });
+    } finally {
+      unsubscribe();
+    }
+    expect(events[0]?.conversationKind).toBe(sample.expectedKind);
+    expect(events[0]?.conversationId).toBe(sample.expectedConversationId);
+    expect(source.ChatType).toBe(sample.sourceKind);
+  });
 
   it("routes a webchat-origin final into its persisted Slack channel, never webchat direct", async () => {
     const routeHook = enableSlackRootDecision();

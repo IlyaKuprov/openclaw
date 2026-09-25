@@ -12,6 +12,7 @@ import {
   type DecidedOutboundRoute,
 } from "../../infra/outbound/outbound-route-decision.js";
 import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
+import { parseSessionDeliveryRoute } from "../../routing/session-key.js";
 import {
   deliverInboundReplyWithMessageSendContextCore,
   isDurableInboundReplyDeliveryHandled,
@@ -62,6 +63,14 @@ export async function deliverDecidedFinalOutboundRoute(params: {
 }): Promise<{ payload: ReplyPayload; delivery: ChannelDeliveryResult }> {
   const { turn, route, payload, info, durableOptions } = params;
   const { decision, assertCurrent } = route;
+  // The host decision has already validated this session peer against the exact
+  // selected target. Source ChatType may describe a different conversation.
+  const destinationPeer = parseSessionDeliveryRoute(turn.routeSessionKey);
+  if (!destinationPeer || destinationPeer.channel !== decision.channel) {
+    throw new Error("outbound route decision lacks matching destination session peer");
+  }
+  const destinationChatType =
+    destinationPeer.peerKind === "dm" ? "direct" : destinationPeer.peerKind;
   const { replyToId: _inheritedReplyToId, ...withoutReply } = payload;
   const rootedPayload = copyReplyPayloadMetadata(payload, withoutReply);
   const mediaAccess = resolveAgentScopedOutboundMediaAccess({
@@ -81,7 +90,7 @@ export async function deliverDecidedFinalOutboundRoute(params: {
     channel: decision.channel,
     accountId: decision.accountId,
     agentId: turn.agentId,
-    ctxPayload: turn.ctxPayload,
+    ctxPayload: { ...turn.ctxPayload, ChatType: destinationChatType },
     payload: rootedPayload,
     info,
     executionIdentityToken: params.executionIdentityToken,
