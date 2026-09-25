@@ -20,7 +20,7 @@ export function createGitHubPublishTool(
     label: "GitHub Publish",
     name: "github_publish",
     description:
-      "Publish the current session's repository changes as a draft pull request. Supports local workspaces and cloud repository sessions without a Gateway checkout. Call after the work is complete, then finish the turn so its changes can be saved. The Gateway publishes the accepted workspace, creates or reuses the draft pull request, and posts the result into the session transcript. Requests wait while the workspace is busy or recovering. Publication credentials stay on the Gateway.",
+      "Publish the current session's repository changes as a pull request. Supports local workspaces and cloud repository sessions without a Gateway checkout. Call after the changes are ready, then finish the turn so they can be saved; report the PR review as pending, not the PR task as complete. The Gateway creates a draft PR or reuses an existing PR and posts its result into the session transcript. A published result confirms publication only: check if the PR is a draft and mark it ready if so, then verify a clean Codex review of its current head before reporting PR completion. Requests wait while the workspace is busy or recovering. Publication credentials stay on the Gateway.",
     parameters: Type.Object(
       {
         title: Type.Optional(GitHubPublicationTitleSchema),
@@ -41,7 +41,15 @@ export function createGitHubPublishTool(
         ...(input.title ? { title: input.title } : {}),
         ...(input.body ? { body: input.body } : {}),
       });
-      return jsonResult(result);
+      return jsonResult(
+        result.status === "published"
+          ? {
+              ...result,
+              review:
+                "pending: PR published or reused, not reviewed; if draft, mark it ready and verify a clean Codex review of the current head before reporting PR completion",
+            }
+          : result,
+      );
     },
   };
 }
