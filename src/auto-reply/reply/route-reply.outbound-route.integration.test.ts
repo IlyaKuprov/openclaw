@@ -198,6 +198,51 @@ describe("routeReply host route decision with durable queue custody", () => {
     ).toBe("completed");
   });
 
+  it("preserves direct-message policy for an authenticated Slack user route", async () => {
+    const directSessionKey = "agent:main:slack:direct:u123";
+    await replaceSessionEntry(
+      { agentId: "main", sessionKey: directSessionKey, storePath },
+      {
+        sessionId: "direct-owner",
+        updatedAt: Date.now(),
+        delivery: {
+          kind: "external",
+          context: { channel: "slack", to: "user:U123", accountId: "work" },
+        },
+      },
+    );
+    routeHook.decide.mockResolvedValueOnce({
+      channel: "slack",
+      to: "user:U123",
+      accountId: "work",
+      threadPolicy: "root",
+    });
+    sendText.mockRejectedValueOnce(
+      new PlatformMessageNotDispatchedError("offline before dispatch", {
+        cause: new Error("offline"),
+      }),
+    );
+    const directIntentId = "block-reply:v1:direct-root-fixture";
+    const result = await routeReply({
+      cfg,
+      replyKind: "final",
+      payload: { text: "direct response" },
+      channel: "matrix",
+      to: "!other:example",
+      sessionKey: directSessionKey,
+      deliveryIntentId: directIntentId,
+      mirror: false,
+    });
+    expect(result).toMatchObject({ ok: false, delivered: false });
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendText.mock.lastCall?.[0]).toMatchObject({ to: "user:U123", accountId: "work" });
+    expect(readQueuedEntry(fixtures.tmpDir(), directIntentId)).toMatchObject({
+      channel: "slack",
+      to: "user:U123",
+      session: { key: directSessionKey, conversationType: "direct" },
+    });
+  });
+
   it("fails closed on hook timeout, without queuing or falling through to the original surface", async () => {
     routeHook.decide.mockRejectedValueOnce(new Error("outbound_route_decision timed out"));
     const result = await routeReply({

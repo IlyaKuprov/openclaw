@@ -27,6 +27,7 @@ import { buildOutboundSessionContext } from "../../infra/outbound/session-contex
 import { hasReplyPayloadContent } from "../../interactive/payload.js";
 import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
 import { normalizeAccountId } from "../../routing/account-id.js";
+import { parseSessionDeliveryRoute } from "../../routing/session-key.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SilentReplyConversationType } from "../../shared/silent-reply-policy.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
@@ -345,8 +346,13 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
           accountId,
         })
       : false;
+  const decidedPeerKind = decidedRoute
+    ? parseSessionDeliveryRoute(params.sessionKey)?.peerKind
+    : undefined;
+  const decidedConversationType =
+    decidedPeerKind === "direct" || decidedPeerKind === "dm" ? "direct" : "group";
   const replyDelivery = decidedRoute
-    ? ({ chatType: "channel", replyToMode: "off" } as const)
+    ? ({ chatType: decidedConversationType, replyToMode: "off" } as const)
     : payloadPolicyMatchesRoute
       ? payloadReplyDelivery
       : (params.replyDelivery ?? payloadReplyDelivery);
@@ -396,7 +402,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       agentId: resolvedAgentId,
       sessionKey: params.sessionKey,
       policySessionKey: decidedRoute ? params.sessionKey : params.policySessionKey,
-      conversationType: decidedRoute ? "channel" : params.policyConversationType,
+      conversationType: decidedRoute ? decidedConversationType : params.policyConversationType,
       isGroup:
         params.policySessionKey || params.policyConversationType ? undefined : params.isGroup,
       requesterSenderId: params.requesterSenderId,
