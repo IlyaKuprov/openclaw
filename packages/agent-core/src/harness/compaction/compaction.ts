@@ -100,7 +100,7 @@ export interface CompactionResult<T = unknown> {
 
 // Persisted summaries replay on every later request, so their owner enforces
 // this provider-independent 16K hard bound.
-export const MAX_COMPACTION_SUMMARY_CHARS = 16_000;
+export const MAX_COMPACTION_SUMMARY_CHARS = 40_000;
 export const SUMMARY_TRUNCATED_MARKER = "\n\n[Compaction summary truncated to fit budget]";
 const TURN_CONTEXT_PREFIX = "\n\n---\n\n**Turn Context (split turn):**\n\n";
 const MAX_LATEST_USER_REQUEST_CHARS = 800;
