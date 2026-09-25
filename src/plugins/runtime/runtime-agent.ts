@@ -19,6 +19,7 @@ import { getRuntimeConfig } from "../../config/config.js";
 import * as session from "../../config/sessions/lifecycle.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
+  cleanupSessionLifecycleArtifactsCore,
   deleteSessionEntryLifecycle,
   listSessionEntriesCore as listAccessorSessionEntries,
   listSessionEntriesReadOnly as listAccessorSessionEntriesReadOnly,
@@ -117,6 +118,7 @@ async function patchSessionEntry(
         : undefined,
     preserveActivity: params.preserveActivity,
     replaceEntry: params.replaceEntry,
+    skipMaintenance: params.skipMaintenance,
   });
 }
 
@@ -700,6 +702,7 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
     listSessionEntries,
     patchSessionEntry,
     upsertSessionEntry,
+    cleanupSessionLifecycleArtifacts: cleanupSessionLifecycleArtifactsCore,
     runWithWorkAdmission: runWithSessionWorkAdmission,
     updateSessionStoreEntry,
   }));

@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   readAmbientTranscriptWatermarkFromEntry,
   resolveAmbientTranscriptWatermarkKey,
@@ -10,6 +11,7 @@ import {
 } from "../config/sessions/ambient-transcript-watermark.js";
 import { buildConversationIdentity } from "../config/sessions/conversation-identity.js";
 import { resolveCurrentConversationSession } from "../config/sessions/conversation-registry.js";
+import { isInternalSessionEffectsKey } from "../config/sessions/internal-session-key.js";
 import {
   formatSqliteSessionFileMarker,
   parseSqliteSessionFileMarker,
@@ -33,7 +35,10 @@ import {
   updateSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
-import { resolveSessionStoreEntryCore as resolveSessionStoreEntryFromStore } from "../config/sessions/store-entry.js";
+import {
+  normalizeStoreSessionKey,
+  resolveSessionStoreEntryCore as resolveSessionStoreEntryFromStore,
+} from "../config/sessions/store-entry.js";
 import { normalizeResolvedMaintenanceConfigInput } from "../config/sessions/store-maintenance.js";
 import type { ResolvedSessionMaintenanceConfigInput } from "../config/sessions/store-maintenance.js";
 import type {
@@ -71,6 +76,21 @@ const LEGACY_TRANSCRIPT_INSPECTION_MAX_BYTES = 16 * 1024 * 1024;
 // by path before load/update. Last selection therefore matches every shipped
 // caller. This map is not a general replacement for target-aware SDK methods.
 const legacyStoreAgentIds = new Map<string, string>();
+
+function isInternalEffectsStoreKey(sessionKey: string): boolean {
+  const normalized = normalizeStoreSessionKey(sessionKey);
+  return (
+    isInternalSessionEffectsKey(normalized) || normalized.startsWith("internal-session-effects:")
+  );
+}
+
+function assertPublicSessionWriteTarget(sessionKey: string): void {
+  if (isInternalEffectsStoreKey(sessionKey)) {
+    // An SDK import carries no unforgeable plugin owner. Internal-effects rows
+    // are execution authority; plugins must use the owner-bound api.runtime seam.
+    throw new Error(`Writing internal session "${sessionKey}" requires scoped plugin runtime.`);
+  }
+}
 
 type SessionStoreListParams = Partial<Omit<SessionStoreReadParams, "sessionKey">>;
 
@@ -324,6 +344,23 @@ export async function updateSessionStore<T>(
       const result = await mutator(publicStore);
       const persist = !options.skipSaveWhenResult?.(result);
       if (persist) {
+        for (const sessionKey of new Set([
+          ...Object.keys(internalStore),
+          ...Object.keys(publicStore),
+        ])) {
+          if (!isInternalEffectsStoreKey(sessionKey)) {
+            continue;
+          }
+          const before = internalStore[sessionKey];
+          if (
+            !isDeepStrictEqual(
+              before ? projectPluginSessionEntry(before) : undefined,
+              publicStore[sessionKey],
+            )
+          ) {
+            assertPublicSessionWriteTarget(sessionKey);
+          }
+        }
         // The deprecated callback owns public row changes and deletions, but
         // core recovery coordination remains invisible and non-overwritable.
         reconcilePluginSessionStore({ internalStore, publicStore });
@@ -466,6 +503,7 @@ export function resolveTranscriptSessionKeyBySessionId(params: {
 export async function patchSessionEntry(
   params: PatchSessionEntryParams,
 ): Promise<SessionEntry | null> {
+  assertPublicSessionWriteTarget(params.sessionKey);
   const entry = await patchAccessorSessionEntry(
     toSessionAccessScope(params),
     async (internalEntry, context) => {
@@ -516,6 +554,7 @@ export function readAmbientTranscriptWatermark(
 export async function updateSessionStoreEntry(
   params: UpdateSessionStoreEntryParams,
 ): Promise<SessionEntry | null> {
+  assertPublicSessionWriteTarget(params.sessionKey);
   const entry = await updateSessionEntry(
     { sessionKey: params.sessionKey, storePath: params.storePath },
     async (internalEntry) => {
@@ -537,6 +576,7 @@ export async function updateSessionStoreEntry(
 
 /** Replaces or creates one session entry by agent/session identity. */
 export async function upsertSessionEntry(params: UpsertSessionEntryParams): Promise<void> {
+  assertPublicSessionWriteTarget(params.sessionKey);
   const publicEntry = projectPluginSessionEntry(params.entry);
   await patchAccessorSessionEntry(
     toSessionAccessScope(params),
@@ -550,6 +590,7 @@ export async function upsertSessionEntry(params: UpsertSessionEntryParams): Prom
 
 /** Deletes one session entry by agent/session identity. */
 export async function deleteSessionEntry(params: DeleteSessionEntryParams): Promise<boolean> {
+  assertPublicSessionWriteTarget(params.sessionKey);
   const agentId = params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey);
   const storePath =
     params.storePath ??
@@ -599,6 +640,13 @@ export function resolveSessionStoreBackupPaths(params: {
 export async function cleanupSessionLifecycleArtifacts(
   params: SessionLifecycleArtifactsCleanupParams,
 ): Promise<SessionLifecycleArtifactsCleanupResult> {
+  const prefix = params.sessionKeySegmentPrefix.trim().toLowerCase();
+  if (
+    "internal-session-effects:".startsWith(prefix) ||
+    prefix.startsWith("internal-session-effects:")
+  ) {
+    throw new Error("Cleaning internal sessions requires scoped plugin runtime.");
+  }
   const storePath =
     params.storePath ??
     resolveSessionStorePathCore(params.sessionStore, {

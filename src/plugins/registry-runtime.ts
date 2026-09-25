@@ -491,6 +491,10 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                 });
               });
             },
+            cleanupSessionLifecycleArtifacts: async (params) =>
+              await runWithPluginScope(() =>
+                session.cleanupSessionLifecycleArtifacts({ ...params, pluginOwnerId: pluginId }),
+              ),
             runWithWorkAdmission: async (params, run) => {
               const { resolveStoredSessionExecutionOwner } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {

@@ -160,6 +160,7 @@ type RuntimeSessionStoreEntryPatchParams = RuntimeSessionStoreReadParams & {
   maintenanceConfig?: import("../../config/sessions/store-maintenance.js").ResolvedSessionMaintenanceConfigInput;
   preserveActivity?: boolean;
   replaceEntry?: boolean;
+  skipMaintenance?: boolean;
   update: (
     entry: RuntimeSessionEntry,
     context: { existingEntry?: RuntimeSessionEntry },
@@ -394,6 +395,16 @@ export type PluginRuntimeCore = {
         params: RuntimeSessionStoreEntryPatchParams,
       ) => Promise<RuntimeSessionEntry | null>;
       upsertSessionEntry: (params: RuntimeUpsertSessionEntryParams) => Promise<void>;
+      cleanupSessionLifecycleArtifacts: (params: {
+        agentId?: string;
+        archiveRemovedEntryTranscripts?: boolean;
+        orphanTranscriptMinAgeMs: number;
+        pluginOwnerId?: string;
+        sessionKeySegmentPrefix: string;
+        storePath: string;
+        transcriptContentMarker: string;
+        nowMs?: number;
+      }) => Promise<{ archivedTranscriptArtifacts: number; removedEntries: number }>;
       runWithWorkAdmission: <T>(
         params: RuntimeSessionWorkAdmissionParams,
         run: (signal: AbortSignal) => Promise<T>,
