@@ -8,6 +8,7 @@
 # zod@3 beneath @a2ui/lit and @a2ui/web_core so root zod@4 stays untouched.
 # The operator stops the Gateway before applying; recovery may replace partial packages.
 set -euo pipefail
+umask 022
 
 ROOT="${1:-${OPENCLAW_ROOT:-${HOME}/.npm-global/lib/node_modules/openclaw}}"
 NM="$ROOT/node_modules"
@@ -95,7 +96,7 @@ if [ "${1:-}" = "--build-cache" ]; then
   exit 0
 fi
 if [ -f "$CACHE" ]; then
-  tar -xzf "$CACHE" -C "$STAGE" || { echo "stage cache unusable: $CACHE" >&2; exit 1; }
+  tar -oxzf "$CACHE" -C "$STAGE" || { echo "stage cache unusable: $CACHE" >&2; exit 1; }
 else
   stage_from_npm || { echo "npm staging failed and no cache at $CACHE" >&2; exit 1; }
 fi
@@ -178,7 +179,8 @@ copy_package() {
   fi
   mkdir -p "$(dirname "$dest")"
   copy_tmp=$(mktemp -d "$(dirname "$dest")/.hf09-copy.XXXXXX")
-  cp -a "$source/." "$copy_tmp/"
+  cp -R "$source/." "$copy_tmp/"
+  chmod 755 "$copy_tmp"
   if [ -d "$dest" ]; then
     backup=$(mktemp -d "$(dirname "$dest")/.hf09-recovery.XXXXXX")
     rmdir "$backup"
@@ -220,4 +222,4 @@ for p in @a2ui/lit @a2ui/web_core; do
 done
 
 cd "$(dirname "$NM")"
-node -e 'Promise.all([import("lit"),import("jsonc-parser"),import("markdown-it"),import("@a2ui/lit/v0_9"),import("@a2ui/web_core/v0_9"),import("@lit/context"),import("mdast-util-from-markdown")]).then(()=>{require.resolve("jsonc-parser/lib/esm/main.js");console.log("HF-09 overlay OK (added '"$added"' dirs, repaired '"$repaired"')")}).catch(e=>{console.error("HF-09 overlay FAILED:",e.message);process.exit(1)})'
+node -e 'Promise.all([import("lit"),import("jsonc-parser"),import("markdown-it"),import("@a2ui/lit/v0_9"),import("@a2ui/web_core/v0_9"),import("@lit/context"),import("mdast-util-from-markdown")]).then(()=>{require.resolve("jsonc-parser/lib/esm/main.js");require.resolve("@a2ui/lit/ui");console.log("HF-09 overlay OK (added '"$added"' dirs, repaired '"$repaired"')")}).catch(e=>{console.error("HF-09 overlay FAILED:",e.message);process.exit(1)})'
