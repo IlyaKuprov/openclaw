@@ -147,6 +147,7 @@ describe("channel lifecycle outbound route decision", () => {
       replyToId: null,
     });
     expect(latestDurableSendRequest().payloads?.[0]?.replyToId).toBeUndefined();
+    expect(latestDurableSendRequest().assertBeforeQueueAdmission).toEqual(expect.any(Function));
   });
 
   it("selects the root before source preparation can flush deferred provider media", async () => {

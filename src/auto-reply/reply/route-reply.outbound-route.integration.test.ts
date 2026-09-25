@@ -55,13 +55,18 @@ const createSendText = () =>
     channel: "slack" as const,
     messageId: "root-recovered",
   }));
+const createMatrixSendText = () =>
+  vi.fn(async (_params: Parameters<NonNullable<ChannelOutboundAdapter["sendText"]>>[0]) => ({
+    channel: "matrix" as const,
+    messageId: "owner-dm",
+  }));
 
 describe("routeReply host route decision with durable queue custody", () => {
   const fixtures = installDeliveryQueueTmpDirHooks();
   let storePath: string;
   let cfg: { session: { store: string } };
   let sendText: ReturnType<typeof createSendText>;
-  let sendMatrixText: ReturnType<typeof vi.fn>;
+  let sendMatrixText: ReturnType<typeof createMatrixSendText>;
 
   beforeEach(async () => {
     const stateDir = fixtures.tmpDir();
@@ -96,7 +101,7 @@ describe("routeReply host route decision with durable queue custody", () => {
     routeHook.rewrite.mockClear();
     routeHook.decide.mockReset().mockResolvedValue(canonical);
     sendText = createSendText();
-    sendMatrixText = vi.fn(async () => ({ channel: "matrix" as const, messageId: "owner-dm" }));
+    sendMatrixText = createMatrixSendText();
     setActivePluginRegistry(
       createTestRegistry([
         {

@@ -452,6 +452,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
               mediaSources: collectPayloadMediaSources([deliveryPayload]),
             }),
             onDirectAdapterHandoff: async () => decidedRoute.assertCurrent(),
+            assertBeforeQueueAdmission: decidedRoute.assertCurrent,
             assertDirectAdapterHandoff: decidedRoute.assertCurrent,
             onPlatformSendDispatch: async () => decidedRoute.assertCurrent(),
           }

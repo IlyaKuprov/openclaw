@@ -187,6 +187,8 @@ export type DeliverOutboundPayloadsCoreParams = {
   preparedBatch?: PreparedOutboundBatch;
   /** @internal Host-owned root policy applied after modifying hooks, before durable custody. */
   rootReplyOnly?: true;
+  /** @internal Synchronous host authority check after staging, before durable queue insertion. */
+  assertBeforeQueueAdmission?: () => void;
   reply?: OutboundReplyFacts;
   formatting?: OutboundDeliveryFormattingOptions;
   threadId?: string | number | null;

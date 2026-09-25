@@ -26,6 +26,14 @@ import {
 } from "./prepared-batch.js";
 import { normalizeOutboundReplyFacts } from "./reply-policy.js";
 
+/** A revoked host decision must never degrade into a best-effort, live-only send. */
+export class OutboundQueueAdmissionAuthorityError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "OutboundQueueAdmissionAuthorityError";
+  }
+}
+
 export function restoreQueuedDeliveryCustody(
   params: InternalDeliverOutboundPayloadsParams,
   entry: QueuedDelivery,
@@ -166,12 +174,21 @@ export async function stageAndEnqueueOutboundDelivery(
       maxRetries: params.maxRetries,
       deliveryCompletion: params.deliveryCompletion,
     };
+    const stablePreparation =
+      params.deliveryIntentId && options?.getStablePreparation
+        ? await options.getStablePreparation()
+        : undefined;
+    try {
+      params.assertBeforeQueueAdmission?.();
+    } catch (error) {
+      throw new OutboundQueueAdmissionAuthorityError(error);
+    }
     if (params.deliveryIntentId) {
-      const queued = options?.getStablePreparation
+      const queued = stablePreparation
         ? await enqueuePreparedDeliveryOnce(
             delivery,
             params.deliveryIntentId,
-            await options.getStablePreparation(),
+            stablePreparation,
             stateDir,
             staged.mediaStageId,
             params.deliveryQueueStateContext,

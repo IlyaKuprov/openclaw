@@ -260,6 +260,7 @@ export async function deliverInboundReplyWithMessageSendContextCore(
     // Keep the exact host decision at the direct adapter's synchronous fence.
     ...(params.assertRouteAuthority
       ? {
+          assertBeforeQueueAdmission: params.assertRouteAuthority,
           assertDirectAdapterHandoff: params.assertRouteAuthority,
           onPlatformSendDispatch: async () => params.assertRouteAuthority?.(),
         }
