@@ -179,7 +179,7 @@ export function resolveSlackRouteFromSessionRecord(record) {
   };
 }
 
-export async function resolveSlackSessionRoute(sessionKey, sessionRecord, api) {
+export function resolveSlackSessionRoute(sessionKey, sessionRecord, api) {
   if (!isSlackNamedSession(sessionKey)) {
     return { matched: false };
   }
@@ -362,7 +362,9 @@ function isSlackSendResult(result) {
   if (
     details.deliveryStatus !== "sent" ||
     details.dryRun === true ||
-    normalizeChannel(details.channel) !== "slack"
+    normalizeChannel(details.channel) !== "slack" ||
+    asRecord(details.messageDelivery).status !== "settled" ||
+    asRecord(details.messageDelivery).partialDelivery === true
   ) {
     return false;
   }
@@ -572,39 +574,33 @@ export default function register(api) {
     { priority: 100 },
   );
 
-  api.on(
-    "after_tool_call",
-    async (event, ctx) => {
-      const runId = event.runId ?? ctx?.runId;
-      // Any non-message tool completion advances the source-reply generation,
-      // re-permitting a later, genuinely new progress update.
-      if (event.toolName !== "message") {
+  // The harness awaits tool-result middleware before giving the result to the
+  // model or finalizing the turn. after_tool_call and message_sent are detached
+  // observers: neither can safely order this state transition against a final.
+  api.registerAgentToolResultMiddleware(
+    (event, ctx) => {
+      const runId = ctx.runId;
+      // A non-message completion (including a failed one) advances the step.
+      if (event.toolName !== "message" || event.isError || !isSlackSendResult(event.result)) {
         advanceSourceReplyGeneration(runId);
         return;
       }
-      if (event.error || !isSlackSendResult(event.result)) {
-        // A failed or non-delivery message action must not arm the gate; treat
-        // it as advancing so a legitimate retry is never blocked.
-        advanceSourceReplyGeneration(runId);
-        return;
-      }
-      const params = asRecord(event.params);
+      const params = asRecord(event.args);
       const action = typeof params.action === "string" ? params.action : "send";
       if (!TOP_LEVEL_ACTIONS.has(action)) {
         advanceSourceReplyGeneration(runId);
         return;
       }
-      // Only a successful reply to this Slack session's own target arms the
-      // repetition gate. Cross-surface notifications and media advance it.
-      const sourceRoute = isSlackNamedSession(ctx?.sessionKey)
-        ? await resolveSlackSessionRoute(ctx.sessionKey, undefined, api)
+      // The synchronous canonical lookup keeps the decision in this settled
+      // result's order; no asynchronous read may overtake another completion.
+      const sourceRoute = isSlackNamedSession(ctx.sessionKey)
+        ? resolveSlackSessionRoute(ctx.sessionKey, undefined, api)
         : { ok: false };
-      const sentTarget = normalizeSlackTarget(params.target);
       if (
         isPlainTextSend(params) &&
         sourceRoute.ok &&
         normalizeChannel(params.channel) === "slack" &&
-        sentTarget === sourceRoute.route.target &&
+        normalizeSlackTarget(params.target) === sourceRoute.route.target &&
         normalizeString(params.accountId) === sourceRoute.route.accountId &&
         !(Array.isArray(params.targets) && params.targets.length > 0)
       ) {
@@ -613,7 +609,7 @@ export default function register(api) {
         advanceSourceReplyGeneration(runId);
       }
     },
-    { priority: 100 },
+    { runtimes: ["openclaw"] },
   );
 
   // Decide before the host acquires direct or queued delivery custody. No adapter

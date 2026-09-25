@@ -37,6 +37,9 @@ function makeApi(config = {}) {
     on(name, handler) {
       hooks.set(name, handler);
     },
+    registerAgentToolResultMiddleware(handler) {
+      hooks.set("tool_result", handler);
+    },
   });
   return { hooks, reads, adapterLoads: () => adapterLoads };
 }

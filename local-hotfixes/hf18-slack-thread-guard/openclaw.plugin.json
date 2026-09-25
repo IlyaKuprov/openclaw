@@ -9,6 +9,9 @@
       "hook"
     ]
   },
+  "contracts": {
+    "agentToolResultMiddleware": ["openclaw"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

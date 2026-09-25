@@ -22,6 +22,11 @@ const register = guard.default;
 const reset = guard._resetStateForTests;
 const SESSION = "agent:main:slack:channel:c012audit";
 
+it("declares the trusted pre-model result middleware contract", () => {
+  const manifest = JSON.parse(fs.readFileSync(new URL("../openclaw.plugin.json", import.meta.url)));
+  assert.deepEqual(manifest.contracts.agentToolResultMiddleware, ["openclaw"]);
+});
+
 function makeApi() {
   const hooks = new Map();
   const api = {
@@ -30,6 +35,10 @@ function makeApi() {
     on(name, handler) {
       hooks.set(name, handler);
     },
+    registerAgentToolResultMiddleware(handler, options) {
+      assert.deepEqual(options, { runtimes: ["openclaw"] });
+      hooks.set("tool_result", handler);
+    },
   };
   register(api);
   return { hooks };
@@ -37,6 +46,7 @@ function makeApi() {
 
 function sentToolResult(messageId = "1700000000.000001") {
   return {
+    content: [{ type: "text", text: "Message sent" }],
     details: {
       channel: "slack",
       deliveryStatus: "sent",
@@ -48,6 +58,7 @@ function sentToolResult(messageId = "1700000000.000001") {
           sentAt: Date.now(),
         },
       },
+      messageDelivery: { status: "settled", partialDelivery: false },
     },
   };
 }
@@ -59,10 +70,16 @@ function beforeTextSend(hooks, runId, message, extra = {}) {
   );
 }
 
-function afterMessageDelivered(hooks, runId, params, result = sentToolResult()) {
-  return hooks.get("after_tool_call")(
-    { toolName: "message", runId, params, result },
-    { sessionKey: SESSION, runId },
+function afterMessageDelivered(
+  hooks,
+  runId,
+  params,
+  result = sentToolResult(),
+  sessionKey = SESSION,
+) {
+  return hooks.get("tool_result")(
+    { toolName: "message", args: params, result },
+    { runtime: "openclaw", sessionKey, runId },
   );
 }
 
@@ -78,9 +95,9 @@ function afterTextSent(hooks, runId, message, extra = {}) {
 }
 
 function afterOtherTool(hooks, runId, toolName = "read") {
-  return hooks.get("after_tool_call")(
-    { toolName, runId, params: {}, result: { ok: true } },
-    { sessionKey: SESSION, runId },
+  return hooks.get("tool_result")(
+    { toolName, args: {}, result: { content: [], details: { ok: true } } },
+    { runtime: "openclaw", sessionKey: SESSION, runId },
   );
 }
 
@@ -91,6 +108,45 @@ afterEach(() => {
 after(() => fs.rmSync(tempState, { recursive: true, force: true }));
 
 describe("source-reply generation gate", () => {
+  it("settles before a final even while detached after_tool_call has not completed", () => {
+    const { hooks } = makeApi();
+    assert.equal(hooks.has("after_tool_call"), false);
+    const event = {
+      toolName: "message",
+      args: {
+        action: "send",
+        channel: "slack",
+        target: "C012AUDIT",
+        accountId: "default",
+        message: "Answer.",
+      },
+      result: sentToolResult(),
+    };
+    const ctx = { runtime: "openclaw", sessionKey: SESSION, runId: "ordered-run" };
+    // The host awaits this pre-model result stage. The handler itself does
+    // not defer its state transition behind an async route lookup.
+    assert.equal(hooks.get("tool_result")(event, ctx), undefined);
+    const final = hooks.get("reply_payload_sending")(
+      {
+        kind: "final",
+        sessionKey: SESSION,
+        runId: ctx.runId,
+        payload: { text: "In short, answer." },
+      },
+      ctx,
+    );
+    assert.equal(final?.cancel, true);
+    assert.equal(
+      hooks.get("tool_result")({ toolName: "read", args: {}, result: {} }, ctx),
+      undefined,
+    );
+    const freshFinal = hooks.get("reply_payload_sending")(
+      { kind: "final", sessionKey: SESSION, runId: ctx.runId, payload: { text: "New result." } },
+      ctx,
+    );
+    assert.equal(freshFinal, undefined);
+  });
+
   it("allows the first plain-text reply in a fresh run", async () => {
     const { hooks } = makeApi();
     const result = await beforeTextSend(hooks, "run-a", "First answer");
@@ -169,6 +225,7 @@ describe("source-reply generation gate", () => {
     const { hooks } = makeApi();
     const failed = sentToolResult();
     failed.details.deliveryStatus = "failed";
+    failed.details.messageDelivery.status = "failed";
     await afterMessageDelivered(
       hooks,
       "run-a",
@@ -179,17 +236,46 @@ describe("source-reply generation gate", () => {
     assert.notEqual(retry?.block, true);
   });
 
+  it("does not arm on partial delivery even with a platform receipt", async () => {
+    const { hooks } = makeApi();
+    const partial = sentToolResult();
+    partial.details.deliveryStatus = "partial_failed";
+    partial.details.messageDelivery.partialDelivery = true;
+    await afterMessageDelivered(
+      hooks,
+      "partial-run",
+      {
+        action: "send",
+        channel: "slack",
+        target: "C012AUDIT",
+        accountId: "default",
+        message: "Part",
+      },
+      partial,
+    );
+    assert.equal(
+      hooks.get("reply_payload_sending")(
+        {
+          kind: "final",
+          sessionKey: SESSION,
+          runId: "partial-run",
+          payload: { text: "Complete answer" },
+        },
+        { sessionKey: SESSION, runId: "partial-run" },
+      ),
+      undefined,
+    );
+  });
+
   it("does not gate distinct Slack notifications from a non-Slack source session", async () => {
     const { hooks } = makeApi();
     const ctx = { sessionKey: "agent:main:main", channelId: "webchat", runId: "web-run" };
-    await hooks.get("after_tool_call")(
-      {
-        toolName: "message",
-        runId: "web-run",
-        params: { action: "send", channel: "slack", target: "C111", message: "First" },
-        result: sentToolResult(),
-      },
-      ctx,
+    await afterMessageDelivered(
+      hooks,
+      "web-run",
+      { action: "send", channel: "slack", target: "C111", message: "First" },
+      sentToolResult(),
+      ctx.sessionKey,
     );
     const next = await hooks.get("before_tool_call")(
       {

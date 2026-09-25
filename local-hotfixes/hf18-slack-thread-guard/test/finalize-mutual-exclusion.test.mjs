@@ -20,6 +20,10 @@ guard.default({
     },
   },
   on: (name, handler) => hooks.set(name, handler),
+  registerAgentToolResultMiddleware: (handler, options) => {
+    assert.deepEqual(options, { runtimes: ["openclaw"] });
+    hooks.set("tool_result", handler);
+  },
 });
 
 function final(runId, text, kind = "final", channel = "slack") {
@@ -31,21 +35,22 @@ function final(runId, text, kind = "final", channel = "slack") {
 
 function sentToolResult() {
   return {
+    content: [{ type: "text", text: "Message sent" }],
     details: {
       channel: "slack",
       deliveryStatus: "sent",
       dryRun: false,
       result: { receipt: { primaryPlatformMessageId: "1700000000.000001" } },
+      messageDelivery: { status: "settled", partialDelivery: false },
     },
   };
 }
 
 function toolSent(runId, message) {
-  return hooks.get("after_tool_call")(
+  return hooks.get("tool_result")(
     {
       toolName: "message",
-      runId,
-      params: {
+      args: {
         action: "send",
         channel: "slack",
         target: "C012MUTEX",
@@ -54,7 +59,7 @@ function toolSent(runId, message) {
       },
       result: sentToolResult(),
     },
-    { sessionKey: SESSION, runId },
+    { runtime: "openclaw", sessionKey: SESSION, runId },
   );
 }
 
@@ -117,9 +122,9 @@ describe("final reply generation gate", () => {
       ),
       undefined,
     );
-    await hooks.get("after_tool_call")(
-      { toolName: "read", runId: "run-progress", result: { ok: true } },
-      { sessionKey: SESSION, runId: "run-progress" },
+    await hooks.get("tool_result")(
+      { toolName: "read", args: {}, result: { content: [], details: { ok: true } } },
+      { runtime: "openclaw", sessionKey: SESSION, runId: "run-progress" },
     );
     assert.equal(final("run-progress", "Done."), undefined);
   });

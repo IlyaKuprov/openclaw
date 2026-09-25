@@ -7,6 +7,12 @@ and returns a route request; it never acquires an outbound adapter, sends a
 reply, or keeps a delivery ledger. The host independently validates the row
 before taking custody. The message-tool guard enforces root sends when enabled,
 and the per-run answer-repetition gate still suppresses immediate paraphrases.
+The gate consumes the host's awaited, pre-model OpenClaw tool-result middleware
+settlement (declared in the plugin manifest), not detached `after_tool_call` or
+`message_sent` observations. A confirmed plain-text source send arms it before a
+canonical final can be checked; a subsequent tool result advances it. The gate
+is process-local and needs the canonical run ID and a settled Slack receipt;
+missing settlement evidence does not suppress a final.
 With `enforceRootDelivery: false`, same-surface finals keep their normal thread
 policy. Cross-surface route requests fail closed: the host route contract cannot
 redirect them without also forcing root delivery against that opt-out.
@@ -33,8 +39,8 @@ operator's own approval. The audit-log default resolves under the current
 user's home directory; configure `auditLog` explicitly to override it.
 
 For offline proof run `node --test test/*.test.mjs` from this directory.
-These tests prove plugin route intent and absence of plugin-side sends, not
-actual host delivery. The host must call and validate the hook before both
+These tests prove plugin route intent, ordered gate decisions, and absence of
+plugin-side sends, not actual host delivery. The host must call and validate the hook before both
 direct and queued sends acquire custody, preserve the session-scoped media
 loader, and fail closed on conflicts or timeout. Until that host integration
 is installed, this plugin alone does **not** reroute cross-surface finals or
