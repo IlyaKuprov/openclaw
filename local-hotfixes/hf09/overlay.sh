@@ -4,9 +4,9 @@
 # packages from node_modules on every install).
 #
 # Stages the locked dependency graph with scripts disabled, copies only
-# directories absent from the stopped 2026.9.5 core tree, and nests A2UI's
+# missing directories into the stopped 2026.9.5 core tree, and nests A2UI's
 # zod@3 beneath @a2ui/lit and @a2ui/web_core so root zod@4 stays untouched.
-# The operator stops the Gateway before applying: package copies are not atomic.
+# The operator stops the Gateway before applying; recovery may replace partial packages.
 set -euo pipefail
 
 ROOT="${1:-${OPENCLAW_ROOT:-${HOME}/.npm-global/lib/node_modules/openclaw}}"
@@ -14,11 +14,22 @@ NM="$ROOT/node_modules"
 if [ "${1:-}" != "--build-cache" ]; then
   [ -d "$NM" ] || { echo "no such core tree: $NM" >&2; exit 1; }
   node -e 'const p=require(process.argv[1]); if(p.version!=="2026.9.5") { console.error(`HF-09 requires OpenClaw 2026.9.5; found ${p.version}`); process.exit(1) }' "$ROOT/package.json"
+  node - "$NM/zod/package.json" <<'NODE'
+try {
+  const version = require(process.argv[2]).version;
+  if (/^4\./.test(version)) process.exit(0);
+  console.error(`HF-09 requires root zod v4; found ${version}`);
+} catch {
+  console.error('HF-09 requires root zod v4; package missing or unreadable');
+}
+process.exit(1);
+NODE
 fi
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 STAGE=$(mktemp -d /tmp/hf09-stage.XXXXXX)
-trap 'rm -rf "$STAGE"' EXIT
+copy_tmp=
+trap 'rm -rf "$STAGE"; [ -z "$copy_tmp" ] || rm -rf "$copy_tmp"' EXIT
 
 # Prefer a pre-staged copy so a cutover does not depend on the npm registry being
 # reachable at the moment of the overlay (build it with --build-cache).
@@ -86,27 +97,80 @@ else
 fi
 verify_stage
 
+# A directory left by an interrupted old overlay may have a manifest but lack
+# later files. Leave different installed versions alone; restore incomplete
+# packages from this exact validated stage after moving them aside temporarily.
+package_incomplete() {
+  node - "${1%/}" "$2" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const [source, dest] = process.argv.slice(2);
+let staged, installed;
+try {
+  staged = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8'));
+  installed = JSON.parse(fs.readFileSync(path.join(dest, 'package.json'), 'utf8'));
+} catch {
+  process.exit(0);
+}
+if (installed.version !== staged.version) process.exit(1);
+function incomplete(dir = '') {
+  for (const entry of fs.readdirSync(path.join(source, dir), { withFileTypes: true })) {
+    const relative = path.join(dir, entry.name);
+    let actual;
+    try { actual = fs.lstatSync(path.join(dest, relative)); } catch { return true; }
+    if (entry.isDirectory()) {
+      if (!actual.isDirectory() || incomplete(relative)) return true;
+    } else if (entry.isFile()) {
+      if (!actual.isFile() || actual.size < fs.statSync(path.join(source, relative)).size) return true;
+    } else if (entry.isSymbolicLink() && !actual.isSymbolicLink()) return true;
+  }
+  return false;
+}
+process.exit(incomplete() ? 0 : 1);
+NODE
+}
+
 added=0
+repaired=0
+copy_package() {
+  local source=${1%/} dest=$2 backup=
+  if [ -d "$dest" ]; then
+    [ -L "$dest" ] && return 0
+    package_incomplete "$source" "$dest" || return 0
+    repaired=$((repaired+1))
+  else
+    added=$((added+1))
+  fi
+  mkdir -p "$(dirname "$dest")"
+  copy_tmp=$(mktemp -d "$(dirname "$dest")/.hf09-copy.XXXXXX")
+  cp -a "$source/." "$copy_tmp/"
+  if [ -d "$dest" ]; then
+    backup=$(mktemp -d "$(dirname "$dest")/.hf09-recovery.XXXXXX")
+    rmdir "$backup"
+    mv -T "$dest" "$backup"
+  fi
+  mv -T "$copy_tmp" "$dest"
+  copy_tmp=
+  [ -z "$backup" ] || rm -rf "$backup"
+}
+
 for d in "$STAGE"/node_modules/*/; do
   name=$(basename "$d")
-  [ "$name" = ".bin" ] && continue
+  case "$name" in .bin|zod) continue ;; esac
   if [ "${name#@}" != "$name" ]; then
-    mkdir -p "$NM/$name"
     for sub in "$d"*/; do
-      subname="$name/$(basename "$sub")"
-      [ -d "$NM/$subname" ] || { cp -r "$sub" "$NM/$subname"; added=$((added+1)); }
+      copy_package "$sub" "$NM/$name/$(basename "$sub")"
     done
   else
-    [ -d "$NM/$name" ] || { cp -r "$d" "$NM/$name"; added=$((added+1)); }
+    copy_package "$d" "$NM/$name"
   fi
 done
 
 for p in @a2ui/lit @a2ui/web_core; do
-  if [ -d "$NM/$p" ] && [ ! -d "$NM/$p/node_modules/zod" ]; then
-    mkdir -p "$NM/$p/node_modules"
-    cp -r "$STAGE/node_modules/zod" "$NM/$p/node_modules/zod"
+  if [ -d "$NM/$p" ]; then
+    copy_package "$STAGE/node_modules/zod" "$NM/$p/node_modules/zod"
   fi
 done
 
 cd "$(dirname "$NM")"
-node -e 'Promise.all([import("lit"),import("jsonc-parser"),import("markdown-it"),import("@a2ui/lit"),import("@lit/context"),import("mdast-util-from-markdown")]).then(()=>console.log("HF-09 overlay OK (added '"$added"' dirs)")).catch(e=>{console.error("HF-09 overlay FAILED:",e.message);process.exit(1)})'
+node -e 'Promise.all([import("lit"),import("jsonc-parser"),import("markdown-it"),import("@a2ui/lit"),import("@lit/context"),import("mdast-util-from-markdown")]).then(()=>console.log("HF-09 overlay OK (added '"$added"' dirs, repaired '"$repaired"')")).catch(e=>{console.error("HF-09 overlay FAILED:",e.message);process.exit(1)})'

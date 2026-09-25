@@ -4,10 +4,13 @@ The 2026.9.5 package omits seven direct runtime packages used by canvas,
 Memory Wiki, and oc-path. The checked-in `package-lock.json` records the
 complete 58-package graph from the validated 2026.9.5 stage archive, including
 npm's original registry integrity values. The script uses `npm ci` with
-lifecycle scripts disabled and copies only _missing_ directories into the
-installed OpenClaw core's `node_modules`; it does not rewrite manifests or
-replace existing packages. The A2UI packages receive their own nested zod v3,
-leaving root zod v4 untouched.
+lifecycle scripts disabled and installs missing package directories through
+same-filesystem temporary copies and renames. On reapplication, it restores
+incomplete package directories from the verified stage (including scoped and
+nested zod packages), but leaves complete and different-version packages alone.
+The A2UI packages receive their own nested zod v3; an absent or non-v4 root
+zod rejects application before any mutation, and staged zod is never copied
+into the root.
 
 Before installing the 2026.9.5 core, stage an offline cache with
 `bash overlay.sh --build-cache` if package-registry access at cutover is uncertain;
@@ -20,8 +23,10 @@ The script verifies the staged package inventory against the lock and hashes its
 file contents and symlink targets against the validated stage archive before any
 copy. It may populate the stage from npm if no cached archive exists. Application rejects core versions other
 than 2026.9.5; do not reapply this graph after upgrading to a different release.
-Package copies are not atomic, so do not run the apply path while the Gateway is
-active. No part of this fork PR applies the overlay automatically.
+Each package directory is installed by rename, but reapplication and recovery
+are not an atomic transaction across the full dependency graph: do not run the
+apply path while the Gateway is active. No part of this fork PR applies the
+overlay automatically.
 
 This is a fork-local 2026.9.5 reapplication artifact, not an upstream
 packaging change. The behavior and validation gate are described in the
