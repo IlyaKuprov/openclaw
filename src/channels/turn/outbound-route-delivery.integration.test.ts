@@ -167,7 +167,7 @@ describe("channel lifecycle outbound route decision", () => {
     });
     const sourceDurable = vi.fn(() => ({ to: "source-conversation" }));
     const sourceDirect = vi.fn();
-    const onDelivered = vi.fn();
+    const onDelivered = vi.fn(() => sourceVisibleSend("observer-replay"));
     sendDurableMessageBatch.mockResolvedValue(createDurableSendResult(["slack-root"]));
 
     await dispatchRoutedChannelTurn({
@@ -194,11 +194,102 @@ describe("channel lifecycle outbound route decision", () => {
       threadId: null,
       rootReplyOnly: true,
     });
-    expect(onDelivered).toHaveBeenCalledWith(
-      { text: "reply" },
-      { kind: "final" },
-      expect.objectContaining({ messageIds: ["slack-root"], visibleReplySent: true }),
-    );
+    // Source observers may themselves flush or replay provider state; the host owns this receipt.
+    expect(onDelivered).not.toHaveBeenCalled();
+  });
+
+  it("decides once for block, tool, and final while keeping source observers off the routed receipt", async () => {
+    const routeHook = enableSlackRootDecision();
+    const sourceVisibleSend = vi.fn();
+    const preparePayload = vi.fn(() => {
+      sourceVisibleSend("prepared");
+      return { text: "source prepared" };
+    });
+    const direct = vi.fn(async () => {
+      sourceVisibleSend("direct");
+      return { messageIds: ["wrong-surface"] };
+    });
+    const onDelivered = vi.fn((_payload, _info, result) => {
+      if (result?.visibleReplySent) {
+        sourceVisibleSend("observer-replay");
+      }
+    });
+    sendDurableMessageBatch.mockResolvedValue(createDurableSendResult(["slack-root"]));
+    dispatchReplyWithRoutedChannelDispatcherCore.mockImplementationOnce(async (params) => {
+      const dispatcher = createReplyDispatcher(params.dispatcherOptions);
+      dispatcher.sendBlockReply({ text: "block" });
+      dispatcher.sendToolResult({ text: "tool" });
+      dispatcher.sendFinalReply({ text: "final" });
+      dispatcher.markComplete();
+      const settledReceipt = await dispatcher.waitForIdle();
+      return {
+        queuedFinal: true,
+        counts: { block: 1, tool: 1, final: 1 },
+        settledReceipt,
+      };
+    });
+
+    const result = await dispatchRoutedChannelTurn({
+      cfg,
+      channel: "whatsapp",
+      route: { agentId: "main", sessionKey: slackSessionKey },
+      ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "whatsapp" }),
+      delivery: { preparePayload, deliver: direct, onDelivered },
+    });
+
+    expectDispatched(result);
+    expect(routeHook).toHaveBeenCalledOnce();
+    // Initial proof + decision validation + queue admission; no extra block/tool probes.
+    expect(loadExactSessionEntryReadOnly).toHaveBeenCalledTimes(3);
+    expect(sendDurableMessageBatch).toHaveBeenCalledOnce();
+    expect(latestDurableSendRequest()).toMatchObject({
+      channel: "slack",
+      to: "channel:C123",
+      payloads: [{ text: "final" }],
+    });
+    expect(preparePayload).not.toHaveBeenCalled();
+    expect(direct).not.toHaveBeenCalled();
+    expect(sourceVisibleSend).not.toHaveBeenCalled();
+    expect(onDelivered.mock.calls.map(([, info]) => info.kind)).toEqual(["block", "tool"]);
+    expect(onDelivered.mock.calls.every((call) => call[2]?.visibleReplySent === false)).toBe(true);
+    expect(result.dispatchResult.settledReceipt).toMatchObject({
+      counts: {
+        block: { deliveredNotVisible: 1 },
+        tool: { deliveredNotVisible: 1 },
+        final: { delivered: 1 },
+      },
+    });
+  });
+
+  it("keeps native block, tool, and final delivery with source observers when no route hook exists", async () => {
+    const direct = vi.fn(async (_payload, info) => ({ messageIds: [`source-${info.kind}`] }));
+    const onDelivered = vi.fn();
+    dispatchReplyWithRoutedChannelDispatcherCore.mockImplementationOnce(async (params) => {
+      const dispatcher = createReplyDispatcher(params.dispatcherOptions);
+      dispatcher.sendBlockReply({ text: "block" });
+      dispatcher.sendToolResult({ text: "tool" });
+      dispatcher.sendFinalReply({ text: "final" });
+      dispatcher.markComplete();
+      return {
+        queuedFinal: true,
+        counts: { block: 1, tool: 1, final: 1 },
+        settledReceipt: await dispatcher.waitForIdle(),
+      };
+    });
+
+    const result = await dispatchRoutedChannelTurn({
+      cfg,
+      channel: "whatsapp",
+      route: { agentId: "main", sessionKey: slackSessionKey },
+      ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "whatsapp" }),
+      delivery: { deliver: direct, onDelivered },
+    });
+
+    expectDispatched(result);
+    expect(direct.mock.calls.map(([, info]) => info.kind)).toEqual(["block", "tool", "final"]);
+    expect(onDelivered.mock.calls.map(([, info]) => info.kind)).toEqual(["block", "tool", "final"]);
+    expect(loadExactSessionEntryReadOnly).not.toHaveBeenCalled();
+    expect(sendDurableMessageBatch).not.toHaveBeenCalled();
   });
 
   it.each(["block", "tool"] as const)(
@@ -325,7 +416,13 @@ describe("channel lifecycle outbound route decision", () => {
       },
     });
     const direct = vi.fn();
+    const onDelivered = vi.fn();
     let observed: unknown;
+    dispatchReplyWithRoutedChannelDispatcherCore.mockImplementationOnce(
+      createDispatch([], { text: "reply" }, (delivery) => {
+        observed = delivery;
+      }),
+    );
     await dispatchRoutedChannelTurn({
       cfg,
       channel: "webchat",
@@ -334,9 +431,7 @@ describe("channel lifecycle outbound route decision", () => {
       delivery: {
         durable: { to: "wrong-webchat-target", threadId: "inherited-thread" },
         deliver: direct,
-        onDelivered: (_payload, _info, result) => {
-          observed = result;
-        },
+        onDelivered,
       },
     });
     expect(direct).not.toHaveBeenCalled();
@@ -346,6 +441,7 @@ describe("channel lifecycle outbound route decision", () => {
       accountId: "work",
       threadId: null,
     });
+    expect(onDelivered).not.toHaveBeenCalled();
     expect(observed).toMatchObject({
       deliveryIntent: { id: "queued-1", kind: "outbound_queue" },
     });

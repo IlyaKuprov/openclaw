@@ -423,6 +423,9 @@ async function dispatchChannelTurnWithDeliveryOwner(
           }
         : {}),
       runDispatch: async () => {
+        // The route is chosen once for this turn; the decided route separately checks
+        // current authority at queue admission and before adapter handoff.
+        let outboundRouteDecision: ReturnType<typeof decideFinalOutboundRoute> | undefined;
         let dispatchResult:
           | Awaited<ReturnType<AssembledChannelTurn["dispatchReplyWithBufferedBlockDispatcher"]>>
           | undefined;
@@ -480,10 +483,10 @@ async function dispatchChannelTurnWithDeliveryOwner(
                     const outboundRoute =
                       params.admission?.kind === "observeOnly"
                         ? undefined
-                        : await decideFinalOutboundRoute(
+                        : await (outboundRouteDecision ??= decideFinalOutboundRoute(
                             params,
                             info.kind === "final" ? info : { ...info, kind: "final" },
-                          );
+                          ));
                     if (outboundRoute) {
                       if (info.kind !== "final") {
                         // The chosen owner only accepts final replies. Suppress intermediate
@@ -507,12 +510,8 @@ async function dispatchChannelTurnWithDeliveryOwner(
                         durableOptions: undefined,
                         executionIdentityToken: agentRun[1],
                       });
-                      await runChannelDeliveryObserver({
-                        onDelivered: delivery.onDelivered,
-                        payload: routed.payload,
-                        info,
-                        result: routed.delivery,
-                      });
+                      // Host-owned durable settlement must not invoke the bypassed source
+                      // adapter's observer, which can have source-transport side effects.
                       return routed.delivery;
                     }
                     const preparedPayloadResult = delivery.preparePayload
