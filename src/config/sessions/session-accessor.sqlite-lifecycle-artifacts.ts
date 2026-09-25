@@ -239,17 +239,23 @@ export function planSessionLifecycleArtifactCleanup(
     const removedSessionIds = new Set<string>();
     const entries: LifecycleArtifactCleanupPlan["entries"] = [];
     const projectedStore = readSessionEntryStore(database);
-    const foreignOwnedSessionIds = params.pluginOwnerId
+    const pluginOwnerId = params.pluginOwnerId;
+    const foreignOwnedSessionIds = pluginOwnerId
       ? new Set(
           executeSqliteQuerySync(
             database.db,
-            (params.requireExactPluginOwnerId
-              ? db.selectFrom("session_windows")
-              : db.selectFrom("session_windows").where("plugin_owner_id", "is not", null)
-            ).select(["session_id", "plugin_owner_id"]),
-          )
-            .rows.filter((row) => row.plugin_owner_id !== params.pluginOwnerId)
-            .map((row) => row.session_id),
+            db
+              .selectFrom("session_windows")
+              .select("session_id")
+              .where((eb) =>
+                params.requireExactPluginOwnerId
+                  ? eb.or([
+                      eb("plugin_owner_id", "is", null),
+                      eb("plugin_owner_id", "!=", pluginOwnerId),
+                    ])
+                  : eb("plugin_owner_id", "!=", pluginOwnerId),
+              ),
+          ).rows.map((row) => row.session_id),
         )
       : undefined;
     for (const row of rows) {
