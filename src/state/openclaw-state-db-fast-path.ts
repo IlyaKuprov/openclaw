@@ -1,6 +1,7 @@
+import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { assertSqliteIntegrityExcept } from "../infra/sqlite-integrity.js";
+import { assertSqliteIntegrity, assertSqliteIntegrityExcept } from "../infra/sqlite-integrity.js";
 import {
   collectSqliteSchemaIssues,
   createSqliteTableContractReader,
@@ -26,6 +27,25 @@ import {
 } from "./openclaw-state-schema-compatibility.js";
 
 const OPEN_PATH_DEFERRED_LEDGER_TABLES = ["audit_events"] as const;
+const activeBackgroundVerifiers = new Map<string, number>();
+
+/** Only a verifier targeting this state file may defer its audit index proof. */
+export function registerOpenClawStateAuditIntegrityVerifier(pathname: string): () => void {
+  const target = path.resolve(pathname);
+  activeBackgroundVerifiers.set(target, (activeBackgroundVerifiers.get(target) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (!released) {
+      released = true;
+      const remaining = (activeBackgroundVerifiers.get(target) ?? 1) - 1;
+      if (remaining > 0) {
+        activeBackgroundVerifiers.set(target, remaining);
+      } else {
+        activeBackgroundVerifiers.delete(target);
+      }
+    }
+  };
+}
 
 export function needsOpenClawStateDatabaseSchemaRepair(pathname: string): boolean {
   let database: DatabaseSync | undefined;
@@ -65,9 +85,13 @@ export function isOpenClawStateSchemaFastPathEligible(
     if (readStateSchemaMigrationVersion(database) !== OPENCLAW_STATE_SCHEMA_VERSION) {
       return false;
     }
-    // HF-40: the audit ledger is append-only and never read on the open path; its
-    // index verification belongs to the background verifier, not to every open.
-    assertSqliteIntegrityExcept(database, pathname, OPEN_PATH_DEFERRED_LEDGER_TABLES);
+    // A direct-local opener has no Gateway-owned background verifier. Prove its
+    // audit indexes before writing; only the active Gateway may defer them.
+    if (activeBackgroundVerifiers.has(pathname)) {
+      assertSqliteIntegrityExcept(database, pathname, OPEN_PATH_DEFERRED_LEDGER_TABLES);
+    } else {
+      assertSqliteIntegrity(database, pathname);
+    }
     // Both policies see this read transaction; repair must collect fresh facts after it ends.
     const readTable = createSqliteTableContractReader(database);
     assertCurrentStateRuntimeSchema(database, pathname, readTable);

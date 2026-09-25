@@ -3,7 +3,10 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
-import { isOpenClawStateSchemaFastPathEligible } from "./openclaw-state-db-fast-path.js";
+import {
+  isOpenClawStateSchemaFastPathEligible,
+  registerOpenClawStateAuditIntegrityVerifier,
+} from "./openclaw-state-db-fast-path.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -64,11 +67,11 @@ function corruptIndexContent(
 describe("state schema fast-path integrity proof", () => {
   it.each([
     {
-      name: "defers audit ledger index verification to the background verifier",
+      name: "refuses audit ledger index corruption without a background verifier",
       index: "idx_audit_events_direction_sequence",
       from: "direction",
       to: "channel  ",
-      refused: false,
+      refused: true,
     },
     {
       name: "refuses a corrupt non-ledger table on every open",
@@ -112,11 +115,38 @@ describe("state schema fast-path integrity proof", () => {
         expect(() => isOpenClawStateSchemaFastPathEligible(database, pathname)).toThrow(
           new RegExp(`integrity_check failed for .*${index}`, "u"),
         );
-      } else {
-        expect(isOpenClawStateSchemaFastPathEligible(database, pathname)).toBe(true);
+      }
+      const unrelatedVerifier = registerOpenClawStateAuditIntegrityVerifier(`${pathname}.other`);
+      try {
+        expect(() => isOpenClawStateSchemaFastPathEligible(database, pathname)).toThrow(
+          new RegExp(`integrity_check failed for .*${index}`, "u"),
+        );
+      } finally {
+        unrelatedVerifier();
+      }
+      const unregister = registerOpenClawStateAuditIntegrityVerifier(pathname);
+      try {
+        if (index.startsWith("idx_audit_events")) {
+          expect(isOpenClawStateSchemaFastPathEligible(database, pathname)).toBe(true);
+        } else {
+          expect(() => isOpenClawStateSchemaFastPathEligible(database, pathname)).toThrow(
+            new RegExp(`integrity_check failed for .*${index}`, "u"),
+          );
+        }
+      } finally {
+        unregister();
       }
     } finally {
       database.close();
+    }
+    if (index.startsWith("idx_audit_events")) {
+      // The real direct-local open detects the failed proof, rebuilds the canonical
+      // index in its existing repair path, and verifies the result before exposure.
+      const repaired = openOpenClawStateDatabase({ env });
+      expect(() => assertSqliteIntegrity(repaired.db, pathname)).not.toThrow();
+      expect(
+        repaired.db.prepare("SELECT event_id FROM audit_events ORDER BY event_id").all(),
+      ).toEqual([{ event_id: "event-1" }, { event_id: "event-2" }]);
     }
   });
 });
