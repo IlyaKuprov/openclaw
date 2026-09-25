@@ -45,6 +45,8 @@ gh pr create --repo owner/repo --title "feat: title" --body-file /tmp/pr.md
 gh pr merge 55 --repo owner/repo --squash
 ```
 
+When creating or refreshing a commit or PR, visibly include the exact ordered `Worked on by` list from the authoritative Git attribution context for the current turn; use `## Worked on by` in PR bodies. Preserve its exact `Co-authored-by` trailers in commits, including after history rewrites. Never infer identities from names or chat, include bots or opted-out people, or reorder the supplied contributors.
+
 When creating or refreshing a PR body, append this final footer only when the Runtime line supplies `sessionUrl=<exact-url>`. Replace `<sessionUrl>` with that URL verbatim; do not construct or modify it. Omit the footer when `sessionUrl` is absent. Preserve any publication marker before exactly one footer, and keep the footer final:
 
 ```text
@@ -54,23 +56,28 @@ When creating or refreshing a PR body, append this final footer only when the Ru
 
 URLs work directly: `gh pr view https://github.com/owner/repo/pull/55`.
 
-### Landing ownership
+## Codex review gate (mandatory)
 
-When the user asks to land or merge a PR, the terminal outcome is the PR's verified
-GitHub state, not the end of a review, worker turn, or CI observation.
+A PR you submit is not finished when it is pushed. It is finished when the GitHub Codex
+reviewer has reviewed the current head with nothing outstanding.
 
-- Keep the job active until `gh pr view ... --json state,mergedAt,mergeCommit`
-  proves `state` is `MERGED`.
-- Treat review findings, merge conflicts, failed checks, and requested changes as
-  continuation work when they are in scope. Patch them, rerun the required gates,
-  and re-evaluate the exact updated head.
-- A pending check is a wait state, not completion. Use the repository's supported
-  wait or merge workflow; do not claim success from partial green checks.
-- If work was delegated to a persistent session and that run stops before merge,
-  continue the same session rather than treating its report as the final result.
-- Stop as blocked only when continuing requires new authority, unavailable
-  credentials, or a product decision that cannot be inferred safely. Report the
-  exact blocker and leave the PR unmerged.
+```bash
+gh pr view 55 --repo owner/repo --json headRefOid,reviews,comments
+gh pr comment 55 --repo owner/repo --body "@codex review"   # when no review appears
+```
+
+- Wait for `chatgpt-codex-connector` after opening a PR and after every push that moves the
+  head. It reviews on PR open, on a draft marked ready, and on a `@codex review` comment;
+  it reacts 👀 while running, comments when it has findings, 👍 when a review finishes clean.
+- Its `<!-- codex-pull-request-review-summary -->` comment tabulates each review's status and
+  the commit it covered. A review of an earlier commit says nothing about the current head.
+- Silence is not approval — an old PR, a rebase, or a push that did not trigger a review needs
+  an explicit `@codex review` request.
+- Address every finding: fix it, or reply on its thread with the reason it does not hold. Then
+  push, request the re-review, and wait for that one too.
+- Report the PR only when the newest Codex review covers the current head SHA with no
+  unaddressed findings; otherwise say what is outstanding instead of calling it done.
+
 
 ## Issues
 

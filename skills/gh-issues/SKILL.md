@@ -169,6 +169,12 @@ Poll workers with `process` or task registry. Report:
 
 Notify channel only with final compact summary.
 
+An opened PR is not a finished PR: it must still clear the Codex review gate in the `github`
+skill — wait for `chatgpt-codex-connector` on the current head, address its findings, push,
+and request `@codex review` again until a review of the current head SHA is clean. Report a PR
+as done only after that, and name what is outstanding otherwise.
+
+
 ## Reviews-only / watch reviews
 
 Discover open PRs:
