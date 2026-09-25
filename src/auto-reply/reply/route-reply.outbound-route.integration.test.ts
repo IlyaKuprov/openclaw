@@ -245,7 +245,13 @@ describe("routeReply host route decision with durable queue custody", () => {
         updatedAt: Date.now(),
         delivery: {
           kind: "external",
+          route: {
+            channel: "slack",
+            accountId: "work",
+            target: { to: "user:U123" },
+          },
           context: { channel: "slack", to: "user:U123", accountId: "work" },
+          origin: { provider: "slack", to: "user:U123", accountId: "work" },
         },
       },
     );
