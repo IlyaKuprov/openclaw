@@ -221,6 +221,25 @@ describe("source-reply generation gate", () => {
     assert.notEqual(withMedia?.block, true);
   });
 
+  for (const [field, value] of [
+    ["presentation", { blocks: [{ type: "text", text: "chart" }] }],
+    ["interactive", { buttons: [{ label: "Open" }] }],
+    ["location", { latitude: 1, longitude: 2 }],
+    ["channelData", { slack: { blocks: [{ type: "section", text: "detail" }] } }],
+    ["mediaUrls", ["file:///plot.png"]],
+    ["voiceText", "Spoken answer"],
+    ["fallbackText", "Accessible detail"],
+    ["btw", true],
+    ["delivery", { pin: "recipient" }],
+  ]) {
+    it(`does not gate a text send with recipient-visible ${field}`, async () => {
+      const { hooks } = makeApi();
+      await afterTextSent(hooks, "run-rich", "Answer.");
+      const rich = await beforeTextSend(hooks, "run-rich", "New item", { [field]: value });
+      assert.notEqual(rich?.block, true);
+    });
+  }
+
   it("does not arm the gate on a failed send, so the retry is allowed", async () => {
     const { hooks } = makeApi();
     const failed = sentToolResult();

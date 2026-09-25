@@ -383,8 +383,19 @@ function isPlainTextSend(params) {
   // restatement, so it is not gated.
   return !(
     params.media ||
+    params.mediaUrl ||
+    params.mediaUrls?.length ||
     params.buffer ||
-    (Array.isArray(params.attachments) && params.attachments.length > 0)
+    (Array.isArray(params.attachments) && params.attachments.length > 0) ||
+    params.presentation ||
+    params.interactive ||
+    params.channelData ||
+    params.location ||
+    params.voiceText ||
+    params.asVoice ||
+    params.fallbackText ||
+    params.btw ||
+    params.delivery
   );
 }
 
