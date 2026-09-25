@@ -151,8 +151,9 @@ export async function cleanupSessionLifecycleArtifactsCore(
     async () =>
       withSqliteSessionDatabase(
         databaseOptions,
-        (database) =>
-          planSessionLifecycleArtifactCleanup(database, {
+        (database) => {
+          params.assertCommitAllowed?.();
+          return planSessionLifecycleArtifactCleanup(database, {
             ...(params.agentId !== undefined ? { agentId: resolved.agentId } : {}),
             archiveRemovedEntryTranscripts: params.archiveRemovedEntryTranscripts !== false,
             archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
@@ -163,7 +164,8 @@ export async function cleanupSessionLifecycleArtifactsCore(
             orphanTranscriptMinAgeMs: params.orphanTranscriptMinAgeMs,
             nowMs: params.nowMs ?? Date.now(),
             diagnostics: artifactPreparation,
-          }),
+          });
+        },
         undefined,
         artifactPreparation,
       ),
@@ -173,6 +175,7 @@ export async function cleanupSessionLifecycleArtifactsCore(
   if (cleanupPlan.entries.length === 0 && cleanupPlan.deletePlans.length === 0) {
     // Startup probes need no reclamation Worker, but previously committed archives
     // still need their publication retry even when this pass has no deletions.
+    params.assertCommitAllowed?.();
     await publishSessionStateArchives(resolved, []);
     return { removedEntries: 0, archivedTranscriptArtifacts: 0 };
   }
@@ -183,6 +186,7 @@ export async function cleanupSessionLifecycleArtifactsCore(
     ),
     async (assertCurrent) =>
       await runExclusiveSqliteSessionReclamation(async () => {
+        params.assertCommitAllowed?.();
         const materializedPlans = await materializeSessionStateDeletePlans(cleanupPlan.deletePlans);
         const diagnostics: SqliteSessionReclamationDiagnostics = {};
         const plan = createLifecycleArtifactReclamationPlan({
@@ -193,7 +197,10 @@ export async function cleanupSessionLifecycleArtifactsCore(
         });
         const reclaimed = await runSqliteSessionReclamation({
           diagnostics,
-          assertCommitAllowed: assertCurrent,
+          assertCommitAllowed: () => {
+            assertCurrent();
+            params.assertCommitAllowed?.();
+          },
           forceInProcess: hasPreparedNativeSessionDeletion(),
           plan,
         });

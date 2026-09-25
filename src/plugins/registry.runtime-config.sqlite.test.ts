@@ -348,6 +348,24 @@ describe("plugin registry SQLite session ownership", () => {
           }),
           { config: {} as OpenClawConfig },
         );
+        const coreTarget = {
+          agentId,
+          sessionKey: "agent:main:internal-session-effects:core-hidden",
+          sessionId: "core-hidden",
+          storePath,
+        };
+        await replaceSessionEntry(coreTarget, { sessionId: coreTarget.sessionId, updatedAt: 1 });
+        await expect(
+          otherApi.runtime.agent.runEmbeddedAgent({
+            ...coreTarget,
+            sessionTarget: coreTarget,
+            workspaceDir: path.join(home, "workspace"),
+            prompt: "core hidden",
+            timeoutMs: 1000,
+            runId: coreTarget.sessionId,
+          } as Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0]),
+        ).rejects.toThrow(/ownerless internal session/);
+        expect(runEmbeddedAgent).toHaveBeenCalledOnce();
         await expect(
           otherApi.runtime.agent.session.patchSessionEntry({
             agentId,

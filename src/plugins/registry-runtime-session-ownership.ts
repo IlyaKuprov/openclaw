@@ -191,13 +191,11 @@ export function createPluginSessionOwnership(
   }): void => {
     if (params.entry) {
       const ownerPluginId = normalizeOptionalString(params.entry.pluginOwnerId);
-      if (
-        isInternalEffectsStoreKey(params.sessionKey) &&
-        ownerPluginId &&
-        ownerPluginId !== pluginId
-      ) {
+      if (isInternalEffectsStoreKey(params.sessionKey) && ownerPluginId !== pluginId) {
         throw new Error(
-          `Internal session "${params.sessionKey}" is owned by plugin "${ownerPluginId}", not "${pluginId}".`,
+          ownerPluginId
+            ? `Internal session "${params.sessionKey}" is owned by plugin "${ownerPluginId}", not "${pluginId}".`
+            : `Plugin "${pluginId}" cannot ${params.action} ownerless internal session "${params.sessionKey}".`,
         );
       }
       // Before harness locking shipped, plugins could create ordinary sessions

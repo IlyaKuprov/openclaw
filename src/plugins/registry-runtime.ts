@@ -498,6 +498,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                   ...params,
                   pluginOwnerId: pluginId,
                   requireExactPluginOwnerId: true,
+                  assertCommitAllowed: assertRuntimeCurrent,
                 }),
               ),
             runWithWorkAdmission: async (params, run) => {

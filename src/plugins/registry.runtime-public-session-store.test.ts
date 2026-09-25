@@ -143,4 +143,48 @@ describe("public plugin session-store writers", () => {
     expect(readStoredEntry(scope)).toBeUndefined();
     expect(readStoredEntry(coreScope)?.sessionId).toBe("core-hidden");
   });
+
+  it("does not clean an owned session after its plugin runtime is revoked", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-plugin-cleanup-revoked-"));
+    tempDirs.push(dir);
+    const storePath = path.join(dir, "sessions.json");
+    const scope = {
+      agentId: "main",
+      sessionKey: "agent:main:internal-session-effects:owned-child",
+      storePath,
+    };
+    await upsertSessionEntryCore(scope, {
+      sessionId: "owned-child",
+      pluginOwnerId: "active-memory",
+      updatedAt: 1,
+    });
+    const runtime = createPluginRuntime();
+    const originalCleanup = runtime.agent.session.cleanupSessionLifecycleArtifacts;
+    const registry = createRuntimeTestRegistry(runtime);
+    const record = createPluginRecord({
+      id: "active-memory",
+      source: "/plugins/active-memory/index.js",
+      origin: "bundled",
+      enabled: true,
+      configSchema: false,
+    });
+    const api = registry.createApi(record, { config: {} });
+    Object.defineProperty(runtime.agent.session, "cleanupSessionLifecycleArtifacts", {
+      configurable: true,
+      value: async (params: Parameters<typeof originalCleanup>[0]) => {
+        registry.registry.plugins.splice(registry.registry.plugins.indexOf(record), 1);
+        return await originalCleanup(params);
+      },
+    });
+    await expect(
+      api.runtime.agent.session.cleanupSessionLifecycleArtifacts({
+        agentId: "main",
+        storePath,
+        sessionKeySegmentPrefix: "internal-session-effects",
+        transcriptContentMarker: '"nonexistent-marker"',
+        orphanTranscriptMinAgeMs: 0,
+      }),
+    ).rejects.toThrow(/runtime is no longer active/);
+    expect(readStoredEntry(scope)?.pluginOwnerId).toBe("active-memory");
+  });
 });
