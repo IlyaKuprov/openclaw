@@ -58,7 +58,11 @@ import {
 } from "../../lib/sessions/route-navigation.ts";
 import { formatSessionArchiveReason } from "../../lib/sessions/session-archive-reason.ts";
 import { parseAgentSessionKey, parseSessionKeyParts } from "../../lib/sessions/session-key.ts";
-import { SESSIONS_PAGE_DEFAULT_LIMIT } from "../../lib/sessions/session-requests.ts";
+import {
+  SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+  SESSIONS_PAGE_DEFAULT_LIMIT,
+  SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
+} from "../../lib/sessions/session-requests.ts";
 
 type TranscriptSearchState =
   | { status: "idle" }
@@ -580,10 +584,31 @@ function paginateRows<T>(rows: T[], page: number, pageSize: number): T[] {
   return rows.slice(start, start + pageSize);
 }
 
+/**
+ * The filter values a freshly routed page opens with: the compact roster
+ * window for the active view, no window and the documented page limit for the
+ * archived and all-status views. Deviations from these count as user filters.
+ */
+function rosterFilterDefaults(statusFilter: SessionArchivedFilter): {
+  activeMinutes: string;
+  limit: string;
+} {
+  return statusFilter === "active"
+    ? {
+        activeMinutes: String(SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES),
+        limit: String(SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT),
+      }
+    : { activeMinutes: "", limit: String(SESSIONS_PAGE_DEFAULT_LIMIT) };
+}
+
 function hasActiveFilters(props: SessionsProps): boolean {
+  // An unparsable window is ignored by the query, so it is not a filter; a
+  // parsable one counts only when it differs from the status-specific default.
+  const activeMinutes = parseStrictPositiveInteger(props.activeMinutes);
   return (
     normalizeLowercaseStringOrEmpty(props.searchQuery).length > 0 ||
-    parseStrictPositiveInteger(props.activeMinutes) !== undefined ||
+    (activeMinutes !== undefined &&
+      String(activeMinutes) !== rosterFilterDefaults(props.statusFilter).activeMinutes) ||
     !props.includeGlobal
   );
 }
@@ -1106,9 +1131,10 @@ function renderSessionsAdvancedFilters(props: SessionsProps) {
     key: keyof Parameters<SessionsProps["onFiltersChange"]>[0],
     value: string | boolean,
   ) => props.onFiltersChange({ activeMinutes, limit, includeGlobal, includeUnknown, [key]: value });
+  const defaults = rosterFilterDefaults(props.statusFilter);
   const active =
-    activeMinutes.trim() !== "" ||
-    limit.trim() !== String(SESSIONS_PAGE_DEFAULT_LIMIT) ||
+    activeMinutes.trim() !== defaults.activeMinutes ||
+    limit.trim() !== defaults.limit ||
     !includeGlobal ||
     includeUnknown ||
     props.groupBy !== "none";

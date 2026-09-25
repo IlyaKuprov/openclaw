@@ -3,7 +3,12 @@
 import type { RouteLoaderOptions } from "@openclaw/uirouter";
 import { describe, expect, it, vi } from "vitest";
 import type { ApplicationContext } from "../../app/context.ts";
-import type { SessionListOptions } from "../../lib/sessions/index.ts";
+import {
+  SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+  SESSIONS_PAGE_DEFAULT_LIMIT,
+  SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
+  type SessionListOptions,
+} from "../../lib/sessions/index.ts";
 import { buildSessionsListQuery } from "./list-query.ts";
 import { page, type SessionsRouteData } from "./route.ts";
 
@@ -45,7 +50,14 @@ async function loadSessionsRoute(options: {
       deepLinkSessionKey: data.expandedSessionKey,
       includeGlobal: true,
       includeUnknown: false,
-      limit: 50,
+      // The defaults the mounted page opens with: the compact roster window
+      // for the active view, the documented page limit for archived/all.
+      activeMinutes:
+        data.statusFilter === "active" ? SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES : undefined,
+      limit:
+        data.statusFilter === "active"
+          ? SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT
+          : SESSIONS_PAGE_DEFAULT_LIMIT,
     }),
   ).toEqual(options.expectedQuery);
 }
@@ -57,7 +69,9 @@ describe("sessions route", () => {
       search: "",
       scopeId: "writer",
       expectedQuery: {
-        limit: 50,
+        limit: 20,
+        activeMinutes: 2880,
+        activeMinutesBy: "activity" as const,
         includeGlobal: true,
         includeUnknown: false,
         includeDerivedTitles: false,

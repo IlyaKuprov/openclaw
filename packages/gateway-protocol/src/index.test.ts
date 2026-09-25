@@ -166,7 +166,7 @@ describe("lazy protocol validators", () => {
       { involvingMe: true },
       { sortBy: "updatedAt" },
       { sortBy: "lastInteractionAt" },
-      { sortBy: "activity", activeMinutes: 1_440, limit: 100 },
+      { sortBy: "activity", activeMinutes: 1_440, activeMinutesBy: "activity", limit: 100 },
       { boardFace: "dashboard" },
       { hasBoard: true },
       { hasBoard: false },
@@ -180,7 +180,7 @@ describe("lazy protocol validators", () => {
     expectAccepted(validateSessionsPatchParams, [{ key: "agent:main:main", boardFace: "chat" }]);
     expectRejected(validateSessionsPatchParams, [{ key: "agent:main:main", boardFace: "grid" }]);
     // The schemas are closed objects; the pre-rename name must not slip back in.
-    expectRejected(validateSessionsListParams, [{ face: "dashboard" }]);
+    expectRejected(validateSessionsListParams, [{ face: "dashboard" }, { activeMinutesBy: "x" }]);
   });
 
   it("validates bounded closed bulk session patch requests", () => {

@@ -64,6 +64,13 @@ export function sessionProgressTargetQuery(agentId?: string | null): SessionList
  *  field, kept separate from the roster page so tuning one never moves the other. */
 export const SESSIONS_PAGE_DEFAULT_LIMIT = 50;
 
+/** The roster the Sessions page opens with. A two-day activity window and a
+ *  twenty-row page keep the default view to the sessions that matter; deep links
+ *  and the archived view bypass the window and keep SESSIONS_PAGE_DEFAULT_LIMIT
+ *  as their page size. */
+export const SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES = 2880;
+export const SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT = 20;
+
 const SESSION_LIST_PARAMS = {
   includeGlobal: true,
   includeUnknown: true,
@@ -129,6 +136,9 @@ export function buildSessionListParams(options: SessionListOptions = {}): Record
         : 0;
   if (activeMinutes > 0) {
     params.activeMinutes = activeMinutes;
+    if (options.activeMinutesBy) {
+      params.activeMinutesBy = options.activeMinutesBy;
+    }
   }
   const agentId = options.agentId?.trim();
   const spawnedBy = options.spawnedBy?.trim();

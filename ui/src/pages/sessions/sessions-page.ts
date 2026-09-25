@@ -42,7 +42,9 @@ import {
 import { resolveSessionRenamePatch, resolveSessionRenameValue } from "../../lib/session-rename.ts";
 import type { SessionsGroupBy } from "../../lib/sessions/grouping.ts";
 import {
+  SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
   SESSIONS_PAGE_DEFAULT_LIMIT,
+  SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
   filterSessionRows,
   scopedAgentParamsForSession,
   type SessionArchivedFilter,
@@ -124,8 +126,8 @@ class SessionsPage extends OpenClawLightDomElement {
   @state() private loading = false;
   @state() private refreshing = false;
   @state() private error: string | null = null;
-  @state() private activeMinutes = "";
-  @state() private limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
+  @state() private activeMinutes = String(SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES);
+  @state() private limit = String(SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT);
   @state() private includeGlobal = true;
   @state() private includeUnknown = false;
   @state() private statusFilter: SessionArchivedFilter = "active";
@@ -429,6 +431,13 @@ class SessionsPage extends OpenClawLightDomElement {
       this.searchQuery = "";
       this.page = 0;
       this.selectedKeys = new Set();
+    } else if (data.statusFilter === "active") {
+      // Compact roster defaults apply to the active view only; the archived and
+      // all-status views keep the documented page limit and no time window.
+      this.activeMinutes = String(SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES);
+      this.limit = String(SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT);
+      this.includeGlobal = true;
+      this.includeUnknown = false;
     } else {
       this.activeMinutes = "";
       this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
