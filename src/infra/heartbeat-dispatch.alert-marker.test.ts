@@ -112,6 +112,8 @@ describe("heartbeat ALERT: marker gate", () => {
     expect(hasHeartbeatAlertMarker("[bot]  ALERT: x", " [bot] ")).toBe(true);
     expect(hasHeartbeatAlertMarker("+ ALERT: service down")).toBe(true);
     expect(hasHeartbeatAlertMarker("1. ALERT: service down")).toBe(true);
+    expect(hasHeartbeatAlertMarker("- [ ] ALERT: disk full")).toBe(true);
+    expect(hasHeartbeatAlertMarker("1. [x] ALERT: backup failed")).toBe(true);
     expect(hasHeartbeatAlertMarker("All sessions are fine, no alerts.")).toBe(false);
     expect(hasHeartbeatAlertMarker("Nothing to report; no ALERT: raised.")).toBe(false);
   });
@@ -197,22 +199,24 @@ describe("heartbeat ALERT: marker gate", () => {
     });
   });
 
-  it.each(["+ ALERT: service down", "1. ALERT: service down"])(
-    "delivers markdown list alert %s from a scheduled poll",
-    async (replyText) => {
-      await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
-        const { sendWhatsApp } = await runPoll({
-          tmpDir,
-          storePath,
-          replySpy,
-          replyText,
-          prompt: MARKER_PROMPT,
-        });
-        expect(sendWhatsApp).toHaveBeenCalledTimes(1);
-        expect(sendWhatsApp.mock.calls[0]?.[1]).toContain(replyText);
+  it.each([
+    "+ ALERT: service down",
+    "1. ALERT: service down",
+    "- [ ] ALERT: disk full",
+    "1. [x] ALERT: backup failed",
+  ])("delivers markdown list alert %s from a scheduled poll", async (replyText) => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const { sendWhatsApp } = await runPoll({
+        tmpDir,
+        storePath,
+        replySpy,
+        replyText,
+        prompt: MARKER_PROMPT,
       });
-    },
-  );
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toContain(replyText);
+    });
+  });
 
   it("delivers a marked alert when the configured prompt names the marker", async () => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {

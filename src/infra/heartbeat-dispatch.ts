@@ -76,7 +76,7 @@ export function hasHeartbeatAlertMarker(text: string, responsePrefix?: string): 
   if (prefix && body.startsWith(prefix)) {
     body = body.slice(prefix.length).trimStart();
   }
-  body = body.replace(/^(?:[*_`>#\s+-]|\d+[.)]\s+)*/, "");
+  body = body.replace(/^(?:[*_`>#\s+-]|\d+[.)]\s+)*(?:\[[ xX]\]\s*)?/, "");
   return body.toUpperCase().startsWith(HEARTBEAT_ALERT_MARKER);
 }
 
