@@ -141,6 +141,7 @@ Worker prompt must include:
 - target branch `fix/issue-<n>`.
 - required proof and PR body.
 - notification route.
+- the exact ordered GitHub logins and `Co-authored-by` trailers from the parent session's Git co-author prompt, if supplied, and its exact Runtime `sessionUrl`, if supplied. Copy these into the separate worker's prompt; do not infer identities or fabricate a URL.
 
 Worker instructions:
 
@@ -149,10 +150,10 @@ Use gh and git. Do not handwave.
 Checkout/create fix/issue-<n> from BASE_BRANCH.
 Implement minimal fix.
 Run relevant tests.
-Commit with conventional message.
+Commit with conventional message and the supplied exact co-author trailers, if any.
 Push to PUSH_REMOTE.
 Open PR against SOURCE_REPO BASE_BRANCH.
-PR body: What Problem This Solves + Why This Change Was Made + User Impact + Evidence + visible Fixes SOURCE_REPO#<n>.
+PR body: What Problem This Solves + Why This Change Was Made + User Impact + Evidence + visible Fixes SOURCE_REPO#<n>. Follow the github skill for the supplied ordered `Worked on by` logins and canonical session URL; omit the public credit section when no canonical URL was supplied.
 Follow the github skill's Codex review gate on the current head: wait for review, address findings, push, request re-review when the head moves, and wait until the current head is clean. A pending review or an opened PR is an interim result, not completion.
 Report PR URL and clean review evidence, or the outstanding gate/failure reason.
 Send completion only after the review gate clears; if a route is provided but work stops earlier, send an explicit unfinished or failure status instead.
@@ -189,6 +190,8 @@ gh api "repos/$SOURCE_REPO/issues/<n>/comments"
 
 Only process `fix/issue-*` PRs created by this workflow unless the user explicitly named PR numbers. Group actionable comments by PR. Ignore praise, status, duplicates, and already-addressed comments. Spawn one worker per selected/scoped PR, same background rules.
 
+Review worker prompts must also copy the parent session's exact ordered verified GitHub logins, `Co-authored-by` trailers, and Runtime `sessionUrl` when supplied. Do not reconstruct missing values from the existing PR or review comments.
+
 Review worker instructions:
 
 ```text
@@ -196,7 +199,7 @@ Checkout PR branch.
 Read all actionable review comments.
 Patch minimal changes.
 Run relevant tests.
-Commit and push normally; do not force-push unless explicitly told.
+Commit and push normally with the supplied exact co-author trailers, if any; do not force-push unless explicitly told. When refreshing the PR body, preserve existing verified credit and its canonical footer. Add new public credit only when the exact canonical session URL was supplied, following the github skill.
 Reply to addressed comments with fix + commit/file reference.
 Follow the github skill's Codex review gate on the new head: request re-review if none appears, wait for a clean verdict on the current head, address further findings, and repeat after each push that moves the head.
 Report comments addressed/skipped and proof with clean current-head review evidence only after the gate clears; otherwise report the outstanding gate/failure reason as explicitly unfinished.

@@ -45,9 +45,9 @@ gh pr create --repo owner/repo --title "feat: title" --body-file /tmp/pr.md
 gh pr merge 55 --repo owner/repo --squash
 ```
 
-When creating or refreshing a commit or PR, use the exact ordered `Worked on by` GitHub logins supplied by the session's Git co-author prompt; include `## Worked on by` in PR bodies when that list is present. Preserve its exact `Co-authored-by` trailers in commits, including after history rewrites. Never infer identities from names, chat, or trailers, include bots or opted-out people, or reorder the supplied contributors.
+When creating or refreshing a commit or PR, use the exact ordered `Worked on by` GitHub logins supplied by the session's Git co-author prompt. Preserve its exact `Co-authored-by` trailers in commits, including after history rewrites. Never infer identities from names, chat, or trailers, include bots or opted-out people, or reorder the supplied contributors.
 
-When creating or refreshing a PR body, append this final footer only when the Runtime line supplies `sessionUrl=<exact-url>`. Replace `<sessionUrl>` with that URL verbatim; do not construct or modify it. Omit the footer when `sessionUrl` is absent. Preserve any publication marker before exactly one footer, and keep the footer final:
+Include `## Worked on by` in PR bodies only when both that list and the Runtime line's `sessionUrl=<exact-url>` are present. Append the final footer below in that case; when the URL is absent, omit the public credit section and footer but retain the verified commit trailers. If no credit list is present, append the footer only when the URL is present. Replace `<sessionUrl>` with the supplied URL verbatim; do not construct or modify it. Preserve any publication marker before exactly one footer, and keep the footer final:
 
 ```text
 ---
@@ -63,6 +63,7 @@ reviewer has reviewed the current head with nothing outstanding.
 
 ```bash
 gh pr view 55 --repo owner/repo --json headRefOid,reviews,comments
+gh api "repos/owner/repo/pulls/55/comments"       # inline findings and locations
 gh pr comment 55 --repo owner/repo --body "@codex review"   # when no review appears
 ```
 
@@ -73,6 +74,7 @@ gh pr comment 55 --repo owner/repo --body "@codex review"   # when no review app
   the commit it covered. A review of an earlier commit says nothing about the current head.
 - Silence is not approval — an old PR, a rebase, or a push that did not trigger a review needs
   an explicit `@codex review` request.
+- Read both PR issue comments and inline pull-request review comments before resolving findings; `gh pr view --json comments,reviews` does not include inline comment bodies or locations.
 - Address every finding: fix it, or reply on its thread with the reason it does not hold. Then
   push, request the re-review, and wait for that one too.
 - Report the PR only when the newest Codex review covers the current head SHA with no
