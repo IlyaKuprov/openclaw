@@ -151,7 +151,7 @@ describe("createCliJsonlStreamingParser framing", () => {
                 source: {
                   type: "base64",
                   media_type: "image/png",
-                  data: padded ? "YQ==" : "a".repeat(4_300_000),
+                  data: padded ? "YQ==" : "a".repeat(34_400_000),
                 },
               },
             ],
@@ -159,7 +159,7 @@ describe("createCliJsonlStreamingParser framing", () => {
         ],
       },
     });
-    const rawLine = padded ? `${" ".repeat(4_300_000)}${semanticLine}` : semanticLine;
+    const rawLine = padded ? `${" ".repeat(34_400_000)}${semanticLine}` : semanticLine;
 
     parser.push(`${rawLine}\n${rawLine}\n`);
 
@@ -178,27 +178,27 @@ describe("createCliJsonlStreamingParser framing", () => {
         onAssistantDelta: () => {},
       });
     const completeParser = createParser();
-    completeParser.push("\r\n".repeat(20_000));
+    completeParser.push("\r\n".repeat(200_000));
     completeParser.finish();
 
     expect(completeParser.getErrorText()).toBeNull();
     expect(parseJsonlEvent).not.toHaveBeenCalled();
 
     const overflowParser = createParser();
-    overflowParser.push("\n".repeat(20_001));
+    overflowParser.push("\n".repeat(200_001));
 
-    expect(overflowParser.getErrorText()).toContain("exceeded 20000 lines");
+    expect(overflowParser.getErrorText()).toContain("exceeded 200000 lines");
     expect(parseJsonlEvent).not.toHaveBeenCalled();
   });
 
   it.each([
     {
       name: "whitespace-only records",
-      createLine: () => " ".repeat(4_300_000),
+      createLine: () => " ".repeat(34_400_000),
     },
     {
       name: "padding around valid JSON",
-      createLine: () => `${" ".repeat(4_300_000)}{}`,
+      createLine: () => `${" ".repeat(34_400_000)}{}`,
     },
     {
       name: "formatting inside a compacted media record",
@@ -219,7 +219,7 @@ describe("createCliJsonlStreamingParser framing", () => {
               },
             ],
           },
-        }).replace('"message":', `"message":${" ".repeat(4_300_000)}`),
+        }).replace('"message":', `"message":${" ".repeat(34_400_000)}`),
     },
   ])("charges $name against the Claude raw-output budget", ({ createLine }) => {
     const parser = createCliJsonlStreamingParser({
@@ -231,7 +231,7 @@ describe("createCliJsonlStreamingParser framing", () => {
 
     parser.push(`${line}\n${line}\n`);
 
-    expect(parser.getErrorText()).toContain("JSONL output exceeded 8388608 characters");
+    expect(parser.getErrorText()).toContain("JSONL output exceeded 67108864 characters");
   });
 
   it("normalizes empty Claude image data without treating zero omitted bytes as unchanged", () => {
@@ -441,7 +441,7 @@ describe("createCliJsonlStreamingParser framing", () => {
                   source: {
                     type: "base64",
                     media_type: "image/png",
-                    data: "a".repeat(8 * 1024 * 1024),
+                    data: "a".repeat(64 * 1024 * 1024),
                   },
                 },
               ],
@@ -453,9 +453,9 @@ describe("createCliJsonlStreamingParser framing", () => {
     expect(oversizedLineParser.getErrorText()).toContain("JSONL line exceeded");
 
     const growingPartialLineParser = createParser();
-    growingPartialLineParser.push("a".repeat(4_300_000));
+    growingPartialLineParser.push("a".repeat(34_400_000));
     expect(growingPartialLineParser.getErrorText()).toBeNull();
-    growingPartialLineParser.push("a".repeat(4_300_000));
+    growingPartialLineParser.push("a".repeat(34_400_000));
     expect(growingPartialLineParser.getErrorText()).toContain("JSONL line exceeded");
 
     const oversizedTextParser = createParser();
@@ -468,7 +468,7 @@ describe("createCliJsonlStreamingParser framing", () => {
               {
                 type: "tool_result",
                 tool_use_id: toolCallId,
-                content: [{ type: "text", text: "a".repeat(4_300_000) }],
+                content: [{ type: "text", text: "a".repeat(34_400_000) }],
               },
             ],
           },
@@ -478,8 +478,8 @@ describe("createCliJsonlStreamingParser framing", () => {
     expect(oversizedTextParser.getErrorText()).toContain("JSONL output exceeded");
 
     const excessiveLinesParser = createParser();
-    excessiveLinesParser.push("{}\n".repeat(20_001));
-    expect(excessiveLinesParser.getErrorText()).toContain("exceeded 20000 lines");
+    excessiveLinesParser.push("{}\n".repeat(200_001));
+    expect(excessiveLinesParser.getErrorText()).toContain("exceeded 200000 lines");
   });
 
   it.each([

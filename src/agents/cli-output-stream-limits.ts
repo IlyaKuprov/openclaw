@@ -3,8 +3,8 @@
 // budget; the limits are process constants, not per-backend configuration.
 import type { CliStreamJsonOutputLimits } from "./cli-output-contracts.js";
 
-const CLI_STREAM_JSON_DEFAULT_MAX_TURN_RAW_CHARS = 8 * 1024 * 1024;
-const CLI_STREAM_JSON_DEFAULT_MAX_TURN_LINES = 20_000;
+const CLI_STREAM_JSON_DEFAULT_MAX_TURN_RAW_CHARS = 64 * 1024 * 1024;
+const CLI_STREAM_JSON_DEFAULT_MAX_TURN_LINES = 200_000;
 export const CLI_STREAM_JSON_OUTPUT_LIMITS = Object.freeze({
   maxTurnRawChars: CLI_STREAM_JSON_DEFAULT_MAX_TURN_RAW_CHARS,
   maxPendingLineChars: CLI_STREAM_JSON_DEFAULT_MAX_TURN_RAW_CHARS,

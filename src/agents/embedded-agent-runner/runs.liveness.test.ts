@@ -137,7 +137,10 @@ describe("runtime-owned embedded liveness", () => {
       expect(abort).not.toHaveBeenCalled();
 
       runtimeOwnsLiveness = false;
-      await vi.advanceTimersByTimeAsync(30_000);
+      // Advance well past the 30-minute stalled-embedded-run abort floor
+      // (MIN_STALLED_EMBEDDED_RUN_ABORT_MS in diagnostic.ts) now that the
+      // runtime no longer protects this wait.
+      await vi.advanceTimersByTimeAsync(1_170_000);
       expect(recover).toHaveBeenCalled();
       expect(abort).toHaveBeenCalled();
     } finally {
