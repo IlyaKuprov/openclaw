@@ -425,8 +425,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
             patchSessionEntry: async (params) => {
-              const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
-                await loadSessionOwnership();
+              const {
+                assertSessionEntryOwned,
+                assertStoredSessionEntryOwned,
+                assertStoreEntryOwned,
+              } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {
                 assertStoredSessionEntryOwned({
                   action: "patch",
@@ -438,6 +441,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                 return await session.patchSessionEntry({
                   ...params,
                   update: async (entry, context) => {
+                    assertSessionEntryOwned({
+                      action: "patch",
+                      entry: context.existingEntry,
+                      sessionKey: params.sessionKey,
+                    });
                     const patch = await params.update(entry, context);
                     assertRuntimeCurrent();
                     if (!patch) {
