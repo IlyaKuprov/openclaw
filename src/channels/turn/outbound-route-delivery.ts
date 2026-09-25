@@ -19,7 +19,12 @@ import {
   throwIfDurableInboundReplyDeliveryFailed,
   type DurableInboundReplyDeliveryOptions,
 } from "./durable-delivery.js";
-import type { AssembledChannelTurn, ChannelDeliveryInfo, ChannelDeliveryResult } from "./types.js";
+import type {
+  AssembledChannelTurn,
+  ChannelDeliveryInfo,
+  ChannelDeliveryResult,
+  ChannelEventDeliveryAdapter,
+} from "./types.js";
 
 type OutboundRouteTurn = Pick<
   AssembledChannelTurn,
@@ -50,6 +55,34 @@ export async function decideFinalOutboundRoute(
     storePath: turn.storePath,
     event,
   });
+}
+
+/** Keep source error observers off failures before or after a redirected send. */
+export function createFinalOutboundRouteDispatch(
+  turn: OutboundRouteTurn,
+  onSourceError: ChannelEventDeliveryAdapter["onError"],
+) {
+  const routedAttempts = new WeakSet<ChannelDeliveryInfo>();
+  let routeDecision: ReturnType<typeof decideFinalOutboundRoute> | undefined;
+  return {
+    decide: async (info: ChannelDeliveryInfo) => {
+      // The decision can fail before returning a route; no source send was attempted.
+      routedAttempts.add(info);
+      const route = await (routeDecision ??= decideFinalOutboundRoute(
+        turn,
+        info.kind === "final" ? info : { ...info, kind: "final" },
+      ));
+      if (!route) {
+        routedAttempts.delete(info);
+      }
+      return route;
+    },
+    onError: (error: unknown, info: ChannelDeliveryInfo) => {
+      if (!routedAttempts.has(info)) {
+        onSourceError?.(error, info);
+      }
+    },
+  };
 }
 
 /** A decided route has no direct/provider fallback, including unsupported durable preflight. */

@@ -594,6 +594,110 @@ describe("channel lifecycle outbound route decision", () => {
     expect(direct).not.toHaveBeenCalled();
   });
 
+  it.each(["stale route", "ambiguous durable send"] as const)(
+    "keeps a Telegram source error observer and fallback off a %s",
+    async (failure) => {
+      enableSlackRootDecision();
+      const sourceSend = vi.fn(async (_payload: { text?: string }) => ({
+        messageIds: ["telegram-fallback"],
+      }));
+      let sourceFinalFailed = false;
+      const sourceOnError = vi.fn((_error: unknown, info: { kind: string }) => {
+        if (info.kind === "final") {
+          sourceFinalFailed = true;
+        }
+      });
+      const routeFailure = new Error(failure);
+      if (failure === "stale route") {
+        // The hook chose Slack, but validation of its persisted route fails before
+        // decideFinalOutboundRoute can return a decision to the channel lifecycle.
+        const stored = loadExactSessionEntryReadOnly.getMockImplementation()?.();
+        loadExactSessionEntryReadOnly.mockReturnValueOnce(stored).mockReturnValue(undefined);
+      } else {
+        sendDurableMessageBatch.mockResolvedValue({ status: "failed", error: routeFailure });
+      }
+      dispatchReplyWithRoutedChannelDispatcherCore.mockImplementationOnce(async (params) => {
+        const dispatcher = createReplyDispatcher(params.dispatcherOptions);
+        dispatcher.sendFinalReply({ text: "routed final" });
+        dispatcher.markComplete();
+        const settledReceipt = await dispatcher.waitForIdle();
+        // Telegram's finalization sends a source-chat fallback after onError
+        // marks its final non-silent failure, even when the source adapter was bypassed.
+        if (sourceFinalFailed) {
+          await sourceSend({ text: "Something went wrong while processing your request." });
+        }
+        return {
+          queuedFinal: true,
+          counts: { block: 0, tool: 0, final: 1 },
+          settledReceipt,
+        };
+      });
+
+      const result = await dispatchRoutedChannelTurn({
+        cfg,
+        channel: "telegram",
+        route: { agentId: "main", sessionKey: slackSessionKey },
+        ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "telegram" }),
+        delivery: { deliver: sourceSend, onError: sourceOnError },
+      });
+
+      expectDispatched(result);
+      expect(result.dispatchResult.settledReceipt?.counts.final.failedAfterSend).toBe(1);
+      expect(sourceOnError).not.toHaveBeenCalled();
+      expect(sourceSend).not.toHaveBeenCalled();
+      expect(sendDurableMessageBatch).toHaveBeenCalledTimes(failure === "stale route" ? 0 : 1);
+    },
+  );
+
+  it.each(["no hook", "declined route"] as const)(
+    "preserves the Telegram source error observer with %s",
+    async (routeMode) => {
+      if (routeMode === "declined route") {
+        getGlobalHookRunner.mockReturnValue({
+          hasHooks: (name: string) => name === "outbound_route_decision",
+          runOutboundRouteDecision: vi.fn(async () => undefined),
+        });
+      }
+      const sourceFailure = new Error("source Telegram send failed");
+      const sourceSend = vi.fn(async () => {
+        throw sourceFailure;
+      });
+      const fallback = vi.fn();
+      const sourceOnError = vi.fn((_error: unknown, info: { kind: string }) => {
+        if (info.kind === "final") {
+          fallback("Telegram source failure");
+        }
+      });
+      dispatchReplyWithRoutedChannelDispatcherCore.mockImplementationOnce(async (params) => {
+        const dispatcher = createReplyDispatcher(params.dispatcherOptions);
+        dispatcher.sendFinalReply({ text: "native final" });
+        dispatcher.markComplete();
+        return {
+          queuedFinal: true,
+          counts: { block: 0, tool: 0, final: 1 },
+          settledReceipt: await dispatcher.waitForIdle(),
+        };
+      });
+      const result = await dispatchRoutedChannelTurn({
+        cfg,
+        channel: "telegram",
+        route: { agentId: "main", sessionKey: slackSessionKey },
+        ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "telegram" }),
+        delivery: { deliver: sourceSend, onError: sourceOnError },
+      });
+
+      expectDispatched(result);
+      expect(sourceSend).toHaveBeenCalledOnce();
+      expect(sourceOnError).toHaveBeenCalledOnce();
+      expect(sourceOnError).toHaveBeenCalledWith(
+        sourceFailure,
+        expect.objectContaining({ kind: "final" }),
+      );
+      expect(fallback).toHaveBeenCalledOnce();
+      expect(sendDurableMessageBatch).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects a changed persisted route after async support preflight, before enqueue", async () => {
     enableSlackRootDecision();
     resolveOutboundDurableFinalDeliverySupport.mockImplementationOnce(async () => {

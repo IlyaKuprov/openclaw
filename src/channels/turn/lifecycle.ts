@@ -47,7 +47,7 @@ import {
 } from "./durable-delivery.js";
 import { runPreparedChannelTurnCore } from "./execution.js";
 import {
-  decideFinalOutboundRoute,
+  createFinalOutboundRouteDispatch,
   deliverDecidedFinalOutboundRoute,
 } from "./outbound-route-delivery.js";
 import { applyRouteDmScope } from "./route-dm-scope.js";
@@ -361,6 +361,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
     params.admission?.kind === "observeOnly" ? createObserveOnlyDeliveryAdapter() : params.delivery;
   const pendingDeliveryAttempts: PendingChannelDeliveryAttempt[] = [];
   const normalizationSuppressionAttempts: PendingChannelDeliveryAttempt[] = [];
+  const routeDispatch = createFinalOutboundRouteDispatch(params, delivery.onError);
   let agentRun: [runId?: string, executionIdentityToken?: ExecutionToken] = [];
   const onAgentRunStart = replyPipeline.replyOptions?.onAgentRunStart;
   const replyOptions: NonNullable<AssembledChannelTurn["replyOptions"]> = {
@@ -425,7 +426,6 @@ async function dispatchChannelTurnWithDeliveryOwner(
       runDispatch: async () => {
         // The route is chosen once for this turn; the decided route separately checks
         // current authority at queue admission and before adapter handoff.
-        let outboundRouteDecision: ReturnType<typeof decideFinalOutboundRoute> | undefined;
         let dispatchResult:
           | Awaited<ReturnType<AssembledChannelTurn["dispatchReplyWithBufferedBlockDispatcher"]>>
           | undefined;
@@ -483,10 +483,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
                     const outboundRoute =
                       params.admission?.kind === "observeOnly"
                         ? undefined
-                        : await (outboundRouteDecision ??= decideFinalOutboundRoute(
-                            params,
-                            info.kind === "final" ? info : { ...info, kind: "final" },
-                          ));
+                        : await routeDispatch.decide(info);
                     if (outboundRoute) {
                       if (info.kind !== "final") {
                         // The chosen owner only accepts final replies. Suppress intermediate
@@ -660,7 +657,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
                     }
                     return result;
                   },
-                  onError: delivery.onError,
+                  onError: routeDispatch.onError,
                 },
                 dispatchReplyFromConfig: params.dispatchReplyFromConfig,
                 toolsAllow: params.toolsAllow,
