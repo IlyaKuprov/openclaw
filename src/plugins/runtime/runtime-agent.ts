@@ -19,9 +19,11 @@ import { getRuntimeConfig } from "../../config/config.js";
 import * as session from "../../config/sessions/lifecycle.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
+  cleanupSessionLifecycleArtifactsCore,
   deleteSessionEntryLifecycle,
   listSessionEntriesCore as listAccessorSessionEntries,
   listSessionEntriesReadOnly as listAccessorSessionEntriesReadOnly,
+  loadExactSessionEntryReadOnly,
   loadSessionEntryReadOnly,
   patchSessionEntryCore as patchAccessorSessionEntry,
   replaceSessionEntry,
@@ -41,11 +43,16 @@ import {
   isSessionWorkAdmissionActive,
   runExclusiveSessionLifecycleMutation,
 } from "../../sessions/session-lifecycle-admission.js";
+import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import { createLazyRuntimeMethod, createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
-import { getPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
+import {
+  getPluginRuntimeGatewayRequestScope,
+  withPluginRuntimeEmbeddedRunSessionScope,
+} from "./gateway-request-scope.js";
 import { resolveAgentCatalogCreateTarget } from "./runtime-agent-session-catalog.js";
 import { resolveRuntimeThinkingCatalog } from "./runtime-agent-thinking.js";
 import { defineCachedValue } from "./runtime-cache.js";
+import type { PluginRuntimeSessionLifecycleCleanupV1 } from "./types-core.js";
 import type { PluginRuntime } from "./types.js";
 
 type RuntimeSession = PluginRuntime["agent"]["session"];
@@ -117,6 +124,7 @@ async function patchSessionEntry(
         : undefined,
     preserveActivity: params.preserveActivity,
     replaceEntry: params.replaceEntry,
+    skipMaintenance: params.skipMaintenance,
   });
 }
 
@@ -690,19 +698,84 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
           ),
     ),
   );
-  defineCachedValue(agentRuntime, "runEmbeddedAgent", () =>
-    createLazyRuntimeMethod(loadEmbeddedAgentRuntime, (runtime) => runtime.runPluginEmbeddedAgent),
+  defineCachedValue(
+    agentRuntime,
+    "runEmbeddedAgent",
+    () => async (params: Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0]) => {
+      const requestScope = getPluginRuntimeGatewayRequestScope();
+      const pluginId = requestScope?.pluginId;
+      const target = params.sessionTarget;
+      const scope =
+        pluginId && target?.agentId && target.sessionKey && target.storePath
+          ? { agentId: target.agentId, sessionKey: target.sessionKey, storePath: target.storePath }
+          : undefined;
+      // Capture the persisted child before the lazy import can yield. A key and
+      // session ID alone can name a different plugin's replacement afterward.
+      const original = scope ? loadExactSessionEntryReadOnly(scope)?.entry : undefined;
+      let changed = false;
+      const unsubscribe = scope
+        ? onSessionIdentityMutation((mutation) => {
+            if (
+              mutation.previous.sessionKeys.includes(scope.sessionKey) ||
+              ("current" in mutation && mutation.current.sessionKeys.includes(scope.sessionKey))
+            ) {
+              // Events omit the physical store. Only a change to this exact
+              // row revokes the run; same-key mutations in another DB do not.
+              const current = loadExactSessionEntryReadOnly(scope)?.entry;
+              if (
+                Boolean(current) !== Boolean(original) ||
+                current?.sessionId !== original?.sessionId ||
+                current?.pluginOwnerId !== original?.pluginOwnerId
+              ) {
+                changed = true;
+              }
+            }
+          })
+        : undefined;
+      try {
+        if (original?.pluginOwnerId && original.pluginOwnerId !== pluginId) {
+          throw new Error("Plugin embedded-agent session owner changed");
+        }
+        const runtime = await loadEmbeddedAgentRuntime();
+        const assertCurrent = () => {
+          requestScope?.assertPluginRuntimeCurrent?.();
+          const current = scope ? loadExactSessionEntryReadOnly(scope)?.entry : undefined;
+          if (
+            changed ||
+            Boolean(current) !== Boolean(original) ||
+            current?.sessionId !== original?.sessionId ||
+            current?.pluginOwnerId !== original?.pluginOwnerId ||
+            (current?.pluginOwnerId && current.pluginOwnerId !== pluginId) ||
+            (current && target?.sessionId && current.sessionId !== target.sessionId)
+          ) {
+            throw new Error("Plugin embedded-agent session owner changed");
+          }
+        };
+        assertCurrent();
+        return await withPluginRuntimeEmbeddedRunSessionScope(assertCurrent, () =>
+          runtime.runPluginEmbeddedAgent(params),
+        );
+      } finally {
+        unsubscribe?.();
+      }
+    },
   );
-  defineCachedValue(agentRuntime, "session", () => ({
-    resolveStorePath: resolveSessionStorePathCore,
-    createSessionEntry,
-    getSessionEntry,
-    listSessionEntries,
-    patchSessionEntry,
-    upsertSessionEntry,
-    runWithWorkAdmission: runWithSessionWorkAdmission,
-    updateSessionStoreEntry,
-  }));
+  defineCachedValue(
+    agentRuntime,
+    "session",
+    () =>
+      ({
+        resolveStorePath: resolveSessionStorePathCore,
+        createSessionEntry,
+        getSessionEntry,
+        listSessionEntries,
+        patchSessionEntry,
+        upsertSessionEntry,
+        cleanupSessionLifecycleArtifacts: cleanupSessionLifecycleArtifactsCore,
+        runWithWorkAdmission: runWithSessionWorkAdmission,
+        updateSessionStoreEntry,
+      }) satisfies PluginRuntime["agent"]["session"] & PluginRuntimeSessionLifecycleCleanupV1,
+  );
 
   return agentRuntime as PluginRuntime["agent"];
 }

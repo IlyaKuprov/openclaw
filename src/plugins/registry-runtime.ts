@@ -220,6 +220,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             withPluginRuntimePluginScope(
               {
                 pluginId,
+                assertPluginRuntimeCurrent: assertRuntimeCurrent,
                 pluginSource: record.source,
                 pluginOrigin: record.origin,
                 pluginTrustedOfficialInstall: record.trustedOfficialInstall,
@@ -376,6 +377,8 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
           }
           const agent: PluginRuntime["agent"] = getRuntimeProperty();
           const session = agent.session;
+          const cleanupSessionLifecycleArtifacts =
+            session.cleanupSessionLifecycleArtifacts?.bind(session);
           const scopedSession = {
             resolveStorePath: session.resolveStorePath,
             getSessionEntry: session.getSessionEntry,
@@ -425,8 +428,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
             patchSessionEntry: async (params) => {
-              const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
-                await loadSessionOwnership();
+              const {
+                assertSessionEntryOwned,
+                assertStoredSessionEntryOwned,
+                assertStoreEntryOwned,
+              } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {
                 assertStoredSessionEntryOwned({
                   action: "patch",
@@ -438,6 +444,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                 return await session.patchSessionEntry({
                   ...params,
                   update: async (entry, context) => {
+                    assertSessionEntryOwned({
+                      action: "patch",
+                      entry: context.existingEntry,
+                      sessionKey: params.sessionKey,
+                    });
                     const patch = await params.update(entry, context);
                     assertRuntimeCurrent();
                     if (!patch) {
@@ -458,25 +469,43 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
             upsertSessionEntry: async (params) => {
-              const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
+              const { assertSessionEntryOwned, assertStoreEntryOwned } =
                 await loadSessionOwnership();
               return await runWithPluginScope(async () => {
-                const before = assertStoredSessionEntryOwned({
-                  action: "upsert",
-                  sessionKey: params.sessionKey,
-                  ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
-                  ...(params.env !== undefined ? { env: params.env } : {}),
-                  ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
+                await session.patchSessionEntry({
+                  ...params,
+                  fallbackEntry: params.entry,
+                  replaceEntry: true,
+                  update: (_entry, context) => {
+                    assertRuntimeCurrent();
+                    const before = context.existingEntry;
+                    assertSessionEntryOwned({
+                      action: "upsert",
+                      entry: before,
+                      sessionKey: params.sessionKey,
+                    });
+                    assertStoreEntryOwned({
+                      action: "upsert",
+                      before,
+                      entry: params.entry,
+                      sessionKey: params.sessionKey,
+                    });
+                    return params.entry;
+                  },
                 });
-                assertStoreEntryOwned({
-                  action: "upsert",
-                  before,
-                  entry: params.entry,
-                  sessionKey: params.sessionKey,
-                });
-                await session.upsertSessionEntry(params);
               });
             },
+            cleanupSessionLifecycleArtifacts: cleanupSessionLifecycleArtifacts
+              ? async (params: Parameters<typeof cleanupSessionLifecycleArtifacts>[0]) =>
+                  await runWithPluginScope(() =>
+                    cleanupSessionLifecycleArtifacts({
+                      ...params,
+                      pluginOwnerId: pluginId,
+                      requireExactPluginOwnerId: true,
+                      assertCommitAllowed: assertRuntimeCurrent,
+                    }),
+                  )
+              : undefined,
             runWithWorkAdmission: async (params, run) => {
               const { resolveStoredSessionExecutionOwner } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {
@@ -505,8 +534,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
             updateSessionStoreEntry: async (params) => {
-              const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
-                await loadSessionOwnership();
+              const {
+                assertSessionEntryOwned,
+                assertStoredSessionEntryOwned,
+                assertStoreEntryOwned,
+              } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {
                 assertStoredSessionEntryOwned({
                   action: "update",
@@ -516,6 +548,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                 return await session.updateSessionStoreEntry({
                   ...params,
                   update: async (entry) => {
+                    assertSessionEntryOwned({
+                      action: "update",
+                      entry,
+                      sessionKey: params.sessionKey,
+                    });
                     const patch = await params.update(entry);
                     assertRuntimeCurrent();
                     if (!patch) {

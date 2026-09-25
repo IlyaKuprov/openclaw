@@ -59,6 +59,10 @@ type PluginRuntimeGatewayRequestScope = {
   client?: GatewayRequestOptions["client"];
   isWebchatConnect: GatewayRequestOptions["isWebchatConnect"];
   pluginId?: string;
+  /** Closure-bound registered owner fence for awaited plugin work. */
+  assertPluginRuntimeCurrent?: () => void;
+  /** Closure-bound exact session identity fence for an embedded run's later admission. */
+  assertEmbeddedRunSessionCurrent?: () => void;
   pluginSource?: string;
   pluginOrigin?: PluginOrigin;
   pluginTrustedOfficialInstall?: boolean;
@@ -69,6 +73,7 @@ type PluginRuntimeGatewayRequestScope = {
 
 type PluginRuntimePluginScope = {
   pluginId: string;
+  assertPluginRuntimeCurrent?: () => void;
   pluginSource?: string;
   pluginOrigin?: PluginOrigin;
   pluginTrustedOfficialInstall?: boolean;
@@ -293,6 +298,11 @@ function applyPluginScope(
   scope: PluginRuntimePluginScope,
 ): void {
   scoped.pluginId = scope.pluginId;
+  if (scope.assertPluginRuntimeCurrent) {
+    scoped.assertPluginRuntimeCurrent = scope.assertPluginRuntimeCurrent;
+  } else {
+    delete scoped.assertPluginRuntimeCurrent;
+  }
   if (scope.pluginSource !== undefined) {
     scoped.pluginSource = scope.pluginSource;
   } else {
@@ -328,6 +338,17 @@ export function withPluginRuntimePluginScope<T>(
       : { isWebchatConnect: isNotWebchatConnect };
   applyPluginScope(scoped, scope);
   return runWithPluginGatewayScope(scoped, run, invocation);
+}
+
+/** Bind one embedded run's checked session identity without mutating a shared plugin scope. */
+export function withPluginRuntimeEmbeddedRunSessionScope<T>(
+  assertCurrent: () => void,
+  run: () => T,
+): T {
+  const current = getPluginGatewayScope();
+  return current
+    ? runWithPluginGatewayScope({ ...current, assertEmbeddedRunSessionCurrent: assertCurrent }, run)
+    : run();
 }
 
 /** Drops only generation selection; authenticated Gateway caller and authority stay attached. */

@@ -58,7 +58,6 @@ const hoisted = vi.hoisted(() => {
     closeActiveMemorySearchManager: vi.fn(async () => {}),
     getActiveMemorySearchManager: vi.fn(async () => ({ manager: null })),
     cleanupSessionLifecycleArtifacts: vi.fn(),
-    patchSessionEntry: vi.fn(),
     rawDeltaReads: [] as Array<{ maxBytes?: number; maxEvents?: number; sessionId: string }>,
     runtimeTranscriptFiles: {} as Record<string, string>,
     sessionStore,
@@ -101,7 +100,6 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
   return {
     ...actual,
     cleanupSessionLifecycleArtifacts: hoisted.cleanupSessionLifecycleArtifacts,
-    patchSessionEntry: hoisted.patchSessionEntry,
     updateSessionStore: hoisted.updateSessionStore,
   };
 });
@@ -310,6 +308,7 @@ describe("active-memory plugin", () => {
         resolveCliBackendDispatchEligibility,
         session: {
           resolveStorePath: vi.fn(() => path.join(stateDir, "sessions.json")),
+          cleanupSessionLifecycleArtifacts: hoisted.cleanupSessionLifecycleArtifacts,
           loadSessionStore: vi.fn(() => hoisted.sessionStore),
           saveSessionStore: vi.fn(async () => {}),
           getSessionEntry: vi.fn(
@@ -330,22 +329,42 @@ describe("active-memory plugin", () => {
             async (params: {
               sessionKey: string;
               fallbackEntry?: Record<string, unknown>;
-              update: (entry: Record<string, unknown>) => Record<string, unknown> | null;
+              replaceEntry?: boolean;
+              update: (
+                entry: Record<string, unknown>,
+                context: { existingEntry?: Record<string, unknown> },
+              ) => Record<string, unknown> | null;
             }) => {
+              if (params.fallbackEntry) {
+                const existingEntry = hoisted.sessionStore[params.sessionKey];
+                const patch = params.update(
+                  { ...(existingEntry ?? params.fallbackEntry) },
+                  { existingEntry },
+                );
+                if (!patch) {
+                  return existingEntry ?? params.fallbackEntry;
+                }
+                const next = params.replaceEntry
+                  ? { ...patch }
+                  : { ...(existingEntry ?? params.fallbackEntry), ...patch };
+                hoisted.sessionStore[params.sessionKey] = next;
+                return next;
+              }
               let result: Record<string, unknown> | null = null;
               await hoisted.updateSessionStore(
                 path.join(stateDir, "sessions.json"),
                 (store: Record<string, Record<string, unknown>>) => {
-                  const existing = store[params.sessionKey] ?? params.fallbackEntry;
-                  if (!existing) {
+                  const existingEntry = store[params.sessionKey];
+                  const entry = existingEntry ?? params.fallbackEntry;
+                  if (!entry) {
                     return;
                   }
-                  const patch = params.update({ ...existing });
+                  const patch = params.update({ ...entry }, { existingEntry });
                   if (!patch) {
-                    result = existing;
+                    result = existingEntry ?? entry;
                     return;
                   }
-                  const next = { ...existing, ...patch };
+                  const next = params.replaceEntry ? { ...patch } : { ...entry, ...patch };
                   store[params.sessionKey] = next;
                   result = next;
                 },
@@ -686,31 +705,6 @@ describe("active-memory plugin", () => {
         payloads: [{ text: "- lemon pepper wings\n- blue cheese" }],
       };
     });
-    hoisted.patchSessionEntry.mockImplementation(
-      async (params: {
-        fallbackEntry?: Record<string, unknown>;
-        replaceEntry?: boolean;
-        sessionKey: string;
-        skipMaintenance?: boolean;
-        update: (
-          entry: Record<string, unknown>,
-          context: { existingEntry?: Record<string, unknown> },
-        ) => Record<string, unknown> | null;
-      }) => {
-        const existingEntry = hoisted.sessionStore[params.sessionKey];
-        const entry = existingEntry ?? params.fallbackEntry;
-        if (!entry) {
-          return null;
-        }
-        const patch = params.update({ ...entry }, { existingEntry });
-        if (!patch) {
-          return existingEntry ?? entry;
-        }
-        const next = params.replaceEntry ? { ...patch } : { ...entry, ...patch };
-        hoisted.sessionStore[params.sessionKey] = next;
-        return next;
-      },
-    );
     hoisted.cleanupSessionLifecycleArtifacts.mockImplementation(
       async (params: { sessionKeySegmentPrefix: string }) => {
         const entry = Object.entries(hoisted.sessionStore).find(([sessionKey]) => {
@@ -930,7 +924,7 @@ describe("active-memory plugin", () => {
       sessionId,
       sessionFile: runtimeSessionFile,
     });
-    expect(hoisted.patchSessionEntry).toHaveBeenCalledWith(
+    expect(api.runtime.agent.session.patchSessionEntry).toHaveBeenCalledWith(
       expect.objectContaining({
         fallbackEntry: expect.objectContaining({
           pluginOwnerId: "active-memory",
@@ -1345,6 +1339,25 @@ describe("active-memory plugin", () => {
     expect(api.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("failed to clean up recall session"),
     );
+  });
+
+  it("refuses recall before creating a session when the host lacks owner-bound cleanup", async () => {
+    const cleanup = api.runtime.agent.session.cleanupSessionLifecycleArtifacts;
+    api.runtime.agent.session.cleanupSessionLifecycleArtifacts = undefined;
+    try {
+      const result = await runPromptBuild({ prompt: "what wings should i order?" });
+      expect(result).toBeUndefined();
+      expect(api.runtime.agent.session.patchSessionEntry).not.toHaveBeenCalledWith(
+        expect.objectContaining({ fallbackEntry: expect.anything() }),
+      );
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+      expect(hoisted.cleanupSessionLifecycleArtifacts).not.toHaveBeenCalled();
+      expect(api.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("requires host session lifecycle cleanup V1"),
+      );
+    } finally {
+      api.runtime.agent.session.cleanupSessionLifecycleArtifacts = cleanup;
+    }
   });
 
   it("runs product recall for an opted-in direct session without an Active Memory agent entry", async () => {
@@ -3477,10 +3490,20 @@ describe("active-memory plugin", () => {
     const transcriptRuntime = await vi.importActual<
       typeof import("openclaw/plugin-sdk/session-transcript-runtime")
     >("openclaw/plugin-sdk/session-transcript-runtime");
-    hoisted.patchSessionEntry.mockImplementationOnce(sessionRuntime.patchSessionEntry);
-    hoisted.cleanupSessionLifecycleArtifacts.mockImplementationOnce(
-      sessionRuntime.cleanupSessionLifecycleArtifacts,
+    const { createPluginRuntime } = await import("../../src/plugins/runtime/index.js");
+    api.runtime.agent.session.patchSessionEntry.mockImplementationOnce(
+      createPluginRuntime().agent.session.patchSessionEntry,
     );
+    hoisted.cleanupSessionLifecycleArtifacts.mockImplementationOnce((params) => {
+      const cleanup = createPluginRuntime().agent.session.cleanupSessionLifecycleArtifacts;
+      if (!cleanup) {
+        throw new Error("test runtime must provide lifecycle cleanup");
+      }
+      return cleanup({
+        ...params,
+        pluginOwnerId: "active-memory",
+      });
+    });
     const sessionKey = "agent:main:timeout-partial-sqlite-transcript";
     seedSession(sessionKey, "s-timeout-partial-sqlite-transcript", 0);
     const transcriptWritten = createDeferred<SessionTranscriptTargetParams>();

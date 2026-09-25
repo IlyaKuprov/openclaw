@@ -609,6 +609,9 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
         upsertSessionEntry: vi
           .fn<PluginRuntime["agent"]["session"]["upsertSessionEntry"]>()
           .mockResolvedValue(undefined),
+        cleanupSessionLifecycleArtifacts: vi
+          .fn<NonNullable<PluginRuntime["agent"]["session"]["cleanupSessionLifecycleArtifacts"]>>()
+          .mockResolvedValue({ archivedTranscriptArtifacts: 0, removedEntries: 0 }),
         runWithWorkAdmission: vi.fn(
           async (_params, run) => await run(new AbortController().signal),
         ) as PluginRuntime["agent"]["session"]["runWithWorkAdmission"],

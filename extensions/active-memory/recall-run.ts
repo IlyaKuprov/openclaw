@@ -7,10 +7,8 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import {
-  cleanupSessionLifecycleArtifacts,
   formatSqliteSessionFileMarker,
   parseSqliteSessionFileMarker,
-  patchSessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { readSessionTranscriptEvents } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -76,6 +74,7 @@ async function persistActiveMemoryTranscriptArtifact(params: {
 }
 
 async function cleanupActiveMemoryRecallSession(params: {
+  api: OpenClawPluginApi;
   agentId: string;
   sessionId: string;
   sessionKey: string;
@@ -89,6 +88,11 @@ async function cleanupActiveMemoryRecallSession(params: {
       await sleep(delayMs);
     }
     try {
+      const cleanupSessionLifecycleArtifacts =
+        params.api.runtime.agent.session.cleanupSessionLifecycleArtifacts;
+      if (!cleanupSessionLifecycleArtifacts) {
+        throw new Error("active-memory recall requires host session lifecycle cleanup V1");
+      }
       const result = await cleanupSessionLifecycleArtifacts({
         agentId: params.agentId,
         archiveRemovedEntryTranscripts: false,
@@ -144,6 +148,9 @@ async function runRecallSubagent(params: {
   if (!modelRef) {
     return { rawReply: "NONE" };
   }
+  if (!params.api.runtime.agent.session.cleanupSessionLifecycleArtifacts) {
+    throw new Error("active-memory recall requires host session lifecycle cleanup V1");
+  }
   const subagentSessionId = `active-memory-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
   const parentSessionKey = params.parentSessionKey;
   const subagentScope = parentSessionKey ?? params.sessionId ?? crypto.randomUUID();
@@ -197,6 +204,7 @@ async function runRecallSubagent(params: {
           });
         }
         await cleanupActiveMemoryRecallSession({
+          api: params.api,
           agentId: params.agentId,
           sessionId: subagentSessionId,
           sessionKey: subagentSessionKey,
@@ -223,7 +231,7 @@ async function runRecallSubagent(params: {
       sessionFile: runtimeSessionFile,
       updatedAt: Date.now(),
     };
-    const createdEntry = await patchSessionEntry({
+    const createdEntry = await params.api.runtime.agent.session.patchSessionEntry({
       agentId: params.agentId,
       fallbackEntry: runtimeEntry,
       replaceEntry: true,

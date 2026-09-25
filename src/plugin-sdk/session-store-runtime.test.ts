@@ -1039,6 +1039,18 @@ describe("session-store-runtime compatibility surface", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps empty lifecycle cleanup prefixes as no-ops", async () => {
+    await expect(
+      cleanupSessionLifecycleArtifacts({
+        agentId: "main",
+        storePath,
+        sessionKeySegmentPrefix: "  ",
+        transcriptContentMarker: '"unused"',
+        orphanTranscriptMinAgeMs: 0,
+      }),
+    ).resolves.toEqual({ archivedTranscriptArtifacts: 0, removedEntries: 0 });
+  });
+
   it("honors lifecycle cleanup without archiving removed entry transcripts", async () => {
     const sessionKey = "agent:main:lifecycle-owned-discard";
     const oldTimestamp = Date.now() - 600_000;
