@@ -243,12 +243,13 @@ export function planSessionLifecycleArtifactCleanup(
       ? new Set(
           executeSqliteQuerySync(
             database.db,
-            db
-              .selectFrom("session_windows")
-              .select("session_id")
-              .where("plugin_owner_id", "is not", null)
-              .where("plugin_owner_id", "!=", params.pluginOwnerId),
-          ).rows.map((row) => row.session_id),
+            (params.requireExactPluginOwnerId
+              ? db.selectFrom("session_windows")
+              : db.selectFrom("session_windows").where("plugin_owner_id", "is not", null)
+            ).select(["session_id", "plugin_owner_id"]),
+          )
+            .rows.filter((row) => row.plugin_owner_id !== params.pluginOwnerId)
+            .map((row) => row.session_id),
         )
       : undefined;
     for (const row of rows) {

@@ -206,6 +206,13 @@ export function listSessionChildEntriesReadOnly(
 export function resolveSessionKeyBySessionId(
   scope: Pick<SessionTranscriptReadScope, "agentId" | "env" | "sessionId" | "storePath">,
 ): string | undefined {
+  return resolveSessionOwnershipBySessionId(scope)?.sessionKey;
+}
+
+/** Resolves the exact persisted window owner without omitting hidden internal sessions. */
+export function resolveSessionOwnershipBySessionId(
+  scope: Pick<SessionTranscriptReadScope, "agentId" | "env" | "sessionId" | "storePath">,
+): { sessionKey: string; pluginOwnerId: string | null } | undefined {
   const resolved = resolveSqliteTranscriptReadScope(scope);
   // session_windows.session_id is the primary key; the indexed lookup cannot be ambiguous.
   const result = withOpenClawAgentDatabaseReadOnly((database) => {
@@ -214,12 +221,14 @@ export function resolveSessionKeyBySessionId(
       database.db,
       db
         .selectFrom("session_windows")
-        .select("session_key")
+        .select(["session_key", "plugin_owner_id"])
         .where("session_id", "=", resolved.sessionId)
         .limit(1),
     );
   }, toDatabaseOptions(resolved));
-  return result.found ? result.value?.session_key : undefined;
+  return result.found && result.value
+    ? { sessionKey: result.value.session_key, pluginOwnerId: result.value.plugin_owner_id }
+    : undefined;
 }
 
 /** Lists session entries from the additive SQLite session store. */

@@ -419,6 +419,55 @@ describe("plugin registry SQLite session ownership", () => {
     });
   });
 
+  it("rejects an ID-only embedded run targeting another plugin's hidden internal session", async () => {
+    await withTempHome(async (home) => {
+      const agentId = "main";
+      const sessionKey = "agent:main:internal-session-effects:foreign-hidden-id";
+      const sessionId = "foreign-hidden-id";
+      const storePath = resolveSessionStorePathCore(undefined, { agentId });
+      try {
+        await replaceSessionEntry(
+          { agentId, sessionKey, storePath },
+          { sessionId, pluginOwnerId: "active-memory", updatedAt: 1 },
+        );
+        expect(listSessionEntriesReadOnly({ agentId, storePath })).toEqual([]);
+        const runtime = createPluginRuntime();
+        const runEmbeddedAgent = vi.fn(async () => ({
+          ok: true,
+        })) as unknown as PluginRuntime["agent"]["runEmbeddedAgent"];
+        Object.defineProperty(runtime.agent, "runEmbeddedAgent", {
+          configurable: true,
+          value: runEmbeddedAgent,
+        });
+        const registry = createRuntimeTestRegistry(runtime);
+        const otherApi = registry.createApi(
+          createPluginRecord({
+            id: "other-plugin",
+            source: "/plugins/other-plugin/index.js",
+            origin: "bundled",
+            enabled: true,
+            configSchema: false,
+          }),
+          { config: {} as OpenClawConfig },
+        );
+        await expect(
+          otherApi.runtime.agent.runEmbeddedAgent({
+            agentId,
+            sessionId,
+            storePath,
+            workspaceDir: path.join(home, "workspace"),
+            prompt: "foreign hidden",
+            timeoutMs: 1000,
+            runId: "foreign-run",
+          } as Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0]),
+        ).rejects.toThrow(/owned by plugin "active-memory"/);
+        expect(runEmbeddedAgent).not.toHaveBeenCalled();
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("does not read runtime config before a logical session requires it", () => {
     const runtime = createPluginRuntime();
     const readConfig = vi.fn(() => {

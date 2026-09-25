@@ -376,6 +376,47 @@ describe("SQLite lifecycle cleanup races", () => {
     });
   });
 
+  it("preserves owned nodes with ownerless historical windows during exact scoped cleanup", async () => {
+    const now = Date.now();
+    const sessionKey = "agent:main:cleanup-race-ownerless-history";
+    const previousSessionId = "ownerless-history";
+    const event = {
+      runId: "cleanup-race-marker-ownerless-history",
+      timestamp: new Date(now - 600_000).toISOString(),
+      type: "metadata" as const,
+    };
+    await replaceSessionEntry(
+      { sessionKey, storePath },
+      { sessionId: previousSessionId, updatedAt: now - 600_000 },
+    );
+    await replaceTranscriptEvents({ sessionKey, sessionId: previousSessionId, storePath }, [event]);
+    await replaceSessionEntry(
+      { sessionKey, storePath },
+      {
+        sessionId: "owned-current",
+        previousSessionId,
+        pluginOwnerId: "memory-core",
+        updatedAt: now - 600_000,
+      },
+    );
+
+    await expect(
+      cleanupSessionLifecycleArtifactsCore({
+        storePath,
+        pluginOwnerId: "memory-core",
+        requireExactPluginOwnerId: true,
+        sessionKeySegmentPrefix: "cleanup-race-",
+        transcriptContentMarker: "cleanup-race-marker",
+        orphanTranscriptMinAgeMs: 300_000,
+        nowMs: now,
+      }),
+    ).resolves.toEqual({ removedEntries: 0, archivedTranscriptArtifacts: 0 });
+    expect(loadSessionEntry({ sessionKey, storePath })?.previousSessionId).toBe(previousSessionId);
+    await expect(
+      loadTranscriptEvents({ sessionKey, sessionId: previousSessionId, storePath }),
+    ).resolves.toEqual([event]);
+  });
+
   it("revalidates entries before deleting their transcript state", async () => {
     const sessionKey = "agent:main:cleanup-race";
     const sessionId = "cleanup-race-session";

@@ -1,6 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeOptionalAgentRuntimeId } from "../agents/agent-runtime-id.js";
+import { resolveDefaultAgentId } from "../agents/agent-scope-config.js";
 import { resolveInitialEmbeddedRunModel } from "../agents/embedded-agent-runner/run/runtime-resolution.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
 import { isInternalSessionEffectsKey } from "../config/sessions/internal-session-key.js";
@@ -9,6 +10,7 @@ import {
   sqliteSessionFileMarkerMatchesTarget,
 } from "../config/sessions/legacy-sqlite-marker.js";
 import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.entry.js";
+import { resolveSessionOwnershipBySessionId } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import { normalizeStoreSessionKey } from "../config/sessions/store-entry.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -325,6 +327,32 @@ export function createPluginSessionOwnership(
       if (sessionIds.has(entry.sessionId)) {
         assertSessionEntryOwned({ action: params.action, entry, sessionKey });
       }
+    }
+    const lookupAgentId =
+      sessionIds.size > 0 ? (agentId ?? resolveDefaultAgentId(currentSessionConfig())) : undefined;
+    for (const sessionId of sessionIds) {
+      const window = resolveSessionOwnershipBySessionId({
+        agentId: lookupAgentId,
+        sessionId,
+        ...(storePath ? { storePath } : {}),
+      });
+      if (!window) {
+        continue;
+      }
+      const ownerPluginId = normalizeOptionalString(window.pluginOwnerId);
+      if (isInternalEffectsStoreKey(window.sessionKey) && ownerPluginId !== pluginId) {
+        throw new Error(
+          ownerPluginId
+            ? `Internal session "${window.sessionKey}" is owned by plugin "${ownerPluginId}", not "${pluginId}".`
+            : `Plugin "${pluginId}" cannot ${params.action} ownerless internal session "${window.sessionKey}".`,
+        );
+      }
+      assertStoredSessionEntryOwned({
+        action: params.action,
+        agentId: lookupAgentId,
+        sessionKey: window.sessionKey,
+        ...(storePath ? { storePath } : {}),
+      });
     }
     for (const sessionFile of sessionFiles) {
       const sessionKeyMatches = entries.filter(({ sessionKey }) => sessionKey === sessionFile);
