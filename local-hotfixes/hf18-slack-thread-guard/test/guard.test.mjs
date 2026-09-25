@@ -14,6 +14,7 @@ const guard = await import("../index.js");
 const register = guard.default;
 const reset = guard._resetStateForTests;
 const SESSION = "agent:main:slack:channel:c012audit";
+const sessionRows = new Map();
 
 function makeApi() {
   const hooks = new Map();
@@ -22,6 +23,7 @@ function makeApi() {
     config: { channels: { slack: { enabled: true } } },
     pluginConfig: { auditLog: path.join(tempState, "guard.jsonl") },
     runtime: {
+      agent: { session: { getSessionEntry: ({ sessionKey }) => sessionRows.get(sessionKey) } },
       channel: {
         outbound: {
           loadAdapter: async () => ({
@@ -74,6 +76,7 @@ function slackFinal(hooks, runId, text) {
 
 afterEach(() => {
   reset();
+  sessionRows.clear();
   fs.writeFileSync(sessionsPath, "{}\n");
 });
 after(() => fs.rmSync(tempState, { recursive: true, force: true }));
@@ -118,7 +121,13 @@ describe("P0-4a run-scoped delivery identity", () => {
     const { hooks, sends } = makeApi();
     for (const runId of ["run-one", "run-two"]) {
       await hooks.get("reply_payload_sending")(
-        { payload: { text: "Repeated final" }, kind: "final", channel: "webchat", sessionKey: SESSION, runId },
+        {
+          payload: { text: "Repeated final" },
+          kind: "final",
+          channel: "webchat",
+          sessionKey: SESSION,
+          runId,
+        },
         { channelId: "webchat", sessionKey: SESSION, runId },
       );
     }
@@ -129,7 +138,13 @@ describe("P0-4a run-scoped delivery identity", () => {
     const { hooks, sends } = makeApi();
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await hooks.get("reply_payload_sending")(
-        { payload: { text: "One final" }, kind: "final", channel: "webchat", sessionKey: SESSION, runId: "same-run" },
+        {
+          payload: { text: "One final" },
+          kind: "final",
+          channel: "webchat",
+          sessionKey: SESSION,
+          runId: "same-run",
+        },
         { channelId: "webchat", sessionKey: SESSION, runId: "same-run" },
       );
     }
@@ -335,19 +350,10 @@ describe("P0-4a route and hook contracts", () => {
   });
 
   it("writes an explicit canonical persisted account", async () => {
-    fs.writeFileSync(
-      sessionsPath,
-      `${JSON.stringify({
-        [SESSION]: {
-          sessionId: "persisted-account-session",
-          deliveryContext: {
-            channel: "slack",
-            to: "channel:C012AUDIT",
-            accountId: "teamA",
-          },
-        },
-      })}\n`,
-    );
+    sessionRows.set(SESSION, {
+      sessionId: "persisted-account-session",
+      deliveryContext: { channel: "slack", to: "channel:C012AUDIT", accountId: "teamA" },
+    });
     const { hooks } = makeApi();
     const result = await hooks.get("before_tool_call")(
       {
@@ -392,5 +398,92 @@ describe("P0-4a route and hook contracts", () => {
     assert.equal(result.cancel, true);
     assert.match(result.cancelReason, /cannot send visible content/i);
     assert.equal(result.reason, undefined);
+  });
+
+  it("reads a canonical conflict rather than accepting stale sessions.json", async () => {
+    fs.writeFileSync(
+      sessionsPath,
+      JSON.stringify({
+        [SESSION]: { deliveryContext: { channel: "slack", to: "channel:C012AUDIT" } },
+      }),
+    );
+    sessionRows.set(SESSION, { deliveryContext: { channel: "slack", to: "channel:C999WRONG" } });
+    const { hooks } = makeApi();
+    const result = await hooks.get("before_tool_call")(
+      {
+        toolName: "message",
+        runId: "sqlite-conflict",
+        params: { action: "send", channel: "slack", message: "x" },
+      },
+      { sessionKey: SESSION, runId: "sqlite-conflict" },
+    );
+    assert.equal(result.block, true);
+    assert.match(result.blockReason, /conflicts with persisted target/);
+  });
+
+  it("blocks rather than using a key fallback when the canonical row lookup fails", async () => {
+    const result = await guard.resolveSlackSessionRoute(SESSION, undefined, {
+      runtime: {
+        agent: {
+          session: {
+            getSessionEntry: () => {
+              throw Error("store unavailable");
+            },
+          },
+        },
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /canonical session lookup failed/);
+  });
+
+  it("resolves a non-decodable ACP Slack binding from its canonical row", async () => {
+    const key = "agent:codex:acp:binding:slack:default:c123";
+    sessionRows.set(key, { deliveryContext: { channel: "slack", to: "channel:C123" } });
+    const { hooks } = makeApi();
+    const result = await hooks.get("before_tool_call")(
+      {
+        toolName: "message",
+        runId: "acp",
+        params: { action: "send", channel: "slack", message: "x" },
+      },
+      { sessionKey: key, runId: "acp" },
+    );
+    assert.equal(result.params.target, "C123");
+  });
+
+  it("accepts canonical Slack prefixes and complete enterprise targets", async () => {
+    assert.equal(guard.normalizeSlackTarget("slack:C123"), "C123");
+    assert.equal(guard.normalizeSlackTarget("team:T123:channel:C456"), "team:T123:channel:C456");
+    const key = "agent:main:slack:channel:team:T123:channel:C456";
+    assert.equal(guard.parseSlackRouteFromSessionKey(key)?.target, "team:T123:channel:C456");
+    sessionRows.set(key, { deliveryContext: { channel: "slack", to: "team:T123:channel:C456" } });
+    const { hooks } = makeApi();
+    const result = await hooks.get("before_tool_call")(
+      {
+        toolName: "message",
+        runId: "enterprise",
+        params: { action: "send", channel: "slack", message: "x" },
+      },
+      { sessionKey: key, runId: "enterprise" },
+    );
+    assert.equal(result.params.target, "team:T123:channel:C456");
+  });
+
+  it("does not conflate equal captions on distinct attachment payloads", async () => {
+    const { hooks, sends } = makeApi();
+    for (const mediaUrl of ["file:///one.png", "file:///two.png"]) {
+      await hooks.get("reply_payload_sending")(
+        {
+          payload: { text: "Plot", mediaUrl },
+          kind: "final",
+          channel: "webchat",
+          sessionKey: SESSION,
+          runId: "media-caption",
+        },
+        { channelId: "webchat", sessionKey: SESSION, runId: "media-caption" },
+      );
+    }
+    assert.equal(sends.length, 2);
   });
 });

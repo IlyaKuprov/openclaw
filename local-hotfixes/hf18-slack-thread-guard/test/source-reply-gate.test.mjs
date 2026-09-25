@@ -84,7 +84,12 @@ function afterMessageDelivered(hooks, runId, params, result = sentToolResult()) 
 }
 
 function afterTextSent(hooks, runId, message, extra = {}) {
-  return afterMessageDelivered(hooks, runId, { action: "send", channel: "slack", message, ...extra });
+  return afterMessageDelivered(hooks, runId, {
+    action: "send",
+    channel: "slack",
+    message,
+    ...extra,
+  });
 }
 
 function afterOtherTool(hooks, runId, toolName = "read") {
@@ -147,7 +152,12 @@ describe("source-reply generation gate", () => {
       {
         toolName: "message",
         runId: "run-a",
-        params: { action: "upload-file", channel: "slack", media: "file:///p.png", caption: "plot" },
+        params: {
+          action: "upload-file",
+          channel: "slack",
+          media: "file:///p.png",
+          caption: "plot",
+        },
       },
       { sessionKey: SESSION, channelId: "slack", runId: "run-a" },
     );
@@ -164,7 +174,9 @@ describe("source-reply generation gate", () => {
   it("does not gate a text send that also carries an artefact", async () => {
     const { hooks } = makeApi();
     await afterTextSent(hooks, "run-a", "Answer.");
-    const withMedia = await beforeTextSend(hooks, "run-a", "See attached.", { media: "file:///x.png" });
+    const withMedia = await beforeTextSend(hooks, "run-a", "See attached.", {
+      media: "file:///x.png",
+    });
     assert.notEqual(withMedia?.block, true);
   });
 
@@ -172,16 +184,57 @@ describe("source-reply generation gate", () => {
     const { hooks } = makeApi();
     const failed = sentToolResult();
     failed.details.deliveryStatus = "failed";
-    await afterMessageDelivered(hooks, "run-a", { action: "send", channel: "slack", message: "Answer." }, failed);
+    await afterMessageDelivered(
+      hooks,
+      "run-a",
+      { action: "send", channel: "slack", message: "Answer." },
+      failed,
+    );
     const retry = await beforeTextSend(hooks, "run-a", "Answer.");
     assert.notEqual(retry?.block, true);
+  });
+
+  it("does not gate distinct Slack notifications from a non-Slack source session", async () => {
+    const { hooks } = makeApi();
+    const ctx = { sessionKey: "agent:main:main", channelId: "webchat", runId: "web-run" };
+    await hooks.get("after_tool_call")(
+      {
+        toolName: "message",
+        runId: "web-run",
+        params: { action: "send", channel: "slack", target: "C111", message: "First" },
+        result: sentToolResult(),
+      },
+      ctx,
+    );
+    const next = await hooks.get("before_tool_call")(
+      {
+        toolName: "message",
+        runId: "web-run",
+        params: { action: "send", channel: "slack", target: "C222", message: "Second" },
+      },
+      ctx,
+    );
+    assert.notEqual(next?.block, true);
+  });
+
+  it("does not arm a source-reply gate for a different Slack target", async () => {
+    const { hooks } = makeApi();
+    await afterTextSent(hooks, "cross-target", "First", { target: "C999OTHER" });
+    const next = await beforeTextSend(hooks, "cross-target", "Second", { target: "C012AUDIT" });
+    assert.notEqual(next?.block, true);
   });
 
   it("cancels a paraphrased canonical final once the model already replied", async () => {
     const { hooks, sends } = makeApi();
     await afterTextSent(hooks, "run-a", "The coupling constant is 7.2 Hz.");
     const result = await hooks.get("reply_payload_sending")(
-      { payload: { text: "To summarise, J = 7.2 Hz." }, kind: "final", channel: "slack", sessionKey: SESSION, runId: "run-a" },
+      {
+        payload: { text: "To summarise, J = 7.2 Hz." },
+        kind: "final",
+        channel: "slack",
+        sessionKey: SESSION,
+        runId: "run-a",
+      },
       { channelId: "slack", sessionKey: SESSION, runId: "run-a" },
     );
     assert.equal(result?.cancel, true);
@@ -193,7 +246,13 @@ describe("source-reply generation gate", () => {
     await afterTextSent(hooks, "run-b", "Working on it.");
     await afterOtherTool(hooks, "run-b", "bash");
     const result = await hooks.get("reply_payload_sending")(
-      { payload: { text: "Done: the fit converged." }, kind: "final", channel: "slack", sessionKey: SESSION, runId: "run-b" },
+      {
+        payload: { text: "Done: the fit converged." },
+        kind: "final",
+        channel: "slack",
+        sessionKey: SESSION,
+        runId: "run-b",
+      },
       { channelId: "slack", sessionKey: SESSION, runId: "run-b" },
     );
     assert.equal(result, undefined);

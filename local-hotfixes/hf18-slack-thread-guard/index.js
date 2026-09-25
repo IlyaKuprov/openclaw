@@ -3,7 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const DEFAULT_AUDIT_LOG = path.join(os.homedir(), ".openclaw", "workspace", "logs", "slack-thread-guard.jsonl");
+const DEFAULT_AUDIT_LOG = path.join(
+  os.homedir(),
+  ".openclaw",
+  "workspace",
+  "logs",
+  "slack-thread-guard.jsonl",
+);
 const DEFAULT_SLACK_ACCOUNT_ID = "default";
 const THREAD_FIELDS = ["replyTo", "replyToId", "threadId", "threadTs", "message_id", "messageId"];
 const TOP_LEVEL_ACTIONS = new Set(["send", "upload-file"]);
@@ -16,7 +22,7 @@ const MAX_STATE_ENTRIES = 2048;
 const directDeliveries = new Map();
 const toolDeliveries = new Map();
 // Per-run source-reply generation gate (answer-repetition control). Diagnosis
-// job 1785365205-063909: within one run, at most one plain-text Slack source
+// job 1785365205-063909: within one Slack-bound run, at most one plain-text source
 // reply is permitted per "generation". Any other completed tool action (or run
 // end) advances the generation and re-permits a genuinely new update. This
 // suppresses an immediate paraphrased second send and a post-compaction
@@ -62,7 +68,18 @@ export function normalizeSlackTarget(value) {
   if (!target) {
     return undefined;
   }
-  target = target.replace(/^(?:channel|group|direct|dm|user):/i, "");
+  const qualified = /^team:(T[a-z0-9]+):(channel|user):([a-z0-9]+)$/i.exec(target);
+  if (qualified) {
+    const [, team, kind, id] = qualified;
+    const validId =
+      kind.toLowerCase() === "channel"
+        ? /^[cdg][a-z0-9]+$/i.test(id)
+        : /^[buw][a-z0-9]+$/i.test(id);
+    return validId
+      ? `team:${team.toUpperCase()}:${kind.toLowerCase()}:${id.toUpperCase()}`
+      : undefined;
+  }
+  target = target.replace(/^(?:channel|group|direct|dm|user|slack):/i, "");
   if (/^[cdgu][a-z0-9]+$/i.test(target)) {
     return target.toUpperCase();
   }
@@ -92,7 +109,11 @@ export function parseSlackRouteFromSessionKey(sessionKey) {
     if (!SLACK_PEER_KINDS.has(peerKind)) {
       continue;
     }
-    const target = normalizeSlackTarget(parts[peerIndex]);
+    const target = normalizeSlackTarget(
+      parts[peerIndex]?.toLowerCase() === "team"
+        ? parts.slice(peerIndex, peerIndex + 4).join(":")
+        : parts[peerIndex],
+    );
     if (!target) {
       continue;
     }
@@ -165,55 +186,25 @@ export function resolveSlackRouteFromSessionRecord(record) {
   };
 }
 
-function parseAgentId(sessionKey) {
-  const parts = typeof sessionKey === "string" ? sessionKey.split(":") : [];
-  if (parts[0]?.toLowerCase() !== "agent" || !/^[a-z0-9_-]+$/i.test(parts[1] ?? "")) {
-    return undefined;
-  }
-  return parts[1].toLowerCase();
-}
-
-// mtime+size-keyed cache of parsed session stores. The delivery hooks used to
-// synchronously read a multi-MiB sessions.json on every call; now the read is
-// async and a store whose (mtimeMs,size) is unchanged is reused without a
-// re-read. (size guards the sub-millisecond case where two writes could share
-// an mtime; a changed store almost always changes size too.)
-const sessionStoreCache = new Map();
-
-async function readSessionRecord(sessionKey) {
-  const agentId = parseAgentId(sessionKey);
-  if (!agentId) {
-    return undefined;
-  }
-  const stateRoot =
-    normalizeString(process.env.OPENCLAW_STATE_DIR) ?? path.join(os.homedir(), ".openclaw");
-  const storePath = path.join(stateRoot, "agents", agentId, "sessions", "sessions.json");
-  try {
-    const stat = await fs.promises.stat(storePath);
-    const cached = sessionStoreCache.get(storePath);
-    let store;
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-      store = cached.store;
-    } else {
-      store = asRecord(JSON.parse(await fs.promises.readFile(storePath, "utf8")));
-      sessionStoreCache.set(storePath, { mtimeMs: stat.mtimeMs, size: stat.size, store });
-    }
-    if (Object.prototype.hasOwnProperty.call(store, sessionKey)) {
-      return asRecord(store[sessionKey]);
-    }
-    const lowerKey = sessionKey.toLowerCase();
-    const matchingKey = Object.keys(store).find((key) => key.toLowerCase() === lowerKey);
-    return matchingKey ? asRecord(store[matchingKey]) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export async function resolveSlackSessionRoute(sessionKey, sessionRecord) {
-  const record =
-    sessionRecord === undefined ? await readSessionRecord(sessionKey) : sessionRecord;
+export async function resolveSlackSessionRoute(sessionKey, sessionRecord, api) {
   if (!isSlackNamedSession(sessionKey)) {
     return { matched: false };
+  }
+  // SQLite is canonical; sessions.json may be a stale migration artifact.
+  let record = sessionRecord;
+  if (record === undefined) {
+    try {
+      record = api?.runtime?.agent?.session?.getSessionEntry({
+        sessionKey,
+        readConsistency: "latest",
+      });
+    } catch (err) {
+      return {
+        matched: true,
+        ok: false,
+        reason: `canonical session lookup failed: ${String(err)}`,
+      };
+    }
   }
   const keyRoute = parseSlackRouteFromSessionKey(sessionKey);
   const persistedRoute = resolveSlackRouteFromSessionRecord(record);
@@ -243,8 +234,10 @@ export async function resolveSlackSessionRoute(sessionKey, sessionRecord) {
 }
 
 function isSlackTarget(target) {
-  return Boolean(normalizeSlackTarget(target)) ||
-    (typeof target === "string" && target.toLowerCase().includes("slack:"));
+  return (
+    Boolean(normalizeSlackTarget(target)) ||
+    (typeof target === "string" && target.toLowerCase().includes("slack:"))
+  );
 }
 
 function isSlackTopLevelAction(params, ctx) {
@@ -272,11 +265,9 @@ function writeAudit(auditLog, entry) {
     if (fs.existsSync(auditLog) && fs.statSync(auditLog).size > AUDIT_LOG_MAX_BYTES) {
       fs.renameSync(auditLog, auditLog + ".1");
     }
-    fs.appendFileSync(
-      auditLog,
-      JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n",
-      { mode: 0o600 },
-    );
+    fs.appendFileSync(auditLog, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n", {
+      mode: 0o600,
+    });
     // Tighten to owner-only even if the file pre-existed with wider perms.
     try {
       fs.chmodSync(auditLog, 0o600);
@@ -332,10 +323,17 @@ function canonicalizeDeliveryValue(value) {
 
 function deliveryMaterial(runId, text, payload) {
   const normalizedText = normalizeString(text) ?? "";
-  // A correlated run only needs content identity to join the message-tool and
-  // finalization hooks. Media-only deliveries need the complete payload so two
-  // different files never collapse onto the same empty-text fingerprint.
-  if (normalizeString(runId) && normalizedText) {
+  // Text-only tool/final hooks share content identity. Media must participate
+  // even when two attachments carry the same caption.
+  const media = asRecord(payload);
+  const hasMedia = Boolean(
+    media.media ||
+    media.mediaUrl ||
+    media.buffer ||
+    (Array.isArray(media.mediaUrls) && media.mediaUrls.length > 0) ||
+    (Array.isArray(media.attachments) && media.attachments.length > 0),
+  );
+  if (normalizeString(runId) && normalizedText && !hasMedia) {
     return normalizedText;
   }
   if (payload && typeof payload === "object") {
@@ -558,7 +556,7 @@ function isSlackSendResult(result) {
     : [];
   const hasReceipt = Boolean(
     normalizeString(receipt.primaryPlatformMessageId) ||
-      platformMessageIds.some((value) => Boolean(normalizeString(value))),
+    platformMessageIds.some((value) => Boolean(normalizeString(value))),
   );
   if (
     details.deliveryStatus !== "sent" ||
@@ -639,7 +637,6 @@ export function _resetStateForTests() {
   directDeliveries.clear();
   toolDeliveries.clear();
   sourceReplyGate.clear();
-  sessionStoreCache.clear();
 }
 
 export default function register(api) {
@@ -658,7 +655,11 @@ export default function register(api) {
       }
 
       const gateRunId = event.runId ?? ctx?.runId;
-      if (isPlainTextSend(params) && isSourceReplyGateArmed(gateRunId)) {
+      if (
+        isPlainTextSend(params) &&
+        isSlackNamedSession(ctx?.sessionKey) &&
+        isSourceReplyGateArmed(gateRunId)
+      ) {
         writeAudit(config.auditLog, {
           action: "source_reply_repeat_suppressed",
           runId: gateRunId ?? null,
@@ -676,7 +677,7 @@ export default function register(api) {
       }
 
       const sessionRoute = config.enforceSessionIdentity
-        ? await resolveSlackSessionRoute(ctx?.sessionKey)
+        ? await resolveSlackSessionRoute(ctx?.sessionKey, undefined, api)
         : { matched: false };
       if (sessionRoute.matched && !sessionRoute.ok) {
         auditRouteFailure(config, {
@@ -704,9 +705,9 @@ export default function register(api) {
         const canonicalAccountId = sessionRoute.route.accountId ?? DEFAULT_SLACK_ACCOUNT_ID;
         forcedSlackRoute = Boolean(
           normalizeChannel(next.channel) !== "slack" ||
-            normalizeSlackTarget(next.target) !== sessionRoute.route.target ||
-            normalizeString(next.accountId) !== canonicalAccountId ||
-            (Array.isArray(next.targets) && next.targets.length > 0),
+          normalizeSlackTarget(next.target) !== sessionRoute.route.target ||
+          normalizeString(next.accountId) !== canonicalAccountId ||
+          (Array.isArray(next.targets) && next.targets.length > 0),
         );
         next.channel = "slack";
         next.target = sessionRoute.route.target;
@@ -771,9 +772,19 @@ export default function register(api) {
         advanceSourceReplyGeneration(runId);
         return;
       }
-      // A successful plain-text reply arms the gate; a media/file delivery is a
-      // legitimate distinct artefact and advances the generation instead.
-      if (isPlainTextSend(params)) {
+      // Only a successful reply to this Slack session's own target arms the
+      // repetition gate. Cross-surface notifications and media advance it.
+      const sourceRoute = isSlackNamedSession(ctx?.sessionKey)
+        ? await resolveSlackSessionRoute(ctx.sessionKey, undefined, api)
+        : { ok: false };
+      const sentTarget = normalizeSlackTarget(params.target);
+      if (
+        isPlainTextSend(params) &&
+        sourceRoute.ok &&
+        normalizeChannel(params.channel) === "slack" &&
+        (!params.target || sentTarget === sourceRoute.route.target) &&
+        !(Array.isArray(params.targets) && params.targets.length > 0)
+      ) {
         armSourceReplyGate(runId);
       } else {
         advanceSourceReplyGeneration(runId);
@@ -845,7 +856,7 @@ export default function register(api) {
       if (!config.rerouteNonSlackDelivery) {
         return;
       }
-      const resolution = await resolveSlackSessionRoute(sessionKey);
+      const resolution = await resolveSlackSessionRoute(sessionKey, undefined, api);
       if (!resolution.ok) {
         auditRouteFailure(config, {
           hook: "reply_payload_sending",
@@ -886,7 +897,7 @@ export default function register(api) {
         return;
       }
       const text = normalizeString(event.content) ?? "";
-      const resolution = await resolveSlackSessionRoute(sessionKey);
+      const resolution = await resolveSlackSessionRoute(sessionKey, undefined, api);
       if (!resolution.ok) {
         auditRouteFailure(config, {
           hook: "message_sending",
