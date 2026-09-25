@@ -29,7 +29,8 @@ fi
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 STAGE=$(mktemp -d /tmp/hf09-stage.XXXXXX)
 copy_tmp=
-trap 'rm -rf "$STAGE"; [ -z "$copy_tmp" ] || rm -rf "$copy_tmp"' EXIT
+cache_tmp=
+trap 'rm -rf "$STAGE"; [ -z "$copy_tmp" ] || rm -rf "$copy_tmp"; [ -z "$cache_tmp" ] || rm -f "$cache_tmp"' EXIT
 
 # Prefer a pre-staged copy so a cutover does not depend on the npm registry being
 # reachable at the moment of the overlay (build it with --build-cache).
@@ -86,7 +87,10 @@ if [ "${1:-}" = "--build-cache" ]; then
   stage_from_npm || { echo "npm staging failed" >&2; exit 1; }
   verify_stage
   mkdir -p "$(dirname "$CACHE")"
-  tar -czf "$CACHE" -C "$STAGE" node_modules
+  cache_tmp=$(mktemp "$(dirname "$CACHE")/.hf09-cache.XXXXXX")
+  tar -czf "$cache_tmp" -C "$STAGE" node_modules
+  mv -f "$cache_tmp" "$CACHE"
+  cache_tmp=
   echo "HF-09 stage cache written: $CACHE ($(du -h "$CACHE" | cut -f1))"
   exit 0
 fi
@@ -147,9 +151,12 @@ copy_package() {
   if [ -d "$dest" ]; then
     backup=$(mktemp -d "$(dirname "$dest")/.hf09-recovery.XXXXXX")
     rmdir "$backup"
-    mv -T "$dest" "$backup"
+    mv "$dest" "$backup"
   fi
-  mv -T "$copy_tmp" "$dest"
+  if ! mv "$copy_tmp" "$dest"; then
+    [ -z "$backup" ] || mv "$backup" "$dest"
+    return 1
+  fi
   copy_tmp=
   [ -z "$backup" ] || rm -rf "$backup"
 }

@@ -14,7 +14,9 @@ into the root.
 
 Before installing the 2026.9.5 core, stage an offline cache with
 `bash overlay.sh --build-cache` if package-registry access at cutover is uncertain;
-cache building does not require an installed core. Set `HF09_STAGE` to choose the cache file. While the
+cache building does not require an installed core. A failed cache rebuild leaves
+the previous archive intact; the replacement is renamed into place only after
+tar succeeds. Set `HF09_STAGE` to choose the cache file. While the
 Gateway is stopped for an operator-controlled package swap, run
 `bash overlay.sh /absolute/path/to/installed/openclaw` and require the
 `HF-09 overlay OK` import check before restarting. The default installed core
