@@ -5,6 +5,7 @@ import type {
   ChannelMessageSendCommitContext,
   ChannelMessageUnknownSendReconciliationResult,
 } from "../../channels/message/types.js";
+import { getChannelPlugin } from "../../channels/plugins/index.js";
 import { loadExactSessionEntryReadOnly } from "../../config/sessions/session-accessor.entry.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
@@ -263,7 +264,6 @@ function assertRecoveredRouteAuthority(entry: QueuedDelivery): void {
     return;
   }
   if (
-    proof.channel !== "slack" ||
     proof.channel !== entry.channel ||
     proof.to !== entry.to ||
     proof.accountId !== entry.accountId ||
@@ -285,7 +285,7 @@ function assertRecoveredRouteAuthority(entry: QueuedDelivery): void {
     {
       sessionKey: proof.sessionKey,
       original: {
-        channel: "slack",
+        channel: proof.channel,
         to: proof.to,
         accountId: proof.accountId,
         threadId: context?.threadId,
@@ -300,7 +300,13 @@ function assertRecoveredRouteAuthority(entry: QueuedDelivery): void {
           threadId: context?.threadId,
         }
       : undefined,
-    { channel: "slack", to: proof.to, accountId: proof.accountId, threadPolicy: "root" },
+    {
+      channel: proof.channel,
+      to: proof.to,
+      ...(proof.accountId ? { accountId: proof.accountId } : {}),
+      threadPolicy: "root",
+    },
+    getChannelPlugin(proof.channel)?.outbound?.validateSessionRoutePeer,
   );
 }
 

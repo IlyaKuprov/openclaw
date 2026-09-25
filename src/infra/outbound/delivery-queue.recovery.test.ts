@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateSlackSessionRoutePeer } from "../../../extensions/slack/src/outbound-route-peer.js";
 import { controlNextRecoverySleep } from "../../../test/helpers/infra/delivery-recovery.js";
 import type { TrustedMessageAuditEvent } from "../../audit/message-audit-events.js";
 import { onTrustedMessageAuditEventForTest as onTrustedMessageAuditEvent } from "../../audit/message-audit-events.test-support.js";
@@ -17,6 +18,8 @@ import {
   replaceSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry.js";
+import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { buildConversationRef } from "../../routing/conversation-ref.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
@@ -24,6 +27,11 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
+import {
+  createDirectOutboundTestAdapter,
+  createOutboundTestPlugin,
+  createTestRegistry,
+} from "../../test-utils/channel-plugins.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { stageAndEnqueueOutboundDelivery } from "./deliver-queue-admission.js";
 import {
@@ -252,6 +260,10 @@ describe("delivery-queue recovery", () => {
     resolveOutboundChannelMessageAdapterMock.mockReset();
     sleepMock.mockReset();
     sleepMock.mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    resetPluginRuntimeStateForTest();
+    setActivePluginRegistry(createEmptyPluginRegistry());
   });
   const enqueueCrashRecoveryEntries = async () => {
     await enqueueRecoveryDelivery({
@@ -504,6 +516,21 @@ describe("delivery-queue recovery", () => {
       closeOpenClawAgentDatabasesForTest();
       closeOpenClawStateDatabaseForTest();
       const platformSend = vi.fn();
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "slack",
+            source: "test",
+            plugin: createOutboundTestPlugin({
+              id: "slack",
+              outbound: {
+                ...createDirectOutboundTestAdapter({ channel: "slack" }),
+                validateSessionRoutePeer: validateSlackSessionRoutePeer,
+              },
+            }),
+          },
+        ]),
+      );
       const deliver = vi.fn(async (params: Parameters<DeliverFn>[0]) => {
         await params.onDirectAdapterHandoff?.();
         if (routeState === "stale-at-handoff") {

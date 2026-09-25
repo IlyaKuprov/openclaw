@@ -619,14 +619,20 @@ export default function register(api) {
   // Decide before the host acquires direct or queued delivery custody. No adapter
   // access, await, audit write, or plugin-side delivery ledger belongs here.
   api.on("outbound_route_decision", (event) => {
-    // The host route contract is root-only; without root enforcement, leave
-    // same-surface thread placement alone but still redirect cross-surface sends.
+    const sourceChannel = normalizeChannel(event?.original?.channel);
     if (
       !config.enforceSessionIdentity ||
       !isSlackNamedSession(event?.sessionKey) ||
-      (!config.rerouteNonSlackDelivery && normalizeChannel(event.original?.channel) !== "slack") ||
-      (!config.enforceRootDelivery && normalizeChannel(event.original?.channel) === "slack")
+      (!config.rerouteNonSlackDelivery && sourceChannel !== "slack")
     ) {
+      return;
+    }
+    if (!config.enforceRootDelivery) {
+      if (sourceChannel !== "slack") {
+        // This host route contract cannot redirect without also rooting. Reject
+        // instead of sending on the source surface or overriding the opt-out.
+        throw new Error("cross-surface Slack routing requires root delivery enforcement");
+      }
       return;
     }
     const record = api.runtime.agent.session.getSessionEntry({

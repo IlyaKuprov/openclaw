@@ -1,6 +1,7 @@
 // Restart recovery must recheck the host-selected physical Slack route at the real adapter.
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { validateSlackSessionRoutePeer } from "../../../extensions/slack/src/outbound-route-peer.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry.js";
@@ -74,6 +75,7 @@ describe("queued Slack root route recovery", () => {
       const platformSend = vi.fn(async () => ({ channel: "slack", messageId: "root-message" }));
       const outbound = {
         deliveryMode: "direct" as const,
+        validateSessionRoutePeer: validateSlackSessionRoutePeer,
         sendText: async (ctx: { onPlatformSendDispatch?: () => Promise<void> }) => {
           await ctx.onPlatformSendDispatch?.();
           return platformSend();

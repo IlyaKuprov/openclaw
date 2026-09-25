@@ -154,8 +154,7 @@ export async function stageAndEnqueueOutboundDelivery(
     const routeAuthority =
       params.routeAuthority ??
       (params.rootReplyOnly &&
-      channel === "slack" &&
-      params.accountId &&
+      params.assertBeforeQueueAdmission &&
       params.session?.agentId &&
       params.session.key
         ? {
@@ -166,7 +165,7 @@ export async function stageAndEnqueueOutboundDelivery(
             sessionKey: params.session.key,
             channel,
             to,
-            accountId: params.accountId,
+            ...(params.accountId ? { accountId: params.accountId } : {}),
           }
         : undefined);
     if (params.rootReplyOnly && (!routeAuthority || !params.assertBeforeQueueAdmission)) {

@@ -19,14 +19,14 @@ import type { OutboundSessionContext } from "./session-context.js";
 
 export type QueuedRenderedMessageBatchPlan = RenderedMessageBatchPlan;
 
-/** Host-selected Slack route, bound to one exact physical session row for replay. */
+/** Host-selected route, bound to one exact physical session row for replay. */
 export type QueuedOutboundRouteAuthority = {
   agentId: string;
   storePath: string;
   sessionKey: string;
-  channel: "slack";
+  channel: string;
   to: string;
-  accountId: string;
+  accountId?: string;
 };
 
 export type QueuedReplyPayloadSendingHook = {

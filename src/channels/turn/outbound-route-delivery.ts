@@ -1,6 +1,7 @@
 // Host-owned route decision and durable delivery for inbound final replies.
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import { copyReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
   deriveInboundMessageHookContext,
   resolveInboundReplyHookTarget,
@@ -94,7 +95,9 @@ export async function deliverDecidedFinalOutboundRoute(params: {
     assertRouteAuthority: assertCurrent,
     routeAuthority: {
       agentId: turn.agentId,
-      storePath: turn.storePath,
+      storePath:
+        turn.storePath ??
+        resolveSessionStorePathCore(turn.cfg.session?.store, { agentId: turn.agentId }),
       sessionKey: turn.routeSessionKey,
       channel: decision.channel,
       to: decision.to,
@@ -104,7 +107,7 @@ export async function deliverDecidedFinalOutboundRoute(params: {
   throwIfDurableInboundReplyDeliveryFailed(routed);
   if (!isDurableInboundReplyDeliveryHandled(routed)) {
     throw new Error(
-      `outbound route decision cannot deliver via Slack: ${"reason" in routed ? routed.reason : routed.status}`,
+      `outbound route decision cannot deliver via ${decision.channel}: ${"reason" in routed ? routed.reason : routed.status}`,
     );
   }
   return { payload: rootedPayload, delivery: routed.delivery };

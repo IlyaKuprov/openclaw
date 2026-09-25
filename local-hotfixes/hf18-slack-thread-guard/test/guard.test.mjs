@@ -89,7 +89,7 @@ describe("pure declarative route decision", () => {
     );
   });
 
-  it("does not request a same-surface root when root enforcement is disabled, but still redirects cross-surface replies", () => {
+  it("does not force a root when enforcement is disabled, and blocks unsafe cross-surface redirection", () => {
     const threaded = `${SESSION}:thread:1712345678.123456`;
     persisted(threaded);
     const { hooks } = makeApi({ enforceRootDelivery: false });
@@ -102,12 +102,7 @@ describe("pure declarative route decision", () => {
       }),
       undefined,
     );
-    assert.deepEqual(route(hooks, threaded), {
-      channel: "slack",
-      to: TARGET,
-      accountId: "work",
-      threadPolicy: "root",
-    });
+    assert.throws(() => route(hooks, threaded), /requires root delivery enforcement/);
   });
 
   for (const [kind, key, target] of [

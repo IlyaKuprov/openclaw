@@ -168,6 +168,7 @@ describe("channel lifecycle outbound route decision", () => {
       replyToId: null,
       routeAuthority: {
         agentId: "main",
+        storePath: expect.any(String),
         sessionKey: slackSessionKey,
         channel: "slack",
         to: "channel:C123",
@@ -483,7 +484,7 @@ describe("channel lifecycle outbound route decision", () => {
         ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "webchat" }),
         delivery: { deliver: direct },
       }),
-    ).rejects.toThrow(/cannot deliver via Slack: missing_outbound_handler/);
+    ).rejects.toThrow(/cannot deliver via slack: missing_outbound_handler/);
     expect(direct).not.toHaveBeenCalled();
   });
 

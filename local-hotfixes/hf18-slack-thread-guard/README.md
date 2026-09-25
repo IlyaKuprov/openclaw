@@ -8,8 +8,8 @@ reply, or keeps a delivery ledger. The host independently validates the row
 before taking custody. The message-tool guard enforces root sends when enabled,
 and the per-run answer-repetition gate still suppresses immediate paraphrases.
 With `enforceRootDelivery: false`, same-surface finals keep their normal thread
-policy; cross-surface route requests still redirect to the persisted Slack peer
-and use the host's root-only route contract.
+policy. Cross-surface route requests fail closed: the host route contract cannot
+redirect them without also forcing root delivery against that opt-out.
 It imports only Node built-ins. The source is preserved for reapplication and
 review, **not** registered as a bundled plugin or automatically installed.
 
