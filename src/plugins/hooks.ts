@@ -65,6 +65,11 @@ import type {
   PluginHookSkillProposalEvaluateResult,
   PluginHookSkillProposalEvaluationOutcome,
 } from "./hook-types.js";
+import {
+  validateOutboundRouteDecision,
+  type PersistedOutboundRouteProof,
+  type PluginHookOutboundRouteDecisionResult,
+} from "./outbound-route-decision.js";
 import { runPluginCleanup } from "./plugin-instance-scope.js";
 import {
   type PluginSubagentRequesterContext,
@@ -150,6 +155,7 @@ const DEFAULT_MODIFYING_HOOK_TIMEOUT_MS_BY_HOOK: Partial<Record<PluginHookName, 
   // Outbound modifying hooks run inside the serialized reply delivery lane.
   // A hung plugin must fail open so later hooks and queued replies can settle.
   message_sending: 15_000,
+  outbound_route_decision: 15_000,
   reply_payload_sending: 15_000,
   resolve_exec_env: 15_000,
   skill_proposal_evaluate: 120_000,
@@ -311,7 +317,9 @@ export function createHookRunner(
   let runtimeDecisionOrdinal = 0;
 
   const shouldCatchHookErrors = (hookName: PluginHookName): boolean =>
-    catchErrors && (failurePolicyByHook[hookName] ?? "fail-open") === "fail-open";
+    hookName !== "outbound_route_decision" &&
+    catchErrors &&
+    (failurePolicyByHook[hookName] ?? "fail-open") === "fail-open";
 
   const recordBeforeToolCallDecision = (params: {
     event: PluginHookBeforeToolCallEvent;
@@ -1567,6 +1575,30 @@ export function createHookRunner(
       const content = finalizeGroupThreadToolReply(original, event, ctx);
       return content !== original ? { ...result, content } : result;
     },
+    runOutboundRouteDecision: (
+      event: HookEvent<"outbound_route_decision">,
+      _ctx: HookContext<"outbound_route_decision">,
+      persisted: PersistedOutboundRouteProof | undefined,
+    ) =>
+      runModifyingHook<"outbound_route_decision", PluginHookOutboundRouteDecisionResult>(
+        "outbound_route_decision",
+        // Plugins cannot mutate the caller's route or acquire a delivery/media handle.
+        deepFreezeHookValue(structuredClone(event)),
+        { channelId: "slack" },
+        {
+          mergeNullResults: true,
+          mergeResults: (previous, next) => {
+            const accepted = validateOutboundRouteDecision(event, persisted, next);
+            if (
+              previous &&
+              (previous.to !== accepted.to || previous.accountId !== accepted.accountId)
+            ) {
+              throw new Error("conflicting outbound route decisions");
+            }
+            return accepted;
+          },
+        },
+      ),
     runMessageSent: bindVoidHook("message_sent"),
     // Tool hooks
     runBeforeToolCall,

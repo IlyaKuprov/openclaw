@@ -47,6 +47,10 @@ import type {
   PluginHeartbeatPromptContributionEvent,
   PluginHeartbeatPromptContributionResult,
 } from "./host-hook-turn-types.js";
+import type {
+  PluginHookOutboundRouteDecisionEvent,
+  PluginHookOutboundRouteDecisionResult,
+} from "./outbound-route-decision.js";
 
 export type {
   PluginHookBeforeModelResolveAttachment,
@@ -75,6 +79,10 @@ export type {
   PluginHookMessageReceivedEvent,
   PluginHookProviderUpdate,
 } from "./hook-message.types.js";
+export type {
+  PluginHookOutboundRouteDecisionEvent,
+  PluginHookOutboundRouteDecisionResult,
+} from "./outbound-route-decision.js";
 export {
   PluginApprovalResolutions,
   type PluginApprovalResolution,
@@ -112,6 +120,7 @@ export type PluginHookName =
   | "channel_pairing_requested"
   | "message_received"
   | "message_sending"
+  | "outbound_route_decision"
   | "reply_payload_sending"
   | "message_sent"
   | "before_tool_call"
@@ -156,6 +165,7 @@ const PLUGIN_HOOK_NAMES = [
   "channel_pairing_requested",
   "message_received",
   "message_sending",
+  "outbound_route_decision",
   "reply_payload_sending",
   "message_sent",
   "before_tool_call",
@@ -1291,6 +1301,13 @@ export type PluginHookHandlerMap = {
     event: PluginHookMessageSendingEvent,
     ctx: PluginHookMessageContext,
   ) => Promise<PluginHookMessageSendingResult | void> | PluginHookMessageSendingResult | void;
+  outbound_route_decision: (
+    event: PluginHookOutboundRouteDecisionEvent,
+    ctx: { channelId: "slack" },
+  ) =>
+    | Promise<PluginHookOutboundRouteDecisionResult | void>
+    | PluginHookOutboundRouteDecisionResult
+    | void;
   message_sent: (
     event: PluginHookMessageSentEvent,
     ctx: PluginHookMessageContext,

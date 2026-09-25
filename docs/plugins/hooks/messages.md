@@ -70,6 +70,25 @@ Use message hooks for channel-level routing and delivery policy:
   `{ cancel: true }`.
 - `message_sent`: observe final success or failure.
 
+`outbound_route_decision` is a declarative, pre-custody route request, not a
+transport send. Its event contains only the canonical `sessionKey` and the
+original `{ channel, to, accountId, threadId }`; no message, media reader, or
+transport authority is supplied. For an eligible Slack channel session, return
+`{ channel: "slack", to: "channel:C123", accountId: "work", threadPolicy: "root" }`
+(workspace-qualified `team:T123:channel:C123` and normalized lowercase IDs are
+also supported). The host must
+read the **exact** session entry's persisted delivery route and call
+`runOutboundRouteDecision(event, { channelId: "slack" }, persistedRoute)` before
+either direct or durable delivery takes custody. The runner requires matching
+session, channel, canonical target, account, and original/persisted thread facts;
+it rejects missing or conflicting facts and applies only the validated root
+request. A thrown handler or timeout rejects the decision, including if another
+handler previously requested a route; late results cannot change that outcome.
+The hook does not send or authorize a plugin-initiated send. Callers must stop
+delivery on rejection, revalidate current authority before the eventual send,
+and use their existing session-scoped media loader. Until a host caller wires
+this into both delivery paths, registering the hook has **no routing effect**.
+
 For audio-only TTS replies, `content` may contain the hidden spoken
 transcript even when the channel payload has no visible text/caption.
 Rewriting that `content` updates the hook-visible transcript only; it is not
