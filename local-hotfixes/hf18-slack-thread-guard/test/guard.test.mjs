@@ -89,6 +89,27 @@ describe("pure declarative route decision", () => {
     );
   });
 
+  it("does not request a same-surface root when root enforcement is disabled, but still redirects cross-surface replies", () => {
+    const threaded = `${SESSION}:thread:1712345678.123456`;
+    persisted(threaded);
+    const { hooks } = makeApi({ enforceRootDelivery: false });
+    assert.equal(
+      route(hooks, threaded, {
+        channel: "slack",
+        to: TARGET,
+        accountId: "work",
+        threadId: "1712345678.123456",
+      }),
+      undefined,
+    );
+    assert.deepEqual(route(hooks, threaded), {
+      channel: "slack",
+      to: TARGET,
+      accountId: "work",
+      threadPolicy: "root",
+    });
+  });
+
   for (const [kind, key, target] of [
     ["group", "agent:main:slack:group:c123", "channel:C123"],
     ["direct user", "agent:main:slack:direct:u123", "user:U123"],
@@ -242,6 +263,30 @@ describe("message-tool root and identity guard", () => {
     assert.equal(result.params.replyTo, null);
     assert.equal(result.params.topLevel, true);
     assert.deepEqual(result.params.targets, []);
+  });
+
+  it("keeps a same-surface thread when root enforcement is disabled while correcting the account and target", async () => {
+    persisted();
+    const { hooks } = makeApi({ enforceRootDelivery: false });
+    const result = await hooks.get("before_tool_call")(
+      {
+        toolName: "message",
+        params: {
+          action: "send",
+          channel: "slack",
+          target: "C999WRONG",
+          accountId: "other",
+          message: "Threaded answer",
+          threadId: "1712345678.123456",
+          topLevel: false,
+        },
+      },
+      { sessionKey: SESSION },
+    );
+    assert.equal(result.params.target, "C012AUDIT");
+    assert.equal(result.params.accountId, "work");
+    assert.equal(result.params.threadId, "1712345678.123456");
+    assert.equal(result.params.topLevel, false);
   });
 
   it("blocks a tool send when the persisted route conflicts", async () => {

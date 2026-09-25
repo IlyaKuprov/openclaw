@@ -79,6 +79,29 @@ describe("final reply generation gate", () => {
     assert.equal(hooks.has("message_sent"), false);
   });
 
+  it("preserves finals carrying recipient-visible content beyond their text", async () => {
+    await toolSent("run-rich", "Working.");
+    for (const extra of [
+      { presentation: { blocks: [{ type: "text", text: "Result" }] } },
+      { interactive: { blocks: [{ type: "text", text: "Result" }] } },
+      { channelData: { slack: { blocks: [{ type: "section", text: "Result" }] } } },
+      { location: { latitude: 51.5, longitude: -0.1 } },
+      { fallbackText: { text: "Native result" } },
+      { btw: { question: "Would you like the result?" } },
+    ]) {
+      const result = hooks.get("reply_payload_sending")(
+        {
+          payload: { text: "Done.", ...extra },
+          kind: "final",
+          sessionKey: SESSION,
+          runId: "run-rich",
+        },
+        { sessionKey: SESSION, runId: "run-rich" },
+      );
+      assert.equal(result, undefined, `non-text final ${Object.keys(extra)[0]} was cancelled`);
+    }
+  });
+
   it("does not cancel streamed blocks, media payloads, or a final after real work", async () => {
     await toolSent("run-progress", "Working.");
     assert.equal(final("run-progress", "Working.", "block"), undefined);

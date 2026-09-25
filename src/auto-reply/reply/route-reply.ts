@@ -353,6 +353,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
   const decidedPeerKind = decidedRoute
     ? parseSessionDeliveryRoute(params.sessionKey)?.peerKind
     : undefined;
+  const decidedIsGroup = decidedPeerKind === "channel" || decidedPeerKind === "group";
   const decidedConversationType =
     decidedPeerKind === "direct" || decidedPeerKind === "dm" ? "direct" : "group";
   const replyDelivery = decidedRoute
@@ -474,8 +475,15 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
               agentId: resolvedAgentId,
               text,
               mediaUrls,
-              ...(params.isGroup != null ? { isGroup: params.isGroup } : {}),
-              ...(params.groupId ? { groupId: params.groupId } : {}),
+              ...(decidedRoute
+                ? {
+                    isGroup: decidedIsGroup,
+                    ...(decidedIsGroup ? { groupId: deliveryTo } : {}),
+                  }
+                : {
+                    ...(params.isGroup != null ? { isGroup: params.isGroup } : {}),
+                    ...(params.groupId ? { groupId: params.groupId } : {}),
+                  }),
             }
           : undefined,
     });

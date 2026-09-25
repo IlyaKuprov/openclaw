@@ -5,8 +5,11 @@ and root policy for decodable Slack channel, group, and direct sessions
 through the synchronous `outbound_route_decision` hook. Its callback reads the canonical session row
 and returns a route request; it never acquires an outbound adapter, sends a
 reply, or keeps a delivery ledger. The host independently validates the row
-before taking custody. The message-tool guard still enforces root sends and
-the per-run answer-repetition gate still suppresses immediate paraphrases.
+before taking custody. The message-tool guard enforces root sends when enabled,
+and the per-run answer-repetition gate still suppresses immediate paraphrases.
+With `enforceRootDelivery: false`, same-surface finals keep their normal thread
+policy; cross-surface route requests still redirect to the persisted Slack peer
+and use the host's root-only route contract.
 It imports only Node built-ins. The source is preserved for reapplication and
 review, **not** registered as a bundled plugin or automatically installed.
 

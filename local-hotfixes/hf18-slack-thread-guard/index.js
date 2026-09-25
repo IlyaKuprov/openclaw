@@ -386,6 +386,29 @@ function isPlainTextSend(params) {
   );
 }
 
+function isBareTextFinalPayload(payload) {
+  return (
+    typeof payload?.text === "string" &&
+    payload.text.trim().length > 0 &&
+    payload.text.trim() !== "NO_REPLY" &&
+    !payload.media &&
+    !payload.mediaUrl &&
+    !payload.buffer &&
+    !payload.mediaUrls?.length &&
+    !payload.attachments?.length &&
+    !payload.presentation &&
+    !payload.interactive &&
+    !payload.channelData &&
+    !payload.location &&
+    !payload.fallbackText &&
+    !payload.btw &&
+    !payload.delivery &&
+    !payload.replyToId &&
+    !payload.replyToTag &&
+    !payload.replyToCurrent
+  );
+}
+
 function pruneSourceReplyGate(now = Date.now()) {
   for (const [key, value] of sourceReplyGate) {
     if (now - value.at > STATE_TTL_MS) {
@@ -596,10 +619,13 @@ export default function register(api) {
   // Decide before the host acquires direct or queued delivery custody. No adapter
   // access, await, audit write, or plugin-side delivery ledger belongs here.
   api.on("outbound_route_decision", (event) => {
+    // The host route contract is root-only; without root enforcement, leave
+    // same-surface thread placement alone but still redirect cross-surface sends.
     if (
       !config.enforceSessionIdentity ||
       !isSlackNamedSession(event?.sessionKey) ||
-      (!config.rerouteNonSlackDelivery && normalizeChannel(event.original?.channel) !== "slack")
+      (!config.rerouteNonSlackDelivery && normalizeChannel(event.original?.channel) !== "slack") ||
+      (!config.enforceRootDelivery && normalizeChannel(event.original?.channel) === "slack")
     ) {
       return;
     }
@@ -620,14 +646,7 @@ export default function register(api) {
       isSlackNamedSession(sessionKey) &&
       (event.kind === undefined || event.kind === "final") &&
       isSourceReplyGateArmed(runId) &&
-      typeof event.payload?.text === "string" &&
-      event.payload.text.trim() &&
-      event.payload.text.trim() !== "NO_REPLY" &&
-      !event.payload.media &&
-      !event.payload.mediaUrl &&
-      !event.payload.buffer &&
-      !event.payload.mediaUrls?.length &&
-      !event.payload.attachments?.length
+      isBareTextFinalPayload(event.payload)
     ) {
       return { cancel: true, reason: "This run already delivered a Slack reply to this step" };
     }

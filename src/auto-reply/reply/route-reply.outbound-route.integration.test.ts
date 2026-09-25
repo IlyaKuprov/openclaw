@@ -30,15 +30,19 @@ const routeHook = vi.hoisted(() => ({
   rewrite: vi.fn(async (event: { payload: Record<string, unknown> }) => ({
     payload: { ...event.payload, replyToId: "escaped-thread" },
   })),
+  observeSent: false,
+  sent: vi.fn(),
 }));
 vi.mock("../../plugins/hook-runner-global.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../plugins/hook-runner-global.js")>()),
   getGlobalHookRunner: () => ({
     hasHooks: (name: string) =>
       (name === "outbound_route_decision" && routeHook.enabled) ||
-      (name === "reply_payload_sending" && routeHook.rewriteReplyTo),
+      (name === "reply_payload_sending" && routeHook.rewriteReplyTo) ||
+      (name === "message_sent" && routeHook.observeSent),
     runOutboundRouteDecision: routeHook.decide,
     runReplyPayloadSending: routeHook.rewrite,
+    runMessageSent: routeHook.sent,
   }),
 }));
 
@@ -99,6 +103,8 @@ describe("routeReply host route decision with durable queue custody", () => {
     routeHook.enabled = true;
     routeHook.rewriteReplyTo = false;
     routeHook.rewrite.mockClear();
+    routeHook.observeSent = false;
+    routeHook.sent.mockReset();
     routeHook.decide.mockReset().mockResolvedValue(canonical);
     sendText = createSendText();
     sendMatrixText = createMatrixSendText();
@@ -137,6 +143,7 @@ describe("routeReply host route decision with durable queue custody", () => {
     setActivePluginRegistry(createEmptyPluginRegistry());
     routeHook.enabled = false;
     routeHook.rewriteReplyTo = false;
+    routeHook.observeSent = false;
     vi.unstubAllEnvs();
   });
 
@@ -215,6 +222,44 @@ describe("routeReply host route decision with durable queue custody", () => {
     expect(
       getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, intentId, fixtures.tmpDir()),
     ).toBe("completed");
+  });
+
+  it("carries the decided channel peer into queued mirror and message_sent recipient facts, not the webchat DM source", async () => {
+    routeHook.observeSent = true;
+    sendText.mockRejectedValueOnce(
+      new PlatformMessageNotDispatchedError("offline before dispatch", {
+        cause: new Error("offline"),
+      }),
+    );
+    await routeReply({
+      cfg,
+      replyKind: "final",
+      payload: { text: "queued final" },
+      channel: "webchat",
+      to: "web-user",
+      sessionKey,
+      isGroup: false,
+      groupId: "web-user",
+      deliveryIntentId: "block-reply:v1:group-facts",
+    });
+    expect(readQueuedEntry(fixtures.tmpDir(), "block-reply:v1:group-facts")).toMatchObject({
+      channel: "slack",
+      to: canonical.to,
+      mirror: { sessionKey, isGroup: true, groupId: canonical.to },
+    });
+    await drainPendingDeliveriesCore({
+      drainKey: "slack:route-reply-group-facts",
+      logLabel: "Slack reconnect drain",
+      deliver: deliverOutboundPayloads,
+      cfg,
+      stateDir: fixtures.tmpDir(),
+      log: createRecoveryLog(),
+      selectEntry: (entry) => ({ match: entry.channel === "slack", bypassBackoff: true }),
+    });
+    expect(routeHook.sent).toHaveBeenCalledWith(
+      expect.objectContaining({ to: canonical.to, success: true, sessionKey }),
+      expect.objectContaining({ channelId: "slack", conversationId: canonical.to }),
+    );
   });
 
   it("keeps an owner-private command response off the originating Slack channel", async () => {
@@ -309,8 +354,9 @@ describe("routeReply host route decision with durable queue custody", () => {
       channel: "matrix",
       to: "!other:example",
       sessionKey: directSessionKey,
+      isGroup: true,
+      groupId: "!other:example",
       deliveryIntentId: directIntentId,
-      mirror: false,
     });
     expect(result).toMatchObject({ ok: false, delivered: false });
     expect(sendText).toHaveBeenCalledOnce();
@@ -319,7 +365,9 @@ describe("routeReply host route decision with durable queue custody", () => {
       channel: "slack",
       to: "user:U123",
       session: { key: directSessionKey, conversationType: "direct" },
+      mirror: { sessionKey: directSessionKey, isGroup: false },
     });
+    expect(readQueuedEntry(fixtures.tmpDir(), directIntentId).mirror).not.toHaveProperty("groupId");
   });
 
   it("fails closed on hook timeout, without queuing or falling through to the original surface", async () => {
