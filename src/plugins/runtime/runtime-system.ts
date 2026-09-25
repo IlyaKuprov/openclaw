@@ -37,6 +37,7 @@ export function createRuntimeSystem(): PluginRuntime["system"] {
       const { reason, agentId, sessionKey, heartbeat } = opts ?? {};
       return runHeartbeatOnceInternal({
         reason,
+        intent: "immediate",
         agentId,
         sessionKey,
         heartbeat: heartbeat ? { target: heartbeat.target } : undefined,

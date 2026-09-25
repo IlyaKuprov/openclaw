@@ -346,6 +346,10 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     "Optional default working directory for this agent's ACP sessions.",
   "agents.entries.*.identity.avatar":
     "Avatar image path (relative to the agent workspace only) or a remote URL/data URL.",
+  "agents.defaults.heartbeat.prompt":
+    "Custom heartbeat prompt. If its text contains ALERT: (case-insensitive), plain scheduled polls deliver text only when the reply starts with ALERT: (after any response prefix or Markdown decoration); unmarked prose stays silent. Event relays, direct runs, media, and structured responses are not gated. Avoid mentioning ALERT: incidentally.",
+  "agents.entries.*.heartbeat.prompt":
+    "Per-agent heartbeat prompt; mentioning ALERT: (case-insensitive) opts plain scheduled text into marker-gated delivery. Start alerts with ALERT:; unmarked status prose is silent. Event relays, direct runs, media, and structured responses are not gated.",
   "agents.defaults.heartbeat.timeoutSeconds":
     "Maximum time in seconds allowed for a heartbeat agent turn before it is aborted. Leave unset to use agents.defaults.timeoutSeconds when set, otherwise the heartbeat cadence capped at 600 seconds.",
   "agents.defaults.heartbeat.agentId":

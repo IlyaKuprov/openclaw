@@ -30,6 +30,7 @@ describe("heartbeat ALERT: marker gate", () => {
     tmpDir: string;
     storePath: string;
     prompt?: string;
+    responsePrefix?: string;
   }): OpenClawConfig {
     return {
       agents: {
@@ -42,6 +43,7 @@ describe("heartbeat ALERT: marker gate", () => {
           },
         },
       },
+      ...(params.responsePrefix ? { messages: { responsePrefix: params.responsePrefix } } : {}),
       channels: { whatsapp: { allowFrom: ["*"] } },
       session: { store: params.storePath },
     } as OpenClawConfig;
@@ -56,6 +58,8 @@ describe("heartbeat ALERT: marker gate", () => {
     event?: { text: string; contextKey?: string };
     reason?: string;
     replyPayload?: Record<string, unknown>;
+    intent?: "immediate" | "scheduled";
+    responsePrefix?: string;
   }) {
     const cfg = createConfig(params);
     const sessionKey = await seedMainSessionStore(params.storePath, cfg, {
@@ -74,6 +78,7 @@ describe("heartbeat ALERT: marker gate", () => {
     await runHeartbeatOnce({
       cfg,
       ...(params.reason ? { reason: params.reason } : {}),
+      intent: params.intent ?? "scheduled",
       deps: {
         whatsapp: sendWhatsApp as unknown,
         getQueueSize: () => 0,
@@ -90,6 +95,7 @@ describe("heartbeat ALERT: marker gate", () => {
     expect(hasHeartbeatAlertMarker("ALERT: gateway down")).toBe(true);
     expect(hasHeartbeatAlertMarker("  *Alert:* job failed")).toBe(true);
     expect(hasHeartbeatAlertMarker("[talos] ALERT: x", "[talos]")).toBe(true);
+    expect(hasHeartbeatAlertMarker("[bot]  ALERT: x", " [bot] ")).toBe(true);
     expect(hasHeartbeatAlertMarker("All sessions are fine, no alerts.")).toBe(false);
     expect(hasHeartbeatAlertMarker("Nothing to report; no ALERT: raised.")).toBe(false);
   });
@@ -111,6 +117,21 @@ describe("heartbeat ALERT: marker gate", () => {
     });
   });
 
+  it("delivers a marked alert behind a whitespace-padded response prefix", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const { sendWhatsApp } = await runPoll({
+        tmpDir,
+        storePath,
+        replySpy,
+        replyText: MARKED_ALERT,
+        prompt: MARKER_PROMPT,
+        responsePrefix: " [bot] ",
+      });
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toContain(MARKED_ALERT);
+    });
+  });
+
   it("delivers a marked alert when the configured prompt names the marker", async () => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
       const { sendWhatsApp } = await runPoll({
@@ -123,6 +144,20 @@ describe("heartbeat ALERT: marker gate", () => {
       expect(sendWhatsApp).toHaveBeenCalledTimes(1);
       expect(sendWhatsApp.mock.calls[0]?.[1]).toContain(MARKED_ALERT);
       expect(getLastHeartbeatEvent()?.status).toBe("sent");
+    });
+  });
+
+  it("does not gate explicitly requested immediate runs", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const { sendWhatsApp } = await runPoll({
+        tmpDir,
+        storePath,
+        replySpy,
+        replyText: UNMARKED_PROSE,
+        prompt: MARKER_PROMPT,
+        intent: "immediate",
+      });
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -154,7 +189,7 @@ describe("heartbeat ALERT: marker gate", () => {
       intent: Parameters<typeof requiresHeartbeatAlertMarker>[2] = "scheduled",
     ) => requiresHeartbeatAlertMarker(prepared, tasks, intent);
     expect(gated(plain)).toBe(true);
-    expect(gated(plain, [], undefined)).toBe(true);
+    expect(requiresHeartbeatAlertMarker(plain, [], undefined)).toBe(false);
     expect(gated({ ...plain, hasTaskContinuation: true })).toBe(false);
     expect(gated({ ...plain, hasExecCompletion: true })).toBe(false);
     expect(gated({ ...plain, hasCronEvents: true })).toBe(false);

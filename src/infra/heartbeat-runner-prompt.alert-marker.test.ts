@@ -39,12 +39,15 @@ function resolve(params: {
 }
 
 describe("heartbeat alert-marker opt-in comes from the configured prompt only", () => {
-  it("opts in when the configured prompt names the marker", () => {
-    const resolution = resolve({
-      prompt: `Check the sessions. Reply NO_REPLY unless something needs ${HEARTBEAT_ALERT_MARKER}`,
-    });
-    expect(resolution.configuredPromptOptsIntoAlertMarker).toBe(true);
-  });
+  it.each([HEARTBEAT_ALERT_MARKER, "Alert:", "alert:"])(
+    "opts in when the configured prompt names %s",
+    (marker) => {
+      const resolution = resolve({
+        prompt: `Check the sessions. Reply NO_REPLY unless something needs ${marker}`,
+      });
+      expect(resolution.configuredPromptOptsIntoAlertMarker).toBe(true);
+    },
+  );
 
   it("does not opt in when only the appended monitor scratch names the marker", () => {
     const resolution = resolve({

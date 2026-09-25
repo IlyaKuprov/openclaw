@@ -72,8 +72,9 @@ export { HEARTBEAT_ALERT_MARKER };
 /** Does a heartbeat reply open with the alert marker, past any prefix or markdown decoration? */
 export function hasHeartbeatAlertMarker(text: string, responsePrefix?: string): boolean {
   let body = text.trimStart();
-  if (responsePrefix && body.startsWith(responsePrefix)) {
-    body = body.slice(responsePrefix.length).trimStart();
+  const prefix = responsePrefix?.trim();
+  if (prefix && body.startsWith(prefix)) {
+    body = body.slice(prefix.length).trimStart();
   }
   body = body.replace(/^[*_`>#\s-]+/, "");
   return body.toUpperCase().startsWith(HEARTBEAT_ALERT_MARKER);
@@ -102,7 +103,7 @@ export function requiresHeartbeatAlertMarker(
   // task and manual wakes, and any pending generic system event, are relays
   // whose reply the owner asked for.
   return (
-    (intent === undefined || intent === "scheduled") &&
+    intent === "scheduled" &&
     !prepared.hasExecCompletion &&
     !prepared.hasCronEvents &&
     !prepared.hasTaskContinuation &&

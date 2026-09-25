@@ -308,7 +308,7 @@ ${completionInstruction}`;
   );
   return {
     prompt: basePromptWithDirectives,
-    configuredPromptOptsIntoAlertMarker: basePrompt.includes(HEARTBEAT_ALERT_MARKER),
+    configuredPromptOptsIntoAlertMarker: basePrompt.toUpperCase().includes(HEARTBEAT_ALERT_MARKER),
     hasTaskContinuation:
       hasExecCompletion ||
       hasBackgroundTaskEvent ||
