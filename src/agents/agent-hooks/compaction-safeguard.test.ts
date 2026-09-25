@@ -1199,7 +1199,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(summarizableToolResultIds).not.toContain("call_recent");
   });
 
-  it("includes preserved tool results in the preserved-turns section", () => {
+  it("excludes paired recent results from the verbatim section", () => {
     const split = splitPreservedRecentTurns({
       messages: [
         { role: "user", content: "older ask", timestamp: 1 },
@@ -1227,6 +1227,52 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(section).not.toContain("- Tool result (read): recent raw output");
     expect(section).toContain("- User: recent ask");
     expect(section).toContain("- Assistant: recent final answer");
+  });
+
+  it("summarizes recent result-only facts without copying tool receipts verbatim (HF-47)", async () => {
+    mockSummarizeInStages.mockReset().mockResolvedValue(summaryResult("measured 17.3 Hz"));
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 1,
+    });
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "older ask", timestamp: 1 },
+          castAgentMessage(timestampedTextAssistant("older answer", 2)),
+          { role: "user", content: "measure the line width", timestamp: 3 },
+          castAgentMessage({
+            role: "assistant",
+            content: [{ type: "toolCall", id: "recent_read", name: "read", arguments: {} }],
+            timestamp: 4,
+          }),
+          castAgentMessage({
+            role: "toolResult",
+            toolCallId: "recent_read",
+            toolName: "read",
+            content: [{ type: "text", text: "measured 17.3 Hz" }],
+            timestamp: 5,
+          }),
+          castAgentMessage(timestampedTextAssistant("I'll report the result next.", 6)),
+        ] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1_500,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+    const summarizationInput = requireRecord(mockCallArg(mockSummarizeInStages));
+    expect(JSON.stringify(summarizationInput.messages)).toContain("measured 17.3 Hz");
+    const summary = expectCompactionResult(result).summary;
+    expect(summary).toContain("measured 17.3 Hz");
+    expect(summary).not.toContain("- Tool result (read):");
   });
 
   it("keeps only the spoken turns of an oversized tool interaction (HF-47)", () => {
@@ -2951,7 +2997,9 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
     const retry = requireRecord(mockCallArg(mockSummarizeInStages, 1));
     expect(retry.customInstructions).toContain("Quality check feedback");
-    expect(retry.customInstructions).toContain("complete summary body within 40000 UTF-16");
+    expect(retry.customInstructions).toContain(
+      `complete summary body within ${MAX_COMPACTION_SUMMARY_CHARS} UTF-16`,
+    );
   });
 
   it("keeps an owner-provided request pending when its completed turn is preserved", async () => {
@@ -3038,7 +3086,10 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(finalSummary).toContain(
       `## Pending user asks\nLatest user request context: ${JSON.stringify(latestAsk)}`,
     );
-    expect(mockSummarizeInStages).not.toHaveBeenCalled();
+    expect(mockSummarizeInStages).toHaveBeenCalledOnce();
+    expect(JSON.stringify(requireRecord(mockCallArg(mockSummarizeInStages)).messages)).toContain(
+      completion,
+    );
   });
 
   it("does not treat a terminal assistant response as proof that the latest task is complete", async () => {
@@ -3510,9 +3561,25 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(mockSummarizeInStages).not.toHaveBeenCalled();
   });
 
-  it("ignores truncated numeric tool-result noise in strict all-preserved audits", async () => {
+  it("ignores numeric tool-result noise in strict all-preserved audits", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "report metric status";
+    mockSummarizeInStages.mockResolvedValue(
+      summaryResult(
+        [
+          "## Decisions",
+          "metric checked",
+          "## Open TODOs",
+          "None.",
+          "## Constraints/Rules",
+          "None.",
+          "## Pending user asks",
+          latestAsk,
+          "## Exact identifiers",
+          "None captured.",
+        ].join("\n"),
+      ),
+    );
     const sessionManager = stubSessionManager();
     setCompactionSafeguardRuntime(sessionManager, {
       model: createAnthropicModelFixture(),
@@ -3567,7 +3634,10 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(summary).not.toContain("23456789e");
     expect(summary).not.toContain("987654321");
     expect(summary).not.toContain("12345678");
-    expect(mockSummarizeInStages).not.toHaveBeenCalled();
+    expect(mockSummarizeInStages).toHaveBeenCalledOnce();
+    expect(JSON.stringify(requireRecord(mockCallArg(mockSummarizeInStages)).messages)).toContain(
+      "metric=0.123456789",
+    );
     expect(mockAuditSummaryQuality).toHaveBeenCalledTimes(1);
     const auditInput = requireRecord(mockCallArg(mockAuditSummaryQuality));
     expect(auditInput.identifiers).toEqual([]);
@@ -4292,7 +4362,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
   it("retains provider body sentinels and emits one redacted warning when suffixes overflow", async () => {
     const sensitiveSentinel = "credential-sentinel-never-log";
-    const providerBody = `BODY-START${"b".repeat(8_500)}BODY-MIDDLE${"b".repeat(8_500)}BODY-END`;
+    const providerBody = `BODY-START${"b".repeat(3_400)}BODY-MIDDLE${"b".repeat(3_400)}BODY-END`;
     const providerSummarize = vi.fn().mockResolvedValue(providerBody);
     installCompactionProviderForTest({
       id: "overflow-provider",
