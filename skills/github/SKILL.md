@@ -45,7 +45,7 @@ gh pr create --repo owner/repo --title "feat: title" --body-file /tmp/pr.md
 gh pr merge 55 --repo owner/repo --squash
 ```
 
-When creating or refreshing a commit or PR, visibly include the exact ordered `Worked on by` list from the authoritative Git attribution context for the current turn; use `## Worked on by` in PR bodies. Preserve its exact `Co-authored-by` trailers in commits, including after history rewrites. Never infer identities from names or chat, include bots or opted-out people, or reorder the supplied contributors.
+When creating or refreshing a commit or PR, use the exact ordered `Worked on by` GitHub logins supplied by the session's Git co-author prompt; include `## Worked on by` in PR bodies when that list is present. Preserve its exact `Co-authored-by` trailers in commits, including after history rewrites. Never infer identities from names, chat, or trailers, include bots or opted-out people, or reorder the supplied contributors.
 
 When creating or refreshing a PR body, append this final footer only when the Runtime line supplies `sessionUrl=<exact-url>`. Replace `<sessionUrl>` with that URL verbatim; do not construct or modify it. Omit the footer when `sessionUrl` is absent. Preserve any publication marker before exactly one footer, and keep the footer final:
 
@@ -78,6 +78,12 @@ gh pr comment 55 --repo owner/repo --body "@codex review"   # when no review app
 - Report the PR only when the newest Codex review covers the current head SHA with no
   unaddressed findings; otherwise say what is outstanding instead of calling it done.
 
+When the user asks to land or merge a PR, a clean review is a gate, not the terminal outcome.
+Keep the job active through pending CI checks, conflicts, and required merge gates; address
+in-scope failures and recheck the updated head. Verify `state == MERGED` with
+`gh pr view ... --json state,mergedAt,mergeCommit` before reporting the merge complete.
+If new authority or an unavailable credential blocks the merge, report that blocker and
+leave the PR unmerged.
 
 ## Issues
 

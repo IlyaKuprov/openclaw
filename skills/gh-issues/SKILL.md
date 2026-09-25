@@ -153,8 +153,9 @@ Commit with conventional message.
 Push to PUSH_REMOTE.
 Open PR against SOURCE_REPO BASE_BRANCH.
 PR body: What Problem This Solves + Why This Change Was Made + User Impact + Evidence + visible Fixes SOURCE_REPO#<n>.
-Report PR URL or failure reason.
-Send completion/failure with openclaw message send if route provided.
+Follow the github skill's Codex review gate on the current head: wait for review, address findings, push, request re-review when the head moves, and wait until the current head is clean. A pending review or an opened PR is an interim result, not completion.
+Report PR URL and clean review evidence, or the outstanding gate/failure reason.
+Send completion only after the review gate clears; if a route is provided but work stops earlier, send an explicit unfinished or failure status instead.
 ```
 
 Use `coding-agent` launch rules when available.
@@ -164,16 +165,10 @@ Use `coding-agent` launch rules when available.
 Poll workers with `process` or task registry. Report:
 
 - issue number + title.
-- status: PR opened, skipped, failed, timed out.
+- status: Codex-clean PR, PR opened with review pending (unfinished), skipped, failed, timed out.
 - PR URL or reason.
 
-Notify channel only with final compact summary.
-
-An opened PR is not a finished PR: it must still clear the Codex review gate in the `github`
-skill — wait for `chatgpt-codex-connector` on the current head, address its findings, push,
-and request `@codex review` again until a review of the current head SHA is clean. Report a PR
-as done only after that, and name what is outstanding otherwise.
-
+Notify channel only with final compact summary, distinguishing pending PRs from completed ones.
 
 ## Reviews-only / watch reviews
 

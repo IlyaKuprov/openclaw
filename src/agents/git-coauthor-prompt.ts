@@ -24,16 +24,17 @@ export function resolveSessionGitCoauthorPrompt(params: {
     return undefined;
   }
   try {
-    const trailers = resolveGitCoauthorAttribution({
+    const attribution = resolveGitCoauthorAttribution({
       config: params.config,
       agentId: params.agentId,
       sessionKey: params.sessionKey,
       storePath: params.storePath,
-    })?.trailers;
-    return trailers?.length
+    });
+    return attribution?.trailers.length
       ? [
           "Git co-authors: add these exact trailers to every commit you make from this session.",
-          ...trailers,
+          ...attribution.trailers,
+          `Worked on by (verified GitHub logins, in order): ${attribution.logins.map((login) => `@${login}`).join(", ")}`,
         ].join("\n")
       : undefined;
   } catch (error) {
