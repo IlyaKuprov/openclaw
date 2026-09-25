@@ -198,7 +198,9 @@ Patch minimal changes.
 Run relevant tests.
 Commit and push normally; do not force-push unless explicitly told.
 Reply to addressed comments with fix + commit/file reference.
-Report comments addressed/skipped and proof.
+Follow the github skill's Codex review gate on the new head: request re-review if none appears, wait for a clean verdict on the current head, address further findings, and repeat after each push that moves the head.
+Report comments addressed/skipped and proof with clean current-head review evidence only after the gate clears; otherwise report the outstanding gate/failure reason as explicitly unfinished.
+Send completion to the notification route only after the gate clears; if work stops earlier, send an explicit unfinished or failure status instead.
 ```
 
 ## Watch mode
