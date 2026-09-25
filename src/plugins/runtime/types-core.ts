@@ -400,6 +400,7 @@ export type PluginRuntimeCore = {
         archiveRemovedEntryTranscripts?: boolean;
         orphanTranscriptMinAgeMs: number;
         pluginOwnerId?: string;
+        requireExactPluginOwnerId?: boolean;
         sessionKeySegmentPrefix: string;
         storePath: string;
         transcriptContentMarker: string;

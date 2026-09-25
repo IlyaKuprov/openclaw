@@ -474,6 +474,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                   fallbackEntry: params.entry,
                   replaceEntry: true,
                   update: (_entry, context) => {
+                    assertRuntimeCurrent();
                     const before = context.existingEntry;
                     assertSessionEntryOwned({
                       action: "upsert",
@@ -493,7 +494,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             },
             cleanupSessionLifecycleArtifacts: async (params) =>
               await runWithPluginScope(() =>
-                session.cleanupSessionLifecycleArtifacts({ ...params, pluginOwnerId: pluginId }),
+                session.cleanupSessionLifecycleArtifacts({
+                  ...params,
+                  pluginOwnerId: pluginId,
+                  requireExactPluginOwnerId: true,
+                }),
               ),
             runWithWorkAdmission: async (params, run) => {
               const { resolveStoredSessionExecutionOwner } = await loadSessionOwnership();

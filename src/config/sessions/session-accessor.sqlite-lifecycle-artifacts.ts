@@ -122,6 +122,7 @@ function planSqliteOrphanLifecycleTranscriptStateDeletes(params: {
   database: OpenClawAgentDatabase;
   excludedSessionIds?: ReadonlySet<string>;
   pluginOwnerId?: string;
+  requireExactPluginOwnerId?: boolean;
   referencedSessionIds: ReadonlySet<string>;
   transcriptContentMarker: string;
   orphanTranscriptMinAgeMs: number;
@@ -148,7 +149,11 @@ function planSqliteOrphanLifecycleTranscriptStateDeletes(params: {
       !sessionKeyBelongsToAgent(row.session_key, params.agentId) ||
       params.referencedSessionIds.has(row.session_id) ||
       params.excludedSessionIds?.has(row.session_id) ||
-      (params.pluginOwnerId && row.plugin_owner_id && row.plugin_owner_id !== params.pluginOwnerId)
+      (params.requireExactPluginOwnerId
+        ? row.plugin_owner_id !== params.pluginOwnerId
+        : params.pluginOwnerId &&
+          row.plugin_owner_id &&
+          row.plugin_owner_id !== params.pluginOwnerId)
     ) {
       continue;
     }
@@ -190,6 +195,7 @@ export function planSessionLifecycleArtifactCleanup(
     archiveRemovedEntryTranscripts: boolean;
     archiveDirectory: string;
     pluginOwnerId?: string;
+    requireExactPluginOwnerId?: boolean;
     sessionKeySegmentPrefix: string;
     transcriptContentMarker: string;
     orphanTranscriptMinAgeMs: number;
@@ -260,6 +266,7 @@ export function planSessionLifecycleArtifactCleanup(
       // Window ownership survives placeholder nodes and ownerless row projections; preserve
       // the entire node when any referenced generation belongs to another plugin.
       if (
+        (params.requireExactPluginOwnerId && entry?.pluginOwnerId !== params.pluginOwnerId) ||
         (params.pluginOwnerId &&
           entry?.pluginOwnerId &&
           entry.pluginOwnerId !== params.pluginOwnerId) ||
@@ -323,6 +330,7 @@ export function planSessionLifecycleArtifactCleanup(
         database,
         excludedSessionIds: removedSessionIds,
         ...(params.pluginOwnerId ? { pluginOwnerId: params.pluginOwnerId } : {}),
+        ...(params.requireExactPluginOwnerId ? { requireExactPluginOwnerId: true } : {}),
         referencedSessionIds,
         transcriptContentMarker: params.transcriptContentMarker,
         orphanTranscriptMinAgeMs: params.orphanTranscriptMinAgeMs,

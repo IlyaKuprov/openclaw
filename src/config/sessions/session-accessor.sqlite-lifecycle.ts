@@ -127,6 +127,9 @@ export async function cleanupSessionLifecycleArtifactsCore(
   const sessionKeySegmentPrefix = params.sessionKeySegmentPrefix.trim();
   const transcriptContentMarker = params.transcriptContentMarker;
   const pluginOwnerId = params.pluginOwnerId?.trim();
+  if (params.requireExactPluginOwnerId && !pluginOwnerId) {
+    throw new Error("Exact plugin-owned cleanup requires a plugin owner ID.");
+  }
   if (!sessionKeySegmentPrefix || !transcriptContentMarker) {
     return { removedEntries: 0, archivedTranscriptArtifacts: 0 };
   }
@@ -154,6 +157,7 @@ export async function cleanupSessionLifecycleArtifactsCore(
             archiveRemovedEntryTranscripts: params.archiveRemovedEntryTranscripts !== false,
             archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
             ...(pluginOwnerId ? { pluginOwnerId } : {}),
+            ...(params.requireExactPluginOwnerId ? { requireExactPluginOwnerId: true } : {}),
             sessionKeySegmentPrefix,
             transcriptContentMarker,
             orphanTranscriptMinAgeMs: params.orphanTranscriptMinAgeMs,

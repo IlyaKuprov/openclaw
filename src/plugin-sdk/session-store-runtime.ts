@@ -341,6 +341,11 @@ export async function updateSessionStore<T>(
     update: async (store) => {
       const internalStore = store as Record<string, InternalSessionEntry>;
       const publicStore = projectPluginSessionStore(internalStore);
+      const protectedEntries = new Map<string, SessionEntry>(
+        Object.entries(publicStore)
+          .filter(([key]) => isInternalEffectsStoreKey(key))
+          .map(([key, entry]) => [key, structuredClone(entry)]),
+      );
       const result = await mutator(publicStore);
       const persist = !options.skipSaveWhenResult?.(result);
       if (persist) {
@@ -351,13 +356,7 @@ export async function updateSessionStore<T>(
           if (!isInternalEffectsStoreKey(sessionKey)) {
             continue;
           }
-          const before = internalStore[sessionKey];
-          if (
-            !isDeepStrictEqual(
-              before ? projectPluginSessionEntry(before) : undefined,
-              publicStore[sessionKey],
-            )
-          ) {
+          if (!isDeepStrictEqual(protectedEntries.get(sessionKey), publicStore[sessionKey])) {
             assertPublicSessionWriteTarget(sessionKey);
           }
         }

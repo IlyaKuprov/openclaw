@@ -31,7 +31,12 @@ describe("public plugin session-store writers", () => {
     const storePath = path.join(dir, "sessions.json");
     const sessionKey = "agent:main:internal-session-effects:owner-child";
     const scope = { agentId: "main", sessionKey, storePath };
-    const ownerEntry = { sessionId: "owned-child", updatedAt: 1, pluginOwnerId: "active-memory" };
+    const ownerEntry = {
+      sessionId: "owned-child",
+      updatedAt: 1,
+      pluginOwnerId: "active-memory",
+      pluginExtensions: { fixture: { state: { active: true } } },
+    };
     await upsertSessionEntryCore(scope, ownerEntry);
     const pluginRegistry = createRuntimeTestRegistry(createPluginRuntime());
     const { registry } = pluginRegistry;
@@ -81,6 +86,14 @@ describe("public plugin session-store writers", () => {
           store[sessionKey] = { ...ownerEntry, pluginOwnerId: "other-plugin" };
         }),
       ).rejects.toThrow(/internal session.*scoped plugin runtime/i);
+      await expect(
+        sdk.updateSessionStore(storePath, (store) => {
+          const extensions = store[sessionKey].pluginExtensions as {
+            fixture: { state: { active: boolean } };
+          };
+          extensions.fixture.state.active = false;
+        }),
+      ).rejects.toThrow(/internal session.*scoped plugin runtime/i);
       await expect(sdk.cleanupSessionLifecycleArtifacts(cleanup)).rejects.toThrow(
         /Cleaning internal sessions requires scoped plugin runtime/,
       );
@@ -88,6 +101,7 @@ describe("public plugin session-store writers", () => {
     expect(readStoredEntry(scope)).toMatchObject({
       sessionId: ownerEntry.sessionId,
       pluginOwnerId: ownerEntry.pluginOwnerId,
+      pluginExtensions: ownerEntry.pluginExtensions,
     });
 
     const ownerRecord = createPluginRecord({
@@ -110,6 +124,11 @@ describe("public plugin session-store writers", () => {
       label: "owner can still write",
     });
     const foreignApi = pluginRegistry.createApi(record, { config: {} });
+    const coreScope = {
+      ...scope,
+      sessionKey: "agent:main:internal-session-effects:core-hidden",
+    };
+    await upsertSessionEntryCore(coreScope, { sessionId: "core-hidden", updatedAt: 1 });
     await expect(
       foreignApi.runtime.agent.session.cleanupSessionLifecycleArtifacts({
         ...cleanup,
@@ -117,9 +136,11 @@ describe("public plugin session-store writers", () => {
       }),
     ).resolves.toMatchObject({ removedEntries: 0 });
     expect(readStoredEntry(scope)?.pluginOwnerId).toBe("active-memory");
+    expect(readStoredEntry(coreScope)?.sessionId).toBe("core-hidden");
     await expect(
       ownerApi.runtime.agent.session.cleanupSessionLifecycleArtifacts(cleanup),
     ).resolves.toMatchObject({ removedEntries: 1 });
     expect(readStoredEntry(scope)).toBeUndefined();
+    expect(readStoredEntry(coreScope)?.sessionId).toBe("core-hidden");
   });
 });

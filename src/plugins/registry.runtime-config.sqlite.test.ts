@@ -16,6 +16,45 @@ import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 
 describe("plugin registry SQLite session ownership", () => {
+  it("rejects a queued upsert after its plugin runtime is revoked", async () => {
+    await withTempHome(async () => {
+      const agentId = "main";
+      const sessionKey = "agent:main:internal-session-effects:revoked-child";
+      const storePath = resolveSessionStorePathCore(undefined, { agentId });
+      try {
+        const runtime = createPluginRuntime();
+        const originalPatch = runtime.agent.session.patchSessionEntry;
+        const registry = createRuntimeTestRegistry(runtime);
+        const record = createPluginRecord({
+          id: "other-plugin",
+          source: "/plugins/other-plugin/index.js",
+          origin: "bundled",
+          enabled: true,
+          configSchema: false,
+        });
+        const api = registry.createApi(record, { config: {} as OpenClawConfig });
+        Object.defineProperty(runtime.agent.session, "patchSessionEntry", {
+          configurable: true,
+          value: async (params: Parameters<typeof originalPatch>[0]) => {
+            registry.registry.plugins.splice(registry.registry.plugins.indexOf(record), 1);
+            return await originalPatch(params);
+          },
+        });
+        await expect(
+          api.runtime.agent.session.upsertSessionEntry({
+            agentId,
+            sessionKey,
+            storePath,
+            entry: { sessionId: "revoked", pluginOwnerId: "other-plugin", updatedAt: 1 },
+          }),
+        ).rejects.toThrow(/runtime is no longer active/);
+        expect(loadSessionEntryReadOnly({ agentId, sessionKey, storePath })).toBeUndefined();
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("does not let a foreign plugin forge a new internal child's ownership proof", async () => {
     await withTempHome(async () => {
       const agentId = "main";
