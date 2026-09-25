@@ -1276,12 +1276,14 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const latestPreparedAsk = extractLatestUserAsk(messagesToSummarize);
       const requiredAskContext = formatRequiredAskContext(latestUserAsk ?? "");
       const includePreservedContext =
-        !latestUnresolvedUserRequest &&
-        qualityGuardEnabled &&
-        latestPreparedAsk === latestUserAsk &&
-        Boolean(latestPreparedAsk) &&
-        (summaryTargetMessages.length > 0 ||
-          !preservedTurnsSectionLocal.text.includes(requiredAskContext));
+        // Receipts omitted from the verbatim section must still reach the summarizer.
+        preservedRecentMessages.some((message) => message.role === "toolResult") ||
+        (!latestUnresolvedUserRequest &&
+          qualityGuardEnabled &&
+          latestPreparedAsk === latestUserAsk &&
+          Boolean(latestPreparedAsk) &&
+          (summaryTargetMessages.length > 0 ||
+            !preservedTurnsSectionLocal.text.includes(requiredAskContext)));
       messagesToSummarize = includePreservedContext ? messagesToSummarize : summaryTargetMessages;
       const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
 
