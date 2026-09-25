@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
@@ -143,6 +144,114 @@ describe("channel lifecycle outbound route decision", () => {
     });
     expect(latestDurableSendRequest().payloads?.[0]?.replyToId).toBeUndefined();
   });
+
+  it("selects the root before source preparation can flush deferred provider media", async () => {
+    enableSlackRootDecision();
+    const sourceVisibleSend = vi.fn();
+    const preparePayload = vi.fn(async (payload: { text?: string }) => {
+      // WhatsApp's preparer flushes previously deferred media before returning a payload.
+      sourceVisibleSend("deferred-media");
+      return { ...payload, text: `${payload.text} (source prepared)` };
+    });
+    const sourceDurable = vi.fn(() => ({ to: "source-conversation" }));
+    const sourceDirect = vi.fn();
+    const onDelivered = vi.fn();
+    sendDurableMessageBatch.mockResolvedValue(createDurableSendResult(["slack-root"]));
+
+    await dispatchRoutedChannelTurn({
+      cfg,
+      channel: "whatsapp",
+      route: { agentId: "main", sessionKey: slackSessionKey },
+      ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "whatsapp" }),
+      delivery: {
+        preparePayload,
+        durable: sourceDurable,
+        deliver: sourceDirect,
+        onDelivered,
+      },
+    });
+
+    expect(sourceVisibleSend).not.toHaveBeenCalled();
+    expect(preparePayload).not.toHaveBeenCalled();
+    expect(sourceDurable).not.toHaveBeenCalled();
+    expect(sourceDirect).not.toHaveBeenCalled();
+    expect(latestDurableSendRequest()).toMatchObject({
+      channel: "slack",
+      to: "channel:C123",
+      payloads: [{ text: "reply" }],
+      threadId: null,
+      rootReplyOnly: true,
+    });
+    expect(onDelivered).toHaveBeenCalledWith(
+      { text: "reply" },
+      { kind: "final" },
+      expect.objectContaining({ messageIds: ["slack-root"], visibleReplySent: true }),
+    );
+  });
+
+  it.each(["block", "tool"] as const)(
+    "does not leak a visible %s through the source provider before the chosen owner settles",
+    async (kind) => {
+      const routeHook = enableSlackRootDecision();
+      const sourceVisibleSend = vi.fn();
+      const preparePayload = vi.fn(async (payload: { text?: string }) => {
+        sourceVisibleSend("deferred-media");
+        return payload;
+      });
+      const sourceDurable = vi.fn(() => ({ to: "source-conversation" }));
+      const sourceDirect = vi.fn(async () => {
+        sourceVisibleSend("direct");
+        return { visibleReplySent: true };
+      });
+      const onDelivered = vi.fn();
+      dispatchReplyWithRoutedChannelDispatcherCore.mockImplementationOnce(async (params) => {
+        const dispatcher = createReplyDispatcher(params.dispatcherOptions);
+        if (kind === "block") {
+          dispatcher.sendBlockReply({ text: "progress" });
+        } else {
+          dispatcher.sendToolResult({ text: "progress" });
+        }
+        dispatcher.markComplete();
+        const settledReceipt = await dispatcher.waitForIdle();
+        return {
+          queuedFinal: false,
+          counts: { tool: Number(kind === "tool"), block: Number(kind === "block"), final: 0 },
+          settledReceipt,
+        };
+      });
+
+      const result = await dispatchRoutedChannelTurn({
+        cfg,
+        channel: "whatsapp",
+        route: { agentId: "main", sessionKey: slackSessionKey },
+        ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "whatsapp" }),
+        delivery: {
+          preparePayload,
+          durable: sourceDurable,
+          deliver: sourceDirect,
+          observeMessageSent: true,
+          onDelivered,
+        },
+      });
+
+      expectDispatched(result);
+      expect(routeHook).toHaveBeenCalledOnce();
+      expect(sourceVisibleSend).not.toHaveBeenCalled();
+      expect(preparePayload).not.toHaveBeenCalled();
+      expect(sourceDurable).not.toHaveBeenCalled();
+      expect(sourceDirect).not.toHaveBeenCalled();
+      expect(sendDurableMessageBatch).not.toHaveBeenCalled();
+      expect(onDelivered).toHaveBeenCalledWith(
+        { text: "progress" },
+        expect.objectContaining({ kind }),
+        expect.objectContaining({ visibleReplySent: false, suppression: expect.anything() }),
+      );
+      expect(result.dispatchResult.settledReceipt).toMatchObject({
+        anyVisibleDelivered: false,
+        counts: { [kind]: { deliveredNotVisible: 1 } },
+      });
+    },
+  );
 
   it("forces a direct Slack final with local media to the durable channel root", async () => {
     enableSlackRootDecision();

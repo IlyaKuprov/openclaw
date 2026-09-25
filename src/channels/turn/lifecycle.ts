@@ -473,6 +473,48 @@ async function dispatchChannelTurnWithDeliveryOwner(
                     });
                   },
                   deliver: async (payload: ReplyPayload, info: ChannelDeliveryInfo) => {
+                    // Select the owner before entering source-channel preparation: a preparer
+                    // may flush previously deferred provider media as a visible side effect.
+                    // Probe the final route for intermediate kinds, then suppress those kinds
+                    // rather than presenting them to the final-only chosen owner as finals.
+                    const outboundRoute =
+                      params.admission?.kind === "observeOnly"
+                        ? undefined
+                        : await decideFinalOutboundRoute(
+                            params,
+                            info.kind === "final" ? info : { ...info, kind: "final" },
+                          );
+                    if (outboundRoute) {
+                      if (info.kind !== "final") {
+                        // The chosen owner only accepts final replies. Suppress intermediate
+                        // output rather than leaking it through the original provider.
+                        const suppression = createSuppressedChannelDeliveryResult({
+                          reason: "no_visible_result",
+                        });
+                        await runChannelDeliveryObserver({
+                          onDelivered: delivery.onDelivered,
+                          payload,
+                          info,
+                          result: suppression,
+                        });
+                        return suppression;
+                      }
+                      const routed = await deliverDecidedFinalOutboundRoute({
+                        turn: params,
+                        route: outboundRoute,
+                        payload,
+                        info,
+                        durableOptions: undefined,
+                        executionIdentityToken: agentRun[1],
+                      });
+                      await runChannelDeliveryObserver({
+                        onDelivered: delivery.onDelivered,
+                        payload: routed.payload,
+                        info,
+                        result: routed.delivery,
+                      });
+                      return routed.delivery;
+                    }
                     const preparedPayloadResult = delivery.preparePayload
                       ? await delivery.preparePayload(payload, info)
                       : payload;
@@ -493,32 +535,11 @@ async function dispatchChannelTurnWithDeliveryOwner(
                       });
                       return suppression;
                     }
-                    const outboundRoute =
-                      params.admission?.kind === "observeOnly"
-                        ? undefined
-                        : await decideFinalOutboundRoute(params, info);
                     const declaredDurable = "durable" in delivery ? delivery.durable : undefined;
                     const durableOptions =
                       typeof declaredDurable === "function"
                         ? await declaredDurable(preparedPayload, info)
                         : declaredDurable;
-                    if (outboundRoute) {
-                      const routed = await deliverDecidedFinalOutboundRoute({
-                        turn: params,
-                        route: outboundRoute,
-                        payload: preparedPayload,
-                        info,
-                        durableOptions,
-                        executionIdentityToken: agentRun[1],
-                      });
-                      await runChannelDeliveryObserver({
-                        onDelivered: delivery.onDelivered,
-                        payload: routed.payload,
-                        info,
-                        result: routed.delivery,
-                      });
-                      return routed.delivery;
-                    }
                     if (durableOptions) {
                       const durable = await deliverInboundReplyWithMessageSendContextCore({
                         cfg: params.cfg,
