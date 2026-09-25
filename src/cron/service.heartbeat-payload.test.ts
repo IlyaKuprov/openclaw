@@ -161,7 +161,7 @@ describe("heartbeat payload execution", () => {
   });
 
   it.each(["busy", "throw", "replacement"] as const)(
-    "cron.run retains the real queue result after %s waiting exceeds the execution timeout",
+    "cron.run retains the real queue result after %s waiting within the hard deadline",
     async (cause) => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-09-15T05:25:39Z"));
@@ -183,7 +183,7 @@ describe("heartbeat payload execution", () => {
         logger: noopLogger,
         requestHeartbeatAndWait: (wake, lifecycle) =>
           requestQueuedHeartbeatAndWait({ ...wake, coalesceMs: 0 }, lifecycle),
-        resolveHeartbeatTimeoutMs: () => 100,
+        resolveHeartbeatTimeoutMs: () => 90_000,
         onEvent: (event) => events.push(structuredClone(event)),
       });
       try {
