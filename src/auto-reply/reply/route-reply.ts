@@ -97,6 +97,8 @@ type RouteReplyParams = {
   policySessionKey?: string;
   /** Explicit conversation type for policy resolution when the policy key is generic. */
   policyConversationType?: SilentReplyConversationType;
+  /** Trusted owner-private command route; the session identifies the command, not its DM recipient. */
+  ownerPrivateCommandRoute?: true;
   /** Provider account id (multi-account). */
   accountId?: string;
   /** Originating sender id for sender-scoped outbound media policy. */
@@ -219,20 +221,22 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
     config: cfg,
     fallbackAgentId: params.agentId,
   });
-  // Followups may have originated on another surface while their exact session
-  // still belongs to a Slack channel. Decide before channel transforms or queue admission.
+  // Followups may originate elsewhere while their session belongs to a Slack channel.
+  // An owner-private command instead carries an independently resolved DM target;
+  // rerouting by the command's group session would disclose its contents there.
   let decidedRoute: Awaited<ReturnType<typeof decideOutboundRoute>>;
   try {
-    decidedRoute = params.sessionKey
-      ? await decideOutboundRoute({
-          cfg,
-          agentId: resolvedAgentId,
-          event: {
-            sessionKey: params.sessionKey,
-            original: { channel, to, accountId, threadId },
-          },
-        })
-      : undefined;
+    decidedRoute =
+      params.sessionKey && !params.ownerPrivateCommandRoute
+        ? await decideOutboundRoute({
+            cfg,
+            agentId: resolvedAgentId,
+            event: {
+              sessionKey: params.sessionKey,
+              original: { channel, to, accountId, threadId },
+            },
+          })
+        : undefined;
   } catch (error) {
     const message = `Failed to decide reply route: ${formatErrorMessage(error)}`;
     return {

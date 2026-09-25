@@ -19,6 +19,8 @@ import { createEmptyPluginRegistry } from "../../plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
+import { deliverPrivateCommandReply } from "./commands-private-route.js";
+import type { HandleCommandsParams } from "./commands-types.js";
 import { routeReply } from "./route-reply.js";
 
 const routeHook = vi.hoisted(() => ({
@@ -59,6 +61,7 @@ describe("routeReply host route decision with durable queue custody", () => {
   let storePath: string;
   let cfg: { session: { store: string } };
   let sendText: ReturnType<typeof createSendText>;
+  let sendMatrixText: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     const stateDir = fixtures.tmpDir();
@@ -93,6 +96,7 @@ describe("routeReply host route decision with durable queue custody", () => {
     routeHook.rewrite.mockClear();
     routeHook.decide.mockReset().mockResolvedValue(canonical);
     sendText = createSendText();
+    sendMatrixText = vi.fn(async () => ({ channel: "matrix" as const, messageId: "owner-dm" }));
     setActivePluginRegistry(
       createTestRegistry([
         {
@@ -114,7 +118,7 @@ describe("routeReply host route decision with durable queue custody", () => {
             id: "matrix",
             outbound: {
               deliveryMode: "direct",
-              sendText: async () => ({ channel: "matrix", messageId: "wrong-surface" }),
+              sendText: (params) => sendMatrixText(params),
               sendMedia: async () => ({ channel: "matrix", messageId: "wrong-surface" }),
             },
           }),
@@ -206,6 +210,32 @@ describe("routeReply host route decision with durable queue custody", () => {
     expect(
       getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, intentId, fixtures.tmpDir()),
     ).toBe("completed");
+  });
+
+  it("keeps an owner-private command response off the originating Slack channel", async () => {
+    const outcome = await deliverPrivateCommandReply({
+      commandParams: { cfg, sessionKey, agentId: "main" } as HandleCommandsParams,
+      targets: [{ channel: "matrix", to: "@owner:example.org" }],
+      reply: { text: "private diagnostics" },
+    });
+    expect(outcome).toBe("delivered");
+    expect(sendMatrixText).toHaveBeenCalledOnce();
+    expect(sendMatrixText.mock.lastCall?.[0]).toMatchObject({ to: "@owner:example.org" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(routeHook.decide).not.toHaveBeenCalled();
+    expect(await loadPendingDeliveries(fixtures.tmpDir())).toEqual([]);
+  });
+
+  it("sends a same-surface owner-private command to its DM, not the Slack group session", async () => {
+    const outcome = await deliverPrivateCommandReply({
+      commandParams: { cfg, sessionKey, agentId: "main" } as HandleCommandsParams,
+      targets: [{ channel: "slack", to: "user:U987", accountId: "work" }],
+      reply: { text: "private approval" },
+    });
+    expect(outcome).toBe("delivered");
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendText.mock.lastCall?.[0]).toMatchObject({ to: "user:U987", accountId: "work" });
+    expect(routeHook.decide).not.toHaveBeenCalled();
   });
 
   it("keeps a modifying hook from reintroducing an inherited reply target after root decision", async () => {
