@@ -43,15 +43,16 @@ export function validateOutboundRouteDecision(
     parsed.peerKind !== "channel" ||
     !persisted ||
     persisted.sessionKey !== event.sessionKey ||
-    !isNonempty(event.original.to) ||
-    !isNonempty(event.original.accountId) ||
+    !isNonempty(event.original.channel) ||
     !isNonempty(persisted.to) ||
     !isNonempty(persisted.accountId) ||
-    event.original.channel !== "slack" ||
     persisted.channel !== "slack" ||
-    event.original.to !== persisted.to ||
-    event.original.accountId !== persisted.accountId ||
-    event.original.threadId !== persisted.threadId ||
+    (event.original.channel === "slack" &&
+      (!isNonempty(event.original.to) ||
+        !isNonempty(event.original.accountId) ||
+        event.original.to !== persisted.to ||
+        event.original.accountId !== persisted.accountId ||
+        event.original.threadId !== persisted.threadId)) ||
     (parsed.threadId !== undefined &&
       (persisted.threadId === undefined || String(persisted.threadId) !== parsed.threadId)) ||
     !SLACK_CHANNEL_TARGET.test(persisted.to) ||

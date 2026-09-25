@@ -26,6 +26,16 @@ function routeRunner(handler: (...args: unknown[]) => unknown) {
 }
 
 describe("outbound_route_decision pure route contract", () => {
+  it("permits a non-Slack originating surface for a persisted Slack session without trusting its target", async () => {
+    const webchatEvent = {
+      ...event,
+      original: { channel: "webchat", to: "unrelated-webchat-target", accountId: "web" },
+    };
+    await expect(
+      routeRunner(() => root).runOutboundRouteDecision(webchatEvent, context, persisted),
+    ).resolves.toEqual(root);
+  });
+
   it("accepts an authoritative Slack root decision without sharing the persisted proof or media", async () => {
     const handler = vi.fn().mockReturnValue(root);
     const runner = routeRunner(handler);
