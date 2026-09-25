@@ -8,9 +8,10 @@ lifecycle scripts disabled and installs missing package directories through
 same-filesystem temporary copies and renames. On reapplication, it restores
 incomplete package directories from the verified stage (including scoped and
 nested zod packages), but leaves complete and different-version packages alone.
-The A2UI packages receive their own nested zod v3; an absent or non-v4 root
-zod rejects application before any mutation, and staged zod is never copied
-into the root.
+A2UI packages receive their own nested zod v3 only when their installed
+versions match the validated stage; different installed versions remain
+untouched. An absent or non-v4 root zod rejects application before any mutation,
+and staged zod is never copied into the root.
 
 Before installing the 2026.9.5 core, stage an offline cache with
 `bash overlay.sh --build-cache` if package-registry access at cutover is uncertain;

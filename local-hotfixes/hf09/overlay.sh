@@ -134,6 +134,19 @@ process.exit(incomplete() ? 0 : 1);
 NODE
 }
 
+same_package_version() {
+  node - "$1/package.json" "$2/package.json" <<'NODE'
+const fs = require('node:fs');
+try {
+  const [source, installed] = process.argv.slice(2).map((file) =>
+    JSON.parse(fs.readFileSync(file, 'utf8')).version);
+  process.exit(source && source === installed ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
 added=0
 repaired=0
 copy_package() {
@@ -174,7 +187,7 @@ for d in "$STAGE"/node_modules/*/; do
 done
 
 for p in @a2ui/lit @a2ui/web_core; do
-  if [ -d "$NM/$p" ]; then
+  if [ -d "$NM/$p" ] && same_package_version "$STAGE/node_modules/$p" "$NM/$p"; then
     copy_package "$STAGE/node_modules/zod" "$NM/$p/node_modules/zod"
   fi
 done
