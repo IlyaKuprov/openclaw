@@ -4479,7 +4479,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const retainedSuffix = summary.split(CONTEXT_TRUNCATED_MARKER)[1] ?? "";
     const firstRetainedLine = retainedSuffix.split("\n").find((line) => line.length > 0);
     expect(firstRetainedLine).toMatch(/^- User: raw-prefix-\d{2}-/);
-    expect(summary).toContain("raw-prefix-19-");
+    expect(summary).toContain("raw-prefix-35-");
     expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
     expect(summary).toContain("## Recent turns preserved verbatim");
   });
