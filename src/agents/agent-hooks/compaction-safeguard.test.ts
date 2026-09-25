@@ -1228,7 +1228,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
   });
 
   it("drops an oversized preserved tool interaction as one atomic group", () => {
-    const toolCalls = Array.from({ length: 30 }, (_, index) => ({
+    const toolCalls = Array.from({ length: 40 }, (_, index) => ({
       type: "toolCall",
       id: `call_${index}`,
       name: "read",
@@ -1252,7 +1252,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
             timestamp: index + 3,
           }),
         ),
-        castAgentMessage(timestampedTextAssistant("terminal answer survives", 33)),
+        castAgentMessage(timestampedTextAssistant("terminal answer survives", 43)),
       ],
       recentTurnsPreserve: 1,
     });
@@ -2529,7 +2529,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     // A model that hoards every identifier it has ever seen: the list alone is
     // larger than the whole artifact budget while the real sections stay small.
     const hoardedIdentifiers = Array.from(
-      { length: 400 },
+      { length: 700 },
       (_, index) => `- /home/vac/clawd/tmp/session-artifacts/run-${index}/output.log`,
     ).join("\n");
     const generatedSummary = [
@@ -2949,7 +2949,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
     const retry = requireRecord(mockCallArg(mockSummarizeInStages, 1));
     expect(retry.customInstructions).toContain("Quality check feedback");
-    expect(retry.customInstructions).toContain("complete summary body within 16000 UTF-16");
+    expect(retry.customInstructions).toContain("complete summary body within 40000 UTF-16");
   });
 
   it("keeps an owner-provided request pending when its completed turn is preserved", async () => {
@@ -4257,8 +4257,8 @@ describe("compaction-safeguard recent-turn preservation", () => {
       provider: "preserved-overflow-provider",
       recentTurnsPreserve: 12,
     });
-    const messagesToSummarize = Array.from({ length: 24 }, (_, index) => ({
-      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+    const messagesToSummarize = Array.from({ length: 36 }, (_, index) => ({
+      role: index % 3 === 0 ? ("user" as const) : ("assistant" as const),
       content: `preserved-${index}-${sensitiveSentinel}-${"p".repeat(700)}`,
       timestamp: index + 1,
     })) as AgentMessage[];
@@ -4302,12 +4302,12 @@ describe("compaction-safeguard recent-turn preservation", () => {
       provider: "overflow-provider",
       recentTurnsPreserve: 12,
     });
-    const messagesToSummarize = Array.from({ length: 24 }, (_, index) => ({
-      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+    const messagesToSummarize = Array.from({ length: 36 }, (_, index) => ({
+      role: index % 3 === 0 ? ("user" as const) : ("assistant" as const),
       content: `preserved-${index}-${"p".repeat(700)}`,
       timestamp: index + 1,
     })) as AgentMessage[];
-    const turnPrefixMessages = Array.from({ length: 20 }, (_, index) => ({
+    const turnPrefixMessages = Array.from({ length: 36 }, (_, index) => ({
       role: "user" as const,
       content: `raw-prefix-${index}-${sensitiveSentinel}-${"r".repeat(700)}`,
       timestamp: index + 100,
@@ -4344,7 +4344,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
   });
 
   it("starts a finally trimmed raw split-turn suffix at a complete message boundary", async () => {
-    const providerBody = `BODY-START${"b".repeat(6_760)}BODY-END`;
+    const providerBody = `BODY-START${"b".repeat(19_980)}BODY-END`;
     const providerSummarize = vi.fn().mockResolvedValue(providerBody);
     installCompactionProviderForTest({
       id: "boundary-provider",
@@ -4361,7 +4361,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
       content: `preserved-${index}-${"p".repeat(700)}`,
       timestamp: index + 1,
     })) as AgentMessage[];
-    const turnPrefixMessages = Array.from({ length: 20 }, (_, index) => ({
+    const turnPrefixMessages = Array.from({ length: 36 }, (_, index) => ({
       role: "user" as const,
       content: `raw-prefix-${String(index).padStart(2, "0")}-${"r".repeat(700)}`,
       timestamp: index + 100,
@@ -4392,7 +4392,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
   });
 
   it("finally trims a raw tool interaction only at its atomic boundary", async () => {
-    const providerSummarize = vi.fn().mockResolvedValue(`BODY-START${"b".repeat(9_000)}BODY-END`);
+    const providerSummarize = vi.fn().mockResolvedValue(`BODY-START${"b".repeat(19_980)}BODY-END`);
     installCompactionProviderForTest({
       id: "tool-boundary-provider",
       label: "Tool Boundary Provider",
@@ -4403,8 +4403,8 @@ describe("compaction-safeguard recent-turn preservation", () => {
       provider: "tool-boundary-provider",
       recentTurnsPreserve: 3,
     });
-    const messagesToSummarize = Array.from({ length: 6 }, (_, index) => ({
-      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+    const messagesToSummarize = Array.from({ length: 24 }, (_, index) => ({
+      role: index % 8 === 0 ? ("user" as const) : ("assistant" as const),
       content: `preserved-${index}-${"p".repeat(600)}`,
       timestamp: index + 1,
     })) as AgentMessage[];
