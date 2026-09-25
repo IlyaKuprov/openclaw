@@ -14,7 +14,7 @@ const runCore = vi.hoisted(() => vi.fn());
 vi.mock("../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: runCore }));
 
 describe("registered plugin embedded-agent admission fence", () => {
-  async function preparePendingRun() {
+  async function preparePendingRun(options: { legacyInternal?: boolean } = {}) {
     const runtime = createPluginRuntime();
     const registry = createRuntimeTestRegistry(runtime);
     const record = createPluginRecord({
@@ -26,7 +26,9 @@ describe("registered plugin embedded-agent admission fence", () => {
     });
     const api = registry.createApi(record, { config: {} as OpenClawConfig });
     const agentId = "main";
-    const sessionKey = "agent:main:telegram:direct:owner:active-memory:recall-admission";
+    const sessionKey = options.legacyInternal
+      ? "agent:main:internal-session-effects:active-memory:legacy-admission"
+      : "agent:main:telegram:direct:owner:active-memory:recall-admission";
     const sessionId = "same-child-id";
     const storePath = runtime.agent.session.resolveStorePath(undefined, { agentId });
     const scope = { agentId, sessionKey, storePath };
@@ -68,11 +70,23 @@ describe("registered plugin embedded-agent admission fence", () => {
       sessionId,
       sessionKey,
       agentId,
-      sessionTarget: { ...scope, sessionId },
+      ...(options.legacyInternal ? {} : { sessionTarget: { ...scope, sessionId } }),
       workspaceDir: "/tmp/workspace",
       timeoutMs: 1000,
     });
-    await entered;
+    if (options.legacyInternal) {
+      // The fixed wrapper rejects before the runner; the old one reaches the
+      // paused runner and can race with a same-ID replacement.
+      await Promise.race([
+        entered,
+        pending.then(
+          () => undefined,
+          () => undefined,
+        ),
+      ]);
+    } else {
+      await entered;
+    }
     return { pending, release, runtime, registry, record, scope, create, original };
   }
 
@@ -90,6 +104,47 @@ describe("registered plugin embedded-agent admission fence", () => {
       expect(loadExactSessionEntryReadOnly(scope)?.entry).toEqual(original);
       release();
       await expect(pending).rejects.toThrow(/owner|session/i);
+      expect(runCore).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("rejects a legacy internal run before a same-ID replacement can reach downstream admission", async () => {
+    await withOpenClawTestState({ label: "plugin-admission-legacy" }, async () => {
+      const { pending, release, scope, create } = await preparePendingRun({ legacyInternal: true });
+      await deleteSessionEntryLifecycle({
+        agentId: scope.agentId,
+        archiveTranscript: false,
+        deleteTranscriptWithoutArchive: true,
+        storePath: scope.storePath,
+        target: { canonicalKey: scope.sessionKey, storeKeys: [scope.sessionKey] },
+      });
+      await create();
+      release();
+      await expect(pending).rejects.toThrow(/exact session target identity/);
+    });
+  });
+
+  it("keeps the admitted run when an unrelated SQLite store mutates the same agent and key", async () => {
+    await withOpenClawTestState({ label: "plugin-admission-other-store" }, async () => {
+      const { pending, release, runtime, scope } = await preparePendingRun();
+      const otherStore = { ...scope, storePath: `${scope.storePath}.unrelated.sqlite` };
+      await runtime.agent.session.patchSessionEntry({
+        ...otherStore,
+        fallbackEntry: { sessionId: "same-child-id", pluginOwnerId: "active-memory", updatedAt: 1 },
+        replaceEntry: true,
+        skipMaintenance: true,
+        update: (entry, context) =>
+          context.existingEntry ? null : { ...entry, pluginOwnerId: "active-memory" },
+      });
+      await deleteSessionEntryLifecycle({
+        agentId: otherStore.agentId,
+        archiveTranscript: false,
+        deleteTranscriptWithoutArchive: true,
+        storePath: otherStore.storePath,
+        target: { canonicalKey: otherStore.sessionKey, storeKeys: [otherStore.sessionKey] },
+      });
+      release();
+      await expect(pending).resolves.toEqual({ payloads: [] });
       expect(runCore).toHaveBeenCalledOnce();
     });
   });

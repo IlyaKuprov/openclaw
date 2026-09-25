@@ -711,6 +711,7 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
           : undefined;
       // Capture the persisted child before the lazy import can yield. A key and
       // session ID alone can name a different plugin's replacement afterward.
+      const original = scope ? loadExactSessionEntryReadOnly(scope)?.entry : undefined;
       let changed = false;
       const unsubscribe = scope
         ? onSessionIdentityMutation((mutation) => {
@@ -718,12 +719,20 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
               mutation.previous.sessionKeys.includes(scope.sessionKey) ||
               ("current" in mutation && mutation.current.sessionKeys.includes(scope.sessionKey))
             ) {
-              changed = true;
+              // Events omit the physical store. Only a change to this exact
+              // row revokes the run; same-key mutations in another DB do not.
+              const current = loadExactSessionEntryReadOnly(scope)?.entry;
+              if (
+                Boolean(current) !== Boolean(original) ||
+                current?.sessionId !== original?.sessionId ||
+                current?.pluginOwnerId !== original?.pluginOwnerId
+              ) {
+                changed = true;
+              }
             }
           })
         : undefined;
       try {
-        const original = scope ? loadExactSessionEntryReadOnly(scope)?.entry : undefined;
         if (original?.pluginOwnerId && original.pluginOwnerId !== pluginId) {
           throw new Error("Plugin embedded-agent session owner changed");
         }

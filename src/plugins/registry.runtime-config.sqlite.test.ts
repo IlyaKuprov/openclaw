@@ -419,6 +419,69 @@ describe("plugin registry SQLite session ownership", () => {
     });
   });
 
+  it("requires an exact target for legacy owned internal runs while preserving ordinary legacy runs", async () => {
+    await withTempHome(async (home) => {
+      const agentId = "main";
+      const storePath = resolveSessionStorePathCore(undefined, { agentId });
+      const internalKey = "agent:main:internal-session-effects:legacy-recall";
+      const ordinaryKey = "agent:main:telegram:direct:legacy-run";
+      const runtime = createPluginRuntime();
+      const runEmbeddedAgent = vi.fn(async () => ({
+        ok: true,
+      })) as unknown as PluginRuntime["agent"]["runEmbeddedAgent"];
+      Object.defineProperty(runtime.agent, "runEmbeddedAgent", {
+        configurable: true,
+        value: runEmbeddedAgent,
+      });
+      const registry = createRuntimeTestRegistry(runtime);
+      const api = registry.createApi(
+        createPluginRecord({
+          id: "active-memory",
+          source: "/plugins/active-memory/index.js",
+          origin: "bundled",
+          enabled: true,
+          configSchema: false,
+        }),
+        { config: {} as OpenClawConfig },
+      );
+      const params = {
+        agentId,
+        sessionId: "legacy-id",
+        sessionKey: internalKey,
+        workspaceDir: path.join(home, "workspace"),
+        prompt: "legacy recall",
+        timeoutMs: 1000,
+        runId: "legacy-id",
+      } as Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0];
+      try {
+        await replaceSessionEntry(
+          { agentId, sessionKey: internalKey, storePath },
+          { sessionId: params.sessionId, pluginOwnerId: "active-memory", updatedAt: 1 },
+        );
+        await expect(api.runtime.agent.runEmbeddedAgent(params)).rejects.toThrow(
+          /exact session target identity/,
+        );
+        expect(runEmbeddedAgent).not.toHaveBeenCalled();
+
+        await replaceSessionEntry(
+          { agentId, sessionKey: ordinaryKey, storePath },
+          { sessionId: "ordinary-id", updatedAt: 1 },
+        );
+        await expect(
+          api.runtime.agent.runEmbeddedAgent({
+            ...params,
+            sessionKey: ordinaryKey,
+            sessionId: "ordinary-id",
+            runId: "ordinary-id",
+          }),
+        ).resolves.toEqual({ ok: true });
+        expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("rejects an ID-only embedded run targeting another plugin's hidden internal session", async () => {
     await withTempHome(async (home) => {
       const agentId = "main";

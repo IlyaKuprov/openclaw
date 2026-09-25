@@ -437,6 +437,13 @@ export function createPluginSessionOwnership(
       throw new Error("Delegated agent execution requires one exact session key.");
     }
     const sessionKey = targetSessionKey ?? directSessionKey;
+    // Legacy key/ID pairs do not identify the SQLite store or the same-row
+    // generation after an await. Internal plugin work needs the exact target.
+    if (sessionKey && isInternalEffectsStoreKey(sessionKey) && !target) {
+      throw new Error(
+        `Plugin "${pluginId}" may execute a persisted internal session only with its exact session target identity.`,
+      );
+    }
     const storePath = normalizeOptionalString(target?.storePath);
     const agentId = normalizeOptionalString(target?.agentId ?? params.agentId);
     const sessionKeyAgentId = parseAgentSessionKey(sessionKey)?.agentId;
