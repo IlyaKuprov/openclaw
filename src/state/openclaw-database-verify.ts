@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import path from "node:path";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   applyOpenClawDatabaseVerificationResults,
@@ -8,6 +9,8 @@ import {
   runDatabaseVerifyWorker,
   terminateDatabaseVerifyWorker,
 } from "./openclaw-database-verify.impl.js";
+import { registerOpenClawStateAuditIntegrityVerifier } from "./openclaw-state-db-fast-path.js";
+import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 
 const log = createSubsystemLogger("state/database-verify");
 
@@ -19,6 +22,9 @@ export function startOpenClawDatabaseIntegrityVerifier(options: { env: NodeJS.Pr
   let activeRun: Promise<void> | undefined;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const unregisterStateAuditVerifier = registerOpenClawStateAuditIntegrityVerifier(
+    path.resolve(resolveOpenClawStateSqlitePath(options.env)),
+  );
 
   const schedule = (delayMs: number) => {
     timer = setTimeout(() => {
@@ -55,7 +61,11 @@ export function startOpenClawDatabaseIntegrityVerifier(options: { env: NodeJS.Pr
   schedule(OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS);
   return {
     stop: async () => {
+      if (stopped) {
+        return await activeRun;
+      }
       stopped = true;
+      unregisterStateAuditVerifier();
       if (timer) {
         clearTimeout(timer);
         timer = undefined;
