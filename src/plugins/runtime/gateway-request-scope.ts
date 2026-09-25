@@ -59,6 +59,8 @@ type PluginRuntimeGatewayRequestScope = {
   client?: GatewayRequestOptions["client"];
   isWebchatConnect: GatewayRequestOptions["isWebchatConnect"];
   pluginId?: string;
+  /** Closure-bound registered owner fence for awaited plugin work. */
+  assertPluginRuntimeCurrent?: () => void;
   pluginSource?: string;
   pluginOrigin?: PluginOrigin;
   pluginTrustedOfficialInstall?: boolean;
@@ -69,6 +71,7 @@ type PluginRuntimeGatewayRequestScope = {
 
 type PluginRuntimePluginScope = {
   pluginId: string;
+  assertPluginRuntimeCurrent?: () => void;
   pluginSource?: string;
   pluginOrigin?: PluginOrigin;
   pluginTrustedOfficialInstall?: boolean;
@@ -293,6 +296,11 @@ function applyPluginScope(
   scope: PluginRuntimePluginScope,
 ): void {
   scoped.pluginId = scope.pluginId;
+  if (scope.assertPluginRuntimeCurrent) {
+    scoped.assertPluginRuntimeCurrent = scope.assertPluginRuntimeCurrent;
+  } else {
+    delete scoped.assertPluginRuntimeCurrent;
+  }
   if (scope.pluginSource !== undefined) {
     scoped.pluginSource = scope.pluginSource;
   } else {

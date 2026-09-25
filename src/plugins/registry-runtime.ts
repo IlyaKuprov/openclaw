@@ -220,6 +220,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             withPluginRuntimePluginScope(
               {
                 pluginId,
+                assertPluginRuntimeCurrent: assertRuntimeCurrent,
                 pluginSource: record.source,
                 pluginOrigin: record.origin,
                 pluginTrustedOfficialInstall: record.trustedOfficialInstall,
