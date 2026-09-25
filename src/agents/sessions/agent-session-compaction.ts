@@ -1,6 +1,9 @@
 import { isContextOverflow } from "@openclaw/ai/internal/runtime";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { capCompactionSummary } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
+import {
+  capCompactionSummary,
+  fitCompactionSummary,
+} from "../../../packages/agent-core/src/harness/compaction/compaction.js";
 import { InvalidSummaryOutputError } from "../../../packages/agent-core/src/harness/types.js";
 import type { AssistantMessage } from "../../llm/types.js";
 import { MAX_OVERFLOW_COMPACTION_ATTEMPTS } from "../agent-compaction-constants.js";
@@ -231,6 +234,37 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
 
     const pathEntries = this.sessionManager.getBranch();
     const requestBudget = options.requestBudget;
+    const contextWindow = Math.min(
+      model.contextTokens ?? Infinity,
+      model.contextWindow ?? Infinity,
+    );
+    if (
+      isManual &&
+      !requestBudget &&
+      (typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0)
+    ) {
+      throw new Error("Manual compaction requires a finite positive model context window.");
+    }
+    // Manual compaction has no foreground request, but its summary replays with
+    // this model's system prompt, tools, and retained history on the next turn.
+    const manualReplayBudget =
+      isManual && !requestBudget && contextWindow !== undefined
+        ? (() => {
+            const budget = createCompactionRequestBudget({
+              contextWindow,
+              reserveTokens: options.settings.reserveTokens,
+              systemPrompt: this.agent.state.systemPrompt,
+              tools: this.agent.state.tools,
+            });
+            // A manual compaction has no pending user yet. Reserve one summary
+            // reserve's worth of ingress, or half the free space on tiny models.
+            const free = contextWindow - budget.reserveTokens - budget.fixedTokens;
+            return {
+              ...budget,
+              pendingTokens: Math.max(0, Math.min(budget.reserveTokens, Math.floor(free / 2))),
+            };
+          })()
+        : undefined;
     const pendingUserIdempotencyKey = requestBudget?.pendingTokens
       ? requestBudget.pendingUserIdempotencyKey
       : undefined;
@@ -249,16 +283,26 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     if (options.pendingUserEntryId && pendingEntryIndex < 0) {
       throw new Error("Compaction cannot find the admitted pending user request.");
     }
-    const retention = requestBudget
-      ? resolveCompactionRetentionBudget(requestBudget, buildSessionContext(pathEntries).messages)
+    const summaryBudget = requestBudget ?? manualReplayBudget;
+    const retention = summaryBudget
+      ? resolveCompactionRetentionBudget(summaryBudget, buildSessionContext(pathEntries).messages)
       : undefined;
     const requestTokenLimit =
       requestBudget && retention
         ? requestBudget.fixedTokens + requestBudget.pendingTokens + retention.maxTokens
         : undefined;
+    const summaryTokenLimit =
+      requestTokenLimit ??
+      (manualReplayBudget
+        ? manualReplayBudget.contextWindow - manualReplayBudget.reserveTokens
+        : undefined);
     let preparation: CompactionPreparation | undefined;
     if (isManual && !options.requestState && !requestBudget && pendingEntryIndex < 0) {
-      const manualPreflight = preflightManualSessionCompaction(pathEntries, options.settings);
+      const manualPreflight = preflightManualSessionCompaction(
+        pathEntries,
+        options.settings,
+        manualReplayBudget,
+      );
       if (!manualPreflight.compactable) {
         throw new Error(manualPreflight.reason);
       }
@@ -290,6 +334,18 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
       return { status: "skipped", reason: "Nothing to compact (session too small)" };
     }
 
+    // Previous summaries are summarizer input as well as replay history. Bound
+    // them before either the core or an extension receives the preparation;
+    // each producer can tighten this further for its actual prompt/chunks.
+    if (Number.isFinite(contextWindow) && preparation.previousSummary) {
+      const previousSummary = preparation.previousSummary;
+      const fitted = fitCompactionSummary(
+        contextWindow - options.settings.reserveTokens,
+        (maxChars) => ({ summary: capCompactionSummary(previousSummary, maxChars) }),
+      );
+      preparation = { ...preparation, previousSummary: unwrapCoreResult(fitted).summary };
+    }
+
     const projectReplacement = (
       result: Pick<CompactionResult, "firstKeptEntryId" | "tokensBefore">,
       summary: string,
@@ -305,10 +361,10 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
           summary,
         },
       ]).messages;
-    if (requestBudget && requestTokenLimit !== undefined) {
+    if (summaryBudget && summaryTokenLimit !== undefined) {
       const remaining =
-        requestTokenLimit -
-        estimateCompactedRequestTokens(projectReplacement(preparation, ""), requestBudget);
+        summaryTokenLimit -
+        estimateCompactedRequestTokens(projectReplacement(preparation, ""), summaryBudget);
       // Each producer fits its complete artifact before audit. Leave one token
       // for independent rounding of the summary and complete request estimates.
       preparation.summaryTokenBudget = Math.floor(remaining / SAFETY_MARGIN) - 1;
@@ -394,6 +450,14 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
       return { status: "aborted" };
     }
 
+    if (fromExtension && manualReplayBudget) {
+      const extensionSummary = compactionResult.summary;
+      const fitted = fitCompactionSummary(preparation.summaryTokenBudget, (maxChars) => ({
+        summary: capCompactionSummary(extensionSummary, maxChars),
+      }));
+      compactionResult = { ...compactionResult, summary: unwrapCoreResult(fitted).summary };
+    }
+
     const completedCompaction = {
       ...compactionResult,
       summary: capCompactionSummary(compactionResult.summary),
@@ -407,15 +471,15 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
       throw new Error("Compaction must retain the unprocessed pending user request.");
     }
     if (
-      requestBudget &&
-      requestTokenLimit !== undefined &&
+      summaryBudget &&
+      summaryTokenLimit !== undefined &&
       estimateCompactedRequestTokens(
         projectReplacement(completedCompaction, completedCompaction.summary),
-        requestBudget,
-      ) > requestTokenLimit
+        summaryBudget,
+      ) > summaryTokenLimit
     ) {
       throw new Error(
-        "The finalized compaction exceeds the foreground request budget. Reduce the request or select a larger context window.",
+        `The finalized compaction exceeds the ${requestBudget ? "foreground request" : "model context"} budget. Reduce the request or select a larger context window.`,
       );
     }
 
