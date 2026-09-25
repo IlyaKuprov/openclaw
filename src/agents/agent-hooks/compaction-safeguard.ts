@@ -88,7 +88,7 @@ const DEFAULT_RECENT_TURNS_PRESERVE = 3;
 const DEFAULT_QUALITY_GUARD_MAX_RETRIES = 1;
 const MAX_RECENT_TURNS_PRESERVE = 12;
 const MAX_QUALITY_GUARD_MAX_RETRIES = 3;
-const MAX_RECENT_TURN_TEXT_CHARS = 600;
+const MAX_RECENT_TURN_TEXT_CHARS = 1_500;
 const MAX_REQUIRED_ASK_CONTEXT_CHARS = 2_000;
 const REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER = "\n[... split-turn ask context truncated ...]\n";
 const PREVIOUS_SUMMARY_REDISTILL_PREFIX =
@@ -696,13 +696,17 @@ function splitPreservedRecentTurns(params: {
   };
 }
 
-function formatContextMessage(message: AgentMessage): string | null {
+function formatContextMessage(message: AgentMessage, textOnly = false): string | null {
   let roleLabel: string;
   if (message.role === "assistant") {
     roleLabel = "Assistant";
   } else if (message.role === "user") {
     roleLabel = "User";
   } else if (message.role === "toolResult") {
+    if (textOnly) {
+      // Verbatim recent turns carry what was said, not tool receipts.
+      return null;
+    }
     const toolName = (message as { toolName?: unknown }).toolName;
     const safeToolName = typeof toolName === "string" && toolName.trim() ? toolName : "tool";
     roleLabel = `Tool result (${safeToolName})`;
@@ -711,7 +715,7 @@ function formatContextMessage(message: AgentMessage): string | null {
   }
   const rendered = [
     extractMessageText(message),
-    formatNonTextPlaceholder((message as { content?: unknown }).content),
+    textOnly ? null : formatNonTextPlaceholder((message as { content?: unknown }).content),
   ]
     .filter(Boolean)
     .join("\n");
@@ -725,7 +729,7 @@ function formatContextMessage(message: AgentMessage): string | null {
   return `- ${roleLabel}: ${trimmed}`;
 }
 
-function formatContextSegments(messages: AgentMessage[]): string[] {
+function formatContextSegments(messages: AgentMessage[], textOnly = false): string[] {
   const pairing = classifyToolUseResultPairing(messages);
   // A call-bearing assistant and all occurrence-matched results are one context
   // atom; keeping remainder messages separate lets later terminal text survive.
@@ -747,7 +751,7 @@ function formatContextSegments(messages: AgentMessage[]): string[] {
       return [];
     }
     const lines = (toolSegments.get(message) ?? [message])
-      .map(formatContextMessage)
+      .map((segmentMessage) => formatContextMessage(segmentMessage, textOnly))
       .filter((line): line is string => Boolean(line));
     return lines.length > 0 ? [lines.join("\n")] : [];
   });
@@ -760,8 +764,10 @@ function formatBoundedContextSection(params: {
   truncatedMarker: string;
   truncatedLoss: CompactionLoss;
   onTruncated?: () => void;
+  /** Render only user and assistant text: no tool results, no non-text placeholders. */
+  textOnly?: boolean;
 }): ContextSection {
-  const segments = formatContextSegments(params.messages);
+  const segments = formatContextSegments(params.messages, params.textOnly === true);
   if (segments.length === 0) {
     return { text: "", segmentStarts: [] };
   }
@@ -811,6 +817,7 @@ function buildPreservedTurnsSection(messages: AgentMessage[]): ContextSection {
     maxChars: MAX_SPLIT_TURN_CONTEXT_CHARS,
     truncatedMarker: PRESERVED_TURNS_TRUNCATED_MARKER,
     truncatedLoss: "preserved-turn-head",
+    textOnly: true,
   });
 }
 

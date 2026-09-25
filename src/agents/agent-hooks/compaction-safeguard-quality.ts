@@ -8,7 +8,7 @@ import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 
 // Compaction summary quality helpers. They define the structured summary contract
 // and audit whether summaries preserve pending asks plus exact identifiers.
-const MAX_EXTRACTED_IDENTIFIERS = 12;
+const MAX_EXTRACTED_IDENTIFIERS = 40;
 const MAX_UNTRUSTED_INSTRUCTION_CHARS = 4000;
 const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
@@ -77,9 +77,12 @@ export function buildCompactionStructureInstructions(
   const identifierSectionInstruction =
     resolveExactIdentifierSectionInstruction(summarizationInstructions);
   const sectionsTemplate = [
-    "Produce a compact, factual summary with these exact section headings:",
+    "Produce a complete, factual summary with these exact section headings:",
     ...REQUIRED_SUMMARY_SECTIONS,
     identifierSectionInstruction,
+    "Aim for 6000 to 10000 characters of summary text; spend them on facts, not prose.",
+    "After ## Decisions, add a ## Results and evidence section: every numerical result with its units and the file, log, or command it came from; every artefact path produced; the working hypothesis with the evidence for and against it; the exact next command or step.",
+    "Write every PR number, commit hash, job id, message id, and file path in full; never compress identifiers into ranges or counts.",
     "Do not omit unresolved asks from the user.",
     "Record completed requests outside ## Pending user asks; list only unresolved user requests there.",
     "When prior compaction summaries are present, re-distill them with new messages and remove stale duplicate detail.",

@@ -1223,11 +1223,13 @@ describe("compaction-safeguard recent-turn preservation", () => {
     });
 
     const section = preservedTurnsText(split.preservedMessages);
-    expect(section).toContain("- Tool result (read): recent raw output");
+    // HF-47: verbatim recent turns carry what was said, not tool receipts.
+    expect(section).not.toContain("- Tool result (read): recent raw output");
     expect(section).toContain("- User: recent ask");
+    expect(section).toContain("- Assistant: recent final answer");
   });
 
-  it("drops an oversized preserved tool interaction as one atomic group", () => {
+  it("keeps only the spoken turns of an oversized tool interaction (HF-47)", () => {
     const toolCalls = Array.from({ length: 40 }, (_, index) => ({
       type: "toolCall",
       id: `call_${index}`,
@@ -1260,15 +1262,16 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const section = preservedTurnsText(split.preservedMessages) as string;
 
     expect(section.length).toBeLessThanOrEqual(MAX_SPLIT_TURN_CONTEXT_CHARS);
-    expect(section).toContain("[Earlier preserved messages truncated]");
+    expect(section).not.toContain("[Earlier preserved messages truncated]");
     expect(section).not.toContain("paired-result-00-");
     expect(section).not.toContain("paired-result-29-");
+    expect(section).not.toContain("paired-result-39-");
     expect(section).not.toContain("- Tool result (read):");
     expect(section).toContain("- Assistant: terminal answer survives");
     expect(section.split("\n").some((line) => line.startsWith("x"))).toBe(false);
   });
 
-  it("formats preserved non-text messages with placeholders", () => {
+  it("omits preserved messages that carry no text (HF-47)", () => {
     const section = preservedTurnsText([
       castAgentMessage({
         role: "user",
@@ -1282,11 +1285,11 @@ describe("compaction-safeguard recent-turn preservation", () => {
       }),
     ]);
 
-    expect(section).toContain("- User: [non-text content: image]");
-    expect(section).toContain("- Assistant: [non-text content: toolCall]");
+    expect(section).not.toContain("[non-text content");
+    expect(section).toBe("");
   });
 
-  it("keeps non-text placeholders for mixed-content preserved messages", () => {
+  it("keeps only the text of mixed-content preserved messages (HF-47)", () => {
     const section = preservedTurnsText([
       castAgentMessage({
         role: "user",
@@ -1299,19 +1302,19 @@ describe("compaction-safeguard recent-turn preservation", () => {
     ]);
 
     expect(section).toContain("- User: caption text");
-    expect(section).toContain("[non-text content: image]");
+    expect(section).not.toContain("[non-text content: image]");
   });
 
   it("keeps bounded preserved-turn text UTF-16 safe", () => {
     const section = preservedTurnsText([
       {
         role: "user",
-        content: `${"x".repeat(599)}🚀tail`,
+        content: `${"x".repeat(1_499)}🚀tail`,
         timestamp: 1,
       },
     ]);
 
-    expect(section).toContain(`- User: ${"x".repeat(599)}...`);
+    expect(section).toContain(`- User: ${"x".repeat(1_499)}...`);
   });
 
   it("does not add non-text placeholders for text-only content blocks", () => {
@@ -1506,13 +1509,13 @@ describe("compaction-safeguard recent-turn preservation", () => {
   it("dedupes identifiers before applying the result cap", () => {
     const noisyPrefix = Array.from({ length: 10 }, () => "a0b0c0d0").join(" ");
     const uniqueTail = Array.from(
-      { length: 12 },
+      { length: 40 },
       (_, idx) => `b${idx.toString(16).padStart(7, "0")}`,
     );
     const identifiers = extractOpaqueIdentifiers(`${noisyPrefix} ${uniqueTail.join(" ")}`);
 
-    expect(identifiers).toHaveLength(12);
-    expect(new Set(identifiers).size).toBe(12);
+    expect(identifiers).toHaveLength(40);
+    expect(new Set(identifiers).size).toBe(40);
     expect(identifiers).toContain("A0B0C0D0");
     expect(identifiers).toContain(uniqueTail[10]?.toUpperCase());
   });
@@ -1990,7 +1993,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const droppedCall = requireRecord(mockCallArg(mockSummarizeInStages));
     const droppedPrompt = requireRecord(droppedCall.summaryPrompt).instructions;
     expect(droppedPrompt).toContain(
-      "Produce a compact, factual summary with these exact section headings:",
+      "Produce a complete, factual summary with these exact section headings:",
     );
     expect(droppedPrompt).toContain("## Decisions");
     expect(droppedPrompt).toContain("Keep security caveats.");
@@ -2547,7 +2550,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     // A model that hoards every identifier it has ever seen: the list alone is
     // larger than the whole artifact budget while the real sections stay small.
     const hoardedIdentifiers = Array.from(
-      { length: 700 },
+      { length: 1_000 },
       (_, index) => `- /home/vac/clawd/tmp/session-artifacts/run-${index}/output.log`,
     ).join("\n");
     const generatedSummary = [
@@ -4279,7 +4282,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     });
     const messagesToSummarize = Array.from({ length: 36 }, (_, index) => ({
       role: index % 3 === 0 ? ("user" as const) : ("assistant" as const),
-      content: `preserved-${index}-${sensitiveSentinel}-${"p".repeat(700)}`,
+      content: `preserved-${index}-${sensitiveSentinel}-${"p".repeat(1_400)}`,
       timestamp: index + 1,
     })) as AgentMessage[];
     const event = {
@@ -4310,7 +4313,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
   it("retains provider body sentinels and emits one redacted warning when suffixes overflow", async () => {
     const sensitiveSentinel = "credential-sentinel-never-log";
-    const providerBody = `BODY-START${"b".repeat(3_400)}BODY-MIDDLE${"b".repeat(3_400)}BODY-END`;
+    const providerBody = `BODY-START${"b".repeat(8_500)}BODY-MIDDLE${"b".repeat(8_500)}BODY-END`;
     const providerSummarize = vi.fn().mockResolvedValue(providerBody);
     installCompactionProviderForTest({
       id: "overflow-provider",
@@ -4324,12 +4327,12 @@ describe("compaction-safeguard recent-turn preservation", () => {
     });
     const messagesToSummarize = Array.from({ length: 36 }, (_, index) => ({
       role: index % 3 === 0 ? ("user" as const) : ("assistant" as const),
-      content: `preserved-${index}-${"p".repeat(700)}`,
+      content: `preserved-${index}-${"p".repeat(1_400)}`,
       timestamp: index + 1,
     })) as AgentMessage[];
     const turnPrefixMessages = Array.from({ length: 36 }, (_, index) => ({
       role: "user" as const,
-      content: `raw-prefix-${index}-${sensitiveSentinel}-${"r".repeat(700)}`,
+      content: `raw-prefix-${index}-${sensitiveSentinel}-${"r".repeat(1_400)}`,
       timestamp: index + 100,
     }));
     const event = {
@@ -4383,7 +4386,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     })) as AgentMessage[];
     const turnPrefixMessages = Array.from({ length: 36 }, (_, index) => ({
       role: "user" as const,
-      content: `raw-prefix-${String(index).padStart(2, "0")}-${"r".repeat(700)}`,
+      content: `raw-prefix-${String(index).padStart(2, "0")}-${"r".repeat(1_400)}`,
       timestamp: index + 100,
     }));
     const event = {
@@ -4412,7 +4415,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
   });
 
   it("finally trims a raw tool interaction only at its atomic boundary", async () => {
-    const providerSummarize = vi.fn().mockResolvedValue(`BODY-START${"b".repeat(19_980)}BODY-END`);
+    const providerSummarize = vi.fn().mockResolvedValue(`BODY-START${"b".repeat(22_500)}BODY-END`);
     installCompactionProviderForTest({
       id: "tool-boundary-provider",
       label: "Tool Boundary Provider",
@@ -4449,7 +4452,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
           content: [
             {
               type: "text",
-              text: `finalizer-tool-output-${index}-${"r".repeat(600)}`,
+              text: `finalizer-tool-output-${index}-${"r".repeat(1_400)}`,
             },
           ],
           timestamp: index + 102,
