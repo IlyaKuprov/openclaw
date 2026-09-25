@@ -10,6 +10,7 @@ import {
 } from "../config/sessions/legacy-sqlite-marker.js";
 import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.entry.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
+import { normalizeStoreSessionKey } from "../config/sessions/store-entry.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -26,6 +27,14 @@ import {
 import type { PluginRegistryState } from "./registry-state.js";
 import type { PluginRegistry } from "./registry-types.js";
 import type { PluginRuntime } from "./runtime/types.js";
+
+function isInternalEffectsStoreKey(sessionKey: string): boolean {
+  const normalized = normalizeStoreSessionKey(sessionKey);
+  // SQLite adds the agent wrapper to legacy keys; both spellings reach the same row.
+  return (
+    isInternalSessionEffectsKey(normalized) || normalized.startsWith("internal-session-effects:")
+  );
+}
 
 const PLUGIN_GATEWAY_SESSION_MUTATION_METHODS = new Set([
   "agent",
@@ -183,7 +192,7 @@ export function createPluginSessionOwnership(
     if (params.entry) {
       const ownerPluginId = normalizeOptionalString(params.entry.pluginOwnerId);
       if (
-        isInternalSessionEffectsKey(params.sessionKey) &&
+        isInternalEffectsStoreKey(params.sessionKey) &&
         ownerPluginId &&
         ownerPluginId !== pluginId
       ) {
@@ -360,7 +369,7 @@ export function createPluginSessionOwnership(
         // Full listings deliberately hide internal-effects rows. A plugin child
         // nested under such a parent must still prove its exact persisted key.
         for (const sessionKey of sessionKeys) {
-          if (!isInternalSessionEffectsKey(sessionKey)) {
+          if (!isInternalEffectsStoreKey(sessionKey)) {
             continue;
           }
           const entry = registryParams.runtime.agent.session.getSessionEntry({
@@ -578,7 +587,7 @@ export function createPluginSessionOwnership(
   }): void => {
     const ownerPluginId = normalizeOptionalString(params.before?.pluginOwnerId);
     if (
-      isInternalSessionEffectsKey(params.sessionKey) &&
+      isInternalEffectsStoreKey(params.sessionKey) &&
       ownerPluginId &&
       normalizeOptionalString(params.entry.pluginOwnerId) !== ownerPluginId
     ) {
