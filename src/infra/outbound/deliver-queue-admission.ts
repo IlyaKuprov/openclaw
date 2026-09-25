@@ -13,6 +13,7 @@ import { resolveConversationDeliveryScope } from "./delivery-completion.js";
 import { releaseSpoolArtifacts, stageQueuePayloadMedia } from "./delivery-queue-media-spool.js";
 import { cancelDeliveryQueueMediaRetention } from "./delivery-queue-media-staging.js";
 import type { StableDeliveryPreparation } from "./delivery-queue-preparation.js";
+import { assertRecoveredRouteAuthority } from "./delivery-queue-recovery.js";
 import {
   loadPendingDelivery,
   type QueuedDelivery,
@@ -62,12 +63,12 @@ function resolveCurrentRouteAuthority(
   };
 }
 
-/** A producer may resume custody only for the exact currently authorized route. */
+/** A routed row requires a current decision; ordinary stable intents do not. */
 export function assertStableRouteCustodyMatchesCurrent(
   params: InternalDeliverOutboundPayloadsParams,
   entry: QueuedDelivery,
 ): void {
-  if (!params.rootReplyOnly) {
+  if (!entry.routeAuthority && !params.rootReplyOnly) {
     return;
   }
   try {
@@ -101,6 +102,13 @@ export function assertStableRouteCustodyMatchesCurrent(
     throw new OutboundQueueAdmissionAuthorityError(
       "Stable delivery route differs from current host decision",
     );
+  }
+  try {
+    // The regenerated callback is not the row's authority. Check the exact
+    // physical row again, including when this runs at the adapter handoff.
+    assertRecoveredRouteAuthority(entry);
+  } catch (error) {
+    throw new OutboundQueueAdmissionAuthorityError(error);
   }
 }
 
@@ -150,7 +158,7 @@ export function restoreQueuedDeliveryCustody(
     ...params,
     ...custody,
     payloads,
-    ...(params.rootReplyOnly
+    ...(entry.routeAuthority
       ? {
           assertDirectAdapterHandoff: () => {
             params.assertDirectAdapterHandoff?.();

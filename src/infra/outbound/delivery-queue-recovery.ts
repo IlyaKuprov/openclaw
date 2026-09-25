@@ -258,7 +258,7 @@ function needsUnknownSendReconciliation(entry: QueuedDelivery): boolean {
   );
 }
 
-function assertRecoveredRouteAuthority(entry: QueuedDelivery): void {
+export function assertRecoveredRouteAuthority(entry: QueuedDelivery): void {
   const proof = entry.routeAuthority;
   if (!proof) {
     return;

@@ -345,6 +345,74 @@ describe("routeReply host route decision with durable queue custody", () => {
     expect(sendMatrixText).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { name: "unchanged session peer", to: canonical.to, accountId: "work" },
+    { name: "session peer", to: "channel:C999", accountId: "work" },
+    { name: "account", to: canonical.to, accountId: "personal" },
+  ])("denies a routed stable row when the hook disappears ($name)", async (moved) => {
+    const id = `block-reply:v1:inactive-hook-${moved.name.replaceAll(" ", "-")}`;
+    await enqueueDeliveryOnce(
+      {
+        channel: "slack",
+        to: canonical.to,
+        accountId: canonical.accountId,
+        routeAuthority: {
+          agentId: "main",
+          storePath,
+          sessionKey,
+          channel: "slack",
+          to: canonical.to,
+          accountId: canonical.accountId,
+          sourceChannel: "matrix",
+        },
+        payloads: [{ text: "old private text" }],
+        queuePolicy: "required",
+      },
+      id,
+      fixtures.tmpDir(),
+    );
+    await replaceSessionEntry(
+      { agentId: "main", sessionKey, storePath },
+      {
+        sessionId: "moved-owner",
+        updatedAt: Date.now(),
+        delivery: {
+          kind: "external",
+          route: {
+            channel: "slack",
+            accountId: moved.accountId,
+            target: { to: moved.to },
+          },
+          context: { channel: "slack", to: moved.to, accountId: moved.accountId },
+          origin: { provider: "slack", to: moved.to, accountId: moved.accountId },
+        },
+      },
+    );
+    routeHook.enabled = false;
+    const result = await routeReply({
+      cfg,
+      replyKind: "block",
+      payload: { text: "new private text" },
+      channel: "matrix",
+      to: "!source:example",
+      sessionKey,
+      deliveryIntentId: id,
+      mirror: false,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      delivered: false,
+      error: expect.stringContaining("route differs from current host decision"),
+    });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendMatrixText).not.toHaveBeenCalled();
+    expect(readQueuedEntry(fixtures.tmpDir(), id)).toMatchObject({
+      channel: "slack",
+      to: canonical.to,
+      accountId: canonical.accountId,
+    });
+  });
+
   it("preserves ordinary native stable retries without routed proof", async () => {
     const id = "block-reply:v1:native-matrix-retry";
     await enqueueDeliveryOnce(
@@ -373,6 +441,63 @@ describe("routeReply host route decision with durable queue custody", () => {
       to: "!native:example",
       text: "native queued text",
     });
+  });
+
+  it("rechecks a reused route's physical session row after awaited dispatch preparation", async () => {
+    const id = "block-reply:v1:route-handoff-move";
+    const proof = {
+      agentId: "main",
+      storePath,
+      sessionKey,
+      channel: "slack",
+      to: canonical.to,
+      accountId: canonical.accountId,
+      sourceChannel: "matrix",
+    };
+    await enqueueDeliveryOnce(
+      {
+        channel: "slack",
+        to: canonical.to,
+        accountId: canonical.accountId,
+        routeAuthority: proof,
+        payloads: [{ text: "held text" }],
+        queuePolicy: "required",
+      },
+      id,
+      fixtures.tmpDir(),
+    );
+    await expect(
+      deliverOutboundPayloads({
+        cfg,
+        channel: "slack",
+        to: canonical.to,
+        accountId: canonical.accountId,
+        routeAuthority: proof,
+        rootReplyOnly: true,
+        assertBeforeQueueAdmission: () => {},
+        assertDirectAdapterHandoff: () => {},
+        payloads: [{ text: "new text" }],
+        deliveryIntentId: id,
+        reusePendingDeliveryIntent: true,
+        queuePolicy: "required",
+        onPlatformSendDispatch: async () => {
+          await replaceSessionEntry(
+            { agentId: "main", sessionKey, storePath },
+            {
+              sessionId: "moved-owner",
+              updatedAt: Date.now(),
+              delivery: {
+                kind: "external",
+                route: { channel: "slack", accountId: "work", target: { to: "channel:C999" } },
+                context: { channel: "slack", to: "channel:C999", accountId: "work" },
+                origin: { provider: "slack", to: "channel:C999", accountId: "work" },
+              },
+            },
+          );
+        },
+      }),
+    ).rejects.toThrow(/persisted route authority/);
+    expect(sendText).not.toHaveBeenCalled();
   });
 
   it("carries the decided channel peer into queued mirror and message_sent recipient facts, not the webchat DM source", async () => {
