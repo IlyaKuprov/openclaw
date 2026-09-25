@@ -16,6 +16,7 @@ import {
   constrainRestartRecoveryDeliveryPayloads,
   shouldPersistCurrentRunSessionCleanup,
   shouldPersistRestartRecoveryCleanup,
+  type captureRestartRecoveryCleanupMarker,
 } from "../agent-command-restart-recovery.js";
 import { normalizeAgentRunTerminalDeliverySnapshot } from "../agent-run-terminal-delivery.js";
 import {
@@ -29,7 +30,10 @@ import type { AcceptedCompactionSuccessor } from "../embedded-agent-runner/compa
 import { buildMainSessionRecoveryClearPatch } from "../main-session-recovery/main-session-recovery-clear.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
 import type { AgentRunSessionTarget } from "../run-session-target.js";
-import { throwAgentRunRestartAbortReason } from "../run-termination.js";
+import {
+  isAgentRunRestartAbortReason,
+  throwAgentRunRestartAbortReason,
+} from "../run-termination.js";
 import type { SessionMaintenanceRequest } from "../session-maintenance/run.js";
 import { persistAssistantTranscriptRepairRecord } from "./assistant-transcript-repair.js";
 import { persistAgentSession } from "./attempt-execution.shared.js";
@@ -56,13 +60,28 @@ export async function clearCommandRecoveryClaim(params: {
   sessionEntry?: SessionEntry;
   runOwnedSessionId: string;
   sessionReboundDuringRun: boolean;
-  trackedRestartRecoveryDeliveryClaim: boolean;
+  /**
+   * Whether this run armed a recovery claim, the signal it ran under, and the
+   * error it ended with (a deferred lifecycle restart is thrown, not signalled).
+   */
+  claim: {
+    tracked: boolean;
+    marker?: ReturnType<typeof captureRestartRecoveryCleanupMarker>;
+    abortSignal?: AbortSignal;
+    terminalError?: unknown;
+  };
   terminalDeliveryEvidence?: RestartRecoveryTerminalDeliveryEvidenceResult;
 }): Promise<void> {
   const { sessionStore, sessionKey, storePath, runId } = params.prepared;
+  const marker = params.claim.marker;
+  // A restart abort retains the claim. Without that signal, the persistence
+  // predicate also fences a newly marked lifecycle cycle from this cleanup.
   if (
     params.sessionReboundDuringRun ||
-    !params.trackedRestartRecoveryDeliveryClaim ||
+    isAgentRunRestartAbortReason(params.claim.abortSignal?.reason) ||
+    isAgentRunRestartAbortReason(params.claim.terminalError) ||
+    !params.claim.tracked ||
+    !marker ||
     !sessionStore ||
     !sessionKey
   ) {
@@ -88,7 +107,7 @@ export async function clearCommandRecoveryClaim(params: {
           updatedAt: Date.now(),
         },
         shouldPersist: (current) =>
-          shouldPersistRestartRecoveryCleanup(current, params.runOwnedSessionId, runId),
+          shouldPersistRestartRecoveryCleanup(current, params.runOwnedSessionId, runId, marker),
       });
     }
     // Finalization may already have cleared the active claim before this finally.

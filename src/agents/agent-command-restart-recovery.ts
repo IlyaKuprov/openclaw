@@ -5,7 +5,7 @@ import type {
   HarnessCompletionRecovery,
   RestartRecoveryTerminalDeliveryEvidenceResult,
 } from "../config/sessions/restart-recovery-types.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import type { InternalSessionEntry, SessionEntry } from "../config/sessions/types.js";
 import { isAgentMediatedCompletionSourceTool } from "../sessions/input-provenance.js";
 import {
   captureHarnessCompletionRecovery,
@@ -325,14 +325,48 @@ export function shouldPersistRestartRecoveryContextClaim(
   );
 }
 
+type RecoveryCleanupEntry = SessionEntry & Pick<InternalSessionEntry, "mainRestartRecovery">;
+
+export function captureRestartRecoveryCleanupMarker(entry: RecoveryCleanupEntry) {
+  return {
+    cycleId: entry.mainRestartRecovery?.cycleId,
+    revision: entry.mainRestartRecovery?.revision,
+    runs:
+      entry.restartRecoveryRuns?.map(({ runId, lifecycleGeneration }) => ({
+        runId,
+        lifecycleGeneration,
+      })) ?? [],
+  };
+}
+
+export function captureRestartRecoveryCleanupClaim(entry: SessionEntry | undefined, runId: string) {
+  return entry?.restartRecoveryDeliveryRunId === runId
+    ? { tracked: true, marker: captureRestartRecoveryCleanupMarker(entry) }
+    : { tracked: false };
+}
+
 export function shouldPersistRestartRecoveryCleanup(
-  current: SessionEntry | undefined,
+  current: RecoveryCleanupEntry | undefined,
   sessionId: string,
   runId: string,
+  marker: ReturnType<typeof captureRestartRecoveryCleanupMarker>,
 ): boolean {
+  // A stale abort flag alone cannot strand this claim, but a new lifecycle
+  // cycle or fence must not be cleared by the finishing command.
   return (
-    shouldPersistCurrentRunSessionCleanup(current, sessionId) &&
-    current?.restartRecoveryDeliveryRunId === runId
+    current !== undefined &&
+    current.sessionId === sessionId &&
+    current.restartRecoveryDeliveryRunId === runId &&
+    (current.abortedLastRun !== true ||
+      (current.mainRestartRecovery?.cycleId === marker.cycleId &&
+        current.mainRestartRecovery?.revision === marker.revision &&
+        !current.restartRecoveryRuns?.some(
+          (run) =>
+            !marker.runs.some(
+              (owned) =>
+                owned.runId === run.runId && owned.lifecycleGeneration === run.lifecycleGeneration,
+            ),
+        )))
   );
 }
 
