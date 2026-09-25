@@ -481,7 +481,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
         ok: false,
         delivered: delivery.delivered,
         ...(decidedRoute ? { routeDecisionControlled: true } : {}),
-        error: `Failed to route reply to ${channel}: ${formatErrorMessage(send.error)}`,
+        error: `Failed to route reply to ${deliveryChannel}: ${formatErrorMessage(send.error)}`,
         cause: send.error,
         messageId: delivery.messageId,
         ...(!delivery.delivered && durableMessageBatchMayHaveReachedRecipient(send)
@@ -534,7 +534,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
             ...(err.sentBeforeError ? { ambiguous: true } : {}),
           }
         : {}),
-      error: `Failed to route reply to ${channel}: ${message}`,
+      error: `Failed to route reply to ${deliveryChannel}: ${message}`,
       cause: err,
     };
   }
