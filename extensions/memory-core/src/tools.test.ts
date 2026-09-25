@@ -1,3 +1,4 @@
+import { MEMORY_SEARCH_DEADLINE_CONTROL } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import type { MemorySearchRuntimeDebug } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 // Memory Core tests cover tools plugin behavior.
 import { clearMemoryPluginState } from "openclaw/plugin-sdk/memory-host-core";
@@ -338,6 +339,111 @@ describe("memory_search unavailable payloads", () => {
       action: "Check embedding provider configuration and retry memory_search.",
     });
     expect(searchCalls).toBe(1);
+  });
+
+  it("waits for a configured memory.search.query.timeoutSeconds deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let searchSignal: AbortSignal | undefined;
+      setMemorySearchImpl(async (opts) => {
+        searchSignal = opts?.signal;
+        return await new Promise(() => {});
+      });
+      const tool = createMemorySearchToolOrThrow({
+        config: {
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { citations: "off", search: { query: { timeoutSeconds: 60 } } },
+        },
+      });
+
+      const resultPromise = tool.execute("search-configured-timeout", { query: "hello" });
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(searchSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      const result = await resultPromise;
+      expect(result.details).toMatchObject({
+        timedOut: true,
+        timeoutMs: 60_000,
+        error: "memory_search timed out after 60s",
+      });
+      expect(searchSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives cleanup only the budget the search left under the configured deadline", async () => {
+    // The remaining budget is measured on performance.now(), so the clock must be faked too.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    try {
+      setMemorySearchImpl(async () => {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 8_000);
+        });
+        return [];
+      });
+      setMemoryCloseImpl(async () => await new Promise<never>(() => {}));
+      const tool = createMemorySearchToolOrThrow({
+        config: {
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { citations: "off", search: { query: { timeoutSeconds: 10 } } },
+        },
+        oneShotCliRun: true,
+      });
+      let settled = false;
+      const resultPromise = tool.execute("search-cleanup-budget", { query: "hello" }).then((r) => {
+        settled = true;
+        return r;
+      });
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await resultPromise;
+      expect(settled).toBe(true);
+      expect(result.details).toMatchObject({ results: [] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not charge paused readiness time against the cleanup budget", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    try {
+      setMemorySearchImpl(async (opts) => {
+        // A managed local embedding service starting up pauses the active-search budget.
+        const control = opts?.[MEMORY_SEARCH_DEADLINE_CONTROL];
+        expect(control).toBeDefined();
+        control?.report("pause");
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 8_000);
+        });
+        control?.report("resume");
+        return [];
+      });
+      setMemoryCloseImpl(async () => await new Promise<never>(() => {}));
+      const tool = createMemorySearchToolOrThrow({
+        config: {
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { citations: "off", search: { query: { timeoutSeconds: 10 } } },
+        },
+        oneShotCliRun: true,
+      });
+      let settled = false;
+      const resultPromise = tool.execute("search-cleanup-paused", { query: "hello" }).then((r) => {
+        settled = true;
+        return r;
+      });
+      // 8 s paused readiness plus the whole 10 s budget for cleanup: settles at 18 s, not 10 s.
+      await vi.advanceTimersByTimeAsync(17_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await resultPromise;
+      expect(settled).toBe(true);
+      expect(result.details).toMatchObject({ results: [] });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns unavailable metadata when memory search does not settle", async () => {

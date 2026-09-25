@@ -593,6 +593,25 @@ describe("memory search config", () => {
     expect(resolved?.store.vector.extensionPath).toBe("/opt/sqlite-vec.dylib");
   });
 
+  it("resolves query.timeoutSeconds to milliseconds and leaves it unset by default", () => {
+    const unset = resolveMemorySearchConfig(
+      asConfig({ agents: { list: [{ id: "main", default: true }] } }),
+      "main",
+    );
+    expect(unset?.query.timeoutMs).toBeUndefined();
+    const cfg = asConfig({
+      memory: { search: { query: { timeoutSeconds: 60 } } },
+      agents: {
+        list: [
+          { id: "main", default: true },
+          { id: "fast", memory: { search: { query: { timeoutSeconds: 2.5 } } } },
+        ],
+      },
+    });
+    expect(resolveMemorySearchConfig(cfg, "main")?.query.timeoutMs).toBe(60_000);
+    expect(resolveMemorySearchConfig(cfg, "fast")?.query.timeoutMs).toBe(2_500);
+  });
+
   it("merges extra memory paths from defaults and overrides", () => {
     const cfg = asConfig({
       memory: {
