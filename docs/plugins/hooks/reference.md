@@ -163,7 +163,7 @@ contracts above; a modifying hook is not an observation hook.
 | `channel_pairing_requested` | Observe       | Observe newly created DM pairing requests                                  |
 | `message_received`          | Observe       | Observe inbound content, sender, thread, and metadata                      |
 | `message_sending`           | Modify / gate | Rewrite outbound content or cancel delivery                                |
-| `outbound_route_decision`   | Modify / gate | Request a validated Slack root route before host delivery takes custody    |
+| `outbound_route_decision`   | Modify / gate | Request a channel-validated root route before host delivery takes custody  |
 | `reply_payload_sending`     | Modify / gate | Mutate or cancel normalized reply payloads before delivery                 |
 | `message_sent`              | Observe       | Observe outbound delivery success or failure                               |
 | `before_dispatch`           | Claim         | Handle an inbound message before the normal model dispatch                 |

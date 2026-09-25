@@ -1,6 +1,7 @@
 // The actual routeReply -> SQLite queue -> recovery path, with a host-only route hook.
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateSlackSessionRoutePeer } from "../../../extensions/slack/src/outbound-route-peer.js";
 import type { ChannelOutboundAdapter } from "../../channels/plugins/types.public.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { getDeliveryQueueEntryStatus } from "../../infra/delivery-queue-sqlite.js";
@@ -117,6 +118,7 @@ describe("routeReply host route decision with durable queue custody", () => {
             id: "slack",
             outbound: {
               deliveryMode: "direct",
+              validateSessionRoutePeer: validateSlackSessionRoutePeer,
               sendText: (params) => sendText(params),
               sendMedia: async () => ({ channel: "slack", messageId: "media-root" }),
             },
@@ -184,6 +186,7 @@ describe("routeReply host route decision with durable queue custody", () => {
         to: canonical.to,
         accountId: canonical.accountId,
       }),
+      validateSlackSessionRoutePeer,
     );
     const [pending] = await loadPendingDeliveries(fixtures.tmpDir());
     expect(pending).toMatchObject({
@@ -421,7 +424,7 @@ describe("routeReply host route decision with durable queue custody", () => {
       ok: false,
       delivered: false,
       routeDecisionControlled: true,
-      error: expect.stringContaining("persisted Slack route authority"),
+      error: expect.stringContaining("persisted route authority"),
     });
     expect(sendText).not.toHaveBeenCalled();
     expect(await loadPendingDeliveries(fixtures.tmpDir())).toEqual([]);

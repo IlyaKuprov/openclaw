@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { validateSlackSessionRoutePeer } from "../../extensions/slack/src/outbound-route-peer.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createHookRunnerWithRegistry } from "./hooks.test-fixtures.js";
 
@@ -26,20 +27,80 @@ function routeRunner(handler: (...args: unknown[]) => unknown) {
 }
 
 describe("outbound_route_decision pure route contract", () => {
+  it("accepts an exact non-Slack route with channel-owned peer validation", async () => {
+    const matrixEvent = {
+      sessionKey: "agent:main:matrix:channel:!Room:example.org",
+      original: { channel: "matrix", to: "!Room:example.org", accountId: "work" },
+    };
+    const matrixProof = { ...matrixEvent.original, sessionKey: matrixEvent.sessionKey };
+    const matrixRoot = {
+      channel: "matrix",
+      to: "!Room:example.org",
+      accountId: "work",
+      threadPolicy: "root",
+    };
+    await expect(
+      routeRunner(() => matrixRoot).runOutboundRouteDecision(
+        matrixEvent,
+        { channelId: "matrix" },
+        matrixProof,
+        ({ peerId, to }) => peerId === to,
+      ),
+    ).resolves.toEqual(matrixRoot);
+  });
+
+  it("accepts a channel with no account when the original and persisted routes agree", async () => {
+    const input = {
+      sessionKey: "agent:main:matrix:channel:!Room:example.org",
+      original: { channel: "matrix", to: "!Room:example.org" },
+    };
+    const stored = { ...input.original, sessionKey: input.sessionKey };
+    const requested = { channel: "matrix", to: stored.to, threadPolicy: "root" };
+    await expect(
+      routeRunner(() => requested).runOutboundRouteDecision(
+        input,
+        { channelId: "matrix" },
+        stored,
+        ({ peerId, to }) => peerId === to,
+      ),
+    ).resolves.toEqual(requested);
+
+    await expect(
+      routeRunner(() => requested).runOutboundRouteDecision(
+        { ...input, original: { ...input.original, to: "!Wrong:example.org" } },
+        { channelId: "matrix" },
+        stored,
+        ({ peerId, to }) => peerId === to,
+      ),
+    ).rejects.toThrow(/route authority/);
+  });
+
+  it("fails closed when a channel provides no peer proof", async () => {
+    await expect(
+      routeRunner(() => root).runOutboundRouteDecision(event, context, persisted, undefined),
+    ).rejects.toThrow(/route authority/);
+  });
   it("permits a non-Slack originating surface for a persisted Slack session without trusting its target", async () => {
     const webchatEvent = {
       ...event,
       original: { channel: "webchat", to: "unrelated-webchat-target", accountId: "web" },
     };
     await expect(
-      routeRunner(() => root).runOutboundRouteDecision(webchatEvent, context, persisted),
+      routeRunner(() => root).runOutboundRouteDecision(
+        webchatEvent,
+        context,
+        persisted,
+        validateSlackSessionRoutePeer,
+      ),
     ).resolves.toEqual(root);
   });
 
   it("accepts an authoritative Slack root decision without sharing the persisted proof or media", async () => {
     const handler = vi.fn().mockReturnValue(root);
     const runner = routeRunner(handler);
-    await expect(runner.runOutboundRouteDecision(event, context, persisted)).resolves.toEqual(root);
+    await expect(
+      runner.runOutboundRouteDecision(event, context, persisted, validateSlackSessionRoutePeer),
+    ).resolves.toEqual(root);
     expect(handler).toHaveBeenCalledWith(event, context);
     expect(handler.mock.calls[0]).toHaveLength(2);
   });
@@ -97,7 +158,9 @@ describe("outbound_route_decision pure route contract", () => {
     ],
   ])("fails closed on %s", async (_label, input, stored, decision) => {
     const runner = routeRunner(() => decision);
-    await expect(runner.runOutboundRouteDecision(input, context, stored)).rejects.toThrow();
+    await expect(
+      runner.runOutboundRouteDecision(input, context, stored, validateSlackSessionRoutePeer),
+    ).rejects.toThrow();
   });
 
   it("fails closed on conflicting registered route decisions, but accepts identical ones", async () => {
@@ -106,12 +169,14 @@ describe("outbound_route_decision pure route contract", () => {
       { hookName: "outbound_route_decision", handler: () => ({ ...root, to: "channel:C999" }) },
     ];
     const { runner } = createHookRunnerWithRegistry(registry);
-    await expect(runner.runOutboundRouteDecision(event, context, persisted)).rejects.toThrow();
+    await expect(
+      runner.runOutboundRouteDecision(event, context, persisted, validateSlackSessionRoutePeer),
+    ).rejects.toThrow();
     registry[1]!.handler = () => ({ ...root });
     const { runner: compatible } = createHookRunnerWithRegistry(registry);
-    await expect(compatible.runOutboundRouteDecision(event, context, persisted)).resolves.toEqual(
-      root,
-    );
+    await expect(
+      compatible.runOutboundRouteDecision(event, context, persisted, validateSlackSessionRoutePeer),
+    ).resolves.toEqual(root);
   });
 
   it("does not apply a late decision after timeout; no later hook or delivery is authorized", async () => {
@@ -128,7 +193,12 @@ describe("outbound_route_decision pure route contract", () => {
         { hookName: "outbound_route_decision", handler: late, timeoutMs: 10 },
         { hookName: "outbound_route_decision", handler: next },
       ]);
-      const pending = runner.runOutboundRouteDecision(event, context, persisted);
+      const pending = runner.runOutboundRouteDecision(
+        event,
+        context,
+        persisted,
+        validateSlackSessionRoutePeer,
+      );
       const rejection = expect(pending).rejects.toThrow(/timed out/);
       await started.promise;
       await vi.advanceTimersByTimeAsync(10);
@@ -153,7 +223,12 @@ describe("outbound_route_decision pure route contract", () => {
           timeoutMs: 10,
         },
       ]).runner;
-      const pending = runner.runOutboundRouteDecision(event, context, persisted);
+      const pending = runner.runOutboundRouteDecision(
+        event,
+        context,
+        persisted,
+        validateSlackSessionRoutePeer,
+      );
       const rejected = expect(pending).rejects.toThrow(/timed out/);
       await vi.advanceTimersByTimeAsync(10);
       await rejected;
@@ -174,15 +249,15 @@ describe("outbound_route_decision pure route contract", () => {
       ],
       { catchErrors: true, failurePolicyByHook: { outbound_route_decision: "fail-open" } },
     );
-    await expect(runner.runOutboundRouteDecision(event, context, persisted)).rejects.toThrow(
-      "no route",
-    );
+    await expect(
+      runner.runOutboundRouteDecision(event, context, persisted, validateSlackSessionRoutePeer),
+    ).rejects.toThrow("no route");
   });
 
   it("does not require route proof when no plugin requests a change", async () => {
     const runner = routeRunner(() => undefined);
     await expect(
-      runner.runOutboundRouteDecision(event, context, undefined),
+      runner.runOutboundRouteDecision(event, context, undefined, validateSlackSessionRoutePeer),
     ).resolves.toBeUndefined();
   });
 
@@ -196,7 +271,9 @@ describe("outbound_route_decision pure route contract", () => {
       }).toThrow();
       return root;
     });
-    await expect(runner.runOutboundRouteDecision(event, context, persisted)).resolves.toEqual(root);
+    await expect(
+      runner.runOutboundRouteDecision(event, context, persisted, validateSlackSessionRoutePeer),
+    ).resolves.toEqual(root);
     expect(event.original.to).toBe("channel:C123");
   });
 
@@ -217,6 +294,7 @@ describe("outbound_route_decision pure route contract", () => {
         qualifiedEvent,
         context,
         qualifiedPersisted,
+        validateSlackSessionRoutePeer,
       ),
     ).resolves.toEqual({ ...root, to: qualified });
   });
@@ -230,6 +308,7 @@ describe("outbound_route_decision pure route contract", () => {
         lowerEvent,
         context,
         lowerPersisted,
+        validateSlackSessionRoutePeer,
       ),
     ).resolves.toEqual({ ...root, to: lower });
   });
@@ -245,13 +324,23 @@ describe("outbound_route_decision pure route contract", () => {
     const stored = { sessionKey: key, channel: "slack", to, accountId: "work" };
     const decision = { ...root, to };
     await expect(
-      routeRunner(() => decision).runOutboundRouteDecision(input, context, stored),
+      routeRunner(() => decision).runOutboundRouteDecision(
+        input,
+        context,
+        stored,
+        validateSlackSessionRoutePeer,
+      ),
     ).resolves.toEqual(decision);
     await expect(
-      routeRunner(() => decision).runOutboundRouteDecision(input, context, {
-        ...stored,
-        to: "channel:C999",
-      }),
+      routeRunner(() => decision).runOutboundRouteDecision(
+        input,
+        context,
+        {
+          ...stored,
+          to: "channel:C999",
+        },
+        validateSlackSessionRoutePeer,
+      ),
     ).rejects.toThrow();
   });
 
@@ -264,7 +353,7 @@ describe("outbound_route_decision pure route contract", () => {
         ...root,
         to: stored.to,
         accountId: stored.accountId,
-      })).runOutboundRouteDecision(input, context, stored),
+      })).runOutboundRouteDecision(input, context, stored, validateSlackSessionRoutePeer),
     ).rejects.toThrow();
   });
 
@@ -277,6 +366,7 @@ describe("outbound_route_decision pure route contract", () => {
         input,
         context,
         stored,
+        validateSlackSessionRoutePeer,
       ),
     ).rejects.toThrow();
   });
@@ -290,6 +380,7 @@ describe("outbound_route_decision pure route contract", () => {
         input,
         context,
         stored,
+        validateSlackSessionRoutePeer,
       ),
     ).rejects.toThrow();
   });

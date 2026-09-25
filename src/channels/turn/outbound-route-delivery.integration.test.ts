@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateSlackSessionRoutePeer } from "../../../extensions/slack/src/outbound-route-peer.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { loadPendingDeliveries } from "../../infra/outbound/delivery-queue.test-helpers.js";
@@ -68,12 +69,31 @@ describe("channel lifecycle outbound route decision", () => {
   afterAll(() => tempDirs.cleanup());
   beforeEach(() => {
     vi.clearAllMocks();
+    setActivePluginRegistry(
+      createTestRegistry([
+        {
+          pluginId: "slack",
+          source: "test",
+          plugin: createOutboundTestPlugin({
+            id: "slack",
+            outbound: {
+              deliveryMode: "direct",
+              validateSessionRoutePeer: validateSlackSessionRoutePeer,
+            },
+          }),
+        },
+      ]),
+    );
     loadExactSessionEntryReadOnly.mockReset();
     dispatchReplyWithRoutedChannelDispatcherCore.mockImplementation(createDispatch());
     resolveOutboundDurableFinalDeliverySupport.mockResolvedValue({ ok: true });
     getGlobalHookRunner.mockReturnValue(null);
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    resetPluginRuntimeStateForTest();
+    setActivePluginRegistry(createEmptyPluginRegistry());
+  });
 
   const slackSessionKey = "agent:main:slack:channel:c123:thread:1712345678.123456";
   const slackRoute = {
@@ -136,6 +156,7 @@ describe("channel lifecycle outbound route decision", () => {
       },
       { channelId: "slack" },
       expect.objectContaining({ to: "channel:C123", accountId: "work" }),
+      expect.any(Function),
     );
     expect(direct).not.toHaveBeenCalled();
     expect(latestDurableSendRequest()).toMatchObject({
@@ -481,7 +502,7 @@ describe("channel lifecycle outbound route decision", () => {
         ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "webchat" }),
         delivery: { deliver: direct },
       }),
-    ).rejects.toThrow(/lacks matching persisted Slack route authority/);
+    ).rejects.toThrow(/lacks matching persisted route authority/);
     expect(direct).not.toHaveBeenCalled();
     expect(sendDurableMessageBatch).not.toHaveBeenCalled();
   });
@@ -517,6 +538,7 @@ describe("channel lifecycle outbound route decision", () => {
               id: "slack",
               outbound: {
                 deliveryMode: "direct",
+                validateSessionRoutePeer: validateSlackSessionRoutePeer,
                 sendText: adapterSend,
                 sendMedia: adapterSend,
                 ...(stage === "presentation"
@@ -551,7 +573,7 @@ describe("channel lifecycle outbound route decision", () => {
             ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "webchat" }),
             delivery: { deliver: direct },
           }),
-        ).rejects.toThrow(/lacks matching persisted Slack route authority/);
+        ).rejects.toThrow(/lacks matching persisted route authority/);
         if (stage === "modifier") {
           expect(runMessageSending).toHaveBeenCalledOnce();
         } else {

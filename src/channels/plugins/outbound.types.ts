@@ -13,6 +13,7 @@ import type { OutboundIdentity } from "../../infra/outbound/identity-types.js";
 import type { OutboundSendDeps } from "../../infra/outbound/send-deps.js";
 import type { MessagePresentation, ReplyPayloadDeliveryPin } from "../../interactive/payload.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
+import type { OutboundRoutePeerValidator } from "../../plugins/outbound-route-decision.js";
 import type {
   ChannelOutboundTargetMode,
   ChannelPollContext,
@@ -175,6 +176,8 @@ type ChannelOutboundNormalizePayloadBatchParams = {
 
 export type ChannelOutboundAdapter = {
   deliveryMode: "direct" | "gateway" | "hybrid";
+  /** Prove that a canonical session peer names this exact persisted delivery target. */
+  validateSessionRoutePeer?: OutboundRoutePeerValidator;
   chunker?: ((text: string, limit: number, ctx?: ChannelOutboundChunkContext) => string[]) | null;
   chunkerMode?: "text" | "markdown";
   chunkedTextFormatting?: OutboundDeliveryFormattingOptions;

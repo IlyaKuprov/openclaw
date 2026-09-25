@@ -67,6 +67,7 @@ import type {
 } from "./hook-types.js";
 import {
   validateOutboundRouteDecision,
+  type OutboundRoutePeerValidator,
   type PersistedOutboundRouteProof,
   type PluginHookOutboundRouteDecisionResult,
 } from "./outbound-route-decision.js";
@@ -1577,18 +1578,19 @@ export function createHookRunner(
     },
     runOutboundRouteDecision: (
       event: HookEvent<"outbound_route_decision">,
-      _ctx: HookContext<"outbound_route_decision">,
+      ctx: HookContext<"outbound_route_decision">,
       persisted: PersistedOutboundRouteProof | undefined,
+      validatePeer: OutboundRoutePeerValidator | undefined,
     ) =>
       runModifyingHook<"outbound_route_decision", PluginHookOutboundRouteDecisionResult>(
         "outbound_route_decision",
         // Plugins cannot mutate the caller's route or acquire a delivery/media handle.
         deepFreezeHookValue(structuredClone(event)),
-        { channelId: "slack" },
+        ctx,
         {
           mergeNullResults: true,
           mergeResults: (previous, next) => {
-            const accepted = validateOutboundRouteDecision(event, persisted, next);
+            const accepted = validateOutboundRouteDecision(event, persisted, next, validatePeer);
             if (
               previous &&
               (previous.to !== accepted.to || previous.accountId !== accepted.accountId)

@@ -1303,7 +1303,7 @@ export type PluginHookHandlerMap = {
   ) => Promise<PluginHookMessageSendingResult | void> | PluginHookMessageSendingResult | void;
   outbound_route_decision: (
     event: PluginHookOutboundRouteDecisionEvent,
-    ctx: { channelId: "slack" },
+    ctx: { channelId: string },
   ) =>
     | Promise<PluginHookOutboundRouteDecisionResult | void>
     | PluginHookOutboundRouteDecisionResult

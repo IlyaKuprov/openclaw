@@ -25,6 +25,7 @@ export async function decideOutboundRoute(params: {
   if (!runner?.hasHooks("outbound_route_decision")) {
     return undefined;
   }
+  const { getChannelPlugin } = await import("../../channels/plugins/index.js");
   const storePath =
     params.storePath ??
     resolveSessionStorePathCore(params.cfg.session?.store, { agentId: params.agentId });
@@ -47,16 +48,24 @@ export async function decideOutboundRoute(params: {
       threadId: context?.threadId,
     };
   };
+  const persisted = readPersisted();
   const requested = await runner.runOutboundRouteDecision(
     params.event,
-    { channelId: "slack" },
-    readPersisted(),
+    { channelId: persisted?.channel ?? "" },
+    persisted,
+    getChannelPlugin(persisted?.channel ?? "")?.outbound?.validateSessionRoutePeer,
   );
   if (!requested) {
     return undefined;
   }
   const assertCurrent = () => {
-    validateOutboundRouteDecision(params.event, readPersisted(), requested);
+    const current = readPersisted();
+    validateOutboundRouteDecision(
+      params.event,
+      current,
+      requested,
+      getChannelPlugin(current?.channel ?? "")?.outbound?.validateSessionRoutePeer,
+    );
   };
   assertCurrent();
   return { decision: requested, assertCurrent };

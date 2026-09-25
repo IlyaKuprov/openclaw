@@ -8,9 +8,9 @@ export type PluginHookOutboundRouteDecisionEvent = {
 
 /** A request, not a send. The host owns route verification, media and transport. */
 export type PluginHookOutboundRouteDecisionResult = {
-  channel: "slack";
+  channel: string;
   to: string;
-  accountId: string;
+  accountId?: string;
   threadPolicy: "root";
 };
 
@@ -23,27 +23,13 @@ export type PersistedOutboundRouteProof = {
   threadId?: string | number;
 };
 
-const SLACK_TARGET = /^((?:team:t[a-z0-9]+:)?(?:channel:[cdg][a-z0-9]+|user:[buw][a-z0-9]+))$/i;
-
-function peerTarget(
-  peerKind: "channel" | "group" | "direct" | "dm",
-  peerId: string,
-): string | null {
-  const peer = peerId.toLowerCase();
-  const qualified = /^(team:t[a-z0-9]+:)?(channel|user):([a-z0-9]+)$/.exec(peer);
-  const team = qualified?.[1] ?? "";
-  const kind = qualified?.[2];
-  const id = qualified?.[3] ?? peer;
-  if (peerKind === "channel" || peerKind === "group") {
-    return (!kind || kind === "channel") && /^[cdg][a-z0-9]+$/.test(id)
-      ? `${team}channel:${id}`
-      : null;
-  }
-  if ((!kind || kind === "user") && /^[buw][a-z0-9]+$/.test(id)) {
-    return `${team}user:${id}`;
-  }
-  return (!kind || kind === "channel") && /^d[a-z0-9]+$/.test(id) ? `${team}channel:${id}` : null;
-}
+/** Channel-owned proof that a canonical session peer denotes the exact stored target. */
+export type OutboundRoutePeerValidator = (params: {
+  peerKind: "channel" | "group" | "direct" | "dm";
+  peerId: string;
+  to: string;
+  accountId?: string;
+}) => boolean;
 
 function isNonempty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value === value.trim();
@@ -54,52 +40,59 @@ export function validateOutboundRouteDecision(
   event: PluginHookOutboundRouteDecisionEvent,
   persisted: PersistedOutboundRouteProof | undefined,
   decision: unknown,
+  validatePeer: OutboundRoutePeerValidator | undefined,
 ): PluginHookOutboundRouteDecisionResult {
   const parsed = parseSessionDeliveryRoute(event.sessionKey);
   if (
     !parsed ||
-    parsed.channel !== "slack" ||
+    !isNonempty(parsed.channel) ||
     !persisted ||
     persisted.sessionKey !== event.sessionKey ||
     !isNonempty(event.original.channel) ||
     !isNonempty(persisted.to) ||
-    !isNonempty(persisted.accountId) ||
-    persisted.channel !== "slack" ||
+    (persisted.accountId !== undefined && !isNonempty(persisted.accountId)) ||
+    persisted.channel !== parsed.channel ||
     (parsed.accountId !== undefined && parsed.accountId !== persisted.accountId) ||
-    (event.original.channel === "slack" &&
+    (event.original.channel === persisted.channel &&
       (!isNonempty(event.original.to) ||
-        !isNonempty(event.original.accountId) ||
         event.original.to !== persisted.to ||
         event.original.accountId !== persisted.accountId ||
         event.original.threadId !== persisted.threadId)) ||
     (parsed.threadId !== undefined &&
       (persisted.threadId === undefined || String(persisted.threadId) !== parsed.threadId)) ||
-    !SLACK_TARGET.test(persisted.to) ||
-    peerTarget(parsed.peerKind, parsed.peerId) !== persisted.to.toLowerCase()
+    !validatePeer ||
+    !validatePeer({
+      peerKind: parsed.peerKind,
+      peerId: parsed.peerId,
+      to: persisted.to,
+      accountId: persisted.accountId,
+    })
   ) {
-    throw new Error("outbound route decision lacks matching persisted Slack route authority");
+    throw new Error("outbound route decision lacks matching persisted route authority");
   }
   if (
     typeof decision !== "object" ||
     decision === null ||
     Array.isArray(decision) ||
-    Object.keys(decision).sort().join(",") !== "accountId,channel,threadPolicy,to"
+    !["accountId,channel,threadPolicy,to", "channel,threadPolicy,to"].includes(
+      Object.keys(decision).toSorted().join(","),
+    )
   ) {
     throw new Error("invalid outbound route decision");
   }
   const requested = decision as Record<string, unknown>;
   if (
-    requested.channel !== "slack" ||
+    requested.channel !== persisted.channel ||
     requested.threadPolicy !== "root" ||
     requested.to !== persisted.to ||
     requested.accountId !== persisted.accountId
   ) {
-    throw new Error("outbound route decision conflicts with persisted Slack route");
+    throw new Error("outbound route decision conflicts with persisted route");
   }
   return {
-    channel: "slack",
+    channel: persisted.channel,
     to: persisted.to,
-    accountId: persisted.accountId,
+    ...(persisted.accountId !== undefined ? { accountId: persisted.accountId } : {}),
     threadPolicy: "root",
   };
 }
