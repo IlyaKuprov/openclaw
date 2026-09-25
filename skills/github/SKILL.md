@@ -45,9 +45,9 @@ gh pr create --repo owner/repo --title "feat: title" --body-file /tmp/pr.md
 gh pr merge 55 --repo owner/repo --squash
 ```
 
-When creating or refreshing a commit or PR, use the exact ordered `Worked on by` GitHub logins supplied by the session's Git co-author prompt. Preserve its exact `Co-authored-by` trailers in commits, including after history rewrites. Never infer identities from names, chat, or trailers, include bots or opted-out people, or reorder the supplied contributors.
+When creating a commit or new PR, use the exact ordered `Worked on by` GitHub logins supplied by the session's Git co-author prompt. Preserve its exact `Co-authored-by` trailers in commits, including after history rewrites. Never infer identities from names, chat, or trailers, include bots or opted-out people, or reorder the supplied contributors.
 
-Include `## Worked on by` in PR bodies only when both that list and the Runtime line's `sessionUrl=<exact-url>` are present. Append the final footer below in that case; when the URL is absent, omit the public credit section and footer but retain the verified commit trailers. If no credit list is present, append the footer only when the URL is present. Replace `<sessionUrl>` with the supplied URL verbatim; do not construct or modify it. Preserve any publication marker before exactly one footer, and keep the footer final:
+For a new PR, include `## Worked on by` only when both that list and the Runtime line's `sessionUrl=<exact-url>` are present. Append the final footer below in that case; when the URL is absent, omit the public credit section and footer but retain the verified commit trailers. If no credit list is present, append the footer only when the URL is present. Replace `<sessionUrl>` with the supplied URL verbatim; do not construct or modify it. Preserve any publication marker before exactly one footer, and keep the footer final:
 
 ```text
 ---
@@ -55,6 +55,12 @@ Include `## Worked on by` in PR bodies only when both that list and the Runtime 
 ```
 
 URLs work directly: `gh pr view https://github.com/owner/repo/pull/55`.
+
+When refreshing an existing PR from a different session, preserve its verified
+`## Worked on by` section and exact canonical footer. Keep the new session's
+verified contributors in its commit trailers only; do not replace the earlier
+session URL or add a second footer. If no public footer exists, the new session
+may add its own verified credit and canonical footer under the conditions above.
 
 ## Codex review gate (mandatory)
 
@@ -79,6 +85,11 @@ gh pr comment 55 --repo owner/repo --body "@codex review"   # when no review app
   push, request the re-review, and wait for that one too.
 - Report the PR only when the newest Codex review covers the current head SHA with no
   unaddressed findings; otherwise say what is outstanding instead of calling it done.
+- A `github_publish` result with `status: "published"` means the Gateway created
+  or reused a PR, not that this review gate cleared. Report review as pending;
+  check whether the PR is a draft and mark it ready if so, then verify the
+  current-head review before reporting the PR task complete. The tool result
+  itself is not review evidence.
 
 When the user asks to land or merge a PR, a clean review is a gate, not the terminal outcome.
 Keep the job active through pending CI checks, conflicts, and required merge gates; address
