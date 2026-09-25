@@ -48,7 +48,7 @@ import type {
   PreparedHeartbeatRun,
   ReadyHeartbeatWake,
 } from "./heartbeat-runner-execution.js";
-import { truncateHeartbeatPreview } from "./heartbeat-runner-prompt.js";
+import { HEARTBEAT_ALERT_MARKER, truncateHeartbeatPreview } from "./heartbeat-runner-prompt.js";
 import { restoreHeartbeatUpdatedAt } from "./heartbeat-runner-session.js";
 import { publishHeartbeatSessionReply } from "./heartbeat-session-publication.js";
 import {
@@ -66,6 +66,53 @@ import {
 import { buildOutboundSessionContext } from "./outbound/session-context.js";
 import { withSystemEventOwner } from "./system-event-ownership.js";
 import { consumeSelectedSystemEventEntries, enqueueSystemEvent } from "./system-events.js";
+
+export { HEARTBEAT_ALERT_MARKER };
+
+/** Does a heartbeat reply open with the alert marker, past any prefix or markdown decoration? */
+export function hasHeartbeatAlertMarker(text: string, responsePrefix?: string): boolean {
+  let body = text.trimStart();
+  const prefix = responsePrefix?.trim();
+  if (prefix && body.startsWith(prefix)) {
+    body = body.slice(prefix.length).trimStart();
+  }
+  body = body.replace(/^(?:[*_`>#\s+-]|\d+[.)]\s+)*(?:\[[ xX]\]\s*)?/, "");
+  return body.toUpperCase().startsWith(HEARTBEAT_ALERT_MARKER);
+}
+
+/**
+ * Plain scheduled polls (no exec completion, cron events or scheduled tasks)
+ * whose configured prompt names the alert marker opt into marker-gated text
+ * delivery. The opt-in is read from the configured prompt only: appended
+ * monitor scratch that happens to contain the marker never enables the gate.
+ * Relays and task runs keep their unconditional delivery policy.
+ */
+export function requiresHeartbeatAlertMarker(
+  prepared: Pick<
+    PreparedHeartbeatRun,
+    | "hasExecCompletion"
+    | "hasCronEvents"
+    | "hasTaskContinuation"
+    | "inspectsRunQueue"
+    | "genericEvents"
+    | "configuredPromptOptsIntoAlertMarker"
+  >,
+  scheduledTasks: ReadyHeartbeatWake["scheduledTasks"],
+  intent: HeartbeatRunOptions["intent"],
+): boolean {
+  // Only a scheduled poll with nothing queued is a plain poll: immediate, event,
+  // task and manual wakes, and inspected generic system events, are relays
+  // whose reply the owner asked for. An isolated poll leaves its base queue unseen.
+  return (
+    intent === "scheduled" &&
+    !prepared.hasExecCompletion &&
+    !prepared.hasCronEvents &&
+    !prepared.hasTaskContinuation &&
+    (!prepared.inspectsRunQueue || prepared.genericEvents.length === 0) &&
+    scheduledTasks.length === 0 &&
+    prepared.configuredPromptOptsIntoAlertMarker
+  );
+}
 
 type HeartbeatDispatch = {
   opts: HeartbeatRunOptions;
@@ -230,7 +277,7 @@ async function prepareHeartbeatDispatchReply(
     prepared.replyPrefix.responsePrefix,
     prepared.replyPrefix.responsePrefixContextProvider(),
   );
-  const outcome = classifyHeartbeatAgentOutcome({
+  const classified = classifyHeartbeatAgentOutcome({
     agentRun: {
       agentRunFailed: execution === "failed",
       heartbeatToolResponse: response,
@@ -246,6 +293,27 @@ async function prepareHeartbeatDispatchReply(
     responsePrefix,
     ackMaxChars: DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
   });
+  // An opted-in plain poll answers prose instead of the quiet token when nothing
+  // needs attention; only marked text is an alert, unmarked prose stays a silent
+  // ack with its preview. Media, failures and the structured tool path are stock.
+  const outcome =
+    classified.kind === "delivery" &&
+    !classified.response &&
+    !classified.hasStructuredReplyContent &&
+    !classified.normalized.shouldSkip &&
+    !classified.normalized.hasMedia &&
+    classified.mediaUrls.length === 0 &&
+    selected?.isError !== true &&
+    !getReplyPayloadMetadata(selected ?? {})?.toolErrorWarning &&
+    requiresHeartbeatAlertMarker(prepared, scheduledTasks, opts.intent) &&
+    !hasHeartbeatAlertMarker(classified.normalized.text, responsePrefix)
+      ? ({
+          kind: "ack",
+          eventStatus: "ok-token",
+          silent: true,
+          preview: truncateHeartbeatPreview(classified.normalized.text),
+        } as const)
+      : classified;
   const scratch =
     outcome.kind === "failure" || !heartbeatResponse
       ? undefined

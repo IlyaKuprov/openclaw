@@ -169,6 +169,7 @@ describe("plugin runtime command execution", () => {
     expect(heartbeatRunnerMocks.loads).toBe(1);
     expect(heartbeatRunnerMocks.runHeartbeatOnce).toHaveBeenCalledWith({
       reason: "plugin-event",
+      intent: "immediate",
       agentId: "main",
       sessionKey: "session",
       heartbeat: { target: "none" },
@@ -178,6 +179,7 @@ describe("plugin runtime command execution", () => {
     await expect(system.runHeartbeatOnce()).rejects.toBe(failure);
     expect(heartbeatRunnerMocks.runHeartbeatOnce).toHaveBeenLastCalledWith({
       reason: undefined,
+      intent: "immediate",
       agentId: undefined,
       sessionKey: undefined,
       heartbeat: undefined,

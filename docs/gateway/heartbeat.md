@@ -124,7 +124,7 @@ Proactive heartbeat behavior is opt-in:
 
 Heartbeat can react to completed [background tasks](/automation/tasks), but a heartbeat run itself does not create a task record.
 
-If you want a heartbeat to do something very specific (e.g. "check Gmail PubSub stats" or "verify gateway health"), set `agents.defaults.heartbeat.prompt` (or `agents.entries.*.heartbeat.prompt`) to a custom body (sent verbatim).
+If you want a heartbeat to do something very specific (e.g. "check Gmail PubSub stats" or "verify gateway health"), set `agents.defaults.heartbeat.prompt` (or `agents.entries.*.heartbeat.prompt`) to a custom body (sent verbatim). A custom prompt containing `ALERT:` (case-insensitive) opts **plain scheduled polls** into marker-gated text delivery: start an alert reply with `ALERT:` (after any configured response prefix or Markdown decoration), and unmarked status prose stays silent. For example: `Check the service. If it needs attention, start the reply with ALERT:; otherwise reply NO_REPLY.` Avoid mentioning the marker incidentally in a prompt unless this behavior is wanted. Immediate/manual runs, event and task relays, media, and structured `heartbeat_respond` results retain their normal delivery behavior.
 
 ## Response contract
 
