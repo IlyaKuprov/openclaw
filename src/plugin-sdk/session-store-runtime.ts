@@ -640,6 +640,9 @@ export async function cleanupSessionLifecycleArtifacts(
   params: SessionLifecycleArtifactsCleanupParams,
 ): Promise<SessionLifecycleArtifactsCleanupResult> {
   const prefix = params.sessionKeySegmentPrefix.trim().toLowerCase();
+  if (!prefix) {
+    return { archivedTranscriptArtifacts: 0, removedEntries: 0 };
+  }
   if (
     "internal-session-effects:".startsWith(prefix) ||
     prefix.startsWith("internal-session-effects:")

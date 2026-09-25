@@ -589,9 +589,11 @@ export function createPluginSessionOwnership(
       if (ownerPluginId && incomingOwner !== ownerPluginId) {
         throw new Error(`Plugin "${pluginId}" cannot change the owner of an internal session.`);
       }
-      if (incomingOwner && incomingOwner !== pluginId) {
+      if (incomingOwner !== pluginId) {
         throw new Error(
-          `Internal session "${params.sessionKey}" is owned by plugin "${incomingOwner}", not "${pluginId}".`,
+          incomingOwner
+            ? `Internal session "${params.sessionKey}" is owned by plugin "${incomingOwner}", not "${pluginId}".`
+            : `Internal session "${params.sessionKey}" requires its plugin owner "${pluginId}".`,
         );
       }
     }

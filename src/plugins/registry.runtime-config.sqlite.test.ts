@@ -80,6 +80,14 @@ describe("plugin registry SQLite session ownership", () => {
             entry: { sessionId: "forged-child", pluginOwnerId: "active-memory", updatedAt: 1 },
           }),
         ).rejects.toThrow('owned by plugin "active-memory"');
+        await expect(
+          otherApi.runtime.agent.session.upsertSessionEntry({
+            agentId,
+            sessionKey,
+            storePath,
+            entry: { sessionId: "ownerless-child", updatedAt: 1 },
+          }),
+        ).rejects.toThrow(/requires its plugin owner/);
         expect(loadSessionEntryReadOnly({ agentId, sessionKey, storePath })).toBeUndefined();
       } finally {
         closeOpenClawAgentDatabasesForTest();
