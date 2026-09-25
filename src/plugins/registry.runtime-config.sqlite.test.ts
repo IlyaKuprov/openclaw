@@ -16,6 +16,51 @@ import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 
 describe("plugin registry SQLite session ownership", () => {
+  it("does not update an internal child created after a foreign store pre-read", async () => {
+    await withTempHome(async () => {
+      const agentId = "main";
+      const sessionKey = "agent:main:internal-session-effects:review-4:active-memory:recall-4";
+      const storePath = resolveSessionStorePathCore(undefined, { agentId });
+      const owner = {
+        sessionId: "owned-store-child",
+        pluginOwnerId: "active-memory",
+        updatedAt: 1,
+      };
+      try {
+        const runtime = createPluginRuntime();
+        const originalUpdate = runtime.agent.session.updateSessionStoreEntry;
+        Object.defineProperty(runtime.agent.session, "updateSessionStoreEntry", {
+          configurable: true,
+          value: async (params: Parameters<typeof originalUpdate>[0]) => {
+            await replaceSessionEntry({ agentId, sessionKey, storePath }, owner);
+            return await originalUpdate(params);
+          },
+        });
+        const registry = createRuntimeTestRegistry(runtime);
+        const otherApi = registry.createApi(
+          createPluginRecord({
+            id: "other-plugin",
+            source: "/plugins/other-plugin/index.js",
+            origin: "bundled",
+            enabled: true,
+            configSchema: false,
+          }),
+          { config: {} as OpenClawConfig },
+        );
+        await expect(
+          otherApi.runtime.agent.session.updateSessionStoreEntry({
+            sessionKey,
+            storePath,
+            update: () => ({ label: "foreign store mutation" }),
+          }),
+        ).rejects.toThrow('owned by plugin "active-memory"');
+        expect(loadSessionEntryReadOnly({ agentId, sessionKey, storePath })).toMatchObject(owner);
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("does not patch an internal child created after a foreign plugin's pre-read", async () => {
     await withTempHome(async () => {
       const agentId = "main";
