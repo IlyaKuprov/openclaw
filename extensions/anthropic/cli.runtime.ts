@@ -158,7 +158,7 @@ async function handleRequest(
 
 function closeSession(
   session: ClaudeCliSession,
-  _reason: CliBackendLiveSessionCloseReason,
+  reason: CliBackendLiveSessionCloseReason,
   error?: unknown,
 ) {
   if (session.closed) {
@@ -166,7 +166,7 @@ function closeSession(
   }
   session.closed = true;
   clearTimeout(session.idleTimer);
-  session.capability?.remove(session.handle);
+  session.capability?.remove(session.handle, reason, error);
   const turn = session.currentTurn;
   session.currentTurn = undefined;
   if (turn) {

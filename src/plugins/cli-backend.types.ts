@@ -233,7 +233,12 @@ export type CliBackendLiveSessionCapability = {
   register(handle: CliBackendLiveSessionHandle): void;
   /** Rebinds this exact admitted turn to the registered process's stable capture. */
   activate(handle: CliBackendLiveSessionHandle): void;
-  remove(handle: CliBackendLiveSessionHandle): void;
+  /** Retire the process; supply its close cause for host-owned diagnostics. */
+  remove(
+    handle: CliBackendLiveSessionHandle,
+    reason?: CliBackendLiveSessionCloseReason,
+    error?: unknown,
+  ): void;
 };
 
 /** Turn-only context that must not become an operator-authored native transcript row. */

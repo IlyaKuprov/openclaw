@@ -106,7 +106,7 @@ export function formatCliLiveSessionClose(
 }
 
 /**
- * Renders a failed live turn with its cause. A FailoverError carries the reason
+ * Renders a failed plugin turn with its cause. A FailoverError carries the reason
  * (no-output watchdog, overall budget, expired session) that the bare error name
  * hides, and the message distinguishes those causes from an injected abort.
  */
@@ -126,7 +126,7 @@ export function formatCliLiveTurnFailure(error: unknown): string {
     detail = formatErrorMessage(error);
   } catch {}
   return (
-    `cli live session turn failed: error=${name}` +
+    `cli plugin turn failed: error=${name}` +
     (failoverReason ? ` failoverReason=${failoverReason}` : "") +
     ` detail=${detail}`
   );
@@ -138,16 +138,6 @@ export async function closeCliLiveSession(
   reason: CliBackendLiveSessionCloseReason,
   error?: unknown,
 ): Promise<void> {
-  if (context.preparedBackend.closeLiveSession) {
-    // Name the cause while the process is still identifiable; a killed turn is
-    // otherwise only visible as its reason label.
-    const line = formatCliLiveSessionClose(reason, error);
-    if (error === undefined) {
-      cliBackendLog.info(line);
-    } else {
-      cliBackendLog.warn(line);
-    }
-  }
   await runCliCleanup(context.params, "cli-live-session-close", async () => {
     await context.preparedBackend.closeLiveSession?.(reason, error);
   });
@@ -369,10 +359,18 @@ export function createCliLiveSessionCapability(params: {
       }
       retainCleanup(params.context, record);
     },
-    remove: (handle) => {
+    remove: (handle, reason, error) => {
       const record = liveSessions.get(ownerKey);
       if (record?.handle !== handle) {
         return;
+      }
+      if (reason !== undefined) {
+        const line = formatCliLiveSessionClose(reason, error);
+        if (error === undefined) {
+          cliBackendLog.info(line);
+        } else {
+          cliBackendLog.warn(line);
+        }
       }
       record.capture?.revoke();
       liveSessions.delete(ownerKey);
@@ -390,8 +388,8 @@ export function createCliLiveSessionCapability(params: {
         });
       // A fresh prepared context must still join the retired owner after a timeout.
       retiredSessionCleanup.set(ownerKey, record.cleanupPromise);
-      void record.cleanupPromise.catch((error: unknown) => {
-        cliBackendLog.warn(`cli live session cleanup failed: ${String(error)}`);
+      void record.cleanupPromise.catch((cleanupError: unknown) => {
+        cliBackendLog.warn(`cli live session cleanup failed: ${String(cleanupError)}`);
       });
     },
   });

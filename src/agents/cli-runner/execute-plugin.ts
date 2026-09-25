@@ -615,7 +615,7 @@ export async function executePluginOwnedProcess(params: {
       throw new Error("CLI plugin runtime completed without a terminal result.");
     }
   } catch (error) {
-    // Say why the live turn ended before the abort and exit handling below
+    // Say why the plugin turn ended before the abort and exit handling below
     // rewrite it into a generic outcome.
     cliBackendLog.warn(formatCliLiveTurnFailure(error));
     if (run.abortSignal?.aborted || termination.reason === "manual-cancel") {

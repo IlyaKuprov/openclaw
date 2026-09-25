@@ -119,6 +119,20 @@ function resultDetail(records: Record<string, unknown>[]): Record<string, unknow
 }
 
 describe("Claude native stdio boundary", () => {
+  it("forwards a direct process close reason to the diagnostic owner", async () => {
+    const liveSession = createLiveSession();
+    const remove = vi.spyOn(liveSession, "remove");
+    const context = await createContext("normal", { liveSession });
+    await collect(context);
+    const handle = liveSession.current();
+    expect(handle).toBeDefined();
+
+    handle?.close("idle");
+
+    expect(remove).toHaveBeenCalledWith(handle, "idle", undefined);
+    await handle?.waitForExit();
+  });
+
   it.each([
     { scenario: "shutdown-ignore", name: "native parent and child ignore EOF and SIGTERM" },
     { scenario: "shutdown-eof", name: "native parent exits immediately on EOF" },
