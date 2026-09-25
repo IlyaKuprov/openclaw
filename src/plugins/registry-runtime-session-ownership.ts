@@ -599,6 +599,7 @@ export function createPluginSessionOwnership(
   return {
     assertOwnedHarness,
     assertReservedSessionKeyOwned,
+    assertSessionEntryOwned,
     assertStoredSessionEntryOwned,
     assertStoreEntryOwned,
     resolveStoredSessionExecutionOwner,

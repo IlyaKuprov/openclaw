@@ -458,23 +458,29 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
             upsertSessionEntry: async (params) => {
-              const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
+              const { assertSessionEntryOwned, assertStoreEntryOwned } =
                 await loadSessionOwnership();
               return await runWithPluginScope(async () => {
-                const before = assertStoredSessionEntryOwned({
-                  action: "upsert",
-                  sessionKey: params.sessionKey,
-                  ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
-                  ...(params.env !== undefined ? { env: params.env } : {}),
-                  ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
+                await session.patchSessionEntry({
+                  ...params,
+                  fallbackEntry: params.entry,
+                  replaceEntry: true,
+                  update: (_entry, context) => {
+                    const before = context.existingEntry;
+                    assertSessionEntryOwned({
+                      action: "upsert",
+                      entry: before,
+                      sessionKey: params.sessionKey,
+                    });
+                    assertStoreEntryOwned({
+                      action: "upsert",
+                      before,
+                      entry: params.entry,
+                      sessionKey: params.sessionKey,
+                    });
+                    return params.entry;
+                  },
                 });
-                assertStoreEntryOwned({
-                  action: "upsert",
-                  before,
-                  entry: params.entry,
-                  sessionKey: params.sessionKey,
-                });
-                await session.upsertSessionEntry(params);
               });
             },
             runWithWorkAdmission: async (params, run) => {

@@ -16,6 +16,64 @@ import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 
 describe("plugin registry SQLite session ownership", () => {
+  it("does not let a foreign upsert replace an internal child created after its pre-read", async () => {
+    await withTempHome(async () => {
+      const agentId = "main";
+      const sessionKey = "agent:main:internal-session-effects:review-2:active-memory:recall-2";
+      const storePath = resolveSessionStorePathCore(undefined, { agentId });
+      const owner = { sessionId: "owned-child", pluginOwnerId: "active-memory", updatedAt: 1 };
+      const foreign = { sessionId: "foreign-child", pluginOwnerId: "other-plugin", updatedAt: 2 };
+      try {
+        const runtime = createPluginRuntime();
+        const originalUpsert = runtime.agent.session.upsertSessionEntry;
+        const originalPatch = runtime.agent.session.patchSessionEntry;
+        let inserted = false;
+        const seedOwner = async () => {
+          if (!inserted) {
+            inserted = true;
+            await replaceSessionEntry({ agentId, sessionKey, storePath }, owner);
+          }
+        };
+        Object.defineProperty(runtime.agent.session, "upsertSessionEntry", {
+          configurable: true,
+          value: async (params: Parameters<typeof originalUpsert>[0]) => {
+            await seedOwner();
+            return await originalUpsert(params);
+          },
+        });
+        Object.defineProperty(runtime.agent.session, "patchSessionEntry", {
+          configurable: true,
+          value: async (params: Parameters<typeof originalPatch>[0]) => {
+            await seedOwner();
+            return await originalPatch(params);
+          },
+        });
+        const registry = createRuntimeTestRegistry(runtime);
+        const otherApi = registry.createApi(
+          createPluginRecord({
+            id: "other-plugin",
+            source: "/plugins/other-plugin/index.js",
+            origin: "bundled",
+            enabled: true,
+            configSchema: false,
+          }),
+          { config: {} as OpenClawConfig },
+        );
+        await expect(
+          otherApi.runtime.agent.session.upsertSessionEntry({
+            agentId,
+            sessionKey,
+            storePath,
+            entry: foreign,
+          }),
+        ).rejects.toThrow('owned by plugin "active-memory"');
+        expect(loadSessionEntryReadOnly({ agentId, sessionKey, storePath })).toMatchObject(owner);
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("admits a plugin-owned recall child under a hidden internal-effects parent", async () => {
     await withTempHome(async (home) => {
       const agentId = "main";
