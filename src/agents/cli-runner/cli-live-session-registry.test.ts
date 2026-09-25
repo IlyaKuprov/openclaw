@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { createAbortError } from "../../infra/abort-signal.js";
 import type {
   CliBackendLiveSessionCapability,
+  CliBackendLiveSessionCloseReason,
   CliBackendLiveSessionHandle,
 } from "../../plugins/cli-backend.types.js";
 import { formatSkillsForPromptCore } from "../../skills/loading/skill-contract.js";
@@ -16,12 +18,19 @@ import {
   buildCliLiveOwnerKey,
   closeCliLiveSession,
   createCliLiveSessionCapability,
+  formatCliLiveSessionClose,
+  formatCliLiveTurnFailure,
   getCliLiveSessionGeneration,
   hasCliLiveSession,
   restartCliLiveSession,
 } from "./cli-live-session-registry.js";
 import { settlePreparedCliRun } from "./cli-run-settlement.js";
 import { buildCliLiveSessionFingerprint } from "./live-session-fingerprint.js";
+import { cliBackendLog } from "./log.js";
+import {
+  createCliTimeoutError,
+  resolveCliNoOutputTimeoutDecision,
+} from "./no-output-timeout-policy.js";
 
 const admissions: Array<ReturnType<typeof prepareSystemAgentRunAdmission>> = [];
 const sessions = new Set<CliBackendLiveSessionHandle>();
@@ -94,8 +103,8 @@ async function createOwner(
     ...(options.requiredGeneration ? { requiredGeneration: options.requiredGeneration } : {}),
   });
   const exited = createDeferred();
-  const close = vi.fn(() => {
-    capability.remove(session);
+  const close = vi.fn((reason: CliBackendLiveSessionCloseReason, error?: unknown) => {
+    capability.remove(session, reason, error);
     if (!options.deferExit) {
       exited.resolve();
     }
@@ -828,5 +837,148 @@ describe("generic plugin-owned live session registry", () => {
 
     eligible.executionTarget = { kind: "process" };
     expect(acceptsCliLiveSession(eligible)).toBe(false);
+  });
+});
+
+describe("live-turn kill diagnostics", () => {
+  const timeoutContext = {
+    provider: "claude-cli",
+    model: "claude-sonnet",
+    sessionId: "diagnostics-session",
+    lane: undefined,
+  };
+
+  it("renders a close with and without a cause", () => {
+    expect(formatCliLiveSessionClose("restart")).toBe("cli live session close: reason=restart");
+    expect(formatCliLiveSessionClose("abort", new Error("gateway killed the turn"))).toBe(
+      "cli live session close: reason=abort detail=gateway killed the turn",
+    );
+  });
+
+  it("records the reason for a plugin-initiated idle close", async () => {
+    const owner = await createOwner();
+    owner.register();
+    const info = vi.spyOn(cliBackendLog, "info");
+
+    owner.session.close("idle");
+
+    expect(info).toHaveBeenCalledWith("cli live session close: reason=idle");
+  });
+
+  it("records a restart close through the retained process owner", async () => {
+    const owner = await createOwner();
+    owner.register();
+    const info = vi.spyOn(cliBackendLog, "info");
+
+    await restartCliLiveSession(owner.context);
+
+    expect(info).toHaveBeenCalledWith("cli live session close: reason=restart");
+  });
+
+  it("names the no-output watchdog that aborted the turn", () => {
+    const { error } = resolveCliNoOutputTimeoutDecision({
+      context: timeoutContext,
+      timeoutMs: 900_000,
+      quietDurationMs: 900_000,
+      cliTimeout: {
+        mode: "no-output",
+        timeoutSeconds: 900,
+        observedActivity: false,
+        activeToolCount: 0,
+        backgroundTaskCount: 0,
+      },
+      hasOutputText: false,
+      useResume: false,
+      hasReplayUnsafeActivity: false,
+    });
+
+    expect(formatCliLiveTurnFailure(error)).toBe(
+      "cli plugin turn failed: error=FailoverError failoverReason=timeout " +
+        "detail=CLI produced no output for 900s and was terminated.",
+    );
+  });
+
+  it("names the overall turn budget that aborted the turn", () => {
+    // The watchdog aborts the controller with exactly this error.
+    const overall = new Error("CLI plugin runtime exceeded its execution timeout.");
+
+    expect(formatCliLiveTurnFailure(overall)).toBe(
+      "cli plugin turn failed: error=Error " +
+        "detail=CLI plugin runtime exceeded its execution timeout.",
+    );
+  });
+
+  it("names an externally injected abort and its cause", () => {
+    const abort = createAbortError("CLI run aborted", {
+      cause: new Error("gateway cancelled the live turn"),
+    });
+
+    // The renderer keeps the cause chain: the injected reason is the diagnosis.
+    expect(formatCliLiveTurnFailure(abort)).toBe(
+      "cli plugin turn failed: error=AbortError " +
+        "detail=CLI run aborted | gateway cancelled the live turn",
+    );
+    expect(formatCliLiveSessionClose("abort", abort)).toBe(
+      "cli live session close: reason=abort " +
+        "detail=CLI run aborted | gateway cancelled the live turn",
+    );
+  });
+
+  it("never throws on the catch path when an error's accessors throw", () => {
+    const hostile = new Error("backend rejected the turn");
+    Object.defineProperty(hostile, "name", {
+      get() {
+        throw new Error("name getter exploded");
+      },
+    });
+    Object.defineProperty(hostile, "message", {
+      get() {
+        throw new Error("message getter exploded");
+      },
+    });
+    expect(() => formatCliLiveTurnFailure(hostile)).not.toThrow();
+    expect(formatCliLiveTurnFailure(hostile)).toMatch(
+      /^cli plugin turn failed: error=unknown detail=/,
+    );
+    expect(() => formatCliLiveSessionClose("abort", hostile)).not.toThrow();
+    expect(formatCliLiveSessionClose("abort", hostile)).toMatch(
+      /^cli live session close: reason=abort detail=/,
+    );
+    const serializedFailover = {
+      name: "FailoverError",
+      get reason(): string {
+        throw new Error("reason getter exploded");
+      },
+    };
+    expect(() => formatCliLiveTurnFailure(serializedFailover)).not.toThrow();
+  });
+
+  it("forwards a close cause to the plugin-owned process", async () => {
+    const owner = await createOwner();
+    owner.register();
+    const warn = vi.spyOn(cliBackendLog, "warn");
+    const cause = createCliTimeoutError(timeoutContext, {
+      mode: "overall",
+      timeoutSeconds: 600,
+      observedActivity: true,
+      activeToolCount: 0,
+      backgroundTaskCount: 0,
+    });
+
+    await closeCliLiveSession(owner.context, "abort", cause);
+
+    expect(owner.close).toHaveBeenCalledWith("abort", cause);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("cli live session close: reason=abort detail="),
+    );
+  });
+
+  it("closes without a cause when the caller has none", async () => {
+    const owner = await createOwner();
+    owner.register();
+
+    await closeCliLiveSession(owner.context, "restart");
+
+    expect(owner.close).toHaveBeenCalledWith("restart");
   });
 });

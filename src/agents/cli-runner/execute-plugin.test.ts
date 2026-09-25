@@ -21,6 +21,7 @@ import {
   SUCCESS_RESULT,
   waitUntilAborted,
 } from "./execute-plugin.test-support.js";
+import { cliBackendLog } from "./log.js";
 import type { PreparedCliRunContext } from "./types.js";
 
 vi.mock("../tools/gateway.js", () => ({
@@ -63,6 +64,24 @@ afterEach(() => {
 });
 
 describe("plugin-owned CLI execution host boundary", () => {
+  it("labels a one-shot plugin failure without claiming a live session", async () => {
+    const { context } = await createExecution();
+    const warn = vi.spyOn(cliBackendLog, "warn");
+    const failure = new Error("one-shot transport failed");
+
+    await expect(
+      runPlugin(context, async function* () {
+        yield { type: "system", subtype: "init", session_id: "one-shot" };
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+
+    expect(warn).toHaveBeenCalledWith(
+      "cli plugin turn failed: error=Error detail=one-shot transport failed",
+    );
+    expect(warn.mock.calls.flat().join("\n")).not.toContain("live session turn failed");
+  });
+
   it("streams plugin events through the canonical host output boundary", async () => {
     const { context } = await createExecution();
     context.systemPrompt = `  Follow host policy.${SYSTEM_PROMPT_CACHE_BOUNDARY}Keep credentials private.  `;
