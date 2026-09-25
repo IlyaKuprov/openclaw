@@ -181,6 +181,16 @@ export function createPluginSessionOwnership(
     sessionKey: string;
   }): void => {
     if (params.entry) {
+      const ownerPluginId = normalizeOptionalString(params.entry.pluginOwnerId);
+      if (
+        isInternalSessionEffectsKey(params.sessionKey) &&
+        ownerPluginId &&
+        ownerPluginId !== pluginId
+      ) {
+        throw new Error(
+          `Internal session "${params.sessionKey}" is owned by plugin "${ownerPluginId}", not "${pluginId}".`,
+        );
+      }
       // Before harness locking shipped, plugins could create ordinary sessions
       // whose user-chosen key happened to start with `harness:`.
       assertLockedSessionEntryOwned(params.sessionKey, params.entry, params.action);
@@ -566,6 +576,14 @@ export function createPluginSessionOwnership(
     entry: SessionEntry;
     sessionKey: string;
   }): void => {
+    const ownerPluginId = normalizeOptionalString(params.before?.pluginOwnerId);
+    if (
+      isInternalSessionEffectsKey(params.sessionKey) &&
+      ownerPluginId &&
+      normalizeOptionalString(params.entry.pluginOwnerId) !== ownerPluginId
+    ) {
+      throw new Error(`Plugin "${pluginId}" cannot change the owner of an internal session.`);
+    }
     if (params.entry.modelSelectionLocked === true) {
       assertLockedSessionEntryOwned(params.sessionKey, params.entry, params.action);
       return;

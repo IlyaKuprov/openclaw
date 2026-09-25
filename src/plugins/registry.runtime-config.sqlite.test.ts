@@ -73,6 +73,30 @@ describe("plugin registry SQLite session ownership", () => {
           }),
           { config: {} as OpenClawConfig },
         );
+        await expect(
+          otherApi.runtime.agent.session.patchSessionEntry({
+            agentId,
+            sessionKey,
+            storePath,
+            update: () => ({ pluginOwnerId: "other-plugin" }),
+          }),
+        ).rejects.toThrow('owned by plugin "active-memory"');
+        await expect(
+          otherApi.runtime.agent.session.upsertSessionEntry({
+            agentId,
+            sessionKey,
+            storePath,
+            entry: { sessionId, sessionFile, pluginOwnerId: "other-plugin", updatedAt: 2 },
+          }),
+        ).rejects.toThrow('owned by plugin "active-memory"');
+        await expect(
+          api.runtime.agent.session.patchSessionEntry({
+            agentId,
+            sessionKey,
+            storePath,
+            update: () => ({ pluginOwnerId: undefined }),
+          }),
+        ).rejects.toThrow("cannot change the owner of an internal session");
         await expect(otherApi.runtime.agent.runEmbeddedAgent(params)).rejects.toThrow(
           'owned by plugin "active-memory"',
         );
