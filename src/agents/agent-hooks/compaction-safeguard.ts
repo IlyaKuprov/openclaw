@@ -107,10 +107,25 @@ type CompactionLoss =
 function prependPreviousSummaryForRedistill(params: {
   messages: AgentMessage[];
   previousSummary?: string;
+  maxChunkTokens: number;
+  contextWindow: number;
 }): AgentMessage[] {
   const previousSummary = params.previousSummary?.trim();
   if (!previousSummary) {
     return params.messages;
+  }
+  // The prior boundary is input, not output. Fit it inside one summarizer
+  // chunk before the chunk planner sees the synthetic first message. On a
+  // tiny model the fixed 4K overhead can reduce maxChunkTokens to one;
+  // use the planner's minimum chunk share rather than rejecting short summaries.
+  const fitted = fitCompactionSummary(
+    Math.floor(
+      Math.max(params.maxChunkTokens, params.contextWindow * MIN_CHUNK_RATIO) / SAFETY_MARGIN,
+    ),
+    (maxChars) => ({ summary: capCompactionSummary(previousSummary, maxChars) }),
+  );
+  if (!fitted.ok) {
+    throw fitted.error;
   }
   return [
     {
@@ -118,7 +133,7 @@ function prependPreviousSummaryForRedistill(params: {
       content: [
         {
           type: "text",
-          text: `<previous-compaction-summary>\n${PREVIOUS_SUMMARY_REDISTILL_PREFIX}\n\n${previousSummary}\n</previous-compaction-summary>`,
+          text: `<previous-compaction-summary>\n${PREVIOUS_SUMMARY_REDISTILL_PREFIX}\n\n${fitted.value.summary}\n</previous-compaction-summary>`,
         },
       ],
       timestamp: 0,

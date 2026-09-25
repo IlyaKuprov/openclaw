@@ -4,6 +4,10 @@ import {
   type SimpleStreamOptions,
   type StreamFn,
 } from "@openclaw/llm-core";
+import {
+  CHARS_PER_TOKEN_ESTIMATE,
+  estimateStringChars,
+} from "@openclaw/normalization-core/cjk-chars";
 import { resolveAgentReasoningOption } from "../../reasoning.js";
 import {
   type AgentCoreCompletionRuntimeDeps,
@@ -13,6 +17,7 @@ import {
 import type { AgentMessage, ThinkingLevel } from "../../types.js";
 import { convertToLlm } from "../messages.js";
 import { CompactionError, err, InvalidSummaryOutputError, ok, type Result } from "../types.js";
+import { capCompactionSummary, fitCompactionSummary } from "./compaction.js";
 import { SUMMARIZATION_SYSTEM_PROMPT } from "./summarization-prompts.js";
 import { extractSummaryText, serializeConversation } from "./utils.js";
 
@@ -56,14 +61,38 @@ export async function runSummarizationCompletion(
 ): Promise<Result<string, CompactionError>> {
   const conversationText = serializeConversation(convertToLlm(params.messages));
   let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
+  const previousSummaryWrapper = `<previous-summary>\n\n</previous-summary>\n\n`;
+  const focus = params.customInstructions
+    ? `\n\nAdditional focus: ${params.customInstructions}`
+    : "";
+  const effectiveContext = Math.min(
+    params.model.contextTokens ?? Infinity,
+    params.model.contextWindow ?? Infinity,
+  );
+  const previousSummaryBudget = Math.floor(
+    effectiveContext -
+      params.maxTokens -
+      estimateStringChars(
+        SUMMARIZATION_SYSTEM_PROMPT + promptText + params.prompt + focus + previousSummaryWrapper,
+      ) /
+        CHARS_PER_TOKEN_ESTIMATE,
+  );
   if (params.previousSummary) {
-    promptText += `<previous-summary>\n${params.previousSummary}\n</previous-summary>\n\n`;
+    const previousSummary = params.previousSummary;
+    const fitted = fitCompactionSummary(
+      Number.isFinite(previousSummaryBudget) ? previousSummaryBudget : undefined,
+      (maxChars) => ({
+        summary: capCompactionSummary(previousSummary, maxChars),
+      }),
+    );
+    if (!fitted.ok) {
+      return err(fitted.error);
+    }
+    promptText += `<previous-summary>\n${fitted.value.summary}\n</previous-summary>\n\n`;
   }
   promptText += params.prompt;
   // SDK callers also pass generated policy here; the host bounds raw operator focus.
-  if (params.customInstructions) {
-    promptText += `\n\nAdditional focus: ${params.customInstructions}`;
-  }
+  promptText += focus;
   const context = {
     systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
     messages: [

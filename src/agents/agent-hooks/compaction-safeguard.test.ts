@@ -1825,6 +1825,8 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const redistillMessages = prependPreviousSummaryForRedistill({
       messages,
       previousSummary: "## Goal\nold duplicate summary",
+      maxChunkTokens: 8_192,
+      contextWindow: 32_768,
     });
 
     expect(redistillMessages).toHaveLength(2);
@@ -1832,6 +1834,22 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(JSON.stringify(redistillMessages[0])).toContain("<previous-compaction-summary>");
     expect(JSON.stringify(redistillMessages[0])).toContain("Prune stale, duplicate");
     expect(redistillMessages[1]).toBe(messages[0]);
+  });
+
+  it("bounds a 40K CJK prior boundary before the small-model safeguard chunker", () => {
+    const previousSummary = "保".repeat(39_900);
+    const messages: AgentMessage[] = [{ role: "user", content: "New decision", timestamp: 1 }];
+    const redistill = prependPreviousSummaryForRedistill({
+      messages,
+      previousSummary,
+      maxChunkTokens: 4_096,
+      contextWindow: 16_384,
+    });
+    const synthetic = JSON.stringify(redistill[0]);
+    expect(synthetic).toContain("[Compaction summary truncated to fit budget]");
+    expect(synthetic).toContain("保");
+    expect(synthetic.length).toBeLessThan(8_192);
+    expect(redistill[1]).toBe(messages[0]);
   });
 
   it("restructures summaries with near-match headings instead of reusing them", () => {
@@ -2902,6 +2920,8 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const redistillMessages = prependPreviousSummaryForRedistill({
       messages: [{ role: "user", content: "continue", timestamp: 3 }],
       previousSummary: summary,
+      maxChunkTokens: 8_192,
+      contextWindow: 32_768,
     });
     const redistillContent = requireArray(requireRecord(redistillMessages[0]).content);
     const redistillPrompt = requireRecord(redistillContent[0]).text;
