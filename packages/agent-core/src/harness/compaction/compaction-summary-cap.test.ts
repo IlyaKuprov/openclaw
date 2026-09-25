@@ -4,7 +4,7 @@ import type { AssistantMessage, Model, StreamFn, Usage } from "../../llm.js";
 import { compact } from "./compaction.js";
 import { createFileOps } from "./utils.js";
 
-const MAX_SUMMARY_CHARS = 16_000;
+const MAX_SUMMARY_CHARS = 40_000;
 const TRUNCATED_MARKER = "\n\n[Compaction summary truncated to fit budget]";
 const TURN_CONTEXT_HEADING = "\n\n---\n\n**Turn Context (split turn):**\n\n";
 
