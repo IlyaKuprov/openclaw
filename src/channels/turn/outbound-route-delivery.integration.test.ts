@@ -183,6 +183,7 @@ describe("channel lifecycle outbound route decision", () => {
       session: { key: slackSessionKey, agentId: "main" },
     });
     expect(latestDurableSendRequest().replyToMode).toBe("off");
+    expect(latestDurableSendRequest().rootReplyOnly).toBe(true);
     expect(latestDurableSendRequest().payloads?.[0]?.replyToId).toBeUndefined();
     const access = sendDurableMessageBatch.mock.calls[0]?.[0]?.mediaAccess as
       | OutboundMediaAccess

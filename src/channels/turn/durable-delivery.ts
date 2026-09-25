@@ -46,6 +46,8 @@ export type DurableInboundReplyDeliveryParams = DurableInboundReplyDeliveryOptio
   info: ChannelDeliveryInfo;
   runId?: string;
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
+  /** Host-only root decision must survive reply-payload modifiers before queue admission. */
+  rootReplyOnly?: true;
   /** Host-only persisted-route freshness fence, after capability preflight and before enqueue. */
   assertRouteAuthority?: () => void;
 };
@@ -242,6 +244,7 @@ export async function deliverInboundReplyWithMessageSendContextCore(
     threadId,
     replyToId,
     replyToMode: params.replyToMode,
+    rootReplyOnly: params.rootReplyOnly,
     formatting: params.formatting,
     identity: params.identity,
     deps: params.deps,

@@ -19,6 +19,7 @@ export type DurableSendRequest = {
   payloads?: ReplyPayload[];
   replyToId?: string | null;
   replyToMode?: string;
+  rootReplyOnly?: true;
   session?: {
     key?: string;
     agentId?: string;

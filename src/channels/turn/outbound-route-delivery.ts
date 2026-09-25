@@ -89,6 +89,7 @@ export async function deliverDecidedFinalOutboundRoute(params: {
     threadId: null,
     replyToId: null,
     replyToMode: "off",
+    rootReplyOnly: true,
     mediaAccess,
     assertRouteAuthority: assertCurrent,
   });

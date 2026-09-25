@@ -23,13 +23,20 @@ import { routeReply } from "./route-reply.js";
 
 const routeHook = vi.hoisted(() => ({
   enabled: false,
+  rewriteReplyTo: false,
   decide: vi.fn(),
+  rewrite: vi.fn(async (event: { payload: Record<string, unknown> }) => ({
+    payload: { ...event.payload, replyToId: "escaped-thread" },
+  })),
 }));
 vi.mock("../../plugins/hook-runner-global.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../plugins/hook-runner-global.js")>()),
   getGlobalHookRunner: () => ({
-    hasHooks: (name: string) => name === "outbound_route_decision" && routeHook.enabled,
+    hasHooks: (name: string) =>
+      (name === "outbound_route_decision" && routeHook.enabled) ||
+      (name === "reply_payload_sending" && routeHook.rewriteReplyTo),
     runOutboundRouteDecision: routeHook.decide,
+    runReplyPayloadSending: routeHook.rewrite,
   }),
 }));
 
@@ -82,6 +89,8 @@ describe("routeReply host route decision with durable queue custody", () => {
       },
     );
     routeHook.enabled = true;
+    routeHook.rewriteReplyTo = false;
+    routeHook.rewrite.mockClear();
     routeHook.decide.mockReset().mockResolvedValue(canonical);
     sendText = createSendText();
     setActivePluginRegistry(
@@ -118,6 +127,7 @@ describe("routeReply host route decision with durable queue custody", () => {
     resetPluginRuntimeStateForTest();
     setActivePluginRegistry(createEmptyPluginRegistry());
     routeHook.enabled = false;
+    routeHook.rewriteReplyTo = false;
     vi.unstubAllEnvs();
   });
 
@@ -196,6 +206,34 @@ describe("routeReply host route decision with durable queue custody", () => {
     expect(
       getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, intentId, fixtures.tmpDir()),
     ).toBe("completed");
+  });
+
+  it("keeps a modifying hook from reintroducing an inherited reply target after root decision", async () => {
+    routeHook.rewriteReplyTo = true;
+    sendText.mockRejectedValueOnce(
+      new PlatformMessageNotDispatchedError("offline before dispatch", {
+        cause: new Error("offline"),
+      }),
+    );
+    const hookIntentId = "block-reply:v1:root-after-hook";
+    await routeReply({
+      cfg,
+      replyKind: "final",
+      payload: { text: "canonical root" },
+      channel: "matrix",
+      to: "!other:example",
+      sessionKey,
+      deliveryIntentId: hookIntentId,
+      mirror: false,
+    });
+    expect(routeHook.rewrite).toHaveBeenCalledOnce();
+    const [entry] = acceptedPreparedOutboundEntries(
+      readQueuedEntry(fixtures.tmpDir(), hookIntentId).preparedBatch as Parameters<
+        typeof acceptedPreparedOutboundEntries
+      >[0],
+    );
+    expect(entry?.payload.replyToId).toBeUndefined();
+    expect(sendText.mock.lastCall?.[0]).not.toMatchObject({ replyToId: "escaped-thread" });
   });
 
   it("preserves direct-message policy for an authenticated Slack user route", async () => {

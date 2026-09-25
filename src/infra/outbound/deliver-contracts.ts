@@ -185,6 +185,8 @@ export type DeliverOutboundPayloadsCoreParams = {
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
   /** @internal Canonical post-policy batch used by queue recovery and physical delivery. */
   preparedBatch?: PreparedOutboundBatch;
+  /** @internal Host-owned root policy applied after modifying hooks, before durable custody. */
+  rootReplyOnly?: true;
   reply?: OutboundReplyFacts;
   formatting?: OutboundDeliveryFormattingOptions;
   threadId?: string | number | null;

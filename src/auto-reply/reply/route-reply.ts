@@ -434,6 +434,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       threadId: resolvedThreadId,
       ...(decidedRoute
         ? {
+            rootReplyOnly: true as const,
             replyToMode: "off" as const,
             mediaAccess: resolveAgentScopedOutboundMediaAccess({
               cfg,
