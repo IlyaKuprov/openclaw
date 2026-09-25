@@ -15,7 +15,8 @@ import type { PluginRuntime } from "./types.js";
 export const runPluginEmbeddedAgent: PluginRuntime["agent"]["runEmbeddedAgent"] = async (
   params,
 ) => {
-  const pluginId = getPluginRuntimeGatewayRequestScope()?.pluginId;
+  const requestScope = getPluginRuntimeGatewayRequestScope();
+  const pluginId = requestScope?.pluginId;
   if (!pluginId) {
     throw new Error("Plugin embedded-agent execution requires an active plugin runtime scope.");
   }
@@ -38,6 +39,10 @@ export const runPluginEmbeddedAgent: PluginRuntime["agent"]["runEmbeddedAgent"] 
   const preparedRunAdmission = prepareAgentRunAdmission({
     cfg: config,
     operationalRunInstance: createOperationalRunInstanceRef(params.runId),
+    assertSourceCurrent: () => {
+      requestScope?.assertPluginRuntimeCurrent?.();
+      requestScope?.assertEmbeddedRunSessionCurrent?.();
+    },
     facts: {
       runId: params.runId,
       agentId: params.sessionTarget?.agentId ?? params.agentId ?? "main",

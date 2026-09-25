@@ -45,7 +45,10 @@ import {
 } from "../../sessions/session-lifecycle-admission.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import { createLazyRuntimeMethod, createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
-import { getPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
+import {
+  getPluginRuntimeGatewayRequestScope,
+  withPluginRuntimeEmbeddedRunSessionScope,
+} from "./gateway-request-scope.js";
 import { resolveAgentCatalogCreateTarget } from "./runtime-agent-session-catalog.js";
 import { resolveRuntimeThinkingCatalog } from "./runtime-agent-thinking.js";
 import { defineCachedValue } from "./runtime-cache.js";
@@ -725,19 +728,24 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
           throw new Error("Plugin embedded-agent session owner changed");
         }
         const runtime = await loadEmbeddedAgentRuntime();
-        requestScope?.assertPluginRuntimeCurrent?.();
-        const current = scope ? loadExactSessionEntryReadOnly(scope)?.entry : undefined;
-        if (
-          changed ||
-          Boolean(current) !== Boolean(original) ||
-          current?.sessionId !== original?.sessionId ||
-          current?.pluginOwnerId !== original?.pluginOwnerId ||
-          (current?.pluginOwnerId && current.pluginOwnerId !== pluginId) ||
-          (current && target?.sessionId && current.sessionId !== target.sessionId)
-        ) {
-          throw new Error("Plugin embedded-agent session owner changed");
-        }
-        return await runtime.runPluginEmbeddedAgent(params);
+        const assertCurrent = () => {
+          requestScope?.assertPluginRuntimeCurrent?.();
+          const current = scope ? loadExactSessionEntryReadOnly(scope)?.entry : undefined;
+          if (
+            changed ||
+            Boolean(current) !== Boolean(original) ||
+            current?.sessionId !== original?.sessionId ||
+            current?.pluginOwnerId !== original?.pluginOwnerId ||
+            (current?.pluginOwnerId && current.pluginOwnerId !== pluginId) ||
+            (current && target?.sessionId && current.sessionId !== target.sessionId)
+          ) {
+            throw new Error("Plugin embedded-agent session owner changed");
+          }
+        };
+        assertCurrent();
+        return await withPluginRuntimeEmbeddedRunSessionScope(assertCurrent, () =>
+          runtime.runPluginEmbeddedAgent(params),
+        );
       } finally {
         unsubscribe?.();
       }
