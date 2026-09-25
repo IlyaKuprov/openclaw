@@ -88,7 +88,11 @@ describe("public plugin session-store writers", () => {
       ).rejects.toThrow(/internal session.*scoped plugin runtime/i);
       await expect(
         sdk.updateSessionStore(storePath, (store) => {
-          const extensions = store[sessionKey].pluginExtensions as {
+          const entry = store[sessionKey];
+          if (!entry) {
+            throw new Error("expected owned session fixture");
+          }
+          const extensions = entry.pluginExtensions as {
             fixture: { state: { active: boolean } };
           };
           extensions.fixture.state.active = false;
@@ -124,22 +128,25 @@ describe("public plugin session-store writers", () => {
       label: "owner can still write",
     });
     const foreignApi = pluginRegistry.createApi(record, { config: {} });
+    const foreignCleanup = foreignApi.runtime.agent.session.cleanupSessionLifecycleArtifacts;
+    const ownerCleanup = ownerApi.runtime.agent.session.cleanupSessionLifecycleArtifacts;
+    if (!foreignCleanup || !ownerCleanup) {
+      throw new Error("test runtime must provide lifecycle cleanup");
+    }
     const coreScope = {
       ...scope,
       sessionKey: "agent:main:internal-session-effects:core-hidden",
     };
     await upsertSessionEntryCore(coreScope, { sessionId: "core-hidden", updatedAt: 1 });
     await expect(
-      foreignApi.runtime.agent.session.cleanupSessionLifecycleArtifacts({
+      foreignCleanup({
         ...cleanup,
         pluginOwnerId: "active-memory",
       }),
     ).resolves.toMatchObject({ removedEntries: 0 });
     expect(readStoredEntry(scope)?.pluginOwnerId).toBe("active-memory");
     expect(readStoredEntry(coreScope)?.sessionId).toBe("core-hidden");
-    await expect(
-      ownerApi.runtime.agent.session.cleanupSessionLifecycleArtifacts(cleanup),
-    ).resolves.toMatchObject({ removedEntries: 1 });
+    await expect(ownerCleanup(cleanup)).resolves.toMatchObject({ removedEntries: 1 });
     expect(readStoredEntry(scope)).toBeUndefined();
     expect(readStoredEntry(coreScope)?.sessionId).toBe("core-hidden");
   });
@@ -160,6 +167,9 @@ describe("public plugin session-store writers", () => {
     });
     const runtime = createPluginRuntime();
     const originalCleanup = runtime.agent.session.cleanupSessionLifecycleArtifacts;
+    if (!originalCleanup) {
+      throw new Error("test runtime must provide lifecycle cleanup");
+    }
     const registry = createRuntimeTestRegistry(runtime);
     const record = createPluginRecord({
       id: "active-memory",
@@ -176,8 +186,12 @@ describe("public plugin session-store writers", () => {
         return await originalCleanup(params);
       },
     });
+    const cleanup = api.runtime.agent.session.cleanupSessionLifecycleArtifacts;
+    if (!cleanup) {
+      throw new Error("test runtime must provide lifecycle cleanup");
+    }
     await expect(
-      api.runtime.agent.session.cleanupSessionLifecycleArtifacts({
+      cleanup({
         agentId: "main",
         storePath,
         sessionKeySegmentPrefix: "internal-session-effects",
@@ -186,5 +200,20 @@ describe("public plugin session-store writers", () => {
       }),
     ).rejects.toThrow(/runtime is no longer active/);
     expect(readStoredEntry(scope)?.pluginOwnerId).toBe("active-memory");
+  });
+
+  it("does not advertise lifecycle cleanup when an external runtime adapter lacks it", () => {
+    const runtime = createPluginRuntime();
+    delete runtime.agent.session.cleanupSessionLifecycleArtifacts;
+    const pluginRegistry = createRuntimeTestRegistry(runtime);
+    const record = createPluginRecord({
+      id: "active-memory",
+      source: "/plugins/active-memory/index.js",
+      origin: "bundled",
+      enabled: true,
+      configSchema: false,
+    });
+    const api = pluginRegistry.createApi(record, { config: {} });
+    expect(api.runtime.agent.session.cleanupSessionLifecycleArtifacts).toBeUndefined();
   });
 });

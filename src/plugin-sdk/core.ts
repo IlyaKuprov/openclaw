@@ -215,6 +215,8 @@ export type { ChannelMessageActionContext } from "../channels/plugins/types.publ
 export type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
 export type { ChannelConfigUiHint } from "../channels/plugins/types.config.js";
 export type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
+export type { PluginRuntimeSessionLifecycleCleanupV1 } from "../plugins/runtime/types.js";
+export type { PluginRuntimeWithSessionLifecycleCleanupV1 } from "../plugins/runtime/types.js";
 export type { WizardPrompter } from "../wizard/prompts.js";
 export type { ContextEngineSessionTarget } from "../context-engine/types.js";
 

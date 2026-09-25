@@ -1341,6 +1341,25 @@ describe("active-memory plugin", () => {
     );
   });
 
+  it("refuses recall before creating a session when the host lacks owner-bound cleanup", async () => {
+    const cleanup = api.runtime.agent.session.cleanupSessionLifecycleArtifacts;
+    api.runtime.agent.session.cleanupSessionLifecycleArtifacts = undefined;
+    try {
+      const result = await runPromptBuild({ prompt: "what wings should i order?" });
+      expect(result).toBeUndefined();
+      expect(api.runtime.agent.session.patchSessionEntry).not.toHaveBeenCalledWith(
+        expect.objectContaining({ fallbackEntry: expect.anything() }),
+      );
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+      expect(hoisted.cleanupSessionLifecycleArtifacts).not.toHaveBeenCalled();
+      expect(api.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("requires host session lifecycle cleanup V1"),
+      );
+    } finally {
+      api.runtime.agent.session.cleanupSessionLifecycleArtifacts = cleanup;
+    }
+  });
+
   it("runs product recall for an opted-in direct session without an Active Memory agent entry", async () => {
     syncRuntimePluginConfig({ agents: [], logging: true });
     configFile = {
@@ -3475,12 +3494,16 @@ describe("active-memory plugin", () => {
     api.runtime.agent.session.patchSessionEntry.mockImplementationOnce(
       createPluginRuntime().agent.session.patchSessionEntry,
     );
-    hoisted.cleanupSessionLifecycleArtifacts.mockImplementationOnce((params) =>
-      createPluginRuntime().agent.session.cleanupSessionLifecycleArtifacts({
+    hoisted.cleanupSessionLifecycleArtifacts.mockImplementationOnce((params) => {
+      const cleanup = createPluginRuntime().agent.session.cleanupSessionLifecycleArtifacts;
+      if (!cleanup) {
+        throw new Error("test runtime must provide lifecycle cleanup");
+      }
+      return cleanup({
         ...params,
         pluginOwnerId: "active-memory",
-      }),
-    );
+      });
+    });
     const sessionKey = "agent:main:timeout-partial-sqlite-transcript";
     seedSession(sessionKey, "s-timeout-partial-sqlite-transcript", 0);
     const transcriptWritten = createDeferred<SessionTranscriptTargetParams>();

@@ -376,6 +376,8 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
           }
           const agent: PluginRuntime["agent"] = getRuntimeProperty();
           const session = agent.session;
+          const cleanupSessionLifecycleArtifacts =
+            session.cleanupSessionLifecycleArtifacts?.bind(session);
           const scopedSession = {
             resolveStorePath: session.resolveStorePath,
             getSessionEntry: session.getSessionEntry,
@@ -492,15 +494,17 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                 });
               });
             },
-            cleanupSessionLifecycleArtifacts: async (params) =>
-              await runWithPluginScope(() =>
-                session.cleanupSessionLifecycleArtifacts({
-                  ...params,
-                  pluginOwnerId: pluginId,
-                  requireExactPluginOwnerId: true,
-                  assertCommitAllowed: assertRuntimeCurrent,
-                }),
-              ),
+            cleanupSessionLifecycleArtifacts: cleanupSessionLifecycleArtifacts
+              ? async (params: Parameters<typeof cleanupSessionLifecycleArtifacts>[0]) =>
+                  await runWithPluginScope(() =>
+                    cleanupSessionLifecycleArtifacts({
+                      ...params,
+                      pluginOwnerId: pluginId,
+                      requireExactPluginOwnerId: true,
+                      assertCommitAllowed: assertRuntimeCurrent,
+                    }),
+                  )
+              : undefined,
             runWithWorkAdmission: async (params, run) => {
               const { resolveStoredSessionExecutionOwner } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {

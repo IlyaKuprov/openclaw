@@ -47,6 +47,7 @@ import { getPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js"
 import { resolveAgentCatalogCreateTarget } from "./runtime-agent-session-catalog.js";
 import { resolveRuntimeThinkingCatalog } from "./runtime-agent-thinking.js";
 import { defineCachedValue } from "./runtime-cache.js";
+import type { PluginRuntimeSessionLifecycleCleanupV1 } from "./types-core.js";
 import type { PluginRuntime } from "./types.js";
 
 type RuntimeSession = PluginRuntime["agent"]["session"];
@@ -695,17 +696,22 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
   defineCachedValue(agentRuntime, "runEmbeddedAgent", () =>
     createLazyRuntimeMethod(loadEmbeddedAgentRuntime, (runtime) => runtime.runPluginEmbeddedAgent),
   );
-  defineCachedValue(agentRuntime, "session", () => ({
-    resolveStorePath: resolveSessionStorePathCore,
-    createSessionEntry,
-    getSessionEntry,
-    listSessionEntries,
-    patchSessionEntry,
-    upsertSessionEntry,
-    cleanupSessionLifecycleArtifacts: cleanupSessionLifecycleArtifactsCore,
-    runWithWorkAdmission: runWithSessionWorkAdmission,
-    updateSessionStoreEntry,
-  }));
+  defineCachedValue(
+    agentRuntime,
+    "session",
+    () =>
+      ({
+        resolveStorePath: resolveSessionStorePathCore,
+        createSessionEntry,
+        getSessionEntry,
+        listSessionEntries,
+        patchSessionEntry,
+        upsertSessionEntry,
+        cleanupSessionLifecycleArtifacts: cleanupSessionLifecycleArtifactsCore,
+        runWithWorkAdmission: runWithSessionWorkAdmission,
+        updateSessionStoreEntry,
+      }) satisfies PluginRuntime["agent"]["session"] & PluginRuntimeSessionLifecycleCleanupV1,
+  );
 
   return agentRuntime as PluginRuntime["agent"];
 }

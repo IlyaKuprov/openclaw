@@ -88,7 +88,12 @@ async function cleanupActiveMemoryRecallSession(params: {
       await sleep(delayMs);
     }
     try {
-      const result = await params.api.runtime.agent.session.cleanupSessionLifecycleArtifacts({
+      const cleanupSessionLifecycleArtifacts =
+        params.api.runtime.agent.session.cleanupSessionLifecycleArtifacts;
+      if (!cleanupSessionLifecycleArtifacts) {
+        throw new Error("active-memory recall requires host session lifecycle cleanup V1");
+      }
+      const result = await cleanupSessionLifecycleArtifacts({
         agentId: params.agentId,
         archiveRemovedEntryTranscripts: false,
         orphanTranscriptMinAgeMs: 0,
@@ -142,6 +147,9 @@ async function runRecallSubagent(params: {
     });
   if (!modelRef) {
     return { rawReply: "NONE" };
+  }
+  if (!params.api.runtime.agent.session.cleanupSessionLifecycleArtifacts) {
+    throw new Error("active-memory recall requires host session lifecycle cleanup V1");
   }
   const subagentSessionId = `active-memory-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
   const parentSessionKey = params.parentSessionKey;
