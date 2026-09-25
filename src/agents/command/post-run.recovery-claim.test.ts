@@ -1,16 +1,13 @@
-// HF-19: the restart-recovery claim is cleared by ownership and retained only
-// when the finishing run ended because the process is restarting, whether that
-// restart arrived on the abort signal or as the thrown terminal error.
+// HF-19: retain a claim for restart aborts and for a lifecycle marker that
+// rotates after admission; ordinary failures clear the claim this run owns.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { captureRestartRecoveryCleanupMarker } from "../agent-command-restart-recovery.js";
 import { createAgentRunRestartAbortError } from "../run-termination.js";
 import type { persistAgentSession } from "./attempt-execution.shared.js";
 
 const persistMock = vi.hoisted(() => vi.fn());
-vi.mock("./attempt-execution.shared.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./attempt-execution.shared.js")>()),
-  persistAgentSession: persistMock,
-}));
+vi.mock("./attempt-execution.shared.js", () => ({ persistAgentSession: persistMock }));
 
 const { clearCommandRecoveryClaim } = await import("./post-run.js");
 
@@ -34,7 +31,7 @@ async function clearWith(claim: { abortSignal?: AbortSignal; terminalError?: unk
     sessionEntry: sessionStore[sessionKey],
     runOwnedSessionId: "session-armed",
     sessionReboundDuringRun: false,
-    claim: { tracked: true, ...claim },
+    claim: { tracked: true, marker: captureRestartRecoveryCleanupMarker(armedEntry()), ...claim },
   });
   return sessionStore;
 }
@@ -43,6 +40,9 @@ describe("clearCommandRecoveryClaim", () => {
   beforeEach(() => {
     persistMock.mockReset();
     persistMock.mockImplementation(async (params: Parameters<typeof persistAgentSession>[0]) => {
+      if (params.shouldPersist?.(params.sessionStore[params.sessionKey]) === false) {
+        return params.sessionStore[params.sessionKey];
+      }
       params.sessionStore[params.sessionKey] = params.entry;
       return params.entry;
     });
@@ -65,5 +65,25 @@ describe("clearCommandRecoveryClaim", () => {
     const store = await clearWith({ terminalError: createAgentRunRestartAbortError() });
     expect(persistMock).not.toHaveBeenCalled();
     expect(store[sessionKey]?.restartRecoveryDeliveryRunId).toBe(runId);
+  });
+
+  it("preserves a newly marked cycle when the restart wins without aborting this command", async () => {
+    const initial = armedEntry();
+    const nextCycle = {
+      ...initial,
+      abortedLastRun: true,
+      restartRecoveryRuns: [{ runId, lifecycleGeneration: "next-generation" }],
+      mainRestartRecovery: { cycleId: "next-cycle", revision: 1, chargedAttempts: 0 },
+    };
+    const sessionStore: Record<string, SessionEntry> = { [sessionKey]: nextCycle };
+    await clearCommandRecoveryClaim({
+      prepared: { sessionStore, sessionKey, storePath, runId } as never,
+      sessionEntry: initial,
+      runOwnedSessionId: initial.sessionId,
+      sessionReboundDuringRun: false,
+      claim: { tracked: true, marker: captureRestartRecoveryCleanupMarker(initial) },
+    });
+
+    expect(sessionStore[sessionKey]).toEqual(nextCycle);
   });
 });

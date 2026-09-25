@@ -32,13 +32,7 @@ import {
 } from "./agent-command-execution-identity.js";
 import { runLocalAgentCommand } from "./agent-command-local.js";
 import { runWithAgentCommandRecoveryOwner } from "./agent-command-recovery-owner.js";
-import {
-  buildCurrentRunRestartRecoveryClaim,
-  prepareCommandHarnessCompletionRecovery,
-  bindCommandHarnessCompletionAssertion,
-  resolveCommandRecoveryOptions,
-  shouldPersistRestartRecoveryContextClaim,
-} from "./agent-command-restart-recovery.js";
+import * as restartRecovery from "./agent-command-restart-recovery.js";
 import { runAcpAgentCommand } from "./command/acp-execution.js";
 import { repairPendingAssistantTranscriptTurns } from "./command/assistant-transcript-repair.js";
 import { persistAgentSession } from "./command/attempt-execution.shared.js";
@@ -92,7 +86,7 @@ async function agentCommandInternal(
   const preserveUserFacingSessionModelState =
     initialOpts.preserveUserFacingSessionModelState === true;
   const lifecycleAbortController = new AbortController();
-  const preparedOpts = resolveCommandRecoveryOptions(prepared);
+  const preparedOpts = restartRecovery.resolveCommandRecoveryOptions(prepared);
   const compactionSessionIdReporter = createCompactionSessionIdReporter(
     prepared.sessionId,
     preparedOpts.onSessionIdChanged,
@@ -145,7 +139,9 @@ async function agentCommandInternal(
   // the parent a human interjected on every spawn, for embedded and ACP children alike.
   const isSubagentLaneTurn = normalizeOptionalString(opts.lane) === AGENT_LANE_SUBAGENT;
   let sessionReboundDuringRun = false;
-  let trackedRecoveryClaim = false;
+  let recoveryClaim: ReturnType<typeof restartRecovery.captureRestartRecoveryCleanupClaim> = {
+    tracked: false,
+  };
   let currentRunDeliveryContext: DeliveryContext | undefined;
   let terminalDeliveryEvidence: RestartRecoveryTerminalDeliveryEvidenceResult | undefined;
   const preparedSessionId = sessionEntry?.sessionId;
@@ -316,7 +312,7 @@ async function agentCommandInternal(
         const entry = isSessionRollover ? clearRotatedSessionMetadata(initialEntry) : initialEntry;
         await prepareDeliveryForRun(entry);
         const { harnessCompletion, guardedHarnessCompletion, sourceOptions, isCompletionCurrent } =
-          prepareCommandHarnessCompletionRecovery({
+          restartRecovery.prepareCommandHarnessCompletionRecovery({
             entry,
             sessionId,
             sessionKey,
@@ -332,7 +328,7 @@ async function agentCommandInternal(
           updatedAt: now,
           sessionStartedAt: isSessionRollover ? now : entry.sessionStartedAt,
           lastInteractionAt: isSessionRollover ? now : entry.lastInteractionAt,
-          ...buildCurrentRunRestartRecoveryClaim({
+          ...restartRecovery.buildCurrentRunRestartRecoveryClaim({
             deliveryContext: currentRunDeliveryContext,
             deliveryMediaUrls: opts.internalDeliveryMediaUrls,
             disableMessageTool: opts.disableMessageTool,
@@ -354,7 +350,7 @@ async function agentCommandInternal(
             isCompletionCurrent(current) &&
             (isSessionRollover
               ? current?.sessionId === initialEntry.sessionId
-              : shouldPersistRestartRecoveryContextClaim(
+              : restartRecovery.shouldPersistRestartRecoveryContextClaim(
                   current,
                   sessionId,
                   runId,
@@ -364,8 +360,8 @@ async function agentCommandInternal(
         // The commit already happened. Cleanup must retain ownership even if
         // cancellation invalidates the task during the awaited session write.
         sessionEntry = persisted;
-        trackedRecoveryClaim = persisted?.restartRecoveryDeliveryRunId === runId;
-        opts = bindCommandHarnessCompletionAssertion({
+        recoveryClaim = restartRecovery.captureRestartRecoveryCleanupClaim(persisted, runId);
+        opts = restartRecovery.bindCommandHarnessCompletionAssertion({
           claim: guardedHarnessCompletion,
           persisted,
           sessionKey,
@@ -588,7 +584,7 @@ async function agentCommandInternal(
         sessionReboundDuringRun,
         // Why this run ended decides whether it keeps the context it armed; the
         // signal composes the caller's abort with this run's lifecycle abort.
-        claim: { tracked: trackedRecoveryClaim, abortSignal: opts.abortSignal, terminalError },
+        claim: { ...recoveryClaim, abortSignal: opts.abortSignal, terminalError },
         terminalDeliveryEvidence,
       });
     } finally {

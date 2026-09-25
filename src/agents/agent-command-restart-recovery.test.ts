@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { getRestartRecoveryTerminalDeliveryEvidence } from "../config/sessions/restart-recovery-state.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import type { InternalSessionEntry } from "../config/sessions/types.js";
 import {
   buildCurrentRunRestartRecoveryClaim,
   buildRestartRecoveryTerminalDeliveryEvidence,
+  captureRestartRecoveryCleanupMarker,
   constrainRestartRecoveryDeliveryPayloads,
   shouldPersistRestartRecoveryCleanup,
 } from "./agent-command-restart-recovery.js";
@@ -353,25 +354,41 @@ describe("buildRestartRecoveryTerminalDeliveryEvidence", () => {
 });
 
 describe("shouldPersistRestartRecoveryCleanup", () => {
-  const entry = (overrides: Partial<SessionEntry>): SessionEntry =>
+  const entry = (overrides: Partial<InternalSessionEntry>): InternalSessionEntry =>
     ({
       sessionId: "s1",
       updatedAt: 1,
       restartRecoveryDeliveryRunId: "run-1",
       ...overrides,
-    }) as SessionEntry;
+    }) as InternalSessionEntry;
+  const marker = captureRestartRecoveryCleanupMarker(entry({}));
 
   it("clears the context it owns despite a stale abortedLastRun flag", () => {
     expect(
-      shouldPersistRestartRecoveryCleanup(entry({ abortedLastRun: true }), "s1", "run-1"),
+      shouldPersistRestartRecoveryCleanup(entry({ abortedLastRun: true }), "s1", "run-1", marker),
     ).toBe(true);
   });
 
   it("clears after an ordinary run and after a user abort", () => {
-    expect(shouldPersistRestartRecoveryCleanup(entry({}), "s1", "run-1")).toBe(true);
+    expect(shouldPersistRestartRecoveryCleanup(entry({}), "s1", "run-1", marker)).toBe(true);
     expect(
-      shouldPersistRestartRecoveryCleanup(entry({ abortedLastRun: false }), "s1", "run-1"),
+      shouldPersistRestartRecoveryCleanup(entry({ abortedLastRun: false }), "s1", "run-1", marker),
     ).toBe(true);
+  });
+
+  it("retains a lifecycle-rotated marker even when the delivery claim still belongs to this run", () => {
+    expect(
+      shouldPersistRestartRecoveryCleanup(
+        entry({
+          abortedLastRun: true,
+          restartRecoveryRuns: [{ runId: "run-1", lifecycleGeneration: "new-generation" }],
+          mainRestartRecovery: { cycleId: "next-cycle", revision: 1, chargedAttempts: 0 },
+        }),
+        "s1",
+        "run-1",
+        marker,
+      ),
+    ).toBe(false);
   });
 
   it("leaves another run's context alone", () => {
@@ -380,9 +397,10 @@ describe("shouldPersistRestartRecoveryCleanup", () => {
         entry({ restartRecoveryDeliveryRunId: "run-2" }),
         "s1",
         "run-1",
+        marker,
       ),
     ).toBe(false);
-    expect(shouldPersistRestartRecoveryCleanup(entry({}), "s2", "run-1")).toBe(false);
-    expect(shouldPersistRestartRecoveryCleanup(undefined, "s1", "run-1")).toBe(false);
+    expect(shouldPersistRestartRecoveryCleanup(entry({}), "s2", "run-1", marker)).toBe(false);
+    expect(shouldPersistRestartRecoveryCleanup(undefined, "s1", "run-1", marker)).toBe(false);
   });
 });

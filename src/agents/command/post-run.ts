@@ -16,6 +16,7 @@ import {
   constrainRestartRecoveryDeliveryPayloads,
   shouldPersistCurrentRunSessionCleanup,
   shouldPersistRestartRecoveryCleanup,
+  type captureRestartRecoveryCleanupMarker,
 } from "../agent-command-restart-recovery.js";
 import { normalizeAgentRunTerminalDeliverySnapshot } from "../agent-run-terminal-delivery.js";
 import {
@@ -63,18 +64,24 @@ export async function clearCommandRecoveryClaim(params: {
    * Whether this run armed a recovery claim, the signal it ran under, and the
    * error it ended with (a deferred lifecycle restart is thrown, not signalled).
    */
-  claim: { tracked: boolean; abortSignal?: AbortSignal; terminalError?: unknown };
+  claim: {
+    tracked: boolean;
+    marker?: ReturnType<typeof captureRestartRecoveryCleanupMarker>;
+    abortSignal?: AbortSignal;
+    terminalError?: unknown;
+  };
   terminalDeliveryEvidence?: RestartRecoveryTerminalDeliveryEvidenceResult;
 }): Promise<void> {
   const { sessionStore, sessionKey, storePath, runId } = params.prepared;
-  // The claim is cleared by ownership, so retention is decided here: this run
-  // keeps the context it armed only when it ended because the process is
-  // restarting. A success, a user abort and an ordinary failure all clear it.
+  const marker = params.claim.marker;
+  // A restart abort retains the claim. Without that signal, the persistence
+  // predicate also fences a newly marked lifecycle cycle from this cleanup.
   if (
     params.sessionReboundDuringRun ||
     isAgentRunRestartAbortReason(params.claim.abortSignal?.reason) ||
     isAgentRunRestartAbortReason(params.claim.terminalError) ||
     !params.claim.tracked ||
+    !marker ||
     !sessionStore ||
     !sessionKey
   ) {
@@ -100,7 +107,7 @@ export async function clearCommandRecoveryClaim(params: {
           updatedAt: Date.now(),
         },
         shouldPersist: (current) =>
-          shouldPersistRestartRecoveryCleanup(current, params.runOwnedSessionId, runId),
+          shouldPersistRestartRecoveryCleanup(current, params.runOwnedSessionId, runId, marker),
       });
     }
     // Finalization may already have cleared the active claim before this finally.
