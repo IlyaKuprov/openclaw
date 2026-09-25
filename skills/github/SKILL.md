@@ -87,6 +87,9 @@ gh pr comment 55 --repo owner/repo --body "@codex review"   # when no review app
   push, request the re-review, and wait for that one too.
 - Report the PR only when the newest Codex review covers the current head SHA with no
   unaddressed findings; otherwise say what is outstanding instead of calling it done.
+- Bound any review wait. If the repository lacks this reviewer or it stays unavailable,
+  report the PR URL and the blocked review gate as unfinished; do not substitute another
+  reviewer or treat silence as approval.
 - A `github_publish` result with `status: "published"` means the Gateway created
   or reused a PR, not that this review gate cleared. Report review as pending;
   check whether the PR is a draft and mark it ready if so, then verify the
