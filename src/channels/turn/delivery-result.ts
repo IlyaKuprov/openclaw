@@ -1,4 +1,6 @@
 // Delivery-result adapters for channel turn receipts.
+import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
+import { isReplyDispatchDeliveryPending } from "../../auto-reply/reply/reply-dispatch-outcome.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
   createMessageReceiptFromOutboundResults,
@@ -10,7 +12,50 @@ import type {
   ChannelDeliveryIntent,
   ChannelDeliveryOutcome,
   ChannelDeliveryResult,
+  ChannelEventDeliveryAdapter,
 } from "./types.js";
+
+export function isExplicitlyNonVisibleChannelDelivery(result: unknown): boolean {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    !Array.isArray(result) &&
+    (result as { visibleReplySent?: unknown }).visibleReplySent === false
+  );
+}
+
+function markChannelDeliveryErrorVisible(error: unknown): unknown {
+  if (typeof error === "object" && error !== null && !Array.isArray(error)) {
+    try {
+      Object.assign(error, { sentBeforeError: true, visibleReplySent: true });
+      return error;
+    } catch {
+      // Fall back to a wrapper when a platform error object is non-extensible.
+    }
+  }
+  const visibleError = new Error("visible channel reply delivery failed", { cause: error });
+  Object.assign(visibleError, { sentBeforeError: true, visibleReplySent: true });
+  return visibleError;
+}
+
+/** Observers after visible sends cannot disguise delivery as a safe retry. */
+export async function runChannelDeliveryObserver(params: {
+  onDelivered: ChannelEventDeliveryAdapter["onDelivered"] | undefined;
+  payload: ReplyPayload;
+  info: Parameters<NonNullable<ChannelEventDeliveryAdapter["onDelivered"]>>[1];
+  result: Parameters<NonNullable<ChannelEventDeliveryAdapter["onDelivered"]>>[2];
+}): Promise<void> {
+  if (!params.onDelivered || isReplyDispatchDeliveryPending(params.result)) {
+    return;
+  }
+  try {
+    await params.onDelivered(params.payload, params.info, params.result);
+  } catch (error: unknown) {
+    throw isExplicitlyNonVisibleChannelDelivery(params.result)
+      ? error
+      : markChannelDeliveryErrorVisible(error);
+  }
+}
 
 type ReceiptParams = Parameters<typeof createMessageReceiptFromOutboundResults>[0];
 

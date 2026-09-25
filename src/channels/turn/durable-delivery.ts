@@ -46,6 +46,8 @@ export type DurableInboundReplyDeliveryParams = DurableInboundReplyDeliveryOptio
   info: ChannelDeliveryInfo;
   runId?: string;
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
+  /** Host-only persisted-route freshness fence, after capability preflight and before enqueue. */
+  assertRouteAuthority?: () => void;
 };
 
 /** Outcome of attempting durable final delivery for an inbound reply payload. */
@@ -158,7 +160,7 @@ export async function deliverInboundReplyWithMessageSendContextCore(
     return { status: "not_applicable", reason: "non_final" };
   }
 
-  const group = getGroupThreadDispatchContext();
+  const group = input.assertRouteAuthority ? undefined : getGroupThreadDispatchContext();
   const params = group
     ? {
         ...input,
@@ -208,6 +210,8 @@ export async function deliverInboundReplyWithMessageSendContextCore(
       ...(support.capability ? { capability: support.capability } : {}),
     };
   }
+
+  params.assertRouteAuthority?.();
 
   const session = buildOutboundSessionContext({
     cfg: params.cfg,

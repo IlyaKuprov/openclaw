@@ -31,6 +31,8 @@ import { recordInboundSession } from "../session.js";
 import {
   createSuppressedChannelDeliveryResult,
   isChannelPartialDeliveryError,
+  isExplicitlyNonVisibleChannelDelivery,
+  runChannelDeliveryObserver,
 } from "./delivery-result.js";
 import {
   createDirectPendingFinalCustody,
@@ -44,6 +46,10 @@ import {
   throwIfDurableInboundReplyDeliveryFailed,
 } from "./durable-delivery.js";
 import { runPreparedChannelTurnCore } from "./execution.js";
+import {
+  decideFinalOutboundRoute,
+  deliverDecidedFinalOutboundRoute,
+} from "./outbound-route-delivery.js";
 import { applyRouteDmScope } from "./route-dm-scope.js";
 import type {
   AssembledChannelTurn,
@@ -150,47 +156,6 @@ function resolveAssembledReplyPipeline(
       ...replyOptions,
     },
   };
-}
-
-function isExplicitlyNonVisibleChannelDelivery(result: unknown): boolean {
-  return (
-    typeof result === "object" &&
-    result !== null &&
-    !Array.isArray(result) &&
-    (result as { visibleReplySent?: unknown }).visibleReplySent === false
-  );
-}
-
-function markChannelDeliveryErrorVisible(error: unknown): unknown {
-  if (typeof error === "object" && error !== null && !Array.isArray(error)) {
-    try {
-      Object.assign(error, { sentBeforeError: true, visibleReplySent: true });
-      return error;
-    } catch {
-      // Fall back to a wrapper when a platform error object is non-extensible.
-    }
-  }
-  const visibleError = new Error("visible channel reply delivery failed", { cause: error });
-  Object.assign(visibleError, { sentBeforeError: true, visibleReplySent: true });
-  return visibleError;
-}
-
-async function runChannelDeliveryObserver(params: {
-  onDelivered: AnyChannelDeliveryAdapter["onDelivered"] | undefined;
-  payload: ReplyPayload;
-  info: Parameters<NonNullable<ChannelEventDeliveryAdapter["onDelivered"]>>[1];
-  result: Parameters<NonNullable<ChannelEventDeliveryAdapter["onDelivered"]>>[2];
-}): Promise<void> {
-  if (!params.onDelivered || isReplyDispatchDeliveryPending(params.result)) {
-    return;
-  }
-  try {
-    await params.onDelivered(params.payload, params.info, params.result);
-  } catch (error: unknown) {
-    throw isExplicitlyNonVisibleChannelDelivery(params.result)
-      ? error
-      : markChannelDeliveryErrorVisible(error);
-  }
 }
 
 function resolveChannelDeliveryMessageId(
@@ -528,11 +493,32 @@ async function dispatchChannelTurnWithDeliveryOwner(
                       });
                       return suppression;
                     }
+                    const outboundRoute =
+                      params.admission?.kind === "observeOnly"
+                        ? undefined
+                        : await decideFinalOutboundRoute(params, info);
                     const declaredDurable = "durable" in delivery ? delivery.durable : undefined;
                     const durableOptions =
                       typeof declaredDurable === "function"
                         ? await declaredDurable(preparedPayload, info)
                         : declaredDurable;
+                    if (outboundRoute) {
+                      const routed = await deliverDecidedFinalOutboundRoute({
+                        turn: params,
+                        route: outboundRoute,
+                        payload: preparedPayload,
+                        info,
+                        durableOptions,
+                        executionIdentityToken: agentRun[1],
+                      });
+                      await runChannelDeliveryObserver({
+                        onDelivered: delivery.onDelivered,
+                        payload: routed.payload,
+                        info,
+                        result: routed.delivery,
+                      });
+                      return routed.delivery;
+                    }
                     if (durableOptions) {
                       const durable = await deliverInboundReplyWithMessageSendContextCore({
                         cfg: params.cfg,

@@ -17,6 +17,7 @@ export type DurableSendRequest = {
   channel?: string;
   durability?: string;
   payloads?: ReplyPayload[];
+  replyToId?: string | null;
   replyToMode?: string;
   session?: {
     key?: string;
