@@ -4,8 +4,12 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { loadPendingDeliveries } from "../../infra/outbound/delivery-queue.test-helpers.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry.js";
+import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
+import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { dispatchRoutedChannelTurn } from "./lifecycle.js";
 import {
   createCtx,
@@ -377,6 +381,92 @@ describe("channel lifecycle outbound route decision", () => {
     expect(direct).not.toHaveBeenCalled();
     expect(sendDurableMessageBatch).not.toHaveBeenCalled();
   });
+
+  it.each(["modifier", "presentation"] as const)(
+    "rejects route drift during awaited %s before direct adapter handoff",
+    async (stage) => {
+      enableSlackRootDecision();
+      const stateDir = await tempDirs.make("route-drift");
+      const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      const adapterSend = vi.fn(async () => ({ channel: "slack", messageId: "forbidden-send" }));
+      const direct = vi.fn(async () => ({ messageIds: ["forbidden-webchat-send"] }));
+      const renderPresentation = vi.fn(async () => {
+        await Promise.resolve();
+        loadExactSessionEntryReadOnly.mockReturnValue(undefined);
+        return { text: "rendered final" };
+      });
+      if (stage === "presentation") {
+        dispatchReplyWithRoutedChannelDispatcherCore.mockImplementationOnce(
+          createDispatch([], {
+            text: "reply",
+            presentation: { blocks: [{ type: "text", text: "card" }] },
+          }),
+        );
+      }
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "slack",
+            source: "test",
+            plugin: createOutboundTestPlugin({
+              id: "slack",
+              outbound: {
+                deliveryMode: "direct",
+                sendText: adapterSend,
+                sendMedia: adapterSend,
+                ...(stage === "presentation"
+                  ? { presentationCapabilities: { supported: true }, renderPresentation }
+                  : {}),
+              },
+            }),
+          },
+        ]),
+      );
+      const actualSend =
+        await vi.importActual<typeof import("../message/send.js")>("../message/send.js");
+      sendDurableMessageBatch.mockImplementation(actualSend.sendDurableMessageBatchCore);
+      const runMessageSending = vi.fn(async () => {
+        await Promise.resolve();
+        loadExactSessionEntryReadOnly.mockReturnValue(undefined);
+        return { content: "modified final" };
+      });
+      getGlobalHookRunner.mockReturnValue({
+        hasHooks: (name: string) =>
+          name === "outbound_route_decision" ||
+          (stage === "modifier" && name === "message_sending"),
+        runOutboundRouteDecision: async () => slackRoute,
+        runMessageSending,
+      });
+      try {
+        await expect(
+          dispatchRoutedChannelTurn({
+            cfg,
+            channel: "webchat",
+            route: { agentId: "main", sessionKey: slackSessionKey },
+            ctxPayload: createCtx({ SessionKey: slackSessionKey, Surface: "webchat" }),
+            delivery: { deliver: direct },
+          }),
+        ).rejects.toThrow(/lacks matching persisted Slack route authority/);
+        if (stage === "modifier") {
+          expect(runMessageSending).toHaveBeenCalledOnce();
+        } else {
+          expect(renderPresentation).toHaveBeenCalledOnce();
+        }
+        expect(adapterSend).not.toHaveBeenCalled();
+        expect(direct).not.toHaveBeenCalled();
+        expect(await loadPendingDeliveries(stateDir)).toEqual([]);
+      } finally {
+        resetPluginRuntimeStateForTest();
+        setActivePluginRegistry(createEmptyPluginRegistry());
+        if (previousStateDir === undefined) {
+          delete process.env.OPENCLAW_STATE_DIR;
+        } else {
+          process.env.OPENCLAW_STATE_DIR = previousStateDir;
+        }
+      }
+    },
+  );
 
   it("rejects a timed-out route decision before either durable or provider delivery", async () => {
     enableSlackRootDecision();

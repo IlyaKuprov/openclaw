@@ -48,7 +48,7 @@ export type DurableInboundReplyDeliveryParams = DurableInboundReplyDeliveryOptio
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
   /** Host-only root decision must survive reply-payload modifiers before queue admission. */
   rootReplyOnly?: true;
-  /** Host-only persisted-route freshness fence, after capability preflight and before enqueue. */
+  /** Host-only persisted-route freshness fence, including the final adapter handoff. */
   assertRouteAuthority?: () => void;
 };
 
@@ -256,6 +256,14 @@ export async function deliverInboundReplyWithMessageSendContextCore(
       : {}),
     session,
     gatewayClientScopes: params.ctxPayload.GatewayClientScopes ?? [],
+    // Modifier hooks and presentation may await after the initial route check.
+    // Keep the exact host decision at the direct adapter's synchronous fence.
+    ...(params.assertRouteAuthority
+      ? {
+          assertDirectAdapterHandoff: params.assertRouteAuthority,
+          onPlatformSendDispatch: async () => params.assertRouteAuthority?.(),
+        }
+      : {}),
   });
   if (send.status === "failed") {
     return { status: "failed" as const, error: send.error };
