@@ -76,7 +76,7 @@ export function hasHeartbeatAlertMarker(text: string, responsePrefix?: string): 
   if (prefix && body.startsWith(prefix)) {
     body = body.slice(prefix.length).trimStart();
   }
-  body = body.replace(/^[*_`>#\s-]+/, "");
+  body = body.replace(/^(?:[*_`>#\s+-]|\d+[.)]\s+)*/, "");
   return body.toUpperCase().startsWith(HEARTBEAT_ALERT_MARKER);
 }
 
@@ -93,6 +93,7 @@ export function requiresHeartbeatAlertMarker(
     | "hasExecCompletion"
     | "hasCronEvents"
     | "hasTaskContinuation"
+    | "inspectsRunQueue"
     | "genericEvents"
     | "configuredPromptOptsIntoAlertMarker"
   >,
@@ -100,14 +101,14 @@ export function requiresHeartbeatAlertMarker(
   intent: HeartbeatRunOptions["intent"],
 ): boolean {
   // Only a scheduled poll with nothing queued is a plain poll: immediate, event,
-  // task and manual wakes, and any pending generic system event, are relays
-  // whose reply the owner asked for.
+  // task and manual wakes, and inspected generic system events, are relays
+  // whose reply the owner asked for. An isolated poll leaves its base queue unseen.
   return (
     intent === "scheduled" &&
     !prepared.hasExecCompletion &&
     !prepared.hasCronEvents &&
     !prepared.hasTaskContinuation &&
-    prepared.genericEvents.length === 0 &&
+    (!prepared.inspectsRunQueue || prepared.genericEvents.length === 0) &&
     scheduledTasks.length === 0 &&
     prepared.configuredPromptOptsIntoAlertMarker
   );
@@ -302,6 +303,8 @@ async function prepareHeartbeatDispatchReply(
     !classified.normalized.shouldSkip &&
     !classified.normalized.hasMedia &&
     classified.mediaUrls.length === 0 &&
+    selected?.isError !== true &&
+    !getReplyPayloadMetadata(selected ?? {})?.toolErrorWarning &&
     requiresHeartbeatAlertMarker(prepared, scheduledTasks, opts.intent) &&
     !hasHeartbeatAlertMarker(classified.normalized.text, responsePrefix)
       ? ({

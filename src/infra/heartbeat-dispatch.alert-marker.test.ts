@@ -1,5 +1,6 @@
 // Covers the opt-in ALERT: marker gate on plain scheduled heartbeat polls.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { hasHeartbeatAlertMarker, requiresHeartbeatAlertMarker } from "./heartbeat-dispatch.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
@@ -10,7 +11,11 @@ import {
   withTempHeartbeatSandbox,
   type HeartbeatReplySpy,
 } from "./heartbeat-runner.test-utils.js";
-import { enqueueSystemEvent, resetSystemEventsForTest } from "./system-events.js";
+import {
+  enqueueSystemEvent,
+  peekSystemEventEntries,
+  resetSystemEventsForTest,
+} from "./system-events.js";
 
 installHeartbeatRunnerTestRuntime();
 
@@ -31,6 +36,7 @@ describe("heartbeat ALERT: marker gate", () => {
     storePath: string;
     prompt?: string;
     responsePrefix?: string;
+    isolatedSession?: boolean;
   }): OpenClawConfig {
     return {
       agents: {
@@ -39,6 +45,7 @@ describe("heartbeat ALERT: marker gate", () => {
           heartbeat: {
             every: "5m",
             target: "whatsapp",
+            ...(params.isolatedSession ? { isolatedSession: true } : {}),
             ...(params.prompt ? { prompt: params.prompt } : {}),
           },
         },
@@ -60,6 +67,8 @@ describe("heartbeat ALERT: marker gate", () => {
     replyPayload?: Record<string, unknown>;
     intent?: "immediate" | "scheduled";
     responsePrefix?: string;
+    isolatedSession?: boolean;
+    toolErrorWarning?: boolean;
   }) {
     const cfg = createConfig(params);
     const sessionKey = await seedMainSessionStore(params.storePath, cfg, {
@@ -73,7 +82,12 @@ describe("heartbeat ALERT: marker gate", () => {
         ...(params.event.contextKey ? { contextKey: params.event.contextKey } : {}),
       });
     }
-    params.replySpy.mockResolvedValue({ text: params.replyText, ...params.replyPayload });
+    const reply = { text: params.replyText, ...params.replyPayload };
+    params.replySpy.mockResolvedValue(
+      params.toolErrorWarning
+        ? setReplyPayloadMetadata(reply, { toolErrorWarning: { toolName: "read" } })
+        : reply,
+    );
     const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "m1", toJid: "jid" });
     await runHeartbeatOnce({
       cfg,
@@ -88,7 +102,7 @@ describe("heartbeat ALERT: marker gate", () => {
         getReplyFromConfig: params.replySpy,
       } satisfies HeartbeatDeps,
     });
-    return { sendWhatsApp };
+    return { sendWhatsApp, sessionKey };
   }
 
   it("recognises the marker past a response prefix or markdown decoration", () => {
@@ -96,6 +110,8 @@ describe("heartbeat ALERT: marker gate", () => {
     expect(hasHeartbeatAlertMarker("  *Alert:* job failed")).toBe(true);
     expect(hasHeartbeatAlertMarker("[talos] ALERT: x", "[talos]")).toBe(true);
     expect(hasHeartbeatAlertMarker("[bot]  ALERT: x", " [bot] ")).toBe(true);
+    expect(hasHeartbeatAlertMarker("+ ALERT: service down")).toBe(true);
+    expect(hasHeartbeatAlertMarker("1. ALERT: service down")).toBe(true);
     expect(hasHeartbeatAlertMarker("All sessions are fine, no alerts.")).toBe(false);
     expect(hasHeartbeatAlertMarker("Nothing to report; no ALERT: raised.")).toBe(false);
   });
@@ -117,6 +133,55 @@ describe("heartbeat ALERT: marker gate", () => {
     });
   });
 
+  it("keeps an isolated scheduled poll quiet despite an unrelated base-session event", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const { sendWhatsApp, sessionKey } = await runPoll({
+        tmpDir,
+        storePath,
+        replySpy,
+        replyText: UNMARKED_PROSE,
+        prompt: MARKER_PROMPT,
+        isolatedSession: true,
+        event: { text: "Unrelated base-session notification" },
+      });
+      expect(sendWhatsApp).not.toHaveBeenCalled();
+      expect(getLastHeartbeatEvent()).toMatchObject({ status: "ok-token", silent: true });
+      expect(peekSystemEventEntries(sessionKey)).toHaveLength(1);
+    });
+  });
+
+  it("delivers a synthesized read-tool warning without an alert marker", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const warning = "⚠️ read failed: file unavailable";
+      const { sendWhatsApp } = await runPoll({
+        tmpDir,
+        storePath,
+        replySpy,
+        replyText: warning,
+        replyPayload: { isError: true },
+        toolErrorWarning: true,
+        prompt: MARKER_PROMPT,
+      });
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toContain(warning);
+      expect(getLastHeartbeatEvent()?.status).toBe("sent");
+    });
+  });
+
+  it("delivers an unmarked error payload without a tool warning tag", async () => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const { sendWhatsApp } = await runPoll({
+        tmpDir,
+        storePath,
+        replySpy,
+        replyText: "⚠️ model call failed",
+        replyPayload: { isError: true },
+        prompt: MARKER_PROMPT,
+      });
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("delivers a marked alert behind a whitespace-padded response prefix", async () => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
       const { sendWhatsApp } = await runPoll({
@@ -131,6 +196,23 @@ describe("heartbeat ALERT: marker gate", () => {
       expect(sendWhatsApp.mock.calls[0]?.[1]).toContain(MARKED_ALERT);
     });
   });
+
+  it.each(["+ ALERT: service down", "1. ALERT: service down"])(
+    "delivers markdown list alert %s from a scheduled poll",
+    async (replyText) => {
+      await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+        const { sendWhatsApp } = await runPoll({
+          tmpDir,
+          storePath,
+          replySpy,
+          replyText,
+          prompt: MARKER_PROMPT,
+        });
+        expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+        expect(sendWhatsApp.mock.calls[0]?.[1]).toContain(replyText);
+      });
+    },
+  );
 
   it("delivers a marked alert when the configured prompt names the marker", async () => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
@@ -180,6 +262,7 @@ describe("heartbeat ALERT: marker gate", () => {
       hasExecCompletion: false,
       hasCronEvents: false,
       hasTaskContinuation: false,
+      inspectsRunQueue: true,
       genericEvents: [],
       configuredPromptOptsIntoAlertMarker: true,
     };
@@ -193,6 +276,13 @@ describe("heartbeat ALERT: marker gate", () => {
     expect(gated({ ...plain, hasTaskContinuation: true })).toBe(false);
     expect(gated({ ...plain, hasExecCompletion: true })).toBe(false);
     expect(gated({ ...plain, hasCronEvents: true })).toBe(false);
+    expect(
+      gated({
+        ...plain,
+        inspectsRunQueue: false,
+        genericEvents: [{ text: "Uninspected base event" }] as never,
+      }),
+    ).toBe(true);
     // A pending generic system event (for example an explicit "other" wake asking
     // to report an overdue delivery) is a relay, never a plain poll.
     expect(
