@@ -13,8 +13,8 @@ versions match the validated stage; different installed versions remain
 untouched. An incompatible nested zod under a matching A2UI package rejects
 application before copying; an absent or non-v4 root zod does likewise. Staged
 zod is never copied into the root. The success check imports both A2UI `v0_9`
-entrypoints and resolves the Canvas `@a2ui/lit/ui` and oc-path JSONC ESM
-subpaths. Cache extraction discards archived ownership; installed package
+entrypoints and the Canvas Lit repeat directive, and resolves the Canvas
+`@a2ui/lit/ui` and oc-path JSONC ESM subpaths. Cache extraction discards archived ownership; installed package
 copies take the installing account's ownership and a non-writable group/world mode.
 
 Before installing the 2026.9.5 core, stage an offline cache with

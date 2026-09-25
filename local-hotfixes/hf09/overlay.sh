@@ -223,4 +223,4 @@ for p in @a2ui/lit @a2ui/web_core; do
 done
 
 cd "$(dirname "$NM")"
-node -e 'Promise.all([import("lit"),import("jsonc-parser"),import("markdown-it"),import("@a2ui/lit/v0_9"),import("@a2ui/web_core/v0_9"),import("@lit/context"),import("mdast-util-from-markdown")]).then(()=>{require.resolve("jsonc-parser/lib/esm/main.js");require.resolve("@a2ui/lit/ui");console.log("HF-09 overlay OK (added '"$added"' dirs, repaired '"$repaired"')")}).catch(e=>{console.error("HF-09 overlay FAILED:",e.message);process.exit(1)})'
+node -e 'Promise.all([import("lit"),import("lit/directives/repeat.js"),import("jsonc-parser"),import("markdown-it"),import("@a2ui/lit/v0_9"),import("@a2ui/web_core/v0_9"),import("@lit/context"),import("mdast-util-from-markdown")]).then(()=>{require.resolve("jsonc-parser/lib/esm/main.js");require.resolve("@a2ui/lit/ui");console.log("HF-09 overlay OK (added '"$added"' dirs, repaired '"$repaired"')")}).catch(e=>{console.error("HF-09 overlay FAILED:",e.message);process.exit(1)})'
