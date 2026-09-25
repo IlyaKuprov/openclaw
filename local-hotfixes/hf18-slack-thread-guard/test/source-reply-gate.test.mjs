@@ -162,6 +162,26 @@ describe("source-reply generation gate", () => {
     assert.match(second.blockReason, /already delivered/i);
   });
 
+  for (const alias of ["text", "content", "SendMessage"]) {
+    it(`arms the repetition gate for a delivered ${alias} body alias`, async () => {
+      const { hooks } = makeApi();
+      afterMessageDelivered(hooks, "alias-run", {
+        action: "send",
+        channel: "slack",
+        target: "C012AUDIT",
+        accountId: "default",
+        [alias]: "First answer",
+      });
+      const duplicate = await beforeTextSend(hooks, "alias-run", "Restated answer");
+      assert.equal(duplicate?.block, true);
+      const final = hooks.get("reply_payload_sending")(
+        { kind: "final", sessionKey: SESSION, runId: "alias-run", payload: { text: "Again." } },
+        { sessionKey: SESSION, runId: "alias-run" },
+      );
+      assert.equal(final?.cancel, true);
+    });
+  }
+
   it("blocks a post-compaction restatement (state persists across attempts, same run)", async () => {
     const { hooks } = makeApi();
     await afterTextSent(hooks, "run-a", "Progress: parsing complete.");

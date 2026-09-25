@@ -128,6 +128,22 @@ describe("pure declarative route decision", () => {
     });
   }
 
+  for (const accountId of ["direct", "dm", "channel", "group"]) {
+    it(`resolves a peer-shaped ${accountId} Slack account before parsing the direct peer`, () => {
+      const key = `agent:main:slack:${accountId}:direct:u123`;
+      rows.set(key, {
+        deliveryContext: { channel: "slack", to: "user:U123", accountId },
+      });
+      const { hooks } = makeApi();
+      assert.deepEqual(route(hooks, key), {
+        channel: "slack",
+        to: "user:U123",
+        accountId,
+        threadPolicy: "root",
+      });
+    });
+  }
+
   it("returns no route for an ordinary session", () => {
     const { hooks, reads } = makeApi();
     assert.equal(route(hooks, "agent:main:main"), undefined);
@@ -219,6 +235,45 @@ describe("pure declarative route decision", () => {
 });
 
 describe("message-tool root and identity guard", () => {
+  it("preserves a Mattermost #target thread without Slack session/channel identity", async () => {
+    const { hooks } = makeApi();
+    const result = await hooks.get("before_tool_call")(
+      {
+        toolName: "message",
+        params: {
+          action: "send",
+          channel: "mattermost",
+          target: "#general",
+          message: "Mattermost reply",
+          threadId: "existing-thread",
+          replyTo: "existing-parent",
+          topLevel: false,
+        },
+      },
+      { sessionKey: "agent:main:mattermost:channel:general", channelId: "mattermost" },
+    );
+    assert.equal(result, undefined);
+  });
+
+  it("still roots a #target when the send explicitly names Slack", async () => {
+    const { hooks } = makeApi();
+    const result = await hooks.get("before_tool_call")(
+      {
+        toolName: "message",
+        params: {
+          action: "send",
+          channel: "slack",
+          target: "#general",
+          message: "Slack reply",
+          threadId: "existing-thread",
+          topLevel: false,
+        },
+      },
+      { sessionKey: "agent:main:other:channel:general", channelId: "other" },
+    );
+    assert.equal(result.params.threadId, null);
+    assert.equal(result.params.topLevel, true);
+  });
   it("still rewrites a non-decodable ACP Slack binding from its canonical row", async () => {
     const key = "agent:codex:acp:binding:slack:default:c123";
     rows.set(key, {

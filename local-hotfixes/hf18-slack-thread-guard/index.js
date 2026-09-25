@@ -91,7 +91,13 @@ export function parseSlackRouteFromSessionKey(sessionKey) {
     let accountId;
     let peerKind = parts[index + 1]?.toLowerCase();
     let peerIndex = index + 2;
-    if (!SLACK_PEER_KINDS.has(peerKind)) {
+    // Direct keys may be account-scoped even when the account itself is named
+    // "direct", "dm", "channel", or "group". Match the canonical shape first.
+    if (["direct", "dm"].includes(parts[index + 2]?.toLowerCase()) && parts[index + 3]) {
+      accountId = normalizeString(parts[index + 1]);
+      peerKind = parts[index + 2]?.toLowerCase();
+      peerIndex = index + 3;
+    } else if (!SLACK_PEER_KINDS.has(peerKind)) {
       accountId = normalizeString(parts[index + 1]);
       peerKind = parts[index + 2]?.toLowerCase();
       peerIndex = index + 3;
@@ -227,9 +233,10 @@ export function resolveSlackSessionRoute(sessionKey, sessionRecord, api) {
 }
 
 function isSlackTarget(target) {
+  const normalized = normalizeSlackTarget(target);
   return (
-    Boolean(normalizeSlackTarget(target)) ||
-    (typeof target === "string" && target.toLowerCase().includes("slack:"))
+    Boolean(normalized && !normalized.startsWith("#")) ||
+    (typeof target === "string" && /^slack:/i.test(target))
   );
 }
 
@@ -285,7 +292,10 @@ function stripThreadFields(params) {
 }
 
 function visibleTextFromToolParams(params) {
-  return [params.message, params.caption]
+  const body = [params.message, params.SendMessage, params.content, params.text].find(
+    (value) => typeof value === "string" && value.trim(),
+  );
+  return [body, params.caption]
     .filter((value) => typeof value === "string" && value.trim())
     .join("\n\n");
 }
