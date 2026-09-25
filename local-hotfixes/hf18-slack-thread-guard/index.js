@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,19 +13,10 @@ const DEFAULT_SLACK_ACCOUNT_ID = "default";
 const THREAD_FIELDS = ["replyTo", "replyToId", "threadId", "threadTs", "message_id", "messageId"];
 const TOP_LEVEL_ACTIONS = new Set(["send", "upload-file"]);
 const SLACK_PEER_KINDS = new Set(["channel", "group", "direct", "dm"]);
-const SILENT_REPLY_TOKENS = new Set(["NO_REPLY"]);
 const STATE_TTL_MS = 60 * 60 * 1000;
-const UNCORRELATED_FALLBACK_TTL_MS = 30 * 1000;
 const MAX_STATE_ENTRIES = 2048;
 
-const directDeliveries = new Map();
-const toolDeliveries = new Map();
-// Per-run source-reply generation gate (answer-repetition control). Diagnosis
-// job 1785365205-063909: within one Slack-bound run, at most one plain-text source
-// reply is permitted per "generation". Any other completed tool action (or run
-// end) advances the generation and re-permits a genuinely new update. This
-// suppresses an immediate paraphrased second send and a post-compaction
-// restatement without a runtime-wide ledger or a core-runtime change.
+// Per-run answer-repetition gate for message-tool replies. This is not delivery custody.
 const sourceReplyGate = new Map();
 
 function asRecord(value) {
@@ -142,6 +132,7 @@ function collectPersistedSlackRoutes(record) {
     routes.push({
       channel: "slack",
       target,
+      persistedTo: normalizeString(to),
       accountId: normalizeString(accountId),
       source,
     });
@@ -181,6 +172,7 @@ export function resolveSlackRouteFromSessionRecord(record) {
   return {
     channel: "slack",
     target: routes[0].target,
+    persistedTo: routes[0].persistedTo,
     accountId: routes.find((route) => route.accountId)?.accountId ?? DEFAULT_SLACK_ACCOUNT_ID,
     source: routes.map((route) => route.source).join("+"),
   };
@@ -297,241 +289,37 @@ function visibleTextFromToolParams(params) {
     .join("\n\n");
 }
 
-function isSilentReply(text) {
-  return SILENT_REPLY_TOKENS.has(normalizeString(text) ?? "");
-}
-
-function fingerprint(text) {
-  return crypto.createHash("sha256").update(text).digest("hex");
-}
-
-function canonicalizeDeliveryValue(value) {
-  if (Array.isArray(value)) {
-    return value.map((entry) => canonicalizeDeliveryValue(entry));
+/** A read-only, synchronous route request; the host independently validates its persisted proof. */
+export function decideOutboundRoute(event, record) {
+  const sessionKey = event?.sessionKey;
+  if (!isSlackNamedSession(sessionKey)) {
+    return;
   }
-  if (!value || typeof value !== "object") {
-    return value;
+  const keyRoute = parseSlackRouteFromSessionKey(sessionKey);
+  const persisted = resolveSlackRouteFromSessionRecord(record);
+  if (
+    keyRoute?.peerKind !== "channel" ||
+    !persisted ||
+    persisted.conflict ||
+    keyRoute.target !== persisted.target ||
+    !collectPersistedSlackRoutes(record).some((route) => route.accountId)
+  ) {
+    throw new Error("Slack outbound route lacks matching persisted channel and account");
   }
-  const out = {};
-  for (const key of Object.keys(value).sort()) {
-    if (value[key] !== undefined) {
-      out[key] = canonicalizeDeliveryValue(value[key]);
-    }
+  // The host accepts only canonical channel-prefixed targets, not aliases.
+  if (
+    !/^(?:team:(?:T[A-Z0-9]+|t[a-z0-9]+):)?channel:(?:[CDG][A-Z0-9]+|[cdg][a-z0-9]+)$/.test(
+      persisted.persistedTo,
+    )
+  ) {
+    throw new Error("Slack outbound route lacks a canonical persisted channel target");
   }
-  return out;
-}
-
-function deliveryMaterial(runId, text, payload) {
-  const normalizedText = normalizeString(text) ?? "";
-  // Text-only tool/final hooks share content identity. Media must participate
-  // even when two attachments carry the same caption.
-  const media = asRecord(payload);
-  const hasMedia = Boolean(
-    media.media ||
-    media.mediaUrl ||
-    media.buffer ||
-    (Array.isArray(media.mediaUrls) && media.mediaUrls.length > 0) ||
-    (Array.isArray(media.attachments) && media.attachments.length > 0),
-  );
-  if (normalizeString(runId) && normalizedText && !hasMedia) {
-    return normalizedText;
-  }
-  if (payload && typeof payload === "object") {
-    return JSON.stringify(
-      canonicalizeDeliveryValue({ text: normalizedText, payload: asRecord(payload) }),
-    );
-  }
-  return normalizedText;
-}
-
-function deliveryKey(runId, sessionKey, material) {
-  const correlatedRunId = normalizeString(runId);
-  const normalizedSessionKey = normalizeString(sessionKey);
-  if (!correlatedRunId && !normalizedSessionKey) {
-    return undefined;
-  }
-  const identity = correlatedRunId
-    ? `run:${correlatedRunId}:session:${normalizedSessionKey ?? "unknown-session"}`
-    : `fallback:session:${normalizedSessionKey}`;
-  return `${identity}:${fingerprint(material)}`;
-}
-
-function pruneState(now = Date.now()) {
-  for (const map of [directDeliveries, toolDeliveries]) {
-    for (const [key, value] of map) {
-      if (now - value.at > (value.ttlMs ?? STATE_TTL_MS)) {
-        map.delete(key);
-      }
-    }
-    while (map.size > MAX_STATE_ENTRIES) {
-      map.delete(map.keys().next().value);
-    }
-  }
-}
-
-function rememberToolDelivery(runId, sessionKey, text, payload) {
-  const material = deliveryMaterial(runId, text, payload);
-  const key = material ? deliveryKey(runId, sessionKey, material) : undefined;
-  if (!key) {
-    return false;
-  }
-  const at = Date.now();
-  toolDeliveries.set(key, {
-    at,
-    status: "sent",
-    ttlMs: normalizeString(runId) ? STATE_TTL_MS : UNCORRELATED_FALLBACK_TTL_MS,
-  });
-  pruneState(at);
-  return true;
-}
-
-function hasKnownDelivery(runId, sessionKey, text, payload) {
-  pruneState();
-  const exactKey = deliveryKey(runId, sessionKey, deliveryMaterial(runId, text, payload));
-  if (!exactKey) {
-    return false;
-  }
-  return (
-    directDeliveries.get(exactKey)?.status === "sent" ||
-    toolDeliveries.get(exactKey)?.status === "sent"
-  );
-}
-
-// OpenClaw 2026.9.5 posts this notice to the originating surface when its own
-// reply ledger saw no visible delivery. For a Slack-named session driven from
-// another surface the guard cancels every originating-surface payload after
-// rerouting it to Slack, so that ledger is always empty and the notice is a
-// false alarm whenever the guard already delivered content for the run.
-const CORE_NO_VISIBLE_REPLY_NOTICE = "OpenClaw couldn't produce or deliver a reply";
-
-function isCoreNoVisibleReplyNotice(text) {
-  return (
-    typeof text === "string" &&
-    text.replace(/^[\s⚠️]+/u, "").startsWith(CORE_NO_VISIBLE_REPLY_NOTICE)
-  );
-}
-
-function hasAnyRunDelivery(runId, sessionKey) {
-  const prefix = normalizeString(runId)
-    ? `run:${normalizeString(runId)}:session:${normalizeString(sessionKey) ?? "unknown-session"}:`
-    : undefined;
-  if (!prefix) {
-    return false;
-  }
-  pruneState();
-  for (const map of [directDeliveries, toolDeliveries]) {
-    for (const [key, value] of map) {
-      if (key.startsWith(prefix) && value.status === "sent") {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function resultMessageId(result) {
-  if (!result || typeof result !== "object") {
-    return undefined;
-  }
-  return normalizeString(result.messageId) ?? normalizeString(result.ts);
-}
-
-async function deliverSlackOnce({ api, config, route, sessionKey, runId, text, payload, reason }) {
-  const normalizedText = normalizeString(text) ?? "";
-  const material = deliveryMaterial(runId, normalizedText, payload);
-  const key = deliveryKey(runId, sessionKey, material);
-  if (!key) {
-    auditRouteFailure(config, {
-      hook: "deliverSlackOnce",
-      sessionKey,
-      runId,
-      reason: `missing runId delivery correlation (${reason})`,
-    });
-    return { at: Date.now(), status: "blocked", source: "missing-correlation" };
-  }
-  pruneState();
-  const existing = directDeliveries.get(key);
-  if (existing) {
-    return existing.promise ? await existing.promise : existing;
-  }
-  if (hasKnownDelivery(runId, sessionKey, normalizedText, payload)) {
-    return { at: Date.now(), status: "sent", source: "known-delivery" };
-  }
-
-  const promise = (async () => {
-    try {
-      const adapter = await api.runtime.channel.outbound.loadAdapter("slack");
-      if (!adapter) {
-        throw new Error("Slack outbound adapter unavailable");
-      }
-      let result;
-      if (payload && typeof adapter.sendPayload === "function") {
-        result = await adapter.sendPayload({
-          cfg: api.config,
-          to: route.target,
-          text: normalizedText,
-          payload,
-          accountId: route.accountId,
-          replyToId: null,
-          threadId: null,
-        });
-      } else if (typeof adapter.sendText === "function") {
-        result = await adapter.sendText({
-          cfg: api.config,
-          to: route.target,
-          text: normalizedText,
-          accountId: route.accountId,
-          replyToId: null,
-          threadId: null,
-        });
-      } else {
-        throw new Error("Slack outbound adapter has no usable send method");
-      }
-      const state = {
-        at: Date.now(),
-        status: "sent",
-        source: "guard",
-        messageId: resultMessageId(result),
-        ttlMs: normalizeString(runId) ? STATE_TTL_MS : UNCORRELATED_FALLBACK_TTL_MS,
-      };
-      directDeliveries.set(key, state);
-      writeAudit(config.auditLog, {
-        action: "session_identity_rerouted",
-        reason,
-        outcome: "sent",
-        sessionKey,
-        runId,
-        target: route.target,
-        accountId: route.accountId ?? null,
-        routeSource: route.source,
-        messageId: state.messageId ?? null,
-      });
-      return state;
-    } catch (err) {
-      const state = {
-        at: Date.now(),
-        status: "unknown",
-        source: "guard",
-        error: String(err),
-      };
-      directDeliveries.set(key, state);
-      writeAudit(config.auditLog, {
-        action: "session_identity_reroute_failed",
-        reason,
-        outcome: "unknown_no_replay",
-        sessionKey,
-        runId,
-        target: route.target,
-        accountId: route.accountId ?? null,
-        routeSource: route.source,
-        error: String(err),
-      });
-      return state;
-    }
-  })();
-
-  directDeliveries.set(key, { at: Date.now(), status: "pending", promise });
-  return await promise;
+  return {
+    channel: "slack",
+    to: persisted.persistedTo,
+    accountId: persisted.accountId,
+    threadPolicy: "root",
+  };
 }
 
 function auditRouteFailure(config, { sessionKey, runId, reason, hook }) {
@@ -634,8 +422,6 @@ function isSourceReplyGateArmed(runId) {
 }
 
 export function _resetStateForTests() {
-  directDeliveries.clear();
-  toolDeliveries.clear();
   sourceReplyGate.clear();
 }
 
@@ -782,178 +568,55 @@ export default function register(api) {
         isPlainTextSend(params) &&
         sourceRoute.ok &&
         normalizeChannel(params.channel) === "slack" &&
-        (!params.target || sentTarget === sourceRoute.route.target) &&
+        sentTarget === sourceRoute.route.target &&
+        normalizeString(params.accountId) === sourceRoute.route.accountId &&
         !(Array.isArray(params.targets) && params.targets.length > 0)
       ) {
         armSourceReplyGate(runId);
       } else {
         advanceSourceReplyGeneration(runId);
       }
-      const remembered = rememberToolDelivery(
-        runId,
-        ctx?.sessionKey,
-        visibleTextFromToolParams(params),
-        params,
-      );
-      if (!remembered) {
-        auditRouteFailure(config, {
-          hook: "after_tool_call",
-          sessionKey: ctx?.sessionKey,
-          runId,
-          reason: "sent Slack tool result lacked runId delivery correlation",
-        });
-      }
     },
     { priority: 100 },
   );
 
-  // Canonical-final handling. Until 2.0.4 a before_agent_finalize hook
-  // delivered the final to Slack itself and returned action "revise" so the
-  // model would answer NO_REPLY. OpenClaw 2026.9.5 implements "revise" by
-  // rewinding the transcript leaf, and every rewind measured on 2026-09-23
-  // (28 of 28, including a fresh one-turn session) failed the run with
-  // "Session transcript projection is rebuilding". The core now delivers the
-  // final; the guard only cancels a final that restates what this run already
-  // sent through the message tool (exact repeat, or armed source-reply gate),
-  // and drops the core's no-visible-reply notice that a cancel provokes.
-  api.on(
-    "reply_payload_sending",
-    async (event, ctx) => {
-      const sessionKey = event.sessionKey ?? ctx?.sessionKey;
-      if (!config.enforceSessionIdentity || !isSlackNamedSession(sessionKey)) {
-        return;
-      }
-      const runId = event.runId ?? ctx?.runId;
-      const payload = asRecord(event.payload);
-      const text = normalizeString(payload.text) ?? "";
-      const channel = normalizeChannel(event.channel ?? ctx?.channelId);
-      if (isCoreNoVisibleReplyNotice(text) && hasAnyRunDelivery(runId, sessionKey)) {
-        writeAudit(config.auditLog, {
-          action: "core_no_visible_reply_notice_dropped",
-          hook: "reply_payload_sending",
-          sessionKey,
-          runId,
-        });
-        return { cancel: true, reason: "The guard already delivered this run's reply" };
-      }
-      const restatement =
-        Boolean(text) &&
-        !isSilentReply(text) &&
-        (event.kind === undefined || event.kind === "final") &&
-        (hasKnownDelivery(runId, sessionKey, text, payload) || isSourceReplyGateArmed(runId));
-      if (channel === "slack") {
-        if (!restatement) {
-          return;
-        }
-        writeAudit(config.auditLog, {
-          action: "canonical_final_suppressed",
-          hook: "reply_payload_sending",
-          sessionKey,
-          runId,
-        });
-        return { cancel: true, reason: "This run already delivered its reply to Slack" };
-      }
-      if (!config.rerouteNonSlackDelivery) {
-        return;
-      }
-      const resolution = await resolveSlackSessionRoute(sessionKey, undefined, api);
-      if (!resolution.ok) {
-        auditRouteFailure(config, {
-          hook: "reply_payload_sending",
-          sessionKey,
-          runId,
-          reason: resolution.reason,
-        });
-      } else if (!isSilentReply(text) && !restatement) {
-        await deliverSlackOnce({
-          api,
-          config,
-          route: resolution.route,
-          sessionKey,
-          runId,
-          text,
-          payload,
-          reason: `reply_payload_sending:${event.channel ?? ctx?.channelId ?? "unknown"}`,
-        });
-      }
-      return {
-        cancel: true,
-        reason: "Slack-named sessions cannot deliver reply payloads to non-Slack surfaces",
-      };
-    },
-    { priority: 100, timeoutMs: 30000 },
-  );
+  // Decide before the host acquires direct or queued delivery custody. No adapter
+  // access, await, audit write, or plugin-side delivery ledger belongs here.
+  api.on("outbound_route_decision", (event) => {
+    if (
+      !config.enforceSessionIdentity ||
+      !isSlackNamedSession(event?.sessionKey) ||
+      (!config.rerouteNonSlackDelivery && normalizeChannel(event.original?.channel) !== "slack")
+    ) {
+      return;
+    }
+    const record = api.runtime.agent.session.getSessionEntry({
+      sessionKey: event.sessionKey,
+      readConsistency: "latest",
+    });
+    return decideOutboundRoute(event, record);
+  });
 
-  api.on(
-    "message_sending",
-    async (event, ctx) => {
-      const sessionKey = ctx?.sessionKey;
-      if (
-        !config.enforceSessionIdentity ||
-        !config.rerouteNonSlackDelivery ||
-        !isSlackNamedSession(sessionKey) ||
-        normalizeChannel(ctx?.channelId) === "slack"
-      ) {
-        return;
-      }
-      const text = normalizeString(event.content) ?? "";
-      const resolution = await resolveSlackSessionRoute(sessionKey, undefined, api);
-      if (!resolution.ok) {
-        auditRouteFailure(config, {
-          hook: "message_sending",
-          sessionKey,
-          runId: ctx?.runId,
-          reason: resolution.reason,
-        });
-      } else if (isCoreNoVisibleReplyNotice(text) && hasAnyRunDelivery(ctx?.runId, sessionKey)) {
-        writeAudit(config.auditLog, {
-          action: "core_no_visible_reply_notice_dropped",
-          hook: "message_sending",
-          sessionKey,
-          runId: ctx?.runId,
-        });
-      } else if (!isSilentReply(text) && !hasKnownDelivery(ctx?.runId, sessionKey, text)) {
-        await deliverSlackOnce({
-          api,
-          config,
-          route: resolution.route,
-          sessionKey,
-          runId: ctx?.runId,
-          text,
-          reason: `message_sending:${ctx?.channelId ?? "unknown"}`,
-        });
-      }
-      return {
-        cancel: true,
-        cancelReason: "Slack-named sessions cannot send visible content to non-Slack surfaces",
-      };
-    },
-    { priority: 100, timeoutMs: 30000 },
-  );
-
-  api.on(
-    "message_sent",
-    async (event, ctx) => {
-      if (
-        event.success &&
-        normalizeChannel(ctx?.channelId) === "slack" &&
-        isSlackNamedSession(event.sessionKey ?? ctx?.sessionKey)
-      ) {
-        const remembered = rememberToolDelivery(
-          event.runId ?? ctx?.runId,
-          event.sessionKey ?? ctx?.sessionKey,
-          event.content,
-        );
-        if (!remembered) {
-          auditRouteFailure(config, {
-            hook: "message_sent",
-            sessionKey: event.sessionKey ?? ctx?.sessionKey,
-            runId: event.runId ?? ctx?.runId,
-            reason: "sent Slack message lacked runId delivery correlation",
-          });
-        }
-      }
-    },
-    { priority: 100 },
-  );
+  // The tool gate also suppresses an immediate paraphrased canonical final.
+  // Host delivery applies the route above; payload and message hooks do not send.
+  api.on("reply_payload_sending", (event, ctx) => {
+    const sessionKey = event.sessionKey ?? ctx?.sessionKey;
+    const runId = event.runId ?? ctx?.runId;
+    if (
+      config.enforceSessionIdentity &&
+      isSlackNamedSession(sessionKey) &&
+      (event.kind === undefined || event.kind === "final") &&
+      isSourceReplyGateArmed(runId) &&
+      typeof event.payload?.text === "string" &&
+      event.payload.text.trim() &&
+      event.payload.text.trim() !== "NO_REPLY" &&
+      !event.payload.media &&
+      !event.payload.mediaUrl &&
+      !event.payload.buffer &&
+      !event.payload.mediaUrls?.length &&
+      !event.payload.attachments?.length
+    ) {
+      return { cancel: true, reason: "This run already delivered a Slack reply to this step" };
+    }
+  });
 }

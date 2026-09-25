@@ -24,32 +24,15 @@ const SESSION = "agent:main:slack:channel:c012audit";
 
 function makeApi() {
   const hooks = new Map();
-  const sends = [];
   const api = {
     config: { channels: { slack: { enabled: true } } },
     pluginConfig: { auditLog: path.join(tempState, "guard.jsonl") },
-    runtime: {
-      channel: {
-        outbound: {
-          loadAdapter: async () => ({
-            sendText: async (ctx) => {
-              sends.push({ kind: "text", ...ctx });
-              return { channel: "slack", messageId: String(sends.length) };
-            },
-            sendPayload: async (ctx) => {
-              sends.push({ kind: "payload", ...ctx });
-              return { channel: "slack", messageId: String(sends.length) };
-            },
-          }),
-        },
-      },
-    },
     on(name, handler) {
       hooks.set(name, handler);
     },
   };
   register(api);
-  return { hooks, sends };
+  return { hooks };
 }
 
 function sentToolResult(messageId = "1700000000.000001") {
@@ -87,6 +70,8 @@ function afterTextSent(hooks, runId, message, extra = {}) {
   return afterMessageDelivered(hooks, runId, {
     action: "send",
     channel: "slack",
+    target: "C012AUDIT",
+    accountId: "default",
     message,
     ...extra,
   });
@@ -224,8 +209,24 @@ describe("source-reply generation gate", () => {
     assert.notEqual(next?.block, true);
   });
 
+  it("does not suppress the final for a send to the right target under a different account", async () => {
+    const { hooks } = makeApi();
+    await afterTextSent(hooks, "cross-account", "Wrong account", { accountId: "other" });
+    const final = hooks.get("reply_payload_sending")(
+      {
+        payload: { text: "Correct account final" },
+        kind: "final",
+        channel: "slack",
+        sessionKey: SESSION,
+        runId: "cross-account",
+      },
+      { channelId: "slack", sessionKey: SESSION, runId: "cross-account" },
+    );
+    assert.equal(final, undefined);
+  });
+
   it("cancels a paraphrased canonical final once the model already replied", async () => {
-    const { hooks, sends } = makeApi();
+    const { hooks } = makeApi();
     await afterTextSent(hooks, "run-a", "The coupling constant is 7.2 Hz.");
     const result = await hooks.get("reply_payload_sending")(
       {
@@ -238,11 +239,10 @@ describe("source-reply generation gate", () => {
       { channelId: "slack", sessionKey: SESSION, runId: "run-a" },
     );
     assert.equal(result?.cancel, true);
-    assert.equal(sends.length, 0);
   });
 
   it("lets a genuine canonical final through after real work advanced the generation", async () => {
-    const { hooks, sends } = makeApi();
+    const { hooks } = makeApi();
     await afterTextSent(hooks, "run-b", "Working on it.");
     await afterOtherTool(hooks, "run-b", "bash");
     const result = await hooks.get("reply_payload_sending")(
@@ -256,6 +256,5 @@ describe("source-reply generation gate", () => {
       { channelId: "slack", sessionKey: SESSION, runId: "run-b" },
     );
     assert.equal(result, undefined);
-    assert.equal(sends.length, 0);
   });
 });

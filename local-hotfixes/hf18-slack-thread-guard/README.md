@@ -1,11 +1,14 @@
 # HF-18: local Slack session and thread guard
 
-This is the standalone 2.0.5 local plugin used by the operator's 2026.9.5
-Gateway. It confines Slack-named sessions to their persisted Slack channel
-and channel-root delivery, while rejecting cross-surface reply leakage and
-unproven duplicate final replies. It imports only Node built-ins. The source
-is preserved here for reapplication and review, **not** registered as a
-bundled plugin or automatically installed by this PR.
+This standalone local plugin requests the persisted Slack channel, account,
+and channel-root policy for Slack channel sessions through the synchronous
+`outbound_route_decision` hook. Its callback reads the canonical session row
+and returns a route request; it never acquires an outbound adapter, sends a
+reply, or keeps a delivery ledger. The host independently validates the row
+before taking custody. The message-tool guard still enforces root sends and
+the per-run answer-repetition gate still suppresses immediate paraphrases.
+It imports only Node built-ins. The source is preserved for reapplication and
+review, **not** registered as a bundled plugin or automatically installed.
 
 To reapply to a Gateway, the operator should copy this directory into its
 local OpenClaw extension directory, preserve the installed config/consent,
@@ -15,6 +18,11 @@ operator's own approval. The audit-log default resolves under the current
 user's home directory; configure `auditLog` explicitly to override it.
 
 For offline proof run `node --test test/*.test.mjs` from this directory.
-The operator's `HOTFIXES.md` HF-18 entry defines the live routing and
-rollback acceptance conditions. This fork-only PR does not alter core Slack
-handling or a running Gateway.
+These tests prove plugin route intent and absence of plugin-side sends, not
+actual host delivery. The host must call and validate the hook before both
+direct and queued sends acquire custody, preserve the session-scoped media
+loader, and fail closed on conflicts or timeout. Until that host integration
+is installed, this plugin alone does **not** reroute cross-surface finals or
+prevent source-surface delivery. `rerouteNonSlackDelivery: false` still opts
+out of cross-surface route requests. The operator's `HOTFIXES.md` HF-18 entry
+defines live routing and rollback acceptance.
