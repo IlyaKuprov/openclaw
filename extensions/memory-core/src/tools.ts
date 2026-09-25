@@ -617,7 +617,6 @@ export function createMemoryGetTool(options: MemoryToolOptions) {
         const from = readPositiveIntegerParam(rawParams, "from");
         const lines = readPositiveIntegerParam(rawParams, "lines");
         const requestedCorpus = readCorpusParam(rawParams, ["memory", "wiki", "all"]);
-        const { readAgentMemoryFile } = await loadMemoryToolRuntime();
         if (requestedCorpus === "wiki") {
           return await executeWikiMemoryReadResult({
             relPath,
@@ -632,14 +631,16 @@ export function createMemoryGetTool(options: MemoryToolOptions) {
           });
         }
         return await executeMemoryReadResult({
-          read: async () =>
-            await readAgentMemoryFile({
+          read: async () => {
+            const { readAgentMemoryFile } = await loadMemoryToolRuntime();
+            return await readAgentMemoryFile({
               cfg,
               agentId,
               relPath,
               from: from ?? undefined,
               lines: lines ?? undefined,
-            }),
+            });
+          },
           requestedCorpus,
           relPath,
           from: from ?? undefined,
