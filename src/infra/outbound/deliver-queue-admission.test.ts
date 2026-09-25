@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { stageAndEnqueueOutboundDelivery } from "./deliver-queue-admission.js";
 import type { StableDeliveryPreparation } from "./delivery-queue-preparation.js";
@@ -44,6 +45,41 @@ describe("stageAndEnqueueOutboundDelivery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.loadPendingDelivery.mockResolvedValue(null);
+  });
+
+  it("persists a followup route's exact agent store and selected Slack recipient", async () => {
+    const payloads = [{ text: "routed" }];
+    mocks.stageQueuePayloadMedia.mockResolvedValueOnce({
+      status: "staged",
+      payloads,
+      artifacts: [],
+    });
+    mocks.enqueueDelivery.mockResolvedValueOnce("routed-queue");
+    const assertCurrent = vi.fn();
+    await stageAndEnqueueOutboundDelivery(
+      {
+        cfg: {},
+        channel: "slack",
+        to: "channel:C123",
+        accountId: "work",
+        payloads,
+        rootReplyOnly: true,
+        session: { agentId: "main", key: "agent:main:slack:channel:c123" },
+        assertBeforeQueueAdmission: assertCurrent,
+      },
+      createUnmodifiedPreparedOutboundBatch(payloads),
+    );
+    expect(assertCurrent).toHaveBeenCalledOnce();
+    expect(mocks.enqueueDelivery.mock.calls[0]?.[0]).toMatchObject({
+      routeAuthority: {
+        agentId: "main",
+        storePath: resolveSessionStorePathCore(undefined, { agentId: "main" }),
+        sessionKey: "agent:main:slack:channel:c123",
+        channel: "slack",
+        to: "channel:C123",
+        accountId: "work",
+      },
+    });
   });
 
   it("waits for the prepared checkpoint snapshot before enqueue", async () => {

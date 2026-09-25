@@ -30,6 +30,7 @@ import type {
   QueuedReplyPayloadSendingHook,
   QueuedRenderedMessageBatchPlan,
 } from "./delivery-queue-storage.js";
+import type { QueuedOutboundRouteAuthority } from "./delivery-queue-types.js";
 import type { OutboundDeliveryFormattingOptions } from "./formatting.js";
 import type { OutboundIdentity } from "./identity.js";
 import type { OutboundMessageSendOverrides } from "./message-plan.js";
@@ -178,6 +179,8 @@ export type DeliverOutboundPayloadsCoreParams = {
   channel: string;
   to: string;
   accountId?: string;
+  /** @internal Host-selected physical route; recovery revalidates it without rerunning plugins. */
+  routeAuthority?: QueuedOutboundRouteAuthority;
   payloads: ReplyPayload[];
   /** Admitted run correlation copied into the prepared durable batch. */
   runId?: string;

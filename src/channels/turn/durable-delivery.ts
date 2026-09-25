@@ -13,6 +13,7 @@ import {
   type OutboundDeliveryIntent,
   resolveOutboundDurableFinalDeliverySupport,
 } from "../../infra/outbound/deliver.js";
+import type { QueuedOutboundRouteAuthority } from "../../infra/outbound/delivery-queue-types.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { deriveDurableFinalDeliveryRequirements } from "../message/capabilities.js";
 import {
@@ -50,6 +51,8 @@ export type DurableInboundReplyDeliveryParams = DurableInboundReplyDeliveryOptio
   rootReplyOnly?: true;
   /** Host-only persisted-route freshness fence, including the final adapter handoff. */
   assertRouteAuthority?: () => void;
+  /** Host-selected route facts that survive durable queue admission. */
+  routeAuthority?: QueuedOutboundRouteAuthority;
 };
 
 /** Outcome of attempting durable final delivery for an inbound reply payload. */
@@ -232,6 +235,7 @@ export async function deliverInboundReplyWithMessageSendContextCore(
     channel,
     to,
     accountId: params.accountId,
+    routeAuthority: params.routeAuthority,
     payloads: [params.payload],
     ...((params.runId ?? params.executionIdentityToken?.runId)
       ? { runId: params.runId ?? params.executionIdentityToken?.runId }

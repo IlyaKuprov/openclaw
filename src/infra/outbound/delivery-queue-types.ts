@@ -19,6 +19,16 @@ import type { OutboundSessionContext } from "./session-context.js";
 
 export type QueuedRenderedMessageBatchPlan = RenderedMessageBatchPlan;
 
+/** Host-selected Slack route, bound to one exact physical session row for replay. */
+export type QueuedOutboundRouteAuthority = {
+  agentId: string;
+  storePath: string;
+  sessionKey: string;
+  channel: "slack";
+  to: string;
+  accountId: string;
+};
+
 export type QueuedReplyPayloadSendingHook = {
   kind: ReplyDispatchKind;
   channel?: string;
@@ -31,6 +41,7 @@ export type QueuedDeliveryPayload = {
   channel: string;
   to: string;
   accountId?: string;
+  routeAuthority?: QueuedOutboundRouteAuthority;
   queuePolicy?: "required" | "best_effort";
   requireUnknownSendReconciliation?: boolean;
   requiresProducerClaim?: boolean;

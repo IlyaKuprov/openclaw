@@ -92,6 +92,14 @@ export async function deliverDecidedFinalOutboundRoute(params: {
     rootReplyOnly: true,
     mediaAccess,
     assertRouteAuthority: assertCurrent,
+    routeAuthority: {
+      agentId: turn.agentId,
+      storePath: turn.storePath,
+      sessionKey: turn.routeSessionKey,
+      channel: decision.channel,
+      to: decision.to,
+      accountId: decision.accountId,
+    },
   });
   throwIfDurableInboundReplyDeliveryFailed(routed);
   if (!isDurableInboundReplyDeliveryHandled(routed)) {

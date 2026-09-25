@@ -5,8 +5,11 @@ import type {
   ChannelMessageSendCommitContext,
   ChannelMessageUnknownSendReconciliationResult,
 } from "../../channels/message/types.js";
+import { loadExactSessionEntryReadOnly } from "../../config/sessions/session-accessor.entry.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { validateOutboundRouteDecision } from "../../plugins/outbound-route-decision.js";
+import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
 import {
   captureDeliveryQueueStateContext,
   type DeliveryQueueStateContext,
@@ -254,6 +257,53 @@ function needsUnknownSendReconciliation(entry: QueuedDelivery): boolean {
   );
 }
 
+function assertRecoveredRouteAuthority(entry: QueuedDelivery): void {
+  const proof = entry.routeAuthority;
+  if (!proof) {
+    return;
+  }
+  if (
+    proof.channel !== "slack" ||
+    proof.channel !== entry.channel ||
+    proof.to !== entry.to ||
+    proof.accountId !== entry.accountId ||
+    !proof.agentId ||
+    !proof.storePath ||
+    !proof.sessionKey
+  ) {
+    throw new Error("recovered outbound route differs from durable custody");
+  }
+  const stored = loadExactSessionEntryReadOnly({
+    agentId: proof.agentId,
+    storePath: proof.storePath,
+    sessionKey: proof.sessionKey,
+  });
+  const context = stored ? deliveryContextFromSession(stored.entry) : undefined;
+  // Reuse the host validator against the exact stored row and the originally
+  // chosen destination. Never call the decision hook a second time on replay.
+  validateOutboundRouteDecision(
+    {
+      sessionKey: proof.sessionKey,
+      original: {
+        channel: "slack",
+        to: proof.to,
+        accountId: proof.accountId,
+        threadId: context?.threadId,
+      },
+    },
+    stored
+      ? {
+          sessionKey: stored.sessionKey,
+          channel: context?.channel,
+          to: context?.to,
+          accountId: context?.accountId,
+          threadId: context?.threadId,
+        }
+      : undefined,
+    { channel: "slack", to: proof.to, accountId: proof.accountId, threadPolicy: "root" },
+  );
+}
+
 export async function withActiveDeliveryClaim<T>(
   entryId: string,
   fn: () => Promise<T>,
@@ -314,18 +364,21 @@ function buildRecoveryDeliverParams(
         }
       : {}),
     // Recovery owns durable terminal settlement, so it cannot forward the
-    // completion itself. Reconstruct only its writer fence at the two final
+    // completion itself. Reconstruct writer and selected-route fences at the
     // transport boundaries used by normal live delivery.
-    ...(pendingFinalWriterAuthority
+    ...(pendingFinalWriterAuthority || entry.routeAuthority
       ? {
           onDirectAdapterHandoff: async () => {
             assertSessionWriterDeliveryAuthorized(pendingFinalWriterAuthority);
+            assertRecoveredRouteAuthority(entry);
           },
           assertDirectAdapterHandoff: () => {
             assertSessionWriterDeliveryAuthorized(pendingFinalWriterAuthority);
+            assertRecoveredRouteAuthority(entry);
           },
           onPlatformSendDispatch: async () => {
             assertSessionWriterDeliveryAuthorized(pendingFinalWriterAuthority);
+            assertRecoveredRouteAuthority(entry);
           },
         }
       : {}),

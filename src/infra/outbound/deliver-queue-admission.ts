@@ -1,5 +1,6 @@
 // Owns durable outbound admission, immutable payload custody, and media staging.
 import { createRenderedMessageBatchPlan } from "../../channels/message/rendered-batch.js";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { resolveOutboundMediaMaxBytes } from "../../media/configured-max-bytes.js";
 import { createInitialDeliveryProducerClaim } from "../delivery-queue-sqlite-claim.js";
 import type { InternalDeliverOutboundPayloadsParams } from "./deliver-contracts.js";
@@ -148,10 +149,34 @@ export async function stageAndEnqueueOutboundDelivery(
       ? createInitialDeliveryProducerClaim()
       : undefined;
     const queuedPreparedBatch = mapPreparedOutboundAcceptedPayloads(preparedBatch, staged.payloads);
+    // Channel-turn finals carry their exact store path. Routed followup/block
+    // replies use the standard agent store selected by decideOutboundRoute.
+    const routeAuthority =
+      params.routeAuthority ??
+      (params.rootReplyOnly &&
+      channel === "slack" &&
+      params.accountId &&
+      params.session?.agentId &&
+      params.session.key
+        ? {
+            agentId: params.session.agentId,
+            storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
+              agentId: params.session.agentId,
+            }),
+            sessionKey: params.session.key,
+            channel,
+            to,
+            accountId: params.accountId,
+          }
+        : undefined);
+    if (params.rootReplyOnly && (!routeAuthority || !params.assertBeforeQueueAdmission)) {
+      throw new OutboundQueueAdmissionAuthorityError("Host route is missing durable authority");
+    }
     const delivery = {
       channel,
       to,
       accountId: params.accountId,
+      routeAuthority,
       queuePolicy,
       requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
       ...(params.reusePendingDeliveryIntent ? { requiresProducerClaim: true } : {}),

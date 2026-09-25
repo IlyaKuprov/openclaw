@@ -128,6 +128,7 @@ function createQueuedDelivery(
     channel: params.channel,
     to: params.to,
     accountId: params.accountId,
+    routeAuthority: params.routeAuthority,
     queuePolicy: params.queuePolicy,
     requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
     ...(params.initialProducerClaim ??

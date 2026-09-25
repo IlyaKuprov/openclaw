@@ -145,6 +145,13 @@ describe("channel lifecycle outbound route decision", () => {
       session: { key: slackSessionKey },
       threadId: null,
       replyToId: null,
+      routeAuthority: {
+        agentId: "main",
+        sessionKey: slackSessionKey,
+        channel: "slack",
+        to: "channel:C123",
+        accountId: "work",
+      },
     });
     expect(latestDurableSendRequest().payloads?.[0]?.replyToId).toBeUndefined();
     expect(latestDurableSendRequest().assertBeforeQueueAdmission).toEqual(expect.any(Function));
