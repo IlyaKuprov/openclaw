@@ -415,7 +415,10 @@ async function settleQueuedFailure(
   let terminalized = false;
   try {
     const unknownSend = needsUnknownSendReconciliation(params.entry);
-    const settlement: DeliveryFailureSettlement = params.entry.settlement ?? {
+    const settlement: DeliveryFailureSettlement = (params.entry.settlement
+      ?.routeAuthorityRecoveryRequired === true
+      ? undefined
+      : params.entry.settlement) ?? {
       error: params.error,
       ...(params.terminals ? { terminals: params.terminals } : {}),
       ...(unknownSend ? { unknownSendCleanup: true as const } : {}),
@@ -1289,7 +1292,14 @@ async function processQueuedRecovery(
   }
   const label =
     context.kind === "startup" ? `Delivery ${entry.id}` : `${context.logLabel}: entry ${entry.id}`;
-  if (entry.settlement) {
+  if (entry.settlement?.routeAuthorityRecoveryRequired === true && !entry.routeAuthority) {
+    await settleQueuedFailure(
+      { ...opts, error: "queued route is missing its durable authority" },
+      stateContext,
+    );
+    return "continue";
+  }
+  if (entry.settlement && entry.settlement.routeAuthorityRecoveryRequired !== true) {
     await settleQueuedFailure({ ...opts, error: entry.settlement.error }, stateContext);
     return "continue";
   }
@@ -1428,7 +1438,9 @@ export async function drainPendingDeliveriesCore(
   const drained = await recoveryCoordinator.withDrain(opts.drainKey, async () => {
     const now = Date.now();
     const matchingEntries = (await loadUnfinishedDeliveries(opts.stateDir, stateContext)).filter(
-      (entry) => entry.settlement || opts.selectEntry(entry, now).match,
+      (entry) =>
+        (entry.settlement && entry.settlement.routeAuthorityRecoveryRequired !== true) ||
+        opts.selectEntry(entry, now).match,
     );
     await recoveryCoordinator.scan({
       entries: matchingEntries,

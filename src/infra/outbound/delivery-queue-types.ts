@@ -101,6 +101,8 @@ export type LegacyQueuedDeliveryPreparation = LegacyQueuedDelivery & {
 
 export type DeliveryFailureSettlement = {
   error: string;
+  /** Shipped recovery treats any settlement as non-sendable; current recovery ignores this fence. */
+  routeAuthorityRecoveryRequired?: true;
   unknownSendCleanup?: true;
   terminals?: readonly IndexedOutboundAuditTerminal[];
 } & ({ outcome: "unknown" } | { outcome: "failed"; rejectionError?: string });
