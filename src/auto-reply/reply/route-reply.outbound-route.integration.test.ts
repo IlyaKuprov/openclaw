@@ -9,6 +9,7 @@ import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-
 import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
 import { OUTBOUND_DELIVERY_QUEUE_NAME } from "../../infra/outbound/delivery-queue-media-staging.js";
 import { drainPendingDeliveriesCore } from "../../infra/outbound/delivery-queue-recovery.js";
+import { enqueueDeliveryOnce } from "../../infra/outbound/delivery-queue-storage.js";
 import {
   createRecoveryLog,
   installDeliveryQueueTmpDirHooks,
@@ -225,6 +226,153 @@ describe("routeReply host route decision with durable queue custody", () => {
     expect(
       getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, intentId, fixtures.tmpDir()),
     ).toBe("completed");
+  });
+
+  it.each([
+    { name: "recipient", channel: "slack", to: "channel:C999", accountId: "work", proof: true },
+    { name: "account", channel: "slack", to: canonical.to, accountId: "other", proof: true },
+    {
+      name: "source channel",
+      channel: "matrix",
+      to: "!old:example",
+      accountId: "old",
+      proof: true,
+    },
+    {
+      name: "source provenance",
+      channel: "slack",
+      to: canonical.to,
+      accountId: "work",
+      proof: true,
+      sourceChannel: "telegram",
+    },
+    {
+      name: "old row without proof",
+      channel: "slack",
+      to: canonical.to,
+      accountId: "work",
+      proof: false,
+    },
+  ])("does not reuse a stable intent for a different host $name", async (old) => {
+    const id = `block-reply:v1:route-reply-stale-${old.name.replaceAll(" ", "-")}`;
+    await enqueueDeliveryOnce(
+      {
+        channel: old.channel,
+        to: old.to,
+        accountId: old.accountId,
+        ...(old.proof
+          ? {
+              routeAuthority: {
+                agentId: "main",
+                storePath,
+                sessionKey,
+                channel: old.channel,
+                to: old.to,
+                accountId: old.accountId,
+                sourceChannel: old.sourceChannel ?? "matrix",
+              },
+            }
+          : {}),
+        payloads: [{ text: "old recipient payload" }],
+        queuePolicy: "required",
+      },
+      id,
+      fixtures.tmpDir(),
+    );
+    const result = await routeReply({
+      cfg,
+      replyKind: "block",
+      payload: { text: "new host decision" },
+      channel: "matrix",
+      to: "!source:example",
+      sessionKey,
+      deliveryIntentId: id,
+      mirror: false,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      delivered: false,
+      routeDecisionControlled: true,
+      error: expect.stringContaining("route differs from current host decision"),
+    });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendMatrixText).not.toHaveBeenCalled();
+    expect(readQueuedEntry(fixtures.tmpDir(), id)).toMatchObject({
+      channel: old.channel,
+      to: old.to,
+    });
+  });
+
+  it("reuses matching routed custody without replacing its prepared payload", async () => {
+    const id = "block-reply:v1:route-reply-matching";
+    await enqueueDeliveryOnce(
+      {
+        channel: "slack",
+        to: canonical.to,
+        accountId: canonical.accountId,
+        routeAuthority: {
+          agentId: "main",
+          storePath,
+          sessionKey,
+          channel: "slack",
+          to: canonical.to,
+          accountId: canonical.accountId,
+          sourceChannel: "matrix",
+        },
+        payloads: [{ text: "first prepared text" }],
+        queuePolicy: "required",
+      },
+      id,
+      fixtures.tmpDir(),
+    );
+    const result = await routeReply({
+      cfg,
+      replyKind: "block",
+      payload: { text: "new text must not replace custody" },
+      channel: "matrix",
+      to: "!source:example",
+      sessionKey,
+      deliveryIntentId: id,
+      mirror: false,
+    });
+    expect(result).toMatchObject({ ok: true, delivered: true });
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendText.mock.lastCall?.[0]).toMatchObject({
+      to: canonical.to,
+      accountId: canonical.accountId,
+      text: "first prepared text",
+    });
+    expect(sendMatrixText).not.toHaveBeenCalled();
+  });
+
+  it("preserves ordinary native stable retries without routed proof", async () => {
+    const id = "block-reply:v1:native-matrix-retry";
+    await enqueueDeliveryOnce(
+      {
+        channel: "matrix",
+        to: "!native:example",
+        payloads: [{ text: "native queued text" }],
+        queuePolicy: "required",
+      },
+      id,
+      fixtures.tmpDir(),
+    );
+    await expect(
+      deliverOutboundPayloads({
+        cfg,
+        channel: "matrix",
+        to: "!native:example",
+        payloads: [{ text: "new text" }],
+        deliveryIntentId: id,
+        reusePendingDeliveryIntent: true,
+        queuePolicy: "required",
+      }),
+    ).resolves.toEqual([expect.objectContaining({ messageId: "owner-dm" })]);
+    expect(sendMatrixText).toHaveBeenCalledOnce();
+    expect(sendMatrixText.mock.lastCall?.[0]).toMatchObject({
+      to: "!native:example",
+      text: "native queued text",
+    });
   });
 
   it("carries the decided channel peer into queued mirror and message_sent recipient facts, not the webchat DM source", async () => {

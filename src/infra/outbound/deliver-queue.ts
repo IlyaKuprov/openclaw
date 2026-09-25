@@ -20,6 +20,7 @@ import { OUTBOUND_DELIVERY_LOG_SCOPE } from "./deliver-log.js";
 import { buildPayloadSummary } from "./deliver-payload.js";
 import { prepareOutboundPayloadBatch } from "./deliver-prepare.js";
 import {
+  assertStableRouteCustodyMatchesCurrent,
   restoreQueuedDeliveryCustody,
   stageAndEnqueueOutboundDelivery,
   OutboundQueueAdmissionAuthorityError,
@@ -260,6 +261,9 @@ async function runOutboundDeliveryWithQueue(
         params.deliveryQueueStateContext,
       )
     : null;
+  if (existingStableDelivery) {
+    assertStableRouteCustodyMatchesCurrent(params, existingStableDelivery);
+  }
   if (params.deliveryIntentId && !existingStableDelivery && !stablePreparationOwner) {
     const owner = findDeliveryIntentOwner(
       params.deliveryIntentId,

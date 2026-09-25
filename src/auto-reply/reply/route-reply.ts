@@ -15,6 +15,7 @@ import { createChannelReplyTransform } from "../../channels/message/reply-transf
 import { getBundledChannelPlugin } from "../../channels/plugins/bundled.js";
 import { getLoadedChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import { normalizeChatChannelId } from "../../channels/registry.js";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { collectPayloadMediaSources } from "../../infra/outbound/deliver-payload.js";
@@ -439,6 +440,17 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       threadId: resolvedThreadId,
       ...(decidedRoute
         ? {
+            routeAuthority: {
+              agentId: resolvedAgentId,
+              storePath: resolveSessionStorePathCore(cfg.session?.store, {
+                agentId: resolvedAgentId,
+              }),
+              sessionKey: params.sessionKey!,
+              channel: channelId,
+              to: deliveryTo,
+              ...(deliveryAccountId ? { accountId: deliveryAccountId } : {}),
+              sourceChannel: channel,
+            },
             rootReplyOnly: true as const,
             replyToMode: "off" as const,
             mediaAccess: resolveAgentScopedOutboundMediaAccess({

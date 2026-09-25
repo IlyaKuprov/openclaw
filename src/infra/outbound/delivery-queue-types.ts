@@ -27,6 +27,8 @@ export type QueuedOutboundRouteAuthority = {
   channel: string;
   to: string;
   accountId?: string;
+  /** Original reply surface, distinct from the host-selected destination. */
+  sourceChannel?: string;
 };
 
 export type QueuedReplyPayloadSendingHook = {
