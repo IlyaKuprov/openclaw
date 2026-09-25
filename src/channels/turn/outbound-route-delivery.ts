@@ -1,20 +1,16 @@
 // Host-owned route decision and durable delivery for inbound final replies.
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import { copyReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
-import { loadExactSessionEntryReadOnly } from "../../config/sessions/session-accessor.entry.js";
 import {
   deriveInboundMessageHookContext,
   resolveInboundReplyHookTarget,
 } from "../../hooks/message-hook-mappers.js";
 import { collectPayloadMediaSources } from "../../infra/outbound/deliver-payload.js";
-import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
-import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import {
-  validateOutboundRouteDecision,
-  type PersistedOutboundRouteProof,
-  type PluginHookOutboundRouteDecisionResult,
-} from "../../plugins/outbound-route-decision.js";
-import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
+  decideOutboundRoute,
+  type DecidedOutboundRoute,
+} from "../../infra/outbound/outbound-route-decision.js";
+import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
 import {
   deliverInboundReplyWithMessageSendContextCore,
   isDurableInboundReplyDeliveryHandled,
@@ -28,40 +24,12 @@ type OutboundRouteTurn = Pick<
   "cfg" | "channel" | "accountId" | "agentId" | "routeSessionKey" | "storePath" | "ctxPayload"
 >;
 
-type DecidedOutboundRoute = {
-  decision: PluginHookOutboundRouteDecisionResult;
-  assertCurrent: () => void;
-};
-
-function readPersistedOutboundRoute(
-  turn: OutboundRouteTurn,
-): PersistedOutboundRouteProof | undefined {
-  // Never resolve aliases: the decision must name the row that owns delivery.
-  const stored = loadExactSessionEntryReadOnly({
-    sessionKey: turn.routeSessionKey,
-    storePath: turn.storePath,
-    agentId: turn.agentId,
-  });
-  if (!stored) {
-    return undefined;
-  }
-  const context = deliveryContextFromSession(stored.entry);
-  return {
-    sessionKey: stored.sessionKey,
-    channel: context?.channel,
-    to: context?.to,
-    accountId: context?.accountId,
-    threadId: context?.threadId,
-  };
-}
-
 /** Resolve only finals with a registered plugin; all other deliveries keep their native route. */
 export async function decideFinalOutboundRoute(
   turn: OutboundRouteTurn,
   info: ChannelDeliveryInfo,
 ): Promise<DecidedOutboundRoute | undefined> {
-  const runner = getGlobalHookRunner();
-  if (info.kind !== "final" || !runner?.hasHooks("outbound_route_decision")) {
+  if (info.kind !== "final") {
     return undefined;
   }
   const hookCtx = deriveInboundMessageHookContext(turn.ctxPayload);
@@ -74,19 +42,12 @@ export async function decideFinalOutboundRoute(
       threadId: turn.ctxPayload.MessageThreadId,
     },
   };
-  const requested = await runner.runOutboundRouteDecision(
+  return await decideOutboundRoute({
+    cfg: turn.cfg,
+    agentId: turn.agentId,
+    storePath: turn.storePath,
     event,
-    { channelId: "slack" },
-    readPersistedOutboundRoute(turn),
-  );
-  if (!requested) {
-    return undefined;
-  }
-  const assertCurrent = () => {
-    validateOutboundRouteDecision(event, readPersistedOutboundRoute(turn), requested);
-  };
-  assertCurrent();
-  return { decision: requested, assertCurrent };
+  });
 }
 
 /** A decided route has no direct/provider fallback, including unsupported durable preflight. */

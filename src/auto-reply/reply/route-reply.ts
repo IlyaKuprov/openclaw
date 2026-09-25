@@ -17,12 +17,15 @@ import { getLoadedChannelPlugin, normalizeChannelId } from "../../channels/plugi
 import { normalizeChatChannelId } from "../../channels/registry.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { collectPayloadMediaSources } from "../../infra/outbound/deliver-payload.js";
 import {
   isOutboundDeliveryError,
   PlatformMessageNotDispatchedError,
 } from "../../infra/outbound/deliver-types.js";
+import { decideOutboundRoute } from "../../infra/outbound/outbound-route-decision.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { hasReplyPayloadContent } from "../../interactive/payload.js";
+import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
 import { normalizeAccountId } from "../../routing/account-id.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SilentReplyConversationType } from "../../shared/silent-reply-policy.js";
@@ -137,6 +140,8 @@ type RouteReplyResult = {
   /** True when the adapter may have sent but returned no delivery identity. */
   ambiguous?: boolean;
   queueCustody?: "held" | "released";
+  /** Host routing owns this outcome; callers must not try an original-surface fallback. */
+  routeDecisionControlled?: true;
   /** True when a hook intentionally suppressed provider delivery. */
   suppressed?: boolean;
   /** Delivery disposition reason when additional caller context is useful. */
@@ -208,25 +213,57 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       reason: "reasoning_payload_not_external",
     };
   }
-  const normalizedChannel = normalizeMessageChannel(channel);
-  const channelId =
-    normalizeChannelId(channel) ?? normalizeOptionalLowercaseString(channel) ?? null;
-  const loadedPlugin = channelId ? getLoadedChannelPlugin(channelId) : undefined;
-  const bundledPlugin = channelId && !loadedPlugin ? getBundledChannelPlugin(channelId) : undefined;
-  const messaging = loadedPlugin?.messaging ?? bundledPlugin?.messaging;
-  const threading = loadedPlugin?.threading ?? bundledPlugin?.threading;
   const resolvedAgentId = resolveSessionAgentId({
     sessionKey: params.sessionKey,
     config: cfg,
     fallbackAgentId: params.agentId,
   });
-
+  // Followups may have originated on another surface while their exact session
+  // still belongs to a Slack channel. Decide before channel transforms or queue admission.
+  let decidedRoute: Awaited<ReturnType<typeof decideOutboundRoute>>;
+  try {
+    decidedRoute = params.sessionKey
+      ? await decideOutboundRoute({
+          cfg,
+          agentId: resolvedAgentId,
+          event: {
+            sessionKey: params.sessionKey,
+            original: { channel, to, accountId, threadId },
+          },
+        })
+      : undefined;
+  } catch (error) {
+    const message = `Failed to decide reply route: ${formatErrorMessage(error)}`;
+    return {
+      ok: false,
+      delivered: false,
+      routeDecisionControlled: true,
+      error: message,
+      cause: new PlatformMessageNotDispatchedError(message, { cause: error }),
+    };
+  }
+  const deliveryChannel = decidedRoute?.decision.channel ?? channel;
+  const deliveryTo = decidedRoute?.decision.to ?? to;
+  const deliveryAccountId = decidedRoute?.decision.accountId ?? accountId;
+  const normalizedChannel = normalizeMessageChannel(deliveryChannel);
+  const channelId =
+    normalizeChannelId(deliveryChannel) ??
+    normalizeOptionalLowercaseString(deliveryChannel) ??
+    null;
+  const loadedPlugin = channelId ? getLoadedChannelPlugin(channelId) : undefined;
+  const bundledPlugin = channelId && !loadedPlugin ? getBundledChannelPlugin(channelId) : undefined;
+  const messaging = loadedPlugin?.messaging ?? bundledPlugin?.messaging;
+  const threading = loadedPlugin?.threading ?? bundledPlugin?.threading;
   // Debug: `pnpm test src/auto-reply/reply/route-reply.test.ts`
   const responsePrefix = resolveEffectiveMessagesConfig(cfg, resolvedAgentId, {
     channel: normalizedChannel,
-    accountId,
+    accountId: deliveryAccountId,
   }).responsePrefix;
-  const transformReplyPayload = createChannelReplyTransform({ messaging, cfg, accountId });
+  const transformReplyPayload = createChannelReplyTransform({
+    messaging,
+    cfg,
+    accountId: deliveryAccountId,
+  });
   const normalization = normalizeReplyPayloadOutcome(payload, {
     responsePrefix,
     responsePrefixContext: params.responsePrefixContext,
@@ -286,7 +323,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
     error,
     cause: new PlatformMessageNotDispatchedError(error, { cause: undefined }),
   });
-  if (channel === INTERNAL_MESSAGE_CHANNEL) {
+  if (deliveryChannel === INTERNAL_MESSAGE_CHANNEL) {
     return rejectBeforeSend("Webchat routing not supported for queued replies");
   }
   if (!channelId) {
@@ -308,46 +345,58 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
           accountId,
         })
       : false;
-  const replyDelivery = payloadPolicyMatchesRoute
-    ? payloadReplyDelivery
-    : (params.replyDelivery ?? payloadReplyDelivery);
-  const replyTransport =
-    threading?.resolveReplyTransport?.({
-      cfg,
-      accountId,
-      threadId,
-      replyToId,
-      currentMessageId: params.currentMessageId,
-      replyToIsExplicit: Boolean(
-        payloadMetadata?.replyToIdExplicit || normalized.replyToTag || normalized.replyToCurrent,
-      ),
-      replyToCurrent: normalized.replyToCurrent,
-      replyDelivery,
-    }) ?? null;
+  const replyDelivery = decidedRoute
+    ? ({ chatType: "channel", replyToMode: "off" } as const)
+    : payloadPolicyMatchesRoute
+      ? payloadReplyDelivery
+      : (params.replyDelivery ?? payloadReplyDelivery);
+  const replyTransport = decidedRoute
+    ? null
+    : (threading?.resolveReplyTransport?.({
+        cfg,
+        accountId: deliveryAccountId,
+        threadId,
+        replyToId,
+        currentMessageId: params.currentMessageId,
+        replyToIsExplicit: Boolean(
+          payloadMetadata?.replyToIdExplicit || normalized.replyToTag || normalized.replyToCurrent,
+        ),
+        replyToCurrent: normalized.replyToCurrent,
+        replyDelivery,
+      }) ?? null);
   const resolvedReplyToId =
-    replyTransport?.replyToId === null
+    decidedRoute || replyTransport?.replyToId === null
       ? undefined
       : (replyTransport?.replyToId ?? replyToId ?? undefined);
-  const resolvedThreadId =
-    replyTransport && Object.hasOwn(replyTransport, "threadId")
+  const resolvedThreadId = decidedRoute
+    ? null
+    : replyTransport && Object.hasOwn(replyTransport, "threadId")
       ? (replyTransport.threadId ?? null)
       : (threadId ?? null);
-  const deliveryPayload = copyReplyPayloadMetadata(normalized, {
-    ...externalPayload,
-    replyToId: resolvedReplyToId,
-  });
+  const deliveryPayload = copyReplyPayloadMetadata(
+    normalized,
+    decidedRoute
+      ? {
+          ...externalPayload,
+          replyToId: undefined,
+          replyToCurrent: undefined,
+          replyToTag: undefined,
+        }
+      : { ...externalPayload, replyToId: resolvedReplyToId },
+  );
 
   try {
     // Provider docking: this is an execution boundary (we're about to send).
     // Keep the module cheap to import by loading outbound plumbing lazily.
     const { durableMessageBatchMayHaveReachedRecipient, sendDurableMessageBatchCore } =
       await loadDeliverRuntime();
+    decidedRoute?.assertCurrent();
     const outboundSession = buildOutboundSessionContext({
       cfg,
       agentId: resolvedAgentId,
       sessionKey: params.sessionKey,
-      policySessionKey: params.policySessionKey,
-      conversationType: params.policyConversationType,
+      policySessionKey: decidedRoute ? params.sessionKey : params.policySessionKey,
+      conversationType: decidedRoute ? "channel" : params.policyConversationType,
       isGroup:
         params.policySessionKey || params.policyConversationType ? undefined : params.isGroup,
       requesterSenderId: params.requesterSenderId,
@@ -358,8 +407,8 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
     const send = await sendDurableMessageBatchCore({
       cfg,
       channel: channelId,
-      to,
-      accountId: accountId ?? undefined,
+      to: deliveryTo,
+      accountId: deliveryAccountId ?? undefined,
       payloads: [deliveryPayload],
       replyPayloadSendingHook: {
         kind: params.replyKind,
@@ -368,8 +417,8 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
         ...(params.runId ? { runId: params.runId } : {}),
         context: {
           channelId,
-          ...(accountId ? { accountId } : {}),
-          conversationId: to,
+          ...(deliveryAccountId ? { accountId: deliveryAccountId } : {}),
+          conversationId: deliveryTo,
           ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
           ...(params.requesterSenderId ? { senderId: params.requesterSenderId } : {}),
           ...(params.runId ? { runId: params.runId } : {}),
@@ -377,6 +426,25 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       },
       replyToId: resolvedReplyToId ?? null,
       threadId: resolvedThreadId,
+      ...(decidedRoute
+        ? {
+            replyToMode: "off" as const,
+            mediaAccess: resolveAgentScopedOutboundMediaAccess({
+              cfg,
+              agentId: resolvedAgentId,
+              sessionKey: params.sessionKey,
+              accountId: deliveryAccountId,
+              requesterSenderId: params.requesterSenderId,
+              requesterSenderName: params.requesterSenderName,
+              requesterSenderUsername: params.requesterSenderUsername,
+              requesterSenderE164: params.requesterSenderE164,
+              mediaSources: collectPayloadMediaSources([deliveryPayload]),
+            }),
+            onDirectAdapterHandoff: async () => decidedRoute.assertCurrent(),
+            assertDirectAdapterHandoff: decidedRoute.assertCurrent,
+            onPlatformSendDispatch: async () => decidedRoute.assertCurrent(),
+          }
+        : {}),
       session: outboundSession,
       signal: abortSignal,
       ...(params.deliveryIntentId
@@ -406,6 +474,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       return {
         ok: false,
         delivered: delivery.delivered,
+        ...(decidedRoute ? { routeDecisionControlled: true } : {}),
         error: `Failed to route reply to ${channel}: ${formatErrorMessage(send.error)}`,
         cause: send.error,
         messageId: delivery.messageId,
@@ -452,6 +521,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
     return {
       ok: false,
       delivered: false,
+      ...(decidedRoute ? { routeDecisionControlled: true } : {}),
       ...(isOutboundDeliveryError(err)
         ? {
             queueCustody: err.queueCustody,

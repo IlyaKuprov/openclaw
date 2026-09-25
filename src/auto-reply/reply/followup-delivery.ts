@@ -440,6 +440,10 @@ async function sendFollowupPayloads(params: {
         );
         continue;
       }
+      if (result.routeDecisionControlled) {
+        defaultRuntime.error?.(`followup queue: routed delivery failed: ${result.error}`);
+        continue;
+      }
       if (!result.delivered && !result.suppressed) {
         const routeError = result.error ?? "no visible delivery";
         logVerbose(`followup queue: route-reply failed: ${routeError}`);
