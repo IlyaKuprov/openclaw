@@ -1,6 +1,6 @@
 {
   "name": "openclaw-slack-thread-guard",
-  "version": "2.0.5",
+  "version": "2.1.0",
   "description": "Routes every Slack-named session exclusively to its persisted Slack target and enforces channel-root delivery",
   "main": "index.js",
   "type": "module",
@@ -9,6 +9,9 @@
   },
   "openclaw": {
     "extensions": ["./index.js"],
-    "plugin": true
+    "plugin": true,
+    "compat": {
+      "pluginApi": ">=2026.9.6"
+    }
   }
 }
