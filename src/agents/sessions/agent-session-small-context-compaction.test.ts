@@ -16,13 +16,81 @@ import {
 } from "./agent-session-loop-correctness.test-support.js";
 import { createResourceLoader } from "./agent-session-loop-resource-loader.test-support.js";
 import type { AgentSessionEvent } from "./agent-session-types.js";
-import { createCompactionRequestBudget } from "./compaction/request-budget.js";
+import {
+  createCompactionRequestBudget,
+  estimateCompactedRequestTokens,
+} from "./compaction/request-budget.js";
 import { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 
 registerAgentSessionLoopTestLifecycle();
 
 describe("AgentSession small-context compaction", () => {
+  it.each([
+    { contextWindow: 8_192, producer: "extension" },
+    { contextWindow: 16_384, producer: "extension" },
+    { contextWindow: 8_192, producer: "core" },
+    { contextWindow: 16_384, producer: "core" },
+  ] as const)(
+    "fits a $producer manual summary to a $contextWindow-token model without a request budget",
+    async ({ contextWindow, producer }) => {
+      const model = { ...testModel, contextWindow, maxTokens: 1_024 };
+      const settingsManager = SettingsManager.inMemory({
+        compaction: { reserveTokens: 1_024, keepRecentTokens: 1 },
+        retry: { enabled: false },
+      });
+      const sessionManager = SessionManager.inMemory();
+      sessionManager.appendMessage(makeUserMessage("Earlier decision", 1));
+      sessionManager.appendMessage(createAssistant(model, [{ type: "text", text: "Recorded." }]));
+      const keptId = sessionManager.appendMessage(makeUserMessage("Continue the work", 3));
+      const oversized = "保".repeat(40_000);
+      const resourceLoader = createResourceLoader(
+        producer === "extension"
+          ? new Map([
+              [
+                "session_before_compact",
+                [
+                  async () => ({
+                    compaction: { summary: oversized, firstKeptEntryId: keptId, tokensBefore: 100 },
+                  }),
+                ],
+              ],
+            ])
+          : undefined,
+      );
+      const { session } = await createTestSession({
+        model,
+        settingsManager,
+        sessionManager,
+        resourceLoader: { ...resourceLoader, getSystemPrompt: () => "Preserve the decision." },
+      });
+      if (producer === "core") {
+        streamMocks.streamSimple.mockImplementation((activeModel: Model) =>
+          createAssistantResultStream(
+            createAssistant(activeModel, [{ type: "text", text: oversized }]),
+          ),
+        );
+      }
+      const budget = createCompactionRequestBudget({
+        contextWindow,
+        reserveTokens: settingsManager.getCompactionReserveTokens(),
+        systemPrompt: session.systemPrompt,
+        tools: session.state.tools,
+      });
+
+      const result = await session.compact();
+      const replayTokens = estimateCompactedRequestTokens(session.messages, budget);
+      expect(replayTokens).toBeLessThanOrEqual(contextWindow - budget.reserveTokens);
+      expect(result.summary).toContain("保");
+      expect(result.summary.length).toBeLessThan(40_000);
+      expect(
+        sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
+      ).toMatchObject({
+        summary: result.summary,
+      });
+    },
+  );
+
   it("defers a one-archive retention no-op until the foreground request budget is prepared", async () => {
     const model = { ...testModel, contextWindow: 32_768, maxTokens: 8_192 };
     const settingsManager = SettingsManager.inMemory({ retry: { enabled: false } });
@@ -262,10 +330,12 @@ describe("AgentSession small-context compaction", () => {
       expect(
         sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
       ).toMatchObject({ summary: result.summary });
-      if (mode === "automatic") {
-        expect(result.summary.length).toBeLessThan(generatedSummary.length);
-      } else {
-        expect(result.summary).toContain(generatedSummary);
+      expect(result.summary).toContain("保留项目的蓝色按钮");
+      expect(result.summary.length).toBeLessThan(generatedSummary.length);
+      if (mode === "manual") {
+        expect(estimateCompactedRequestTokens(session.messages, budget)).toBeLessThanOrEqual(
+          model.contextWindow - budget.reserveTokens,
+        );
       }
     },
   );
