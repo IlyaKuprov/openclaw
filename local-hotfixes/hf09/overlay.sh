@@ -197,6 +197,7 @@ copy_package() {
 for p in @a2ui/lit @a2ui/web_core; do
   if [ -d "$NM/$p" ] && same_package_version "$STAGE/node_modules/$p" "$NM/$p" &&
      [ -d "$NM/$p/node_modules/zod" ] &&
+     ! package_incomplete "$STAGE/node_modules/zod" "$NM/$p/node_modules/zod" &&
      ! compatible_nested_zod "$STAGE/node_modules/$p" "$NM/$p/node_modules/zod"; then
     echo "HF-09 refuses incompatible nested zod under $p" >&2
     exit 1
