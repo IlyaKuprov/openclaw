@@ -42,7 +42,7 @@ function nestMarkdownHeadings(text: string): string {
 }
 
 export function extractMessageText(message: AgentMessage): string {
-  const content = (message as { content?: unknown }).content;
+  const content = "content" in message ? message.content : undefined;
   if (typeof content === "string") {
     return content.trim();
   }
@@ -50,7 +50,7 @@ export function extractMessageText(message: AgentMessage): string {
     ? content
         .flatMap((block) => {
           const text =
-            block && typeof block === "object" ? (block as { text?: unknown }).text : undefined;
+            block && typeof block === "object" && "text" in block ? block.text : undefined;
           return typeof text === "string" && text.trim() ? [text.trim()] : [];
         })
         .join("\n")
@@ -143,7 +143,7 @@ export function formatNonTextPlaceholder(content: unknown): string | null {
     if (!block || typeof block !== "object") {
       continue;
     }
-    const typeRaw = (block as { type?: unknown }).type;
+    const typeRaw = "type" in block ? block.type : undefined;
     const type = typeof typeRaw === "string" && typeRaw.trim().length > 0 ? typeRaw : "unknown";
     if (type === "text") {
       continue;
@@ -168,7 +168,7 @@ function formatContextMessage(message: AgentMessage, textOnly = false): string |
       // Verbatim recent turns carry what was said, not tool receipts.
       return null;
     }
-    const toolName = (message as { toolName?: unknown }).toolName;
+    const toolName = "toolName" in message ? message.toolName : undefined;
     const safeToolName = typeof toolName === "string" && toolName.trim() ? toolName : "tool";
     roleLabel = `Tool result (${safeToolName})`;
   } else {
@@ -176,7 +176,7 @@ function formatContextMessage(message: AgentMessage, textOnly = false): string |
   }
   const rendered = [
     extractMessageText(message),
-    textOnly ? null : formatNonTextPlaceholder((message as { content?: unknown }).content),
+    textOnly ? null : formatNonTextPlaceholder("content" in message ? message.content : undefined),
   ]
     .filter(Boolean)
     .join("\n");
