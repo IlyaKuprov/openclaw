@@ -2223,6 +2223,42 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(call?.reserveTokens).toBe(128_000);
   });
 
+  it("scales structured summary length to a small model's actual custom output budget", async () => {
+    mockSummarizeInStages.mockReset();
+    mockSummarizeInStages.mockResolvedValue(summaryResult("mock summary"));
+    const sessionManager = stubSessionManager();
+    const model = createAnthropicModelFixture({ maxTokens: 1_024 });
+    setCompactionSafeguardRuntime(sessionManager, { model, recentTurnsPreserve: 0 });
+
+    await createCompactionHandler()(
+      {
+        preparation: {
+          messagesToSummarize: [
+            { role: "user", content: "large history", timestamp: 1 } as AgentMessage,
+          ],
+          turnPrefixMessages: [],
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 2_000,
+          fileOps: { read: [], edited: [], written: [] },
+          settings: { reserveTokens: 4_000 },
+          isSplitTurn: false,
+        },
+        customInstructions: "",
+        signal: new AbortController().signal,
+      },
+      createCompactionContext({
+        sessionManager,
+        getApiKeyMock: vi.fn().mockResolvedValue("test-key"),
+      }),
+    );
+
+    const call = requireRecord(mockCallArg(mockSummarizeInStages));
+    expect(call?.reserveTokens).toBe(1_024);
+    const prompt = requireRecord(call?.summaryPrompt).instructions;
+    expect(prompt).toContain("Aim for up to 3276 characters");
+    expect(prompt).not.toContain("6000 to 10000 characters");
+  });
+
   it("preserves provider-prepared Copilot headers in built-in compaction summarization", async () => {
     mockSummarizeInStages.mockReset();
     mockSummarizeInStages.mockResolvedValue(summaryResult("mock summary"));

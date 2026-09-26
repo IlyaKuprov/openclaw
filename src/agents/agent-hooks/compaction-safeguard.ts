@@ -1011,7 +1011,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     const providerId = runtime?.provider;
     const turnPrefixMessages = baseTurnPrefixMessages;
     const recentTurnsPreserve = resolveRecentTurnsPreserve(runtime?.recentTurnsPreserve);
-    const structuredInstructions = buildCompactionStructureInstructions(
+    let structuredInstructions = buildCompactionStructureInstructions(
       customInstructions,
       summarizationInstructions,
       latestUnresolvedUserRequest ?? undefined,
@@ -1154,6 +1154,14 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     try {
       const modelContextWindow = resolveContextWindowTokens(model);
       const contextWindowTokens = runtime?.contextWindowTokens ?? modelContextWindow;
+      const reserveTokens = resolveSummaryReserveTokens(preparation.settings.reserveTokens, model);
+      // agent-core's custom summary generator caps output at 80% of the reserve.
+      structuredInstructions = buildCompactionStructureInstructions(
+        customInstructions,
+        summarizationInstructions,
+        latestUnresolvedUserRequest ?? undefined,
+        Math.floor(0.8 * reserveTokens),
+      );
       let messagesToSummarize = baseMessagesToSummarize;
       const headers = buildCompactionSummaryHeaders({
         model,
@@ -1167,7 +1175,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         apiKey: authResult.apiKey ?? "",
         headers,
         signal,
-        reserveTokens: resolveSummaryReserveTokens(preparation.settings.reserveTokens, model),
+        reserveTokens,
         contextWindow: contextWindowTokens,
         summarizationInstructions,
         thinkingLevel,
