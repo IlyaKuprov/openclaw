@@ -1388,9 +1388,14 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(JSON.stringify(messages)).toContain("orphaned measurement: 42 kHz");
     const note = messages.find(
       (message) =>
-        message.role === "user" && String(message.content).includes("Unpaired tool results"),
+        message.role === "user" &&
+        "content" in message &&
+        String(message.content).includes("Unpaired tool results"),
     );
-    expect(String(note?.content).length).toBeLessThan(4_200);
+    if (!note || !("content" in note)) {
+      throw new Error("expected unpaired result note");
+    }
+    expect(String(note.content).length).toBeLessThan(4_200);
     expect(messages.filter((message) => message.role === "toolResult")).toHaveLength(2);
     expect(
       messages
@@ -1896,7 +1901,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
   });
 
   it.each(["off", "custom"] as const)(
-    "rejects a misplaced source test result through the compaction handler with policy %s",
+    "restores a misplaced source test result through the compaction handler with policy %s",
     async (identifierPolicy) => {
       const sourceResult = "42 tests passed";
       const summary = buildStructuredFallbackSummary(sourceResult);
@@ -1918,13 +1923,13 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
       const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
 
-      expect(result).toEqual({ cancel: true });
+      expect(expectCompactionResult(result).summary).toMatch(
+        /## Results and evidence[\s\S]*42 tests passed[\s\S]*## Open TODOs/u,
+      );
       expect(mockAuditSummaryQuality).toHaveBeenCalledWith(
         expect.objectContaining({ identifierPolicy, identifiers: [sourceResult] }),
       );
-      expect(consumeCompactionSafeguardCancellation(sessionManager)?.reason).toBe(
-        "Compaction safeguard finalized summary failed quality checks.",
-      );
+      expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
     },
   );
 
@@ -3006,6 +3011,53 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const summary = expectCompactionResult(result).summary;
     expect(summary).toContain(evidence);
     expect(summary).not.toContain(SUMMARY_TRUNCATED_MARKER.trim());
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+  });
+
+  it("retains a late numeric result in Results when budgeting an oversized summary", async () => {
+    mockSummarizeInStages.mockReset();
+    const latestAsk = "Report validation of 42 tests passed.";
+    const generatedSummary = [
+      `## Decisions\n${"d".repeat(12_000)}`,
+      `## Results and evidence\nSource: artifacts/validation.log; earlier evidence retained.\n${"e".repeat(8_000)}\n42 tests passed`,
+      "## Open TODOs\nInspect the next run.",
+      "## Constraints/Rules\nKeep the validation evidence.",
+      `## Pending user asks\nLatest user request context: ${JSON.stringify(latestAsk)}`,
+      "## Exact identifiers\nNone captured.",
+    ].join("\n\n");
+    expect(
+      auditSummaryQuality({
+        summary: generatedSummary,
+        identifiers: ["42 tests passed"],
+        latestAsk,
+      }).ok,
+    ).toBe(true);
+    mockSummarizeInStages.mockResolvedValue(summaryResult(generatedSummary));
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 0,
+    });
+    const event = createCompactionEvent({ messageText: latestAsk, tokensBefore: 1_500 });
+    (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+      reserveTokens: 4_000,
+    };
+
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event,
+      apiKey: "***",
+      latestUnresolvedUserRequest: true,
+    });
+
+    const summary = expectCompactionResult(result).summary;
+    expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(summary).toContain("Source: artifacts/validation.log; earlier evidence retained.");
+    expect(summary).toMatch(/## Results and evidence[\s\S]*42 tests passed[\s\S]*## Open TODOs/u);
+    expectCanonicalSummaryHeadingsOnce(summary);
+    expect(mockSummarizeInStages).toHaveBeenCalledOnce();
     expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
 

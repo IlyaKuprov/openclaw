@@ -33,14 +33,15 @@ describe("compaction summary quality contract", () => {
       latestAsk: null,
     })?.render(16_000)?.text;
     expect(restored).toContain("## Exact identifiers\nNone captured.\n42 tests passed");
+    expect(restored).toContain("## Results and evidence\nNone captured.\n42 tests passed");
     expect(
       auditSummaryQuality({
         summary: restored ?? "",
         structuralSummary: restored ?? "",
         identifiers,
         latestAsk: null,
-      }).reasons,
-    ).toContain("missing_result_evidence:42 tests passed");
+      }).ok,
+    ).toBe(true);
     const repaired = summary.replace(
       "## Results and evidence\nNone captured.",
       "## Results and evidence\n42 tests passed; evidence: artifacts/run.log; next: inspect failures.",
@@ -54,6 +55,33 @@ describe("compaction summary quality contract", () => {
       }).ok,
     ).toBe(true);
   });
+
+  it.each(["off", "custom"] as const)(
+    "retains a late audited result under %s identifier policy when trimming",
+    (identifierPolicy) => {
+      const summary = buildStructuredFallbackSummary(undefined).replace(
+        "## Results and evidence\nNone captured.",
+        `## Results and evidence\n${"e".repeat(12_000)}\n42 tests passed`,
+      );
+      const rendered = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+        identifiers: ["42 tests passed"],
+        latestAsk: null,
+        identifierPolicy,
+      })?.render(8_000)?.text;
+      expect(rendered).toMatch(
+        /## Results and evidence[\s\S]*42 tests passed[\s\S]*## Open TODOs/u,
+      );
+      expect(
+        auditSummaryQuality({
+          summary: rendered ?? "",
+          structuralSummary: rendered ?? "",
+          identifiers: ["42 tests passed"],
+          identifierPolicy,
+          latestAsk: null,
+        }).ok,
+      ).toBe(true);
+    },
+  );
 
   it("extracts repository-relative paths and requires literal preservation", () => {
     const identifiers = extractOpaqueIdentifiers(
