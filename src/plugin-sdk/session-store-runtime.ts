@@ -150,6 +150,8 @@ type UpdateSessionStoreEntryParams = {
   storePath: string;
   sessionKey: string;
   update: SessionStoreEntryUpdate;
+  /** Synchronous final ownership check executed inside the commit transaction. */
+  assertCommitAllowed?: () => void;
   skipMaintenance?: boolean;
   takeCacheOwnership?: boolean;
   requireWriteSuccess?: boolean;
@@ -586,6 +588,7 @@ export async function updateSessionStoreEntry(
       return preserveGenerationPrivateFields(persistedEntry, projectPluginSessionEntryPatch(patch));
     },
     {
+      assertCommitAllowed: params.assertCommitAllowed,
       skipMaintenance: params.skipMaintenance,
       takeCacheOwnership: params.takeCacheOwnership,
       requireWriteSuccess: params.requireWriteSuccess,

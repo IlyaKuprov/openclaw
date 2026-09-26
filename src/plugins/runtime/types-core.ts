@@ -180,6 +180,8 @@ type RuntimeSessionStoreEntryUpdateParams = {
   update: (
     entry: RuntimeSessionEntry,
   ) => Promise<Partial<RuntimeSessionEntry> | null> | Partial<RuntimeSessionEntry> | null;
+  /** Synchronous final ownership check executed inside the commit transaction. */
+  assertCommitAllowed?: () => void;
   skipMaintenance?: boolean;
   takeCacheOwnership?: boolean;
   requireWriteSuccess?: boolean;
