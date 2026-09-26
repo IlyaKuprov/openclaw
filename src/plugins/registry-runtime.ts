@@ -476,6 +476,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                   ...params,
                   fallbackEntry: params.entry,
                   replaceEntry: true,
+                  assertCommitAllowed: assertRuntimeCurrent,
                   update: (_entry, context) => {
                     assertRuntimeCurrent();
                     const before = context.existingEntry;
