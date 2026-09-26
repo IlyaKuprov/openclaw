@@ -443,8 +443,25 @@ export function buildStructuredFallbackSummary(previousSummary: string | undefin
       LEGACY_SUMMARY_SECTIONS,
     );
     if (legacyContents) {
+      const resultIdentifiers = extractResultEvidenceAnchors(trimmedPreviousSummary);
+      const resultLines = uniqueStrings(
+        legacyContents.flatMap((content) =>
+          content.split(/\r?\n/u).flatMap((line) => {
+            const matching = resultIdentifiers.filter((identifier) =>
+              summaryIncludesIdentifier(line, identifier),
+            );
+            return matching.length > 0
+              ? [line.length <= MAX_AUDITED_IDENTIFIER_CHARS ? line.trim() : matching.join(", ")]
+              : [];
+          }),
+        ),
+      );
       return LEGACY_SUMMARY_SECTIONS.map((heading, index) => `${heading}\n${legacyContents[index]}`)
-        .toSpliced(RESULTS_SECTION_INDEX, 0, "## Results and evidence\nNone captured.")
+        .toSpliced(
+          RESULTS_SECTION_INDEX,
+          0,
+          `## Results and evidence\n${resultLines.join("\n") || "None captured."}`,
+        )
         .join("\n\n");
     }
   }
@@ -496,6 +513,11 @@ const MEASURED_VALUE_ANCHOR = new RegExp(`^${MEASURED_VALUE_SOURCE}$`, "u");
 
 function isResultEvidenceAnchor(identifier: string): boolean {
   return NUMERIC_RESULT_ANCHOR.test(identifier) || MEASURED_VALUE_ANCHOR.test(identifier);
+}
+
+/** Reuse the source-literal budget and unit rules for persisted result migration. */
+export function extractResultEvidenceAnchors(text: string): string[] {
+  return extractOpaqueIdentifiers(text).filter(isResultEvidenceAnchor);
 }
 
 function auditedIdentifierPriority(identifier: string): number {

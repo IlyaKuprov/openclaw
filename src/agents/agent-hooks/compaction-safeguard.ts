@@ -66,6 +66,7 @@ import {
   buildStructuredFallbackSummary,
   createSummaryQualityRetentionPlan,
   extractOpaqueIdentifiers,
+  extractResultEvidenceAnchors,
   nestRequiredSummaryHeadings,
   selectAuditedIdentifiers,
   wrapUntrustedInstructionBlock,
@@ -615,7 +616,7 @@ function repairSummaryMessages(
   previouslyDiscarded: AgentMessage[] = [],
 ): AgentMessage[] {
   const repaired = repairToolUseResultPairing(messages);
-  const receiptText = [...previouslyDiscarded, ...repaired.discarded]
+  const receipts = [...previouslyDiscarded, ...repaired.discarded]
     .filter(
       (message): message is Extract<AgentMessage, { role: "toolResult" }> =>
         message.role === "toolResult" && !message.isError,
@@ -628,9 +629,27 @@ function repairSummaryMessages(
       const name = typeof message.toolName === "string" ? message.toolName : "tool";
       return `${truncateUtf16Safe(name, 80)}: ${truncateUtf16Safe(text, 900)}`;
     })
-    .filter(Boolean)
-    .slice(0, 8)
-    .join("\n");
+    .filter(Boolean);
+  const omissionMarker = "[earlier tool results omitted]";
+  const retained: string[] = [];
+  // Select newest complete receipts before wrapping: both the count cap and
+  // the escaped-character cap can otherwise silently erase the newest result.
+  let remaining = MAX_UNPAIRED_RESULT_CONTEXT_CHARS - omissionMarker.length - 1;
+  for (const receipt of receipts.toReversed()) {
+    if (retained.length >= 8) {
+      break;
+    }
+    const cost =
+      receipt.replace(/</gu, "&lt;").replace(/>/gu, "&gt;").length + (retained.length > 0 ? 1 : 0);
+    if (cost <= remaining) {
+      retained.unshift(receipt);
+      remaining -= cost;
+    }
+  }
+  const receiptText = [
+    ...(retained.length < receipts.length ? [omissionMarker] : []),
+    ...retained,
+  ].join("\n");
   if (!receiptText) {
     return repaired.messages;
   }
@@ -1429,13 +1448,22 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       // incorporates context from pruned messages instead of losing it entirely.
       const effectivePreviousSummary = droppedSummary ?? previousSummary;
 
+      // A no-LLM migration must audit measured results from persisted history,
+      // not only from current messages (which may all be preserved verbatim).
+      const fallbackResults =
+        messagesToSummarize.length === 0 && effectivePreviousSummary
+          ? extractResultEvidenceAnchors(effectivePreviousSummary)
+          : [];
+
       let correctiveInstructions = "";
       const totalAttempts = qualityGuardEnabled ? qualityGuardMaxRetries + 1 : 1;
       const qualityRetentionFor = (auditSummary: string): SummaryQualityRetention | undefined =>
-        qualityGuardEnabled
+        qualityGuardEnabled || (messagesToSummarize.length === 0 && Boolean(fallbackResults.length))
           ? {
               auditSummary,
-              identifiers: identifierCandidates,
+              identifiers: qualityGuardEnabled
+                ? [...new Set([...identifierCandidates, ...fallbackResults])]
+                : fallbackResults,
               latestAsk: latestUserAsk,
               latestAskInRetainedTurn: splitUserAsk !== null,
               latestUnresolvedUserRequest: latestUnresolvedUserRequest ?? undefined,

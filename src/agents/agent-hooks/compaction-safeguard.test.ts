@@ -1335,6 +1335,66 @@ describe("compaction-safeguard recent-turn preservation", () => {
     },
   );
 
+  it.each([20, 850])(
+    "marks receipt-count overflow and keeps the newest of nine orphan receipts (%i chars each)",
+    async (receiptLength) => {
+      mockSummarizeInStages.mockReset().mockResolvedValue("receipts recorded");
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 1,
+      });
+      const receipts = Array.from({ length: 9 }, (_, index) =>
+        castAgentMessage({
+          role: "toolResult",
+          toolCallId: `before-window-${index}`,
+          toolName: "read",
+          content: [{ type: "text", text: `receipt-${index}: ${"x".repeat(receiptLength)}` }],
+          isError: false,
+          timestamp: index + 2,
+        }),
+      );
+      const event = {
+        preparation: {
+          messagesToSummarize: [
+            { role: "user", content: "Inspect receipts", timestamp: 1 },
+            ...receipts,
+            { role: "user", content: "Continue", timestamp: 12 },
+          ] as AgentMessage[],
+          turnPrefixMessages: [] as AgentMessage[],
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 500,
+          fileOps: { read: [], edited: [], written: [] },
+          settings: { reserveTokens: 4_000 },
+          isSplitTurn: false,
+        },
+        customInstructions: "",
+        signal: new AbortController().signal,
+      };
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+
+      expectCompactionResult(result);
+      const messages = requireArray(
+        requireRecord(mockCallArg(mockSummarizeInStages)).messages,
+      ) as AgentMessage[];
+      const receiptNote = messages.find(
+        (message) =>
+          message.role === "user" &&
+          "content" in message &&
+          typeof message.content === "string" &&
+          message.content.includes("Unpaired tool results"),
+      );
+      if (!receiptNote || !("content" in receiptNote) || typeof receiptNote.content !== "string") {
+        throw new Error("expected unpaired result note");
+      }
+      expect(receiptNote.content).toContain("receipt-8:");
+      expect(receiptNote.content).toContain("[earlier tool results omitted]");
+      expect(receiptNote.content.length).toBeLessThan(4_200);
+      expect(messages.filter((message) => message.role === "toolResult")).toHaveLength(0);
+    },
+  );
+
   it("keeps an orphan receipt beside a partial tool frame while synthesizing its missing result", async () => {
     mockSummarizeInStages.mockReset().mockResolvedValue("partial frame summary");
     const sessionManager = stubSessionManager();
@@ -4170,48 +4230,64 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(mockSummarizeInStages).not.toHaveBeenCalled();
   });
 
-  it("compacts a persisted five-section summary with no messages requiring an LLM", async () => {
-    mockSummarizeInStages.mockReset();
-    const previousSummary = [
-      "## Decisions\nKeep the measured result.",
-      "## Open TODOs\nInspect the peak next.",
-      "## Constraints/Rules\nPreserve units.",
-      "## Pending user asks\nReport deployment status.",
-      "## Exact identifiers\n/tmp/peak.log",
-    ].join("\n\n");
-    const sessionManager = stubSessionManager();
-    setCompactionSafeguardRuntime(sessionManager, {
-      model: createAnthropicModelFixture(),
-      recentTurnsPreserve: 12,
-      qualityGuardEnabled: true,
-      qualityGuardMaxRetries: 1,
-    });
-    const event = {
-      preparation: {
-        ...createCompactionEvent({ messageText: "Report deployment status.", tokensBefore: 1_500 })
-          .preparation,
-        previousSummary,
-        settings: { reserveTokens: 4_000 },
-        isSplitTurn: false,
-      },
-    };
+  it.each([
+    { summaryTokenBudget: 650, qualityGuardEnabled: true },
+    { summaryTokenBudget: 650, qualityGuardEnabled: false },
+    { summaryTokenBudget: 4_000, qualityGuardEnabled: true },
+  ])(
+    "compacts a persisted five-section result with no LLM under a $summaryTokenBudget-token budget (quality guard $qualityGuardEnabled)",
+    async ({ summaryTokenBudget, qualityGuardEnabled }) => {
+      mockSummarizeInStages.mockReset();
+      const previousSummary = [
+        `## Decisions\n${"An earlier decision. ".repeat(summaryTokenBudget === 650 ? 1_000 : 2)}\nMeasured linewidth 17.3 Hz at /tmp/peak.log.`,
+        "## Open TODOs\nInspect the peak next.",
+        "## Constraints/Rules\nPreserve units.",
+        "## Pending user asks\nReport deployment status.",
+        "## Exact identifiers\n/tmp/peak.log",
+      ].join("\n\n");
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 12,
+        qualityGuardEnabled,
+        qualityGuardMaxRetries: 1,
+      });
+      const event = {
+        preparation: {
+          ...createCompactionEvent({
+            messageText: "Report deployment status.",
+            tokensBefore: 1_500,
+          }).preparation,
+          previousSummary,
+          settings: { reserveTokens: 4_000 },
+          summaryTokenBudget,
+          isSplitTurn: false,
+        },
+      };
 
-    const { result } = await runCompactionScenario({
-      sessionManager,
-      event,
-      apiKey: "***",
-      latestUnresolvedUserRequest: true,
-    });
+      const { result } = await runCompactionScenario({
+        sessionManager,
+        event,
+        apiKey: "***",
+        latestUnresolvedUserRequest: true,
+      });
 
-    const summary = expectCompactionResult(result).summary;
-    expectCanonicalSummaryHeadingsOnce(summary);
-    expect(summary).toContain("Keep the measured result.");
-    expect(summary).toContain("Inspect the peak next.");
-    expect(summary).toContain("/tmp/peak.log");
-    expect(summary).toContain("## Results and evidence\nNone captured.");
-    expect(mockSummarizeInStages).not.toHaveBeenCalled();
-    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
-  });
+      const summary = expectCompactionResult(result).summary;
+      expectCanonicalSummaryHeadingsOnce(summary);
+      expect(summary.length).toBeLessThanOrEqual(summaryTokenBudget * 4);
+      expect(summary).toMatch(/## Results and evidence[\s\S]*17\.3 Hz[\s\S]*## Open TODOs/u);
+      if (summaryTokenBudget === 4_000) {
+        expect(summary).toContain("Measured linewidth 17.3 Hz at /tmp/peak.log.");
+        expect(summary).toContain("Inspect the peak next.");
+      } else {
+        expect(summary).toContain(SUMMARY_TRUNCATED_MARKER.trim());
+      }
+      expect(summary).toContain("/tmp/peak.log");
+      expect(summary).not.toContain("## Results and evidence\nNone captured.");
+      expect(mockSummarizeInStages).not.toHaveBeenCalled();
+      expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+    },
+  );
 
   it("ignores numeric tool-result noise in strict all-preserved audits", async () => {
     mockSummarizeInStages.mockReset();
