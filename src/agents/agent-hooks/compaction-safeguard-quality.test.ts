@@ -108,8 +108,18 @@ describe("compaction summary quality contract", () => {
       }).reasons,
     ).toContain("missing_identifiers:src/foo.ts,artifacts/run.log");
     const instructions = buildCompactionStructureInstructions();
-    expect(instructions).not.toContain("every artefact path");
+    expect(instructions).not.toContain("every artifact path");
     expect(instructions).not.toContain("every numerical result");
+  });
+
+  it("retains a labeled seven-character commit hash without accepting a longer near-match", () => {
+    const identifiers = extractOpaqueIdentifiers("commit abc1234; commit: 1a2b3c4");
+    expect(identifiers).toEqual(["ABC1234", "1A2B3C4"]);
+    const summary = buildStructuredFallbackSummary("commit abc12345 and 1a2b3c4");
+    expect(
+      auditSummaryQuality({ summary, structuralSummary: summary, identifiers, latestAsk: null })
+        .reasons,
+    ).toContain("missing_identifiers:ABC1234");
   });
 
   it("audits short PR, job, and message references without classifying ordinary counts", () => {
@@ -341,12 +351,12 @@ describe("compaction summary quality contract", () => {
     expect(budgeted?.text.length).toBeLessThanOrEqual(1000);
   });
 
-  it("does not demand literal identifiers or artefact paths when policy is off or custom", () => {
+  it("does not demand literal identifiers or artifact paths when policy is off or custom", () => {
     for (const identifierPolicy of ["off", "custom"] as const) {
       const instructions = buildCompactionStructureInstructions(undefined, { identifierPolicy });
       expect(instructions).toContain("## Results and evidence");
       expect(instructions).not.toContain("Write every PR number");
-      expect(instructions).not.toContain("every artefact path produced");
+      expect(instructions).not.toContain("every artifact path produced");
     }
   });
 });

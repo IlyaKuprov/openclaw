@@ -112,7 +112,7 @@ export function buildCompactionStructureInstructions(
     "In ## Results and evidence, record numerical results with units and evidence sources when available; the working hypothesis with evidence for and against it when present; and the next step when known.",
     ...(strictIdentifiers
       ? [
-          "Record important artefact paths produced and the file, log, or command behind each result.",
+          "Record important artifact paths produced and the file, log, or command behind each result.",
           "Write important PR numbers, commit hashes, job ids, message ids, and file paths in full; do not compress retained identifiers into ranges or counts.",
         ]
       : []),
@@ -473,7 +473,7 @@ function sanitizeExtractedIdentifier(value: string): string {
 }
 
 function isPureHexIdentifier(value: string): boolean {
-  return /^[A-Fa-f0-9]{8,}$/.test(value);
+  return /^[A-Fa-f0-9]{7,}$/.test(value);
 }
 
 function normalizeOpaqueIdentifier(value: string): string {
@@ -485,7 +485,7 @@ const NUMERIC_RESULT_ANCHOR =
 
 function summaryIncludesIdentifier(summary: string, identifier: string): boolean {
   if (isPureHexIdentifier(identifier)) {
-    return summary.toUpperCase().includes(identifier.toUpperCase());
+    return new RegExp(`(?<![A-Fa-f0-9])${identifier}(?![A-Fa-f0-9])`, "iu").test(summary);
   }
   if (
     /^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/iu.test(identifier) ||
@@ -511,6 +511,10 @@ export function extractOpaqueIdentifiers(text: string): string[] {
     ),
     (match) => ({ index: match.index, value: match[0] }),
   );
+  const labeledCommits = Array.from(
+    text.matchAll(/\bcommit(?:\s+(?:hash|sha))?(?:\s*[:#]\s*|\s+)([a-f0-9]{7,40})\b/giu),
+    (match) => ({ index: match.index, value: match[1] ?? "" }),
+  );
   return uniqueStrings(
     [
       ...Array.from(
@@ -520,6 +524,7 @@ export function extractOpaqueIdentifiers(text: string): string[] {
         (match) => ({ index: match.index, value: match[1] ?? match[2] ?? match[3] ?? "" }),
       ),
       ...pathsAndResults,
+      ...labeledCommits,
     ]
       .toSorted((left, right) => left.index - right.index)
       .map((match) => normalizeOpaqueIdentifier(sanitizeExtractedIdentifier(match.value)))
