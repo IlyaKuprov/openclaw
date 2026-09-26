@@ -795,8 +795,10 @@ function formatBoundedContextSection(params: {
   };
 }
 
-function buildPreservedTurnsSection(messages: AgentMessage[]): ContextSection {
-  return formatBoundedContextSection({
+function buildPreservedTurnsSection(
+  messages: AgentMessage[],
+): ContextSection & { needsSummarization: boolean } {
+  const section = formatBoundedContextSection({
     messages,
     heading: "\n\n## Recent turns preserved verbatim",
     maxChars: MAX_SPLIT_TURN_CONTEXT_CHARS,
@@ -804,6 +806,18 @@ function buildPreservedTurnsSection(messages: AgentMessage[]): ContextSection {
     truncatedLoss: "preserved-turn-head",
     textOnly: true,
   });
+  return {
+    ...section,
+    // Neither an evicted message nor the clipped tail of a single long turn is
+    // present in the verbatim suffix. Feed the full window to the summarizer.
+    needsSummarization:
+      Boolean(section.truncatedLoss) ||
+      messages.some(
+        (message) =>
+          (message.role === "user" || message.role === "assistant") &&
+          extractMessageText(message).length > MAX_RECENT_TURN_TEXT_CHARS,
+      ),
+  };
 }
 
 function buildSplitTurnContextSection(
@@ -1268,6 +1282,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const latestPreparedAsk = extractLatestUserAsk(messagesToSummarize);
       const requiredAskContext = formatRequiredAskContext(latestUserAsk ?? "");
       const includePreservedContext =
+        preservedTurnsSectionLocal.needsSummarization ||
         // Receipts omitted from the verbatim section must still reach the summarizer.
         preservedRecentMessages.some((message) => message.role === "toolResult") ||
         // Non-text user attachments also disappear from the text-only suffix.
