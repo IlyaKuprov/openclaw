@@ -1010,70 +1010,69 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       };
       const qualityGuardMaxRetries = resolveQualityGuardMaxRetries(runtime?.qualityGuardMaxRetries);
 
-      const maxHistoryShare = runtime?.maxHistoryShare ?? 0.5;
-
-      const tokensBefore =
-        typeof preparation.tokensBefore === "number" && Number.isFinite(preparation.tokensBefore)
-          ? preparation.tokensBefore
-          : undefined;
+      const tokensBefore = preparation.tokensBefore;
 
       let droppedSummary: string | undefined;
       let droppedResultEvidence: string[] = [];
+      let droppedIdentifierCandidates =
+        qualityGuardEnabled && identifierPolicy === "strict"
+          ? extractOpaqueIdentifiers(previousSummary ?? "", Number.POSITIVE_INFINITY)
+          : [];
 
-      if (tokensBefore !== undefined) {
-        const prunePlan = buildHistoryPrunePlan({
+      if (typeof tokensBefore === "number" && Number.isFinite(tokensBefore)) {
+        const { newContentTokens, maxHistoryTokens, pruned } = buildHistoryPrunePlan({
           messagesToSummarize,
           turnPrefixMessages,
           tokensBefore,
           contextWindowTokens,
-          maxHistoryShare,
+          maxHistoryShare: runtime?.maxHistoryShare ?? 0.5,
           parts: 2,
         });
-        const { newContentTokens, maxHistoryTokens, pruned } = prunePlan;
 
-        if (newContentTokens > maxHistoryTokens && pruned) {
-          if (pruned.droppedChunks > 0) {
-            const newContentRatio = (newContentTokens / contextWindowTokens) * 100;
-            log.warn(
-              `Compaction safeguard: new content uses ${newContentRatio.toFixed(
-                1,
-              )}% of context; dropped ${pruned.droppedChunks} older chunk(s) ` +
-                `(${pruned.droppedMessages} messages) to fit history budget.`,
-            );
-            messagesToSummarize = pruned.messages;
+        if (newContentTokens > maxHistoryTokens && pruned && pruned.droppedChunks > 0) {
+          const newContentRatio = ((newContentTokens / contextWindowTokens) * 100).toFixed(1);
+          log.warn(
+            `Compaction safeguard: new content uses ${newContentRatio}% of context; ` +
+              `dropped ${pruned.droppedChunks} older chunk(s) ` +
+              `(${pruned.droppedMessages} messages) to fit history budget.`,
+          );
+          messagesToSummarize = pruned.messages;
 
-            // Summarize dropped messages so context isn't lost
-            if (pruned.droppedMessagesList.length > 0) {
-              // Keep a bounded source audit independent of the lossy intermediate summary.
-              droppedResultEvidence = extractResultEvidenceAnchors(
-                pruned.droppedMessagesList.map(extractMessageText).join("\n"),
+          // Summarize dropped messages so context isn't lost
+          if (pruned.droppedMessagesList.length > 0) {
+            // Keep a bounded source audit independent of the lossy intermediate summary.
+            const droppedText = pruned.droppedMessagesList.map(extractMessageText).join("\n");
+            droppedResultEvidence = extractResultEvidenceAnchors(droppedText);
+            if (qualityGuardEnabled && identifierPolicy === "strict") {
+              droppedIdentifierCandidates = extractOpaqueIdentifiers(
+                `${previousSummary ?? ""}\n${droppedText}`,
+                Number.POSITIVE_INFINITY,
               );
-              try {
-                const droppedChunkRatio = await computeAdaptiveChunkRatioWithWorker({
-                  messages: pruned.droppedMessagesList,
-                  contextWindow: contextWindowTokens,
-                  signal,
-                });
-                const droppedMaxChunkTokens = Math.max(
-                  1,
-                  Math.floor(contextWindowTokens * droppedChunkRatio) -
-                    SUMMARIZATION_OVERHEAD_TOKENS,
-                );
-                droppedSummary = await summarizeViaLLM({
-                  ...llmSummaryParams,
-                  messages: repairSummaryMessages(pruned.droppedMessagesList),
-                  maxChunkTokens: droppedMaxChunkTokens,
-                  summaryPrompt: { kind: "custom", instructions: structuredInstructions },
-                  previousSummary,
-                });
-              } catch (droppedError) {
-                if (signal?.aborted) {
-                  signal.throwIfAborted();
-                }
-                throw new Error("Failed to summarize dropped messages.", {
-                  cause: droppedError,
-                });
+            }
+            try {
+              const droppedChunkRatio = await computeAdaptiveChunkRatioWithWorker({
+                messages: pruned.droppedMessagesList,
+                contextWindow: contextWindowTokens,
+                signal,
+              });
+              const droppedMaxChunkTokens = Math.max(
+                1,
+                Math.floor(contextWindowTokens * droppedChunkRatio) - SUMMARIZATION_OVERHEAD_TOKENS,
+              );
+              droppedSummary = await summarizeViaLLM({
+                ...llmSummaryParams,
+                messages: repairSummaryMessages(pruned.droppedMessagesList),
+                maxChunkTokens: droppedMaxChunkTokens,
+                summaryPrompt: { kind: "custom", instructions: structuredInstructions },
+                previousSummary,
+              });
+            } catch (droppedError) {
+              if (signal?.aborted) {
+                signal.throwIfAborted();
               }
+              throw new Error("Failed to summarize dropped messages.", {
+                cause: droppedError,
+              });
             }
           }
         }
@@ -1085,7 +1084,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         : null;
       const latestUserAsk = splitUserAsk ?? extractLatestUserAsk(messagesToSummarize);
       const identifierCandidates = extractOpaqueIdentifiers(
-        oracleMessages.map(extractMessageText).filter(Boolean).join("\n"),
+        droppedIdentifierCandidates.concat(oracleMessages.map(extractMessageText)).join("\n"),
         Number.POSITIVE_INFINITY,
       );
       const preparedPairing = repairToolUseResultPairing(messagesToSummarize);

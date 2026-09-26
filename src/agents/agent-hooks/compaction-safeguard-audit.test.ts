@@ -262,6 +262,86 @@ function expectCompactionResult(result: {
 }
 
 describe("compaction-safeguard quality audit and structured summaries", () => {
+  it.each(["strict", "off", "custom"] as const)(
+    "audits raw non-result identifiers discarded by history pruning under %s policy",
+    async (identifierPolicy) => {
+      const discardedIdentifiers = [
+        "PR #654321",
+        "A1B2C3D4",
+        "/tmp/review/prune.ts",
+        "https://example.test/pr/654321",
+      ];
+      const priorIdentifier = "PR #987654";
+      const urlNoise = Array.from(
+        { length: 45 },
+        (_, index) => `https://example.test/noise/${index}`,
+      );
+      mockSummarizeInStages.mockReset();
+      mockSummarizeInStages
+        .mockResolvedValueOnce("## Decisions\nOlder status reviewed; identifiers omitted.")
+        .mockResolvedValueOnce(
+          [
+            "## Decisions\nStatus reviewed.",
+            "## Results and evidence\nNone captured.",
+            "## Open TODOs\nReport status.",
+            "## Constraints/Rules\nPreserve evidence.",
+            "## Pending user asks\nReport status.",
+            "## Exact identifiers\nNone captured.",
+          ].join("\n\n"),
+        );
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture({ contextWindow: 2_000 }),
+        maxHistoryShare: 0.5,
+        recentTurnsPreserve: 0,
+        qualityGuardEnabled: true,
+        qualityGuardMaxRetries: 0,
+        identifierPolicy,
+      });
+      const event = {
+        preparation: {
+          messagesToSummarize: [
+            {
+              role: "user",
+              content: `${discardedIdentifiers.slice(0, 3).join(" ")} ${urlNoise.join(" ")} ${discardedIdentifiers[3]} ${"x".repeat(4_000)}`,
+              timestamp: 1,
+            },
+            { role: "user", content: "y".repeat(4_000), timestamp: 2 },
+            { role: "user", content: "Report status.", timestamp: 3 },
+          ] as AgentMessage[],
+          previousSummary: `## Decisions\nPrior work involved ${priorIdentifier}.`,
+          turnPrefixMessages: [] as AgentMessage[],
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 10_000,
+          fileOps: { read: [], edited: [], written: [] },
+          settings: { reserveTokens: 4_000 },
+          summaryTokenBudget: 650,
+          isSplitTurn: false,
+        },
+      };
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+      const summary = expectCompactionResult(result).summary;
+      expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(mockSummarizeInStages.mock.calls[0]?.[0].messages)).toContain(
+        discardedIdentifiers[0],
+      );
+      expect(JSON.stringify(mockSummarizeInStages.mock.calls[1]?.[0].messages)).not.toContain(
+        discardedIdentifiers[0],
+      );
+      const allIdentifiers = [...discardedIdentifiers, priorIdentifier];
+      for (const identifier of allIdentifiers) {
+        if (identifierPolicy === "strict") {
+          expect(summary).toContain(identifier);
+        } else {
+          expect(summary).not.toContain(identifier);
+        }
+      }
+      expect(summary.length).toBeLessThanOrEqual(650 * 4);
+      expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+    },
+  );
+
   it.each(["strict", "off"] as const)(
     "audits original result evidence across a lossy history-prune summary (%s)",
     async (identifierPolicy) => {
