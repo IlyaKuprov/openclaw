@@ -642,6 +642,51 @@ describe("compaction-safeguard quality audit and structured summaries", () => {
     },
   );
 
+  it("reuses the measured Results reservation through the compaction handler", async () => {
+    const sourceMessage = "Report 17.3 Hz, 512 MB, 23 °C, and 85%.";
+    const measurements = ["17.3 Hz", "512 MB", "23 °C", "85%"];
+    const summary = [
+      `## Decisions\n${"d".repeat(1200)}`,
+      `## Results and evidence\n${measurements.join("\n")}\n${"r".repeat(1200)}`,
+      `## Open TODOs\n${"t".repeat(1200)}`,
+      `## Constraints/Rules\n${"c".repeat(1200)}`,
+      `## Pending user asks\n${sourceMessage}`,
+      "## Exact identifiers\nNone.",
+    ].join("\n\n");
+    mockSummarizeInStages.mockReset();
+    mockSummarizeInStages.mockResolvedValue(summaryResult(summary));
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 0,
+      identifierPolicy: "off",
+    });
+    const event = createCompactionEvent({ messageText: sourceMessage, tokensBefore: 1_500 });
+    (
+      event.preparation as { summaryTokenBudget?: number; settings?: { reserveTokens: number } }
+    ).summaryTokenBudget = 250;
+    (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+      reserveTokens: 4_000,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+    const finalized = expectCompactionResult(result).summary;
+    expect(finalized.length).toBeLessThanOrEqual(1_000);
+    expect(finalized).toContain(`## Results and evidence\n${measurements.join("\n")}`);
+    expect(finalized).toContain("[Compaction summary truncated to fit budget]");
+    const retainedOptional = ["d", "t", "c"].reduce(
+      (total, char) => total + (finalized.match(new RegExp(`${char}{2,}`, "u"))?.[0].length ?? 0),
+      0,
+    );
+    expect(retainedOptional).toBeGreaterThanOrEqual(510);
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+    expect(mockAuditSummaryQuality).toHaveBeenCalledWith(
+      expect.objectContaining({ identifiers: measurements }),
+    );
+  });
+
   it("does not force strict identifier retention for custom policy", () => {
     const quality = auditSummaryQuality({
       summary: [

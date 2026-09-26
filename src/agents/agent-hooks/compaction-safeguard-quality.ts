@@ -385,9 +385,22 @@ export function createSummaryQualityRetentionPlan(
       const allocations = contents.map((content, index) =>
         PROTECTED_SECTION_INDEXES.has(index) ? Math.min(content.length, protectedCap) : 0,
       );
+      const retainedResults = truncateUtf16Safe(
+        contents[RESULTS_SECTION_INDEX] ?? "",
+        allocations[RESULTS_SECTION_INDEX] ?? 0,
+      );
+      // The minimum reserved the entire audited tail; a result already in the
+      // retained prefix is not appended again, so return its reservation.
+      const remainingResults = auditedResults.filter(
+        (identifier) => !summaryIncludesIdentifier(retainedResults, identifier),
+      );
+      const recoveredResultChars =
+        (protectedTails[RESULTS_SECTION_INDEX]?.length ?? 0) - remainingResults.join("\n").length;
       const optionalBudget = Math.max(
         0,
-        contentBudget - allocations.reduce((total, chars) => total + chars, 0),
+        contentBudget -
+          allocations.reduce((total, chars) => total + chars, 0) +
+          recoveredResultChars,
       );
       const optionalIndexes = contents.flatMap((_, index) =>
         PROTECTED_SECTION_INDEXES.has(index) ? [] : [index],
