@@ -18,6 +18,10 @@ import { loadPluginLookUpTable, type PluginLookUpTable } from "../plugins/plugin
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { getPluginModuleLoaderStats } from "../plugins/plugin-module-loader-cache.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import {
+  capturePluginLifecycleAuthority,
+  getPluginRecordRegistry,
+} from "../plugins/registry-lifecycle.js";
 import type { PluginRegistryParams } from "../plugins/registry-types.js";
 import {
   bindGatewayContextResolver,
@@ -96,10 +100,32 @@ export async function dispatchTrustedPluginGatewayMethod<T>(
       } See https://docs.openclaw.ai/plugins/sdk-runtime#api-runtime-gateway`,
     );
   }
+  const owner = scope?.pluginRuntimeOwner;
+  // Bind the exact host-issued record before entering the synthetic router. A same-ID
+  // replacement must never inherit the retired runtime's pending session writes.
+  const assertRuntimeCurrent = owner
+    ? () => {
+        const { record, registry, scopedRuntime } = owner;
+        const current = getPluginRecordRegistry(registry, record);
+        if (
+          record.id !== pluginId ||
+          current.plugins.find((entry) => entry.id === pluginId) !== record ||
+          !capturePluginLifecycleAuthority(current, record, {
+            scopedRuntime,
+            registration: true,
+            admittedRuntime: true,
+          })?.()
+        ) {
+          throw new Error(`Plugin "${pluginId}" runtime is no longer active.`);
+        }
+      }
+    : undefined;
+  assertRuntimeCurrent?.();
   const syntheticScopes = normalizeOperatorScopeList(options?.scopes);
   return await dispatchGatewayMethodInProcess<T>(method, params, {
     forceSyntheticClient: true,
     pluginRuntimeOwnerId: pluginId,
+    ...(assertRuntimeCurrent ? { sessionMutationCommitGuard: assertRuntimeCurrent } : {}),
     resolveGatewayContext,
     ...(!scope?.client ? { operatorRoleActor: { kind: "system" as const } } : {}),
     ...(syntheticScopes ? { syntheticScopes } : {}),

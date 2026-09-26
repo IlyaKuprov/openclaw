@@ -210,6 +210,8 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         );
       }
     };
+    const scopedRuntime = registryParams.activateGlobalSideEffects === false;
+    const runtimeOwner = { record, registry, scopedRuntime };
     const runtime = new Proxy(registryParams.runtime, {
       get(target, prop, receiver) {
         const runWithPluginScope = <T>(run: () => T, requireActive = true): T => {
@@ -221,6 +223,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               {
                 pluginId,
                 assertPluginRuntimeCurrent: assertRuntimeCurrent,
+                pluginRuntimeOwner: runtimeOwner,
                 pluginSource: record.source,
                 pluginOrigin: record.origin,
                 pluginTrustedOfficialInstall: record.trustedOfficialInstall,
