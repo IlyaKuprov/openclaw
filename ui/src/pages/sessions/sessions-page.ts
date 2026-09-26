@@ -85,6 +85,7 @@ import { prepareArchiveOutcome } from "./archive-outcome.ts";
 import { rememberSessionCustomGroup, sessionCategoryNames } from "./custom-groups.ts";
 import { buildSessionsListQuery } from "./list-query.ts";
 import { loadStoredGroupBy, saveStoredGroupBy } from "./page-state.ts";
+import { rosterFilterDefaults } from "./roster-filter-defaults.ts";
 import type { SessionsRouteData } from "./route.ts";
 import { renderSessions, type SessionsProps } from "./view.ts";
 
@@ -423,26 +424,15 @@ class SessionsPage extends OpenClawLightDomElement {
       return;
     }
     this.statusFilter = data.statusFilter;
+    const defaults = rosterFilterDefaults(data.statusFilter);
+    this.activeMinutes = data.expandedSessionKey ? "" : defaults.activeMinutes;
+    this.limit = data.expandedSessionKey ? String(SESSIONS_PAGE_DEFAULT_LIMIT) : defaults.limit;
+    this.includeGlobal = true;
+    this.includeUnknown = Boolean(data.expandedSessionKey);
     if (data.expandedSessionKey) {
-      this.activeMinutes = "";
-      this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
-      this.includeGlobal = true;
-      this.includeUnknown = true;
       this.searchQuery = "";
       this.page = 0;
       this.selectedKeys = new Set();
-    } else if (data.statusFilter === "active") {
-      // Compact roster defaults apply to the active view only; the archived and
-      // all-status views keep the documented page limit and no time window.
-      this.activeMinutes = String(SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES);
-      this.limit = String(SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT);
-      this.includeGlobal = true;
-      this.includeUnknown = false;
-    } else {
-      this.activeMinutes = "";
-      this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
-      this.includeGlobal = true;
-      this.includeUnknown = false;
     }
     this.expandedSessionKey = data.expandedSessionKey;
     // Only route-driven expansion narrows the list query; interactive drawer
