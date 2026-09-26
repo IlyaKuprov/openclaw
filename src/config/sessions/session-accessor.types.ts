@@ -490,6 +490,8 @@ export type SessionTranscriptManualTrimPreflightResult =
     };
 
 export type SessionEntryUpdateOptions = {
+  /** Synchronous final ownership check executed inside the commit transaction. */
+  assertCommitAllowed?: () => void;
   /** Let this write satisfy a legacy updatedAt=0 pending reset without rotating lifecycle identity. */
   consumePendingReset?: boolean;
   /** Skip prune/cap/rotation maintenance for specialized internal updates. */

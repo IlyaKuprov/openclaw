@@ -615,6 +615,33 @@ describe("session-store-runtime compatibility surface", () => {
     });
   });
 
+  it("checks public store-update authority at the SQLite commit edge", async () => {
+    const sessionKey = "agent:main:store-update-guard";
+    await seedSessionEntry(sessionKey, {
+      sessionId: "session-guard",
+      updatedAt: 10,
+      label: "before",
+    });
+    let allowed = false;
+    const guard = vi.fn(() => {
+      if (!allowed) {
+        throw new Error("update denied at commit");
+      }
+    });
+    const update = () =>
+      updateSessionStoreEntry({
+        sessionKey,
+        storePath,
+        assertCommitAllowed: guard,
+        update: () => ({ label: "after" }),
+      });
+    await expect(update()).rejects.toThrow("update denied at commit");
+    expect(getSessionEntry({ sessionKey, storePath })?.label).toBe("before");
+    allowed = true;
+    await expect(update()).resolves.toMatchObject({ sessionId: "session-guard", label: "after" });
+    expect(guard).toHaveBeenCalledTimes(2);
+  });
+
   it("hides core recovery state and preserves it across public mutations", async () => {
     const sessionKey = "agent:main:recovery-owned";
     const mainRestartRecovery = {

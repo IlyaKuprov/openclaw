@@ -133,6 +133,7 @@ async function updateSessionStoreEntry(
     },
     params.update,
     {
+      assertCommitAllowed: params.assertCommitAllowed,
       skipMaintenance: params.skipMaintenance,
       takeCacheOwnership: params.takeCacheOwnership,
       requireWriteSuccess: params.requireWriteSuccess,
