@@ -3,6 +3,7 @@ import { CHARS_PER_TOKEN_ESTIMATE } from "@openclaw/normalization-core/cjk-chars
 import { localeLowercasePreservingWhitespace } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { MAX_COMPACTION_SUMMARY_CHARS } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
 import { extractKeywords, isQueryStopWordToken } from "../../memory-host-sdk/query.js";
 import type { CompactionSummarizationInstructions } from "../compaction.js";
 import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
@@ -35,6 +36,11 @@ const PROTECTED_SECTION_INDEXES = new Set([
   EXACT_IDENTIFIERS_SECTION_INDEX,
 ]);
 const MAX_PROTECTED_SECTION_CONTENT_SHARE = 0.25;
+// Source literals cannot consume the whole persisted artifact: leave the other
+// sections, pending ask and separately audited Results room to survive trimming.
+const MAX_AUDITED_IDENTIFIER_CHARS = Math.floor(
+  MAX_COMPACTION_SUMMARY_CHARS * MAX_PROTECTED_SECTION_CONTENT_SHARE,
+);
 const LATEST_USER_REQUEST_CONTEXT_LABEL = "Latest user request context:";
 const STRICT_EXACT_IDENTIFIERS_INSTRUCTION =
   "For ## Exact identifiers, preserve important literal values exactly as seen (IDs, URLs, file paths, ports, hashes, dates, times).";
@@ -526,7 +532,7 @@ export function extractOpaqueIdentifiers(text: string): string[] {
     text.matchAll(/\bcommit(?:\s+(?:hash|sha))?(?:\s*[:#]\s*|\s+)([a-f0-9]{7,40})\b/giu),
     (match) => ({ index: match.index, value: match[1] ?? "" }),
   );
-  return uniqueStrings(
+  const identifiers = uniqueStrings(
     [
       ...Array.from(
         text.matchAll(
@@ -553,6 +559,41 @@ export function extractOpaqueIdentifiers(text: string): string[] {
         (value) => value.length >= 4 || /^#\d+$/u.test(value) || MEASURED_VALUE_ANCHOR.test(value),
       ),
   ).slice(0, MAX_EXTRACTED_IDENTIFIERS);
+  if (
+    identifiers.reduce((chars, identifier) => chars + identifier.length + 1, 0) <=
+    MAX_AUDITED_IDENTIFIER_CHARS
+  ) {
+    return identifiers;
+  }
+  // Preserve short, actionable anchors and measured outcomes before expensive
+  // URLs; among equally important candidates prefer the most recent source.
+  const priority = (identifier: string) =>
+    isResultEvidenceAnchor(identifier)
+      ? 0
+      : /^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/iu.test(identifier) ||
+          isPureHexIdentifier(identifier)
+        ? 1
+        : identifier.startsWith("http://") || identifier.startsWith("https://")
+          ? 3
+          : 2;
+  const selected = new Set<number>();
+  let usedChars = 0;
+  for (const index of identifiers
+    .map((_, position) => position)
+    .toSorted(
+      (left, right) =>
+        priority(identifiers[left] ?? "") - priority(identifiers[right] ?? "") || right - left,
+    )) {
+    const identifier = identifiers[index] ?? "";
+    const cost = identifier.length + (selected.size > 0 ? 1 : 0);
+    if (usedChars + cost <= MAX_AUDITED_IDENTIFIER_CHARS) {
+      selected.add(index);
+      usedChars += cost;
+    }
+  }
+  // A single impossible literal is not a license to erase every audited fact:
+  // leave it required so the retention plan fails closed as before.
+  return selected.size === 0 ? identifiers : identifiers.filter((_, index) => selected.has(index));
 }
 
 function tokenizeAskOverlapText(text: string): string[] {

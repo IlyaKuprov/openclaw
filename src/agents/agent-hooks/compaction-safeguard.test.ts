@@ -3246,6 +3246,52 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
 
+  it("budgets forty individually fitting source URLs before finalizing the real compaction", async () => {
+    mockSummarizeInStages.mockReset();
+    const urls = Array.from(
+      { length: 40 },
+      (_, index) =>
+        `https://example.com/result-${index.toString().padStart(2, "0")}/${"a".repeat(370)}`,
+    );
+    const sourceChars = urls.reduce((total, url) => total + url.length + 1, 0);
+    expect(sourceChars).toBeGreaterThan(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(urls.every((url) => url.length <= 400)).toBe(true);
+    const generatedSummary = [
+      "## Decisions\nKeep deployment paused.",
+      "## Results and evidence\n42 tests passed; see the test log.",
+      "## Open TODOs\nInspect the rollout.",
+      "## Constraints/Rules\nDo not deploy until verified.",
+      "## Pending user asks\nReport deployment status.",
+      "## Exact identifiers\nNone captured.",
+    ].join("\n\n");
+    mockSummarizeInStages.mockResolvedValue(summaryResult(generatedSummary));
+    const sessionManager = createQualityGuardSessionManager();
+    const event = createCompactionEvent({
+      messageText: "Report deployment status.",
+      tokensBefore: 1_500,
+    });
+    event.preparation.messagesToSummarize.push({
+      role: "assistant",
+      content: [{ type: "text", text: urls.join("\n") }],
+      timestamp: Date.now(),
+    } as AgentMessage);
+    (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+      reserveTokens: 4_000,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+    const summary = expectCompactionResult(result).summary;
+    expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(mockAuditSummaryQuality.mock.calls.at(-1)?.[0].identifiers).toEqual(urls.slice(-9));
+    expect(summary).toContain("## Decisions\nKeep deployment paused.");
+    expect(summary).toContain("42 tests passed; see the test log.");
+    expect(summary).toContain("## Open TODOs\nInspect the rollout.");
+    expect(summary).toContain("## Pending user asks\nReport deployment status.");
+    expect(summary).toContain(urls.at(-1));
+    expect(summary).not.toContain(urls[0]);
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+  });
+
   it("fails closed when audit-required tail sections cannot fit the artifact cap", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "preserve the pending deployment status";

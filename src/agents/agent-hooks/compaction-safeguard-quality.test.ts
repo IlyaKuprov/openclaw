@@ -181,6 +181,29 @@ describe("compaction summary quality contract", () => {
     ).toContain("missing_identifiers:ABC1234");
   });
 
+  it("keeps twelve fitting URLs and selects recent actionable anchors under a shared budget", () => {
+    const urls = Array.from(
+      { length: 40 },
+      (_, index) =>
+        `https://example.com/result-${index.toString().padStart(2, "0")}/${"a".repeat(370)}`,
+    );
+    expect(extractOpaqueIdentifiers(urls.slice(0, 9).join("\n"))).toEqual(urls.slice(0, 9));
+    const shorter = urls.map((url) => url.slice(0, -80));
+    expect(extractOpaqueIdentifiers(shorter.slice(0, 12).join("\n"))).toEqual(shorter.slice(0, 12));
+    const bounded = extractOpaqueIdentifiers(
+      `${urls.slice(0, 36).join("\n")}\nPR #47\njob-123\n42 tests passed\nsrc/rollout.log`,
+    );
+    expect(bounded).toContain("PR #47");
+    expect(bounded).toContain("job-123");
+    expect(bounded).toContain("42 tests passed");
+    expect(bounded).toContain("src/rollout.log");
+    expect(bounded).toContain(urls[35]);
+    expect(bounded).not.toContain(urls[0]);
+    expect(bounded.reduce((total, value) => total + value.length + 1, 0)).toBeLessThanOrEqual(
+      4_000,
+    );
+  });
+
   it("audits short PR, job, and message references without classifying ordinary counts", () => {
     const identifiers = extractOpaqueIdentifiers(
       "PR #13, #14, job id 42, message id 7; job-8, msg-9. 13 files, 42 tests and 7 retries.",
