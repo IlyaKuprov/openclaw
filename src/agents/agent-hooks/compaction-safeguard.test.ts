@@ -1933,6 +1933,41 @@ describe("compaction-safeguard recent-turn preservation", () => {
     },
   );
 
+  it.each(["off", "custom"] as const)(
+    "restores a measured value with units to Results through the compaction handler under %s policy",
+    async (identifierPolicy) => {
+      const sourceResult = "17.3 Hz";
+      const sourceMessage = `Report the measured value: ${sourceResult}.`;
+      mockSummarizeInStages.mockReset();
+      mockSummarizeInStages.mockResolvedValue(
+        summaryResult(buildStructuredFallbackSummary(sourceMessage)),
+      );
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 0,
+        qualityGuardEnabled: true,
+        qualityGuardMaxRetries: 0,
+        identifierPolicy,
+      });
+      const event = createCompactionEvent({ messageText: sourceMessage, tokensBefore: 1_500 });
+      (
+        event.preparation as { settings?: { reserveTokens: number }; isSplitTurn?: boolean }
+      ).settings = { reserveTokens: 4_000 };
+      (event.preparation as { isSplitTurn?: boolean }).isSplitTurn = false;
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+
+      expect(expectCompactionResult(result).summary).toMatch(
+        /## Results and evidence[\s\S]*17\.3 Hz[\s\S]*## Open TODOs/u,
+      );
+      expect(mockAuditSummaryQuality).toHaveBeenCalledWith(
+        expect.objectContaining({ identifierPolicy, identifiers: [sourceResult] }),
+      );
+      expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+    },
+  );
+
   it("does not force strict identifier retention for custom policy", () => {
     const quality = auditSummaryQuality({
       summary: [

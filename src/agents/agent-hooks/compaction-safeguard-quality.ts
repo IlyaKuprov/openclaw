@@ -215,7 +215,7 @@ function isEmptyPendingAsk(value: string): boolean {
 /**
  * Plan truncation that keeps the audit facts and lets everything else shrink.
  * Only the headings, the bounded latest-ask context, and the audited source
- * identifiers (including numeric outcomes inside Results) are untrimmable.
+ * identifiers (including measured values inside Results) are untrimmable.
  * Model-written section text — including the "## Exact identifiers" list —
  * is optional content; protecting it verbatim let
  * a re-distilled identifier dump grow past the whole artifact budget while the
@@ -254,7 +254,7 @@ export function createSummaryQualityRetentionPlan(
   const enforceIdentifiers = (params.identifierPolicy ?? "strict") === "strict";
   const auditedIdentifiers = enforceIdentifiers ? params.identifiers : [];
   const auditedResults = params.identifiers.filter((identifier) =>
-    NUMERIC_RESULT_ANCHOR.test(identifier),
+    isResultEvidenceAnchor(identifier),
   );
   const marker = truncatedMarker.trim();
   const pendingAsk = contents[PENDING_ASK_SECTION_INDEX] ?? "";
@@ -482,6 +482,14 @@ function normalizeOpaqueIdentifier(value: string): string {
 
 const NUMERIC_RESULT_ANCHOR =
   /^\d+\s+(?:tests?|checks?|assertions?|cases?)\s+(?:passed|failed|succeeded)$/iu;
+// Only numerical values paired with recognizable measurement units are source
+// results; a decimal in prose or inside an ID is not evidence by itself.
+const MEASURED_VALUE_SOURCE = String.raw`(?<![A-Za-z0-9._/\\-])(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?[ \t]*(?:Hz|kHz|MHz|GHz|mT|T|G|ppm|ms|[µμu]s|ns|s|K)(?![A-Za-z0-9_-])`;
+const MEASURED_VALUE_ANCHOR = new RegExp(`^${MEASURED_VALUE_SOURCE}$`, "u");
+
+function isResultEvidenceAnchor(identifier: string): boolean {
+  return NUMERIC_RESULT_ANCHOR.test(identifier) || MEASURED_VALUE_ANCHOR.test(identifier);
+}
 
 function summaryIncludesIdentifier(summary: string, identifier: string): boolean {
   if (isPureHexIdentifier(identifier)) {
@@ -489,7 +497,7 @@ function summaryIncludesIdentifier(summary: string, identifier: string): boolean
   }
   if (
     /^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/iu.test(identifier) ||
-    NUMERIC_RESULT_ANCHOR.test(identifier)
+    isResultEvidenceAnchor(identifier)
   ) {
     const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     return new RegExp(`(?<![A-Za-z0-9_#])${literal}(?![A-Za-z0-9_-])`, "u").test(summary);
@@ -501,10 +509,13 @@ function summaryIncludesIdentifier(summary: string, identifier: string): boolean
   return summary.includes(identifier);
 }
 
-/** Extracts bounded literal anchors: IDs, paths, and explicit numeric test outcomes. */
+/** Extracts bounded literal anchors: IDs, paths, test outcomes, and measured values. */
 export function extractOpaqueIdentifiers(text: string): string[] {
   // Plain counts are not IDs; capture only integer test outcomes with a result verb.
-  // Decimal/scientific syntax is unambiguous numeric data, including unit suffixes.
+  const measuredValues = Array.from(
+    text.matchAll(new RegExp(MEASURED_VALUE_SOURCE, "gu")),
+    (match) => ({ index: match.index, value: match[0] }),
+  );
   const pathsAndResults = Array.from(
     text.matchAll(
       /(?<![A-Za-z0-9._/\\-])(?:\.\.\/|\.\/)*(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+(?![A-Za-z0-9._/-])|(?<![A-Za-z0-9_])\d+\s+(?:tests?|checks?|assertions?|cases?)\s+(?:passed|failed|succeeded)\b/giu,
@@ -525,10 +536,22 @@ export function extractOpaqueIdentifiers(text: string): string[] {
       ),
       ...pathsAndResults,
       ...labeledCommits,
+      ...measuredValues,
     ]
+      .filter(
+        (match) =>
+          !measuredValues.some(
+            (value) =>
+              match.value !== value.value &&
+              match.index >= value.index &&
+              match.index + match.value.length <= value.index + value.value.length,
+          ),
+      )
       .toSorted((left, right) => left.index - right.index)
       .map((match) => normalizeOpaqueIdentifier(sanitizeExtractedIdentifier(match.value)))
-      .filter((value) => value.length >= 4 || /^#\d+$/u.test(value)),
+      .filter(
+        (value) => value.length >= 4 || /^#\d+$/u.test(value) || MEASURED_VALUE_ANCHOR.test(value),
+      ),
   ).slice(0, MAX_EXTRACTED_IDENTIFIERS);
 }
 
@@ -626,7 +649,7 @@ export function auditSummaryQuality(params: {
   ];
   if (resultsSection !== undefined) {
     const missingResults = params.identifiers
-      .filter((identifier) => NUMERIC_RESULT_ANCHOR.test(identifier))
+      .filter((identifier) => isResultEvidenceAnchor(identifier))
       .filter((identifier) => !summaryIncludesIdentifier(resultsSection, identifier));
     if (missingResults.length > 0) {
       reasons.push(`missing_result_evidence:${missingResults.slice(0, 3).join(",")}`);

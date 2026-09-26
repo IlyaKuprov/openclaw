@@ -83,6 +83,65 @@ describe("compaction summary quality contract", () => {
     },
   );
 
+  it.each(["off", "custom"] as const)(
+    "anchors a measured value with its units in Results under %s policy",
+    (identifierPolicy) => {
+      const identifiers = extractOpaqueIdentifiers("Measured 17.3 Hz in the source spectrum.");
+      expect(identifiers).toEqual(["17.3 Hz"]);
+      expect(extractOpaqueIdentifiers("17.3 widgets; 17.3 Hz-extra")).toEqual([]);
+      expect(extractOpaqueIdentifiers("job-17.3 Hz")).not.toContain("17.3 Hz");
+      const summary = buildStructuredFallbackSummary("Source measurement: 17.3 Hz.");
+      expect(
+        auditSummaryQuality({
+          summary,
+          structuralSummary: summary,
+          identifiers,
+          latestAsk: null,
+          identifierPolicy,
+        }).reasons,
+      ).toContain("missing_result_evidence:17.3 Hz");
+      const wrongUnits = summary.replace(
+        "None captured.\n\n## Open TODOs",
+        "17.3 kHz\n\n## Open TODOs",
+      );
+      expect(
+        auditSummaryQuality({
+          summary: wrongUnits,
+          structuralSummary: wrongUnits,
+          identifiers,
+          latestAsk: null,
+          identifierPolicy,
+        }).reasons,
+      ).toContain("missing_result_evidence:17.3 Hz");
+      const rendered = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+        identifiers,
+        latestAsk: null,
+        identifierPolicy,
+      })?.render(500)?.text;
+      expect(rendered).toMatch(/## Results and evidence[\s\S]*17\.3 Hz[\s\S]*## Open TODOs/u);
+      expect(
+        auditSummaryQuality({
+          summary: rendered ?? "",
+          structuralSummary: rendered ?? "",
+          identifiers,
+          latestAsk: null,
+          identifierPolicy,
+        }).ok,
+      ).toBe(true);
+      const oversized = summary.replace(
+        "## Results and evidence\nNone captured.",
+        `## Results and evidence\n${"e".repeat(12_000)}\n17.3 Hz`,
+      );
+      const budgeted = createSummaryQualityRetentionPlan(oversized, "[truncated]", {
+        identifiers,
+        latestAsk: null,
+        identifierPolicy,
+      })?.render(2_000)?.text;
+      expect(budgeted?.length).toBeLessThanOrEqual(2_000);
+      expect(budgeted).toMatch(/## Results and evidence[\s\S]*17\.3 Hz[\s\S]*## Open TODOs/u);
+    },
+  );
+
   it("extracts repository-relative paths and requires literal preservation", () => {
     const identifiers = extractOpaqueIdentifiers(
       "Modified `src/foo.ts`; output artifacts/run.log; link https://example.com/a/b.",
