@@ -264,6 +264,7 @@ describe("compaction-safeguard quality audit and structured summaries", () => {
     ["corrected", "off"],
     ["corrected", "custom"],
     ["current-only", "strict"],
+    ["split-corrected", "strict"],
     ["long-corrected", "strict"],
     ["independent", "off"],
   ] as const)("keeps sourced %s results under %s policy", async (scenario, identifierPolicy) => {
@@ -271,14 +272,17 @@ describe("compaction-safeguard quality audit and structured summaries", () => {
       "Correction: the 17.3 Hz linewidth was invalidated; corrected linewidth is 18.1 Hz.";
     const independent = "Independent samples: A measured 17.3 Hz; B measured 18.1 Hz.";
     const isCorrection = scenario !== "independent";
+    const splitCorrection = "17.3 Hz was invalidated.\nCorrected value: 18.1 Hz.";
     const source =
       scenario === "long-corrected"
         ? `${correction} ${"x".repeat(50_000)}`
-        : isCorrection
-          ? correction
-          : independent;
+        : scenario === "split-corrected"
+          ? splitCorrection
+          : isCorrection
+            ? correction
+            : independent;
     const currentResult =
-      scenario === "current-only"
+      scenario === "current-only" || scenario === "split-corrected"
         ? "17.3 Hz; 18.1 Hz"
         : isCorrection
           ? "Corrected linewidth is 18.1 Hz."

@@ -161,6 +161,14 @@ describe("strict history literals", () => {
     }
   });
 
+  it("matches generic extracted IDs only at token boundaries", () => {
+    const identifier = "abc_123456";
+    expect(extractOpaqueIdentifiers(`job ${identifier}`)).toContain(identifier);
+    expect(summaryIncludesIdentifier(`Recorded ${identifier}.`, identifier)).toBe(true);
+    expect(summaryIncludesIdentifier(`Recorded x${identifier}.`, identifier)).toBe(false);
+    expect(summaryIncludesIdentifier(`Recorded ${identifier}7.`, identifier)).toBe(false);
+  });
+
   it("does not accept a longer URL as the exact source URL", () => {
     const [identifier] = extractOpaqueIdentifiers("See https://example.com/issues/42 for details.");
     expect(identifier).toBe("https://example.com/issues/42");

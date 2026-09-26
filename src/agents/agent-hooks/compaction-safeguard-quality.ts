@@ -10,6 +10,7 @@ import {
   AUDITED_IDENTIFIER_CONTENT_SHARE,
   MAX_AUDITED_IDENTIFIER_CHARS,
   extractResultEvidenceAnchors,
+  hasResultRelationshipStatus,
   isResultEvidenceAnchor,
   summaryIncludesIdentifier,
 } from "./compaction-safeguard-identifiers.js";
@@ -279,11 +280,7 @@ export function createSummaryQualityRetentionPlan(
   const resultLines = (results: string[]) => uniqueStrings(results.map(resultLine));
   const containsResult = (text: string, identifier: string) => {
     const context = params.resultContexts?.get(identifier);
-    const relatesResults =
-      context &&
-      /\b(?:correct(?:ed|ion)|invalidat(?:ed|ion)|supersed(?:ed|es)|retract(?:ed|ion))\b/iu.test(
-        context,
-      );
+    const relatesResults = context && hasResultRelationshipStatus(context);
     return relatesResults ? text.includes(context) : summaryIncludesIdentifier(text, identifier);
   };
   const marker = truncatedMarker.trim();
@@ -461,20 +458,33 @@ export function createSummaryQualityRetentionPlan(
   };
 }
 
+function quoteFencedSummaryHeadings(summary: string): string {
+  let fence: string | undefined;
+  return summary
+    .split(/\r?\n/u)
+    .map((line) => {
+      const marker = line.trim().match(/^(`{3,}|~{3,})/u)?.[0]?.[0];
+      if (marker) {
+        fence = fence === marker ? undefined : (fence ?? marker);
+        return line;
+      }
+      return fence && REQUIRED_SUMMARY_SECTIONS.some((heading) => line.trim() === heading)
+        ? `> ${line}`
+        : line;
+    })
+    .join("\n");
+}
+
 /** Return a structured fallback summary when model output is missing/invalid. */
 export function buildStructuredFallbackSummary(previousSummary: string | undefined): string {
   const trimmedPreviousSummary = previousSummary?.trim() ?? "";
-  const legacyContents = trimmedPreviousSummary
-    ? parseRequiredSummarySectionContents(trimmedPreviousSummary, LEGACY_SUMMARY_SECTIONS)
+  // Fenced source snippets can contain literal headings that are not section boundaries.
+  const canonicalSource = quoteFencedSummaryHeadings(trimmedPreviousSummary);
+  const legacyContents = canonicalSource
+    ? parseRequiredSummarySectionContents(canonicalSource, LEGACY_SUMMARY_SECTIONS)
     : null;
-  const hasCanonicalResultsBoundary =
-    /(?:^|\r?\n[ \t]*\r?\n)## Results and evidence(?:\r?\n|$)/u.test(trimmedPreviousSummary);
-  if (
-    trimmedPreviousSummary &&
-    parseRequiredSummarySectionContents(trimmedPreviousSummary) &&
-    (!legacyContents || hasCanonicalResultsBoundary)
-  ) {
-    return trimmedPreviousSummary;
+  if (canonicalSource && parseRequiredSummarySectionContents(canonicalSource)) {
+    return canonicalSource;
   }
   if (legacyContents) {
     const migratedContents = legacyContents.map((content) =>

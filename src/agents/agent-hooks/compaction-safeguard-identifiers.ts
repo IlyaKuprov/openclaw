@@ -56,6 +56,12 @@ export function extractResultEvidenceAnchors(text: string): string[] {
   return extractOpaqueIdentifiers(text).filter(isResultEvidenceAnchor);
 }
 
+export function hasResultRelationshipStatus(text: string): boolean {
+  return /\b(?:correct(?:ed|ion)|invalidat(?:ed|ion)|supersed(?:ed|es)|retract(?:ed|ion))\b/iu.test(
+    text,
+  );
+}
+
 /** Retain source context for multiple results together without guessing their relationship. */
 export function sourceResultEvidenceContexts(
   messages: readonly string[],
@@ -63,17 +69,24 @@ export function sourceResultEvidenceContexts(
   maxChars = MAX_AUDITED_IDENTIFIER_CHARS,
 ): ReadonlyMap<string, string> {
   const contexts = new Map<string, string>();
-  const sources = messages.flatMap((message) =>
-    message.split(/\r?\n/u).flatMap((line) => {
-      const source = line.trim();
-      const matching = results.filter((result) => summaryIncludesIdentifier(source, result));
-      if (matching.length === 0) {
-        return [];
+  const sources = messages.flatMap((message) => {
+    const lines = message.split(/\r?\n/u).map((line) => line.trim());
+    return lines.flatMap((line, index) => {
+      const next = lines[index + 1];
+      const spans = [line];
+      if (next && (hasResultRelationshipStatus(line) || hasResultRelationshipStatus(next))) {
+        spans.push(`${line}\n${next}`);
       }
-      const anchors = extractResultEvidenceAnchors(source);
-      return anchors.length > 1 ? [{ source, matching, anchors }] : [];
-    }),
-  );
+      return spans.flatMap((source) => {
+        const matching = results.filter((result) => summaryIncludesIdentifier(source, result));
+        if (matching.length === 0) {
+          return [];
+        }
+        const anchors = extractResultEvidenceAnchors(source);
+        return anchors.length > 1 ? [{ source, matching, anchors }] : [];
+      });
+    });
+  });
   const perSourceChars = Math.floor(Math.max(0, maxChars) / Math.max(1, sources.length));
   for (const { source, matching, anchors } of sources) {
     const complete = `Source message: ${source}`;
@@ -151,7 +164,8 @@ export function summaryIncludesIdentifier(summary: string, identifier: string): 
     const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     return new RegExp(`(?<![A-Za-z0-9_#./\\-])${literal}(?![A-Za-z0-9_./\\-])`, "u").test(summary);
   }
-  return summary.includes(identifier);
+  const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9_])${literal}(?![A-Za-z0-9_])`, "u").test(summary);
 }
 
 /** Extracts bounded literal anchors: IDs, paths, test outcomes, and measured values. */

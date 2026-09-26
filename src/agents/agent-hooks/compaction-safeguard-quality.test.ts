@@ -550,7 +550,7 @@ describe("compaction summary quality contract", () => {
 
   it("migrates a legacy summary with a quoted Results line without nesting its pending ask", () => {
     const previous = [
-      "## Decisions\nQuoted source text follows:\n## Results and evidence\n17.3 Hz was invalidated.",
+      "## Decisions\nQuoted source text follows:\n```text\n## Results and evidence\n17.3 Hz was invalidated.\n```",
       "## Open TODOs\nInspect the corrected spectrum.",
       "## Constraints/Rules\nKeep original evidence.",
       "## Pending user asks\nReport the corrected result.",
@@ -572,6 +572,18 @@ describe("compaction summary quality contract", () => {
         latestAsk: null,
       }).ok,
     ).toBe(true);
+  });
+
+  it("leaves a compact valid six-section summary untouched", () => {
+    const compact = [
+      "## Decisions\nProceed with the plan.",
+      "## Results and evidence\nQualitative source was accepted.",
+      "## Open TODOs\nVerify the result.",
+      "## Constraints/Rules\nRetain source meaning.",
+      "## Pending user asks\nReport status.",
+      "## Exact identifiers\nNone.",
+    ].join("\n");
+    expect(buildStructuredFallbackSummary(compact)).toBe(compact);
   });
 
   it("requires Results and evidence in order and reserves its content during budgeting", () => {
