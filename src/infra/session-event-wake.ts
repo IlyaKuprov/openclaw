@@ -43,7 +43,7 @@ type PendingWake = SessionEventWakeRequest & {
   readyAt: number;
   notBefore: number;
   settlements: Settlement[];
-  /** Original requests, retained so cancellation can remove just one coalesced owner. */
+  /** Cancellable owners plus at most one aggregate of other requests. */
   members?: PendingWake[];
 };
 type WakeGroup = {
@@ -55,8 +55,8 @@ type WakeGroup = {
 type ActiveWake = {
   generation: number;
   controller: AbortController;
-  /** Cancel only a pre-handler admission; a started turn retains its own completion. */
-  admitting?: { wake: PendingWake; controller: AbortController; started: boolean };
+  /** Cancel the admitted turn only when all its coalesced owners have left. */
+  admitting?: { wake: PendingWake; controller: AbortController };
 };
 type RequestOptions = Omit<SessionEventWakeRequest, "retainedWork"> & { coalesceMs?: number };
 
@@ -89,7 +89,7 @@ function priority(wake: SessionEventWakeRequest): number {
         : 2;
 }
 
-function merge(previous: PendingWake, next: PendingWake): PendingWake {
+function merge(previous: PendingWake, next: PendingWake, retainMembers = true): PendingWake {
   const preferred =
     (previous.intent === "task") !== (next.intent === "task")
       ? previous.intent === "task"
@@ -105,6 +105,22 @@ function merge(previous: PendingWake, next: PendingWake): PendingWake {
   );
   const bypass =
     (preferred.intent === "manual" || preferred.intent === "immediate") && !preferred.retainedWork;
+  const originals = retainMembers
+    ? [...(previous.members ?? [previous]), ...(next.members ?? [next])]
+    : [];
+  const cancellable = originals.filter((member) =>
+    member.settlements.some((entry) => entry.cancelQueuedOnAbort),
+  );
+  // Only cancellable owners need individual provenance. Fold settlement-free
+  // requests into one aggregate instead of copying every fire-and-forget wake.
+  const unowned = cancellable.length
+    ? originals
+        .filter((member) => !member.settlements.some((entry) => entry.cancelQueuedOnAbort))
+        .reduce<PendingWake | undefined>(
+          (current, member) => (current ? merge(current, member, false) : member),
+          undefined,
+        )
+    : undefined;
   return {
     ...preferred,
     // A scheduled reason must not discard the event's guard-retry semantics.
@@ -127,7 +143,7 @@ function merge(previous: PendingWake, next: PendingWake): PendingWake {
       : undefined,
     retainedWork: !bypass && (previous.retainedWork || next.retainedWork),
     settlements: [...previous.settlements, ...next.settlements].filter((entry) => entry.active),
-    members: [...(previous.members ?? [previous]), ...(next.members ?? [next])],
+    members: cancellable.length ? [...cancellable, ...(unowned ? [unowned] : [])] : undefined,
   };
 }
 
@@ -370,8 +386,9 @@ function createSessionEventWakeRuntime() {
         if (!wake) {
           continue;
         }
-        const admitting = { wake: queued, controller: new AbortController(), started: false };
+        const admitting = { wake: queued, controller: new AbortController() };
         owner.admitting = admitting;
+        const attemptSignal = AbortSignal.any([signal, admitting.controller.signal]);
         let result: SessionEventWakeResult;
         let onAbort: (() => void) | undefined;
         try {
@@ -384,21 +401,21 @@ function createSessionEventWakeRuntime() {
                 throw new Error("Heartbeat wake was cancelled before admission");
               }
               wake = retained;
-              admitting.started = true;
               for (const entry of wake.settlements) {
                 if (entry.active) {
                   entry.onAttemptStarted?.();
                 }
               }
+              attemptSignal.throwIfAborted();
               // Subscribe before calling the handler: it can synchronously replace its owner.
               const aborted = new Promise<never>((_resolve, reject) => {
                 onAbort = () =>
                   reject(
-                    signal.reason instanceof Error
-                      ? signal.reason
-                      : new Error("Heartbeat handler was replaced"),
+                    attemptSignal.reason instanceof Error
+                      ? attemptSignal.reason
+                      : new Error("Heartbeat wake was interrupted"),
                   );
-                signal.addEventListener("abort", onAbort, { once: true });
+                attemptSignal.addEventListener("abort", onAbort, { once: true });
               });
               const request: SessionEventWakeRequest = {
                 source: wake.source,
@@ -414,7 +431,9 @@ function createSessionEventWakeRuntime() {
                 ...(wake.retainedWork ? { retainedWork: true } : {}),
               };
               // A synchronous handler throw must not leave the abort promise unobserved.
-              const running = abortSignals.run(signal, async () => run(request, signal));
+              const running = abortSignals.run(attemptSignal, async () =>
+                run(request, attemptSignal),
+              );
               return Promise.race([running, aborted]);
             },
             "heartbeat:wake",
@@ -432,7 +451,7 @@ function createSessionEventWakeRuntime() {
             owner.admitting = undefined;
           }
           if (onAbort) {
-            signal.removeEventListener("abort", onAbort);
+            attemptSignal.removeEventListener("abort", onAbort);
           }
         }
         if (result.status === "skipped" && shouldRetain(wake, result)) {
@@ -534,7 +553,7 @@ function createSessionEventWakeRuntime() {
           if (wake) {
             wake.notBefore = 0;
             wake.retainedWork = false;
-            // Cancellation can later rebuild this projection from the original members.
+            // Cancellation can later rebuild this projection from its owners.
             for (const member of wake.members ?? []) {
               member.notBefore = 0;
               member.retainedWork = false;
@@ -643,7 +662,6 @@ function createSessionEventWakeRuntime() {
           const admitting = owner.admitting;
           if (
             admitting &&
-            !admitting.started &&
             admitting.wake.settlements.includes(settlement) &&
             !withoutCancelledMembers(admitting.wake)
           ) {
