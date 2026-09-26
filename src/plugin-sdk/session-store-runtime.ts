@@ -362,20 +362,28 @@ export async function updateSessionStore<T>(
       const result = await mutator(publicStore);
       const persist = !options.skipSaveWhenResult?.(result);
       if (persist) {
+        // Snapshot accessor-backed values once so the protected comparison and
+        // reconciliation cannot observe different owners from the same entry.
+        const materializedPublicStore = structuredClone(publicStore);
         for (const sessionKey of new Set([
           ...Object.keys(internalStore),
-          ...Object.keys(publicStore),
+          ...Object.keys(materializedPublicStore),
         ])) {
           if (!isInternalEffectsStoreKey(sessionKey)) {
             continue;
           }
-          if (!isDeepStrictEqual(protectedEntries.get(sessionKey), publicStore[sessionKey])) {
+          if (
+            !isDeepStrictEqual(
+              protectedEntries.get(sessionKey),
+              materializedPublicStore[sessionKey],
+            )
+          ) {
             assertPublicSessionWriteTarget(sessionKey);
           }
         }
         // The deprecated callback owns public row changes and deletions, but
         // core recovery coordination remains invisible and non-overwritable.
-        reconcilePluginSessionStore({ internalStore, publicStore });
+        reconcilePluginSessionStore({ internalStore, publicStore: materializedPublicStore });
       }
       return {
         persist,
