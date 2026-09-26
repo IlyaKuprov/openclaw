@@ -652,7 +652,8 @@ export function resolveSessionStoreBackupPaths(params: {
 export async function cleanupSessionLifecycleArtifacts(
   params: SessionLifecycleArtifactsCleanupParams,
 ): Promise<SessionLifecycleArtifactsCleanupResult> {
-  const prefix = params.sessionKeySegmentPrefix.trim().toLowerCase();
+  const sessionKeySegmentPrefix = params.sessionKeySegmentPrefix;
+  const prefix = sessionKeySegmentPrefix.trim().toLowerCase();
   if (!prefix) {
     return { archivedTranscriptArtifacts: 0, removedEntries: 0 };
   }
@@ -673,7 +674,7 @@ export async function cleanupSessionLifecycleArtifacts(
     ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
     archiveRemovedEntryTranscripts: params.archiveRemovedEntryTranscripts,
     ...(params.pluginOwnerId !== undefined ? { pluginOwnerId: params.pluginOwnerId } : {}),
-    sessionKeySegmentPrefix: params.sessionKeySegmentPrefix,
+    sessionKeySegmentPrefix,
     transcriptContentMarker: params.transcriptContentMarker,
     orphanTranscriptMinAgeMs: params.orphanTranscriptMinAgeMs,
     nowMs: params.nowMs,
