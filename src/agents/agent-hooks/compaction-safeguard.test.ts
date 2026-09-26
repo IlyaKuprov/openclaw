@@ -3276,7 +3276,11 @@ describe("compaction-safeguard recent-turn preservation", () => {
     );
     const sourceChars = urls.reduce((total, url) => total + url.length + 1, 0);
     const auditedAllotment = Math.floor(MAX_COMPACTION_SUMMARY_CHARS / 4);
-    const expectedUrlCount = Math.floor(auditedAllotment / (urls[0].length + 1));
+    const firstUrl = urls[0];
+    if (!firstUrl) {
+      throw new Error("URL fixture must contain at least one element");
+    }
+    const expectedUrlCount = Math.floor(auditedAllotment / (firstUrl.length + 1));
     expect(sourceChars).toBeGreaterThan(auditedAllotment);
     expect(urls.every((url) => url.length <= 400)).toBe(true);
     const generatedSummary = [
@@ -3363,12 +3367,12 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const summary = expectCompactionResult(result).summary;
     const selected = mockAuditSummaryQuality.mock.calls.at(-1)?.[0].identifiers ?? [];
     expect(selected).toContain("42 tests passed");
-    expect(selected).toContain(urls[38]);
+    expect(selected).toContain(urls.at(-1));
     expect(selected).not.toContain(urls[0]);
     expect(selected.filter((identifier) => urls.includes(identifier)).length).toBeGreaterThan(0);
     expect(summary).toMatch(/## Results and evidence\n[^#]*42 tests passed/u);
     expect(summary).toContain('Latest user request context: "Report deployment status."');
-    expect(summary).toContain(urls[38]);
+    expect(summary).toContain(urls.at(-1));
     expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
 

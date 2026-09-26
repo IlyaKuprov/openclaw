@@ -599,8 +599,7 @@ export function selectAuditedIdentifiers(
   availableBodyChars = Number.POSITIVE_INFINITY,
 ): string[] {
   if (
-    identifiers.reduce((chars, identifier) => chars + identifier.length + 1, 0) <=
-    maxAuditedChars
+    identifiers.reduce((chars, identifier) => chars + identifier.length + 1, 0) <= maxAuditedChars
   ) {
     return identifiers;
   }
