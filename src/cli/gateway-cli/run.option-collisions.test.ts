@@ -3,8 +3,10 @@ import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Command } from "commander";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { CONFIG_AUDIT_STORE_LABEL } from "../../config/io.audit.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.js";
 import { GATEWAY_SERVICE_RUNTIME_PID_ENV } from "../../daemon/constants.js";
@@ -54,6 +56,7 @@ const ensureDevGatewayConfig = vi.fn(async (_opts?: unknown) => {});
 type GatewayLoopStart = (params?: { startupStartedAt?: number }) => Promise<unknown>;
 type GatewayLoopParams = {
   start: GatewayLoopStart;
+  beginBoot?: (startedAtMs: number) => Promise<void>;
   completeBoot?: (completion: unknown) => void;
   ownsProcessLifecycle?: boolean;
   runtime?: unknown;
@@ -167,6 +170,7 @@ const serviceEnvSnapshot = captureEnv([
   "OPENCLAW_GATEWAY_TOKEN",
   "OPENCLAW_GATEWAY_PASSWORD",
 ]);
+const stateDirs = useAutoCleanupTempDirTracker(afterEach);
 
 vi.mock("../../config/config.js", () => ({
   getConfigPath: () => "/tmp/openclaw-test-missing-config.json",
@@ -1798,6 +1802,63 @@ describe("gateway run option collisions", () => {
           expect(process.env.REMOVED_KEY).toBeUndefined();
         },
       ),
+    );
+  });
+
+  it("uses the Gateway audit-deferred integrity path on its first boot database open", async () => {
+    const stateDir = stateDirs.make("gateway-first-state-open-");
+    await withEnvAsync(
+      { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_TEST_MINIMAL_GATEWAY: undefined },
+      async () => {
+        const { openOpenClawStateDatabase, closeOpenClawStateDatabaseForTest } =
+          await import("../../state/openclaw-state-db.js");
+        const lifecycle = await vi.importActual<
+          typeof import("../../infra/gateway-boot-lifecycle.js")
+        >("../../infra/gateway-boot-lifecycle.js");
+        // Seed a current-schema file so a migration's mandatory full check cannot
+        // mask the ordinary first boot open's policy.
+        openOpenClawStateDatabase({ env: process.env });
+        closeOpenClawStateDatabaseForTest();
+        const checks: string[] = [];
+        // oxlint-disable-next-line typescript/unbound-method -- Forward the native method with its database receiver.
+        const prepare = DatabaseSync.prototype.prepare;
+        const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+          this: DatabaseSync,
+          sql: string,
+        ) {
+          if (sql.startsWith("PRAGMA integrity_check") || sql.startsWith("PRAGMA quick_check")) {
+            checks.push(sql);
+          }
+          return prepare.call(this, sql);
+        });
+        bootLifecycle.inspect
+          .mockImplementationOnce((env, nowMs) =>
+            lifecycle.inspectGatewayCrashLoopBreaker(env, nowMs),
+          )
+          .mockImplementationOnce((env, nowMs) =>
+            lifecycle.inspectGatewayCrashLoopBreaker(env, nowMs),
+          );
+        runGatewayLoop.mockImplementationOnce(async ({ beginBoot }) => {
+          await beginBoot?.(Date.now());
+          closeOpenClawStateDatabaseForTest();
+          await beginBoot?.(Date.now() + 1);
+        });
+        try {
+          await runGatewayCli(["gateway", "run", "--allow-unconfigured"]);
+          expect(checks).not.toContain("PRAGMA integrity_check;");
+          expect(checks.filter((sql) => sql === "PRAGMA quick_check;")).toHaveLength(2);
+          expect(checks.some((sql) => sql.includes("audit_events"))).toBe(false);
+          // The CLI releases a verifier even if the loop exits without a server
+          // close handle. Later direct-local work must recover its full proof.
+          closeOpenClawStateDatabaseForTest();
+          checks.length = 0;
+          openOpenClawStateDatabase({ env: process.env });
+          expect(checks).toContain("PRAGMA integrity_check;");
+        } finally {
+          spy.mockRestore();
+          closeOpenClawStateDatabaseForTest();
+        }
+      },
     );
   });
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { closePreparedModelRuntimeSnapshots } from "../agents/prepared-model-runtime.lifecycle.js";
 import { isNixMode, resolveIsConfigReadOnly } from "../config/paths.js";
+import { isVitestRuntimeEnv } from "../infra/env.js";
 import { clearGatewayAgentCliShim } from "../infra/openclaw-cli-shim.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
@@ -16,6 +17,7 @@ import { createPluginRegistryOwner } from "../plugins/runtime.js";
 import { clearSecretsRuntimeSnapshotState } from "../secrets/runtime-state.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { getAgentDatabaseStartupAdmission } from "../state/agent-database-startup.js";
+import type { startOpenClawDatabaseIntegrityVerifier } from "../state/openclaw-database-verify.js";
 import { startGatewayCoreRuntime } from "./server-core-runtime.js";
 import { prepareGatewayKernelRequestRuntime } from "./server-kernel-request-runtime.js";
 import { prepareGatewayLifecycle } from "./server-lifecycle.js";
@@ -184,7 +186,22 @@ async function createGatewayKernelWithSdkHost(
   let kernelState: Awaited<ReturnType<typeof prepareGatewayKernelState>> | undefined;
   let closeStartupTrace: (() => void) | undefined;
   let startupError: unknown;
+  let databaseIntegrityVerifier:
+    | ReturnType<typeof startOpenClawDatabaseIntegrityVerifier>
+    | undefined;
   try {
+    // Direct embedders have no CLI beginBoot. Register before bootstrap or its
+    // shared-state preflight opens the database; CLI boots transfer their verifier.
+    databaseIntegrityVerifier = opts.databaseIntegrityVerifier;
+    if (
+      !databaseIntegrityVerifier &&
+      !opts.updateCanary &&
+      !(isVitestRuntimeEnv() && process.env.OPENCLAW_TEST_MINIMAL_GATEWAY === "1")
+    ) {
+      const { startOpenClawDatabaseIntegrityVerifier } =
+        await import("../state/openclaw-database-verify.js");
+      databaseIntegrityVerifier = startOpenClawDatabaseIntegrityVerifier({ env: process.env });
+    }
     const bootstrap = await pluginMetadata.runBootstrap(() =>
       prepareGatewayServerBootstrap({
         port,
@@ -241,6 +258,9 @@ async function createGatewayKernelWithSdkHost(
       }),
     );
     lifecycleRuntime = preparedLifecycleRuntime;
+    if (databaseIntegrityVerifier) {
+      preparedLifecycleRuntime.registerGatewayLifetimeSidecars(databaseIntegrityVerifier);
+    }
     const databaseStartupAdmission = getAgentDatabaseStartupAdmission();
     if (databaseStartupAdmission) {
       preparedLifecycleRuntime.registerGatewayLifetimeSidecars(databaseStartupAdmission.adopt());
@@ -292,6 +312,11 @@ async function createGatewayKernelWithSdkHost(
       kernelState?.mentionInbox.dispose();
       await sdkResourceHost.drainWork();
       const cleanupErrors: unknown[] = [];
+      try {
+        await databaseIntegrityVerifier?.stop();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
       const releaseMetadata = async (
         retireRegistry?: Parameters<typeof pluginMetadata.close>[1],
       ) => {
