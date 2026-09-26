@@ -282,9 +282,17 @@ export function createPluginSessionOwnership(
     sessionIds?: unknown[];
     sessionKeys?: unknown[];
     storePath?: unknown;
+    requireExactInternalRunTarget?: boolean;
   }): void => {
     const agentId = normalizeOptionalString(params.agentId);
     const storePath = normalizeOptionalString(params.storePath);
+    const requireExactInternalRunTarget = (sessionKey: string) => {
+      if (params.requireExactInternalRunTarget && isInternalEffectsStoreKey(sessionKey)) {
+        throw new Error(
+          `Plugin "${pluginId}" may execute a persisted internal session only with its exact session target identity.`,
+        );
+      }
+    };
     const sessionKeys = new Set<string>();
     for (const value of params.sessionKeys ?? []) {
       const sessionKey = normalizeOptionalString(value);
@@ -326,6 +334,7 @@ export function createPluginSessionOwnership(
     for (const { sessionKey, entry } of entries) {
       if (sessionIds.has(entry.sessionId)) {
         assertSessionEntryOwned({ action: params.action, entry, sessionKey });
+        requireExactInternalRunTarget(sessionKey);
       }
     }
     const lookupAgentId =
@@ -347,6 +356,7 @@ export function createPluginSessionOwnership(
             : `Plugin "${pluginId}" cannot ${params.action} ownerless internal session "${window.sessionKey}".`,
         );
       }
+      requireExactInternalRunTarget(window.sessionKey);
       assertStoredSessionEntryOwned({
         action: params.action,
         agentId: lookupAgentId,
@@ -363,6 +373,7 @@ export function createPluginSessionOwnership(
             entry: match.entry,
             sessionKey: match.sessionKey,
           });
+          requireExactInternalRunTarget(match.sessionKey);
         }
         const matchedSessionIds = new Set(
           sessionKeyMatches
@@ -377,6 +388,7 @@ export function createPluginSessionOwnership(
               entry: match.entry,
               sessionKey: match.sessionKey,
             });
+            requireExactInternalRunTarget(match.sessionKey);
           }
         }
         continue;
@@ -424,6 +436,7 @@ export function createPluginSessionOwnership(
           entry: match.entry,
           sessionKey: match.sessionKey,
         });
+        requireExactInternalRunTarget(match.sessionKey);
       }
     }
   };
@@ -543,6 +556,7 @@ export function createPluginSessionOwnership(
       sessionIds: [target?.sessionId ?? params.sessionId],
       sessionKeys: [target?.sessionKey ?? params.sessionKey],
       storePath: ownershipStorePath,
+      requireExactInternalRunTarget: !target,
     });
     // Reuse the authorized snapshot, but never manufacture a native pin or replace
     // a turn-local request (including auto). Detached and raw-model runs own their selection.
