@@ -1462,13 +1462,13 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       // Feed dropped-messages summary as previousSummary so the main summarization
       // incorporates context from pruned messages instead of losing it entirely.
       const effectivePreviousSummary = droppedSummary ?? previousSummary;
-
-      // A no-LLM migration must audit measured results from persisted history,
-      // not only from current messages (which may all be preserved verbatim).
-      const fallbackResults =
-        messagesToSummarize.length === 0 && effectivePreviousSummary
-          ? extractResultEvidenceAnchors(effectivePreviousSummary)
-          : [];
+      // Re-distilled history is source evidence even when current messages still
+      // reach the model; the new summary can otherwise silently drop its results.
+      const persistedResults = effectivePreviousSummary
+        ? extractResultEvidenceAnchors(effectivePreviousSummary)
+        : [];
+      // Keep the no-LLM legacy migration when the quality guard is disabled.
+      const fallbackResults = messagesToSummarize.length === 0 ? persistedResults : [];
 
       let correctiveInstructions = "";
       const totalAttempts = qualityGuardEnabled ? qualityGuardMaxRetries + 1 : 1;
@@ -1477,7 +1477,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           ? {
               auditSummary,
               identifiers: qualityGuardEnabled
-                ? [...new Set([...identifierCandidates, ...fallbackResults])]
+                ? [...new Set([...identifierCandidates, ...persistedResults])]
                 : fallbackResults,
               latestAsk: latestUserAsk,
               latestAskInRetainedTurn: splitUserAsk !== null,
