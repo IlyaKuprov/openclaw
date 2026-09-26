@@ -3318,6 +3318,91 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
 
+  it("selects audited literals from the actual small compaction budget", async () => {
+    mockSummarizeInStages.mockReset();
+    const urls = Array.from(
+      { length: 40 },
+      (_, index) =>
+        `https://example.com/result-${index.toString().padStart(2, "0")}/${"a".repeat(370)}`,
+    );
+    mockSummarizeInStages.mockResolvedValue(
+      summaryResult(
+        [
+          "## Decisions\nKeep deployment paused.",
+          "## Results and evidence\nNone captured.",
+          "## Open TODOs\nInspect the rollout.",
+          "## Constraints/Rules\nDo not deploy until verified.",
+          "## Pending user asks\nReport deployment status.",
+          "## Exact identifiers\nNone captured.",
+        ].join("\n\n"),
+      ),
+    );
+    const sessionManager = createQualityGuardSessionManager();
+    const event = createCompactionEvent({
+      messageText: "Report deployment status.",
+      tokensBefore: 1_500,
+    });
+    event.preparation.messagesToSummarize.push({
+      role: "assistant",
+      content: [{ type: "text", text: `42 tests passed\n${urls.join("\n")}` }],
+      timestamp: Date.now(),
+    } as AgentMessage);
+    (event.preparation as { summaryTokenBudget?: number }).summaryTokenBudget = 650;
+    (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+      reserveTokens: 4_000,
+    };
+
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event,
+      apiKey: "***",
+      latestUnresolvedUserRequest: true,
+    });
+    const summary = expectCompactionResult(result).summary;
+    const selected = mockAuditSummaryQuality.mock.calls.at(-1)?.[0].identifiers ?? [];
+    expect(selected).toContain("42 tests passed");
+    expect(selected).toContain(urls[38]);
+    expect(selected).not.toContain(urls[0]);
+    expect(selected.filter((identifier) => urls.includes(identifier)).length).toBeGreaterThan(0);
+    expect(summary).toMatch(/## Results and evidence\n[^#]*42 tests passed/u);
+    expect(summary).toContain('Latest user request context: "Report deployment status."');
+    expect(summary).toContain(urls[38]);
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+  });
+
+  it("fails closed on a single impossible literal even when a short ID fits", async () => {
+    mockSummarizeInStages.mockReset();
+    mockSummarizeInStages.mockResolvedValue(
+      summaryResult(buildStructuredFallbackSummary(undefined)),
+    );
+    const impossible = `https://example.com/${"x".repeat(3_000)}`;
+    const sessionManager = createQualityGuardSessionManager();
+    const event = createCompactionEvent({
+      messageText: "Report deployment status.",
+      tokensBefore: 1_500,
+    });
+    event.preparation.messagesToSummarize.push({
+      role: "assistant",
+      content: [{ type: "text", text: `PR #47\n${impossible}` }],
+      timestamp: Date.now(),
+    } as AgentMessage);
+    (event.preparation as { summaryTokenBudget?: number }).summaryTokenBudget = 650;
+    (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+      reserveTokens: 4_000,
+    };
+
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event,
+      apiKey: "***",
+      latestUnresolvedUserRequest: true,
+    });
+    expect(result).toEqual({ cancel: true });
+    expect(consumeCompactionSafeguardCancellation(sessionManager)?.reason).toBe(
+      "Compaction safeguard required facts exceed the finalized summary budget.",
+    );
+  });
+
   it("fails closed when audit-required tail sections cannot fit the artifact cap", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "preserve the pending deployment status";

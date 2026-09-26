@@ -41,6 +41,7 @@ const MAX_PROTECTED_SECTION_CONTENT_SHARE = 0.25;
 const MAX_AUDITED_IDENTIFIER_CHARS = Math.floor(
   MAX_COMPACTION_SUMMARY_CHARS * MAX_PROTECTED_SECTION_CONTENT_SHARE,
 );
+export const AUDITED_IDENTIFIER_CONTENT_SHARE = MAX_PROTECTED_SECTION_CONTENT_SHARE;
 const LATEST_USER_REQUEST_CONTEXT_LABEL = "Latest user request context:";
 const STRICT_EXACT_IDENTIFIERS_INSTRUCTION =
   "For ## Exact identifiers, preserve important literal values exactly as seen (IDs, URLs, file paths, ports, hashes, dates, times).";
@@ -497,6 +498,17 @@ function isResultEvidenceAnchor(identifier: string): boolean {
   return NUMERIC_RESULT_ANCHOR.test(identifier) || MEASURED_VALUE_ANCHOR.test(identifier);
 }
 
+function auditedIdentifierPriority(identifier: string): number {
+  return isResultEvidenceAnchor(identifier)
+    ? 0
+    : /^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/iu.test(identifier) ||
+        isPureHexIdentifier(identifier)
+      ? 1
+      : identifier.startsWith("http://") || identifier.startsWith("https://")
+        ? 3
+        : 2;
+}
+
 function summaryIncludesIdentifier(summary: string, identifier: string): boolean {
   if (isPureHexIdentifier(identifier)) {
     return new RegExp(`(?<![A-Fa-f0-9])${identifier}(?![A-Fa-f0-9])`, "iu").test(summary);
@@ -516,7 +528,10 @@ function summaryIncludesIdentifier(summary: string, identifier: string): boolean
 }
 
 /** Extracts bounded literal anchors: IDs, paths, test outcomes, and measured values. */
-export function extractOpaqueIdentifiers(text: string): string[] {
+export function extractOpaqueIdentifiers(
+  text: string,
+  maxAuditedChars = MAX_AUDITED_IDENTIFIER_CHARS,
+): string[] {
   // Plain counts are not IDs; capture only integer test outcomes with a result verb.
   const measuredValues = Array.from(
     text.matchAll(new RegExp(MEASURED_VALUE_SOURCE, "gu")),
@@ -561,52 +576,70 @@ export function extractOpaqueIdentifiers(text: string): string[] {
   );
   // Preserve short, actionable anchors and measured outcomes before expensive
   // URLs; prioritize before either limit so late results survive an early URL flood.
-  const priority = (identifier: string) =>
-    isResultEvidenceAnchor(identifier)
-      ? 0
-      : /^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/iu.test(identifier) ||
-          isPureHexIdentifier(identifier)
-        ? 1
-        : identifier.startsWith("http://") || identifier.startsWith("https://")
-          ? 3
-          : 2;
   if (identifiers.length > MAX_EXTRACTED_IDENTIFIERS) {
     const retainedPositions = new Set(
       identifiers
         .map((_, position) => position)
         .toSorted((left, right) => {
-          const leftPriority = priority(identifiers[left] ?? "");
-          const rightPriority = priority(identifiers[right] ?? "");
+          const leftPriority = auditedIdentifierPriority(identifiers[left] ?? "");
+          const rightPriority = auditedIdentifierPriority(identifiers[right] ?? "");
           return leftPriority - rightPriority || (leftPriority === 3 ? right - left : left - right);
         })
         .slice(0, MAX_EXTRACTED_IDENTIFIERS),
     );
     identifiers = identifiers.filter((_, position) => retainedPositions.has(position));
   }
+  return selectAuditedIdentifiers(identifiers, maxAuditedChars);
+}
+
+/** Select source facts against the actual body slot left by the compaction fit. */
+export function selectAuditedIdentifiers(
+  identifiers: string[],
+  maxAuditedChars: number,
+  availableBodyChars = Number.POSITIVE_INFINITY,
+): string[] {
   if (
     identifiers.reduce((chars, identifier) => chars + identifier.length + 1, 0) <=
-    MAX_AUDITED_IDENTIFIER_CHARS
+    maxAuditedChars
   ) {
     return identifiers;
   }
   const selected = new Set<number>();
   let usedChars = 0;
-  for (const index of identifiers
+  const rankedIndexes = identifiers
     .map((_, position) => position)
     .toSorted(
       (left, right) =>
-        priority(identifiers[left] ?? "") - priority(identifiers[right] ?? "") || right - left,
-    )) {
+        auditedIdentifierPriority(identifiers[left] ?? "") -
+          auditedIdentifierPriority(identifiers[right] ?? "") || right - left,
+    );
+  for (const index of rankedIndexes) {
     const identifier = identifiers[index] ?? "";
     const cost = identifier.length + (selected.size > 0 ? 1 : 0);
-    if (usedChars + cost <= MAX_AUDITED_IDENTIFIER_CHARS) {
+    if (usedChars + cost <= maxAuditedChars) {
       selected.add(index);
       usedChars += cost;
     }
   }
   // A single impossible literal is not a license to erase every audited fact:
-  // leave it required so the retention plan fails closed as before.
-  return selected.size === 0 ? identifiers : identifiers.filter((_, index) => selected.has(index));
+  // leave it required so the retention plan fails closed as before, even
+  // when shorter source facts fit beside it.
+  const impossible = identifiers.some((identifier) => identifier.length > availableBodyChars);
+  if (selected.size === 0 && !impossible && Number.isFinite(availableBodyChars)) {
+    // A source literal can exceed its preferred share yet still fit alone.
+    // Retain the best candidate rather than cancelling with the entire list.
+    const firstFitting = rankedIndexes.find(
+      (index) => (identifiers[index]?.length ?? 0) <= availableBodyChars,
+    );
+    if (firstFitting !== undefined) {
+      selected.add(firstFitting);
+    }
+  }
+  return selected.size === 0 && !impossible
+    ? identifiers
+    : identifiers.filter(
+        (identifier, index) => selected.has(index) || identifier.length > availableBodyChars,
+      );
 }
 
 function tokenizeAskOverlapText(text: string): string[] {
