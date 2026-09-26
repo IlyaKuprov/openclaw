@@ -144,6 +144,51 @@ describe("compaction summary quality contract", () => {
     },
   );
 
+  it.each(["strict", "off", "custom"] as const)(
+    "audits percent, memory, and temperature measurements in Results under %s policy",
+    (identifierPolicy) => {
+      const measurements = ["85%", "512 MB", "23 °C"];
+      const identifiers = extractOpaqueIdentifiers(
+        "Measured 85% utilization, 512 MB allocated, and 23 °C ambient.",
+      );
+      expect(identifiers).toEqual(measurements);
+      expect(
+        extractOpaqueIdentifiers("task-85% ID_512 MB path/23 °C; 85%extra 512 MBps 23 °Celsius"),
+      ).toEqual([]);
+      const summary = buildStructuredFallbackSummary(undefined);
+      const misplaced = summary.replace(
+        "## Decisions\n",
+        `## Decisions\n${measurements.join(", ")}\n`,
+      );
+      expect(
+        auditSummaryQuality({
+          summary: misplaced,
+          structuralSummary: misplaced,
+          identifiers,
+          latestAsk: null,
+          identifierPolicy,
+        }).reasons,
+      ).toContain(`missing_result_evidence:${measurements.join(",")}`);
+      const restored = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+        identifiers,
+        latestAsk: null,
+        identifierPolicy,
+      })?.render(500)?.text;
+      expect(restored).toMatch(
+        /## Results and evidence[\s\S]*85%[\s\S]*512 MB[\s\S]*23 °C[\s\S]*## Open TODOs/u,
+      );
+      expect(
+        auditSummaryQuality({
+          summary: restored ?? "",
+          structuralSummary: restored ?? "",
+          identifiers,
+          latestAsk: null,
+          identifierPolicy,
+        }).ok,
+      ).toBe(true);
+    },
+  );
+
   it("extracts repository-relative paths and requires literal preservation", () => {
     const identifiers = extractOpaqueIdentifiers(
       "Modified `src/foo.ts`; output artifacts/run.log; link https://example.com/a/b.",

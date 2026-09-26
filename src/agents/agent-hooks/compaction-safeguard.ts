@@ -1365,7 +1365,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         : null;
       const latestUserAsk = splitUserAsk ?? extractLatestUserAsk(messagesToSummarize);
       const identifierCandidates = extractOpaqueIdentifiers(
-        oracleMessages.slice(-10).map(extractMessageText).filter(Boolean).join("\n"),
+        oracleMessages.map(extractMessageText).filter(Boolean).join("\n"),
         Number.POSITIVE_INFINITY,
       );
       const preparedPairing = repairToolUseResultPairing(messagesToSummarize);
