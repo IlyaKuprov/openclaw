@@ -1262,6 +1262,11 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const includePreservedContext =
         // Receipts omitted from the verbatim section must still reach the summarizer.
         preservedRecentMessages.some((message) => message.role === "toolResult") ||
+        // Non-text user attachments also disappear from the text-only suffix.
+        preservedRecentMessages.some(
+          (message) =>
+            message.role === "user" && formatNonTextPlaceholder(message.content) !== null,
+        ) ||
         (!latestUnresolvedUserRequest &&
           qualityGuardEnabled &&
           latestPreparedAsk === latestUserAsk &&
