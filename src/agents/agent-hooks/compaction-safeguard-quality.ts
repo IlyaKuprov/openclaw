@@ -532,7 +532,7 @@ export function extractOpaqueIdentifiers(text: string): string[] {
     text.matchAll(/\bcommit(?:\s+(?:hash|sha))?(?:\s*[:#]\s*|\s+)([a-f0-9]{7,40})\b/giu),
     (match) => ({ index: match.index, value: match[1] ?? "" }),
   );
-  const identifiers = uniqueStrings(
+  let identifiers = uniqueStrings(
     [
       ...Array.from(
         text.matchAll(
@@ -558,15 +558,9 @@ export function extractOpaqueIdentifiers(text: string): string[] {
       .filter(
         (value) => value.length >= 4 || /^#\d+$/u.test(value) || MEASURED_VALUE_ANCHOR.test(value),
       ),
-  ).slice(0, MAX_EXTRACTED_IDENTIFIERS);
-  if (
-    identifiers.reduce((chars, identifier) => chars + identifier.length + 1, 0) <=
-    MAX_AUDITED_IDENTIFIER_CHARS
-  ) {
-    return identifiers;
-  }
+  );
   // Preserve short, actionable anchors and measured outcomes before expensive
-  // URLs; among equally important candidates prefer the most recent source.
+  // URLs; prioritize before either limit so late results survive an early URL flood.
   const priority = (identifier: string) =>
     isResultEvidenceAnchor(identifier)
       ? 0
@@ -576,6 +570,25 @@ export function extractOpaqueIdentifiers(text: string): string[] {
         : identifier.startsWith("http://") || identifier.startsWith("https://")
           ? 3
           : 2;
+  if (identifiers.length > MAX_EXTRACTED_IDENTIFIERS) {
+    const retainedPositions = new Set(
+      identifiers
+        .map((_, position) => position)
+        .toSorted((left, right) => {
+          const leftPriority = priority(identifiers[left] ?? "");
+          const rightPriority = priority(identifiers[right] ?? "");
+          return leftPriority - rightPriority || (leftPriority === 3 ? right - left : left - right);
+        })
+        .slice(0, MAX_EXTRACTED_IDENTIFIERS),
+    );
+    identifiers = identifiers.filter((_, position) => retainedPositions.has(position));
+  }
+  if (
+    identifiers.reduce((chars, identifier) => chars + identifier.length + 1, 0) <=
+    MAX_AUDITED_IDENTIFIER_CHARS
+  ) {
+    return identifiers;
+  }
   const selected = new Set<number>();
   let usedChars = 0;
   for (const index of identifiers
