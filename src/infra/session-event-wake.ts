@@ -16,6 +16,8 @@ type WakeHandler = (
 ) => Promise<SessionEventWakeResult>;
 export type SessionEventWakeWaitOptions = {
   abortSignal?: AbortSignal;
+  /** Remove this request's queued work on abort; other coalesced requests remain. */
+  cancelQueuedOnAbort?: boolean;
   /** Called when the queue starts an attempt for this waiter. */
   onAttemptStarted?: () => void;
   /** Called whenever this waiter enters the queue, including retained retries. */
@@ -29,6 +31,7 @@ export type SessionEventWakeWaitOptions = {
 type Settlement = {
   active: boolean;
   settle: (result: SessionEventWakeResult) => void;
+  cancelQueuedOnAbort?: boolean;
   onAttemptStarted?: SessionEventWakeWaitOptions["onAttemptStarted"];
   onQueued?: SessionEventWakeWaitOptions["onQueued"];
   stopWaitingOnRetry?: SessionEventWakeWaitOptions["stopWaitingOnRetry"];
@@ -40,6 +43,8 @@ type PendingWake = SessionEventWakeRequest & {
   readyAt: number;
   notBefore: number;
   settlements: Settlement[];
+  /** Original requests, retained so cancellation can remove just one coalesced owner. */
+  members?: PendingWake[];
 };
 type WakeGroup = {
   task?: PendingWake;
@@ -117,7 +122,22 @@ function merge(previous: PendingWake, next: PendingWake): PendingWake {
       : undefined,
     retainedWork: !bypass && (previous.retainedWork || next.retainedWork),
     settlements: [...previous.settlements, ...next.settlements].filter((entry) => entry.active),
+    members: [...(previous.members ?? [previous]), ...(next.members ?? [next])],
   };
+}
+
+function withoutCancelledMembers(wake: PendingWake): PendingWake | undefined {
+  const originals = wake.members ?? [wake];
+  const members = originals.filter(
+    (member) => !member.settlements.some((entry) => entry.cancelQueuedOnAbort && !entry.active),
+  );
+  if (members.length === originals.length) {
+    return wake;
+  }
+  return members.reduce<PendingWake | undefined>(
+    (current, member) => (current ? merge(current, member) : member),
+    undefined,
+  );
 }
 
 function targetKey(request: SessionEventWakeRequest): string {
@@ -160,13 +180,17 @@ function createSessionEventWakeRuntime() {
 
   function enqueue(wake: PendingWake, blockedUntil = 0): string {
     const key = targetKey(wake);
+    const retained = withoutCancelledMembers(wake);
+    if (!retained) {
+      return key;
+    }
     const group = pending.get(key) ?? { blockedUntil: 0 };
     const slot =
-      wake.intent === "task" ? "task" : wake.intent === "scheduled" ? "scheduled" : "event";
-    group[slot] = group[slot] ? merge(group[slot], wake) : wake;
+      retained.intent === "task" ? "task" : retained.intent === "scheduled" ? "scheduled" : "event";
+    group[slot] = group[slot] ? merge(group[slot], retained) : retained;
     group.blockedUntil = Math.max(group.blockedUntil, blockedUntil);
     pending.set(key, group);
-    for (const entry of wake.settlements) {
+    for (const entry of retained.settlements) {
       if (entry.active) {
         entry.onQueued?.();
       }
@@ -295,12 +319,22 @@ function createSessionEventWakeRuntime() {
         }
       }
     }
+    const retryReadyAt = performance.now();
+    const members = wake.members ?? [wake];
+    for (const member of members) {
+      member.readyAt = retryReadyAt;
+      member.notBefore = guard ? deadline : 0;
+      if (guard) {
+        member.retainedWork = true;
+      }
+    }
     enqueue(
       {
         ...wake,
-        readyAt: performance.now(),
+        readyAt: retryReadyAt,
         notBefore: guard ? deadline : 0,
         retainedWork: guard ? true : wake.retainedWork,
+        members,
       },
       guard ? 0 : deadline,
     );
@@ -532,6 +566,7 @@ function createSessionEventWakeRuntime() {
       const signal = lifecycle?.abortSignal;
       const settlement: Settlement = {
         active: true,
+        cancelQueuedOnAbort: lifecycle?.cancelQueuedOnAbort,
         onAttemptStarted: lifecycle?.onAttemptStarted,
         onQueued: lifecycle?.onQueued,
         stopWaitingOnRetry: lifecycle?.stopWaitingOnRetry,
@@ -543,8 +578,38 @@ function createSessionEventWakeRuntime() {
           }
         },
       };
-      const onAbort = () =>
+      const onAbort = () => {
         settlement.settle({ status: "failed", reason: "heartbeat wake cancelled" });
+        if (!settlement.cancelQueuedOnAbort) {
+          return;
+        }
+        for (const [key, group] of pending) {
+          for (const slot of SLOTS) {
+            const wake = group[slot];
+            if (!wake?.settlements.includes(settlement)) {
+              continue;
+            }
+            delete group[slot];
+            const retained = withoutCancelledMembers(wake);
+            if (retained) {
+              const retainedSlot =
+                retained.intent === "task"
+                  ? "task"
+                  : retained.intent === "scheduled"
+                    ? "scheduled"
+                    : "event";
+              group[retainedSlot] = group[retainedSlot]
+                ? merge(group[retainedSlot], retained)
+                : retained;
+            }
+            if (!SLOTS.some((candidate) => group[candidate])) {
+              pending.delete(key);
+            }
+            schedulePending(0, key);
+            return;
+          }
+        }
+      };
       if (signal?.aborted) {
         onAbort();
       } else {
