@@ -97,6 +97,13 @@ describe("assertSqliteIntegrityExcept", () => {
       to: "id  ",
       refused: true,
     },
+    {
+      name: "still refuses a corrupt index on a sqlite-prefixed user table",
+      index: "idx_sqlitefoo_name",
+      from: "name",
+      to: "id  ",
+      refused: true,
+    },
   ])("$name", ({ index, from, to, refused }) => {
     const sqlite = requireNodeSqlite();
     const databasePath = path.join(tempDirs.make("sqlite-deferred-ledger-"), "database.sqlite");
@@ -106,8 +113,11 @@ describe("assertSqliteIntegrityExcept", () => {
       CREATE INDEX idx_ledger_payload ON ledger(payload);
       CREATE TABLE live (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
       CREATE INDEX idx_live_name ON live(name);
+      CREATE TABLE sqlitefoo (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+      CREATE INDEX idx_sqlitefoo_name ON sqlitefoo(name);
       INSERT INTO ledger (id, payload) VALUES (1, 'x'), (2, 'y');
       INSERT INTO live (id, name) VALUES (1, 'a'), (2, 'b');
+      INSERT INTO sqlitefoo (id, name) VALUES (1, 'a'), (2, 'b');
     `);
     seed.close();
     repointIndexColumn(databasePath, index, from, to);
