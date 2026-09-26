@@ -583,6 +583,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
           } satisfies PluginRuntime["agent"]["session"];
           const runEmbeddedAgent: PluginRuntime["agent"]["runEmbeddedAgent"] = async (params) => {
             const runParams = { ...params };
+            if (runParams.sessionTarget) {
+              // Preflight and runtime dispatch must read the same nested target,
+              // not re-evaluate plugin-controlled getters after the owner check.
+              runParams.sessionTarget = Object.freeze({ ...runParams.sessionTarget });
+            }
             const { prepareRunSessionExecution } = await loadSessionOwnership();
             return await runWithPluginScope(async () => {
               const { ownerPluginId, agentHarnessRuntimeOverride } =
