@@ -54,4 +54,39 @@ describe("managed gateway service lifecycle evidence producer", () => {
       fs.readFile(path.join(artifactBase, "managed-gateway-service-lifecycle.log"), "utf8"),
     ).resolves.toContain("fail: foreground-cli-runtime terminated by signal SIGTERM");
   });
+
+  it("runs and records every split foreground option suite", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-service-options-"));
+    const artifactBase = path.join(root, "artifacts");
+    tempRoots.push(root);
+    vi.mocked(spawnSync).mockReturnValue({
+      output: [null, null, null],
+      pid: 123,
+      signal: null,
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: Buffer.alloc(0),
+    });
+
+    await expect(testing.main(["--artifact-base", artifactBase])).resolves.toBe(0);
+
+    const optionSuites = [
+      "src/cli/gateway-cli/run.option-collisions.test.ts",
+      "src/cli/gateway-cli/run.option-collisions.boot-lifecycle.test.ts",
+      "src/cli/gateway-cli/run.option-collisions.startup-guards.test.ts",
+    ];
+    const optionRun = vi
+      .mocked(spawnSync)
+      .mock.calls.find(([, args]) => Array.isArray(args) && args.includes(optionSuites[0]));
+    expect(optionRun?.[1]).toEqual(expect.arrayContaining(optionSuites));
+
+    const evidence = validateQaEvidenceSummaryJson(
+      JSON.parse(await fs.readFile(path.join(artifactBase, QA_EVIDENCE_FILENAME), "utf8")),
+    );
+    for (const sourcePath of optionSuites) {
+      expect(evidence.entries[0]?.refs).toEqual(
+        expect.arrayContaining([{ kind: "code", path: sourcePath }]),
+      );
+    }
+  });
 });

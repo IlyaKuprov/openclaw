@@ -43,7 +43,11 @@ const phases: ProofPhase[] = [
   {
     name: "foreground-cli-option-validation",
     coverageIds: ["cli.foreground-gateway-runs"],
-    testPaths: ["src/cli/gateway-cli/run.option-collisions.test.ts"],
+    testPaths: [
+      "src/cli/gateway-cli/run.option-collisions.test.ts",
+      "src/cli/gateway-cli/run.option-collisions.boot-lifecycle.test.ts",
+      "src/cli/gateway-cli/run.option-collisions.startup-guards.test.ts",
+    ],
   },
   {
     name: "install-and-control",
@@ -173,6 +177,8 @@ function createEvidenceWriter(options: ProducerOptions) {
         SOURCE_PATH,
         "extensions/qa-lab/src/managed-gateway-service-lifecycle.e2e.test.ts",
         "src/cli/gateway-cli/run.option-collisions.test.ts",
+        "src/cli/gateway-cli/run.option-collisions.boot-lifecycle.test.ts",
+        "src/cli/gateway-cli/run.option-collisions.startup-guards.test.ts",
         "src/cli/daemon-cli/install.integration.test.ts",
         "src/cli/daemon-cli/lifecycle.test.ts",
         "src/cli/daemon-cli/restart-health.test.ts",
