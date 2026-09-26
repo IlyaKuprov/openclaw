@@ -20,6 +20,10 @@ const REQUIRED_SUMMARY_SECTIONS = [
   "## Pending user asks",
   "## Exact identifiers",
 ] as const;
+const LEGACY_SUMMARY_SECTIONS = [
+  REQUIRED_SUMMARY_SECTIONS[0],
+  ...REQUIRED_SUMMARY_SECTIONS.slice(2),
+];
 const RESULTS_SECTION_INDEX = 1;
 const QUALITY_PROTECTED_SECTION_START = 4;
 const PENDING_ASK_SECTION_INDEX = 4;
@@ -140,30 +144,33 @@ type SummaryQualityRetentionPlan = {
   minimumChars: number;
   /**
    * True when render() must rebuild even a body that fits: a strict source
-   * fact is missing, or an audit-bearing section exceeds its share cap.
+   * fact is missing.
    */
   needsRebuild: (maxChars: number) => boolean;
   /** Null when even the protected facts cannot fit `maxChars`. */
   render: (maxChars: number) => { text: string; trimmed: boolean } | null;
 };
 
-function parseRequiredSummarySectionContents(summary: string): string[] | null {
-  const contents = REQUIRED_SUMMARY_SECTIONS.map(() => new Array<string>());
+function parseRequiredSummarySectionContents(
+  summary: string,
+  headings: readonly string[] = REQUIRED_SUMMARY_SECTIONS,
+): string[] | null {
+  const contents = headings.map(() => new Array<string>());
   const preamble: string[] = [];
   let sectionIndex = -1;
 
   for (const line of summary.split(/\r?\n/u)) {
-    const nextHeading = REQUIRED_SUMMARY_SECTIONS[sectionIndex + 1];
+    const nextHeading = headings[sectionIndex + 1];
     if (nextHeading && line.trim() === nextHeading) {
       sectionIndex += 1;
       continue;
     }
-    if (REQUIRED_SUMMARY_SECTIONS.some((heading) => line.trim() === heading)) {
+    if (headings.some((heading) => line.trim() === heading)) {
       return null;
     }
     (sectionIndex < 0 ? preamble : contents[sectionIndex])?.push(line);
   }
-  if (sectionIndex !== REQUIRED_SUMMARY_SECTIONS.length - 1) {
+  if (sectionIndex !== headings.length - 1) {
     return null;
   }
   contents[0]?.unshift(...preamble);
@@ -296,32 +303,28 @@ export function createSummaryQualityRetentionPlan(
     marker,
     ...minimumBlocks.slice(QUALITY_PROTECTED_SECTION_START),
   ].join("\n\n");
-  // Audit-bearing sections (pending asks, exact identifiers) are funded first so
-  // a runaway earlier section cannot starve them, but each is hard-capped: an
-  // uncapped identifier list re-distills into the whole budget — even while the
-  // artifact still fits — and leaves every other section as a bare heading.
+  // Audit-bearing sections (pending asks, exact identifiers) are funded first
+  // when trimming is needed so a runaway section cannot starve the others.
   const protectedCapFor = (maxChars: number) =>
     Math.floor(Math.max(0, maxChars - minimumSummary.length) * MAX_PROTECTED_SECTION_CONTENT_SHARE);
-  const protectedWithinCap = (maxChars: number) =>
-    PROTECTED_SECTION_INDEXES.every(
-      (index) => (contents[index]?.length ?? 0) <= protectedCapFor(maxChars),
-    );
 
   return {
     minimumChars: minimumSummary.length,
-    needsRebuild: (maxChars) =>
+    needsRebuild: () =>
       (!latestUnresolvedUserRequest && !bodyHasLatestAsk) ||
       !bodyHasRequiredAskContext ||
-      !bodyHasIdentifiers ||
-      !protectedWithinCap(maxChars),
+      !bodyHasIdentifiers,
     render(maxChars) {
-      if (
-        summary.length <= maxChars &&
-        bodyHasRequiredAskContext &&
-        bodyHasIdentifiers &&
-        protectedWithinCap(maxChars)
-      ) {
+      if (summary.length <= maxChars && bodyHasRequiredAskContext && bodyHasIdentifiers) {
         return { text: summary, trimmed: false };
+      }
+      const completeSections = contents.map((content, index) => joinSectionContent(index, content));
+      const completeSummary = [
+        ...(requiredContextBlock ? [requiredContextBlock] : []),
+        ...renderSections(completeSections),
+      ].join("\n\n");
+      if (completeSummary.length <= maxChars) {
+        return { text: completeSummary, trimmed: false };
       }
       if (maxChars < minimumSummary.length) {
         return null;
@@ -383,6 +386,22 @@ export function buildStructuredFallbackSummary(previousSummary: string | undefin
   if (trimmedPreviousSummary && hasRequiredSummarySections(trimmedPreviousSummary)) {
     return trimmedPreviousSummary;
   }
+  if (
+    trimmedPreviousSummary &&
+    !normalizedSummaryLines(trimmedPreviousSummary).includes(
+      REQUIRED_SUMMARY_SECTIONS[RESULTS_SECTION_INDEX],
+    )
+  ) {
+    const legacyContents = parseRequiredSummarySectionContents(
+      trimmedPreviousSummary,
+      LEGACY_SUMMARY_SECTIONS,
+    );
+    if (legacyContents) {
+      return LEGACY_SUMMARY_SECTIONS.map((heading, index) => `${heading}\n${legacyContents[index]}`)
+        .toSpliced(RESULTS_SECTION_INDEX, 0, "## Results and evidence\nNone captured.")
+        .join("\n\n");
+    }
+  }
   const values = [
     trimmedPreviousSummary || "No prior history.",
     "None captured.",
@@ -440,7 +459,7 @@ export function extractOpaqueIdentifiers(text: string): string[] {
   return uniqueStrings(
     Array.from(
       text.matchAll(
-        /((?<![A-Za-z0-9_])#\d+\b|\b(?:PR\s+#\d+|(?:job|message|msg)(?:[-_#][A-Za-z0-9_-]+|\s+id\s*[:#]?\s*[A-Za-z0-9_-]+))\b)|(https?:\/\/\S+|(?<![A-Za-z0-9._-])\/[\w.-]{2,}(?:\/[\w.-]+)+|[A-Za-z]:\\[\w\\.-]+|(?<![A-Za-z0-9._-])[A-Za-z0-9._-]+\.[A-Za-z0-9._/-]+:\d{1,5})|(?:(?:(?:\d+\.\d+|\.\d+)(?:[eE][+-]?\d+)?|\d+\.[eE][+-]?\d+|\d+\.?[eE][+-]\d+|(?![A-Fa-f0-9]{8,}(?![A-Fa-f0-9]))\d+\.?[eE]\d+)(?:(?=[A-Za-z]+(?![A-Za-z0-9]))(?=[A-Za-z]*[G-Zg-z])[A-Za-z]+)?(?![A-Za-z0-9])|(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*(?:[A-Fa-f0-9]{8,}|\d{6,}))([A-Za-z0-9_-]+))/g,
+        /((?<![A-Za-z0-9_])#\d+\b|\b(?:PR\s+#\d+|(?:job|message|msg)(?:[-_#][A-Za-z0-9_-]+|\s+id\s*[:#]?\s*[A-Za-z0-9_-]+))\b)|(https?:\/\/\S+|(?<![A-Za-z0-9._-])\/[\w.-]{2,}(?:\/[\w.-]+)+|[A-Za-z]:\\[\w\\.-]+|(?<![A-Za-z0-9._-])[A-Za-z0-9._-]+\.[A-Za-z0-9._/-]+:\d{1,5})|(?:(?:(?:\d+\.\d+|\.\d+)(?:[eE][+-]?\d+)?|\d+\.[eE][+-]?\d+|\d+\.?[eE][+-]\d+|(?![A-Fa-f0-9]{8,}(?![A-Fa-f0-9]))\d+\.?[eE]\d+)(?:(?=[A-Za-z]+(?![A-Za-z0-9]))(?=[A-Za-z]*[G-Zg-z])[A-Za-z]+)?(?![A-Za-z0-9])|(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*(?:[A-Fa-f0-9]{8,}|\d{6,}))([A-Za-z0-9_-]+))/gi,
       ),
       (match) => match[1] ?? match[2] ?? match[3] ?? "",
     )

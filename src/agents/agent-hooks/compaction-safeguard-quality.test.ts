@@ -32,6 +32,90 @@ describe("compaction summary quality contract", () => {
     ).toContain("missing_identifiers:PR #13,job-8,message id 7");
   });
 
+  it("audits capitalized short job and message identifiers", () => {
+    const identifiers = extractOpaqueIdentifiers("Job ID 42; Message ID: abc; MSG-9.");
+    expect(identifiers).toEqual(["Job ID 42", "Message ID: abc", "MSG-9"]);
+    expect(
+      auditSummaryQuality({
+        summary: buildStructuredFallbackSummary(undefined),
+        structuralSummary: buildStructuredFallbackSummary(undefined),
+        identifiers,
+        latestAsk: null,
+      }).reasons,
+    ).toContain("missing_identifiers:Job ID 42,Message ID: abc,MSG-9");
+  });
+
+  it("keeps an 8,000-character fitting summary with 5,000 characters of evidence intact", () => {
+    const evidence = `measurement 17.3 Hz, source /tmp/result.log, next: inspect peak\n${"e".repeat(4940)}`;
+    const summary = [
+      "## Decisions\nKeep the measurement.",
+      `## Results and evidence\n${evidence}`,
+      `## Open TODOs\n${"t".repeat(2700)}`,
+      "## Constraints/Rules\nRetain source facts.",
+      "## Pending user asks\nNone.",
+      "## Exact identifiers\n/tmp/result.log",
+    ].join("\n\n");
+    expect(summary.length).toBeGreaterThan(7_000);
+    expect(summary.length).toBeLessThan(8_000);
+    expect(evidence.length).toBeGreaterThan(5_000);
+    const plan = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+      identifiers: ["/tmp/result.log"],
+      latestAsk: null,
+      identifierPolicy: "strict",
+    });
+    expect(plan?.needsRebuild(16_000)).toBe(false);
+    expect(plan?.render(16_000)).toEqual({ text: summary, trimmed: false });
+    const pressured = plan?.render(6_000);
+    expect(pressured?.trimmed).toBe(true);
+    expect(pressured?.text).toContain("## Results and evidence\nmeasurement 17.3 Hz");
+    expect(pressured?.text.length).toBeLessThanOrEqual(6_000);
+
+    const missingIdentifierPlan = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+      identifiers: ["/tmp/result.log", "Job ID 42"],
+      latestAsk: null,
+      identifierPolicy: "strict",
+    });
+    expect(missingIdentifierPlan?.needsRebuild(16_000)).toBe(true);
+    const completed = missingIdentifierPlan?.render(16_000);
+    expect(completed?.trimmed).toBe(false);
+    expect(completed?.text).toContain(evidence);
+    expect(completed?.text).toContain("Job ID 42");
+  });
+
+  it("migrates a persisted five-section summary without nesting or losing its evidence", () => {
+    const previous = [
+      "## Decisions\nKeep the measured result.",
+      "## Open TODOs\nInspect the peak next.",
+      "## Constraints/Rules\nPreserve units.",
+      "## Pending user asks\nReport status.",
+      "## Exact identifiers\n/tmp/peak.log",
+    ].join("\n\n");
+    const summary = buildStructuredFallbackSummary(previous);
+    expect(summary).toContain("## Results and evidence\nNone captured.");
+    expect(summary).toContain("## Decisions\nKeep the measured result.");
+    expect(summary).toContain("## Open TODOs\nInspect the peak next.");
+    expect(summary).toContain("## Exact identifiers\n/tmp/peak.log");
+    for (const heading of [
+      "## Decisions",
+      "## Results and evidence",
+      "## Open TODOs",
+      "## Constraints/Rules",
+      "## Pending user asks",
+      "## Exact identifiers",
+    ]) {
+      expect(summary.split("\n").filter((line) => line === heading)).toHaveLength(1);
+    }
+    expect(
+      auditSummaryQuality({
+        summary,
+        structuralSummary: summary,
+        sourceSummaries: [summary],
+        identifiers: ["/tmp/peak.log"],
+        latestAsk: null,
+      }).ok,
+    ).toBe(true);
+  });
+
   it("requires Results and evidence in order and reserves its content during budgeting", () => {
     const noResults = [
       "## Decisions",
