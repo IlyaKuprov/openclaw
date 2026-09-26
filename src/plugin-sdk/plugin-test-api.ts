@@ -94,6 +94,7 @@ export function createTestPluginApi(api: TestPluginApiInput = {}): OpenClawPlugi
     },
     on() {},
     ...flatApi,
+    outboundRouteDecisionContract: 1,
   } satisfies OpenClawPluginApiWithoutFacades;
   // Facades derive nested `agent`, `lifecycle`, `runContext`, and `session`
   // views from the flat API; explicit overrides below let tests replace only

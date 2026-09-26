@@ -485,6 +485,11 @@ export function _resetStateForTests() {
 }
 
 export default function register(api) {
+  // Stock 2026.9.5 accepts this package's version range but cannot dispatch
+  // this hook. Refuse registration unless the host supplies the custody contract.
+  if (api.outboundRouteDecisionContract !== 1) {
+    throw new Error("HF-18 requires the host-owned outbound route decision contract");
+  }
   const config = normalizeConfig(api.pluginConfig);
 
   api.on(

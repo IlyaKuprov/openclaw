@@ -15,6 +15,7 @@ function makeApi(config = {}) {
   const reads = [];
   let adapterLoads = 0;
   guard.default({
+    outboundRouteDecisionContract: 1,
     pluginConfig: { auditLog: path.join(tempState, "guard.jsonl"), ...config },
     runtime: {
       agent: {
@@ -62,6 +63,15 @@ afterEach(() => {
 after(() => fs.rmSync(tempState, { recursive: true, force: true }));
 
 describe("pure declarative route decision", () => {
+  it("refuses stock 2026.9.5 without the host contract before registering any hook", () => {
+    const hooks = [];
+    assert.throws(
+      () => guard.default({ on: (name) => hooks.push(name) }),
+      /requires the host-owned outbound route decision contract/,
+    );
+    assert.deepEqual(hooks, []);
+  });
+
   it("requests the persisted Slack channel, account, and root from a webchat-origin Slack session", () => {
     persisted();
     const { hooks, reads, adapterLoads } = makeApi();

@@ -9,6 +9,7 @@ const guard = await import("../index.js");
 const SESSION = "agent:main:slack:channel:c012mutex";
 const hooks = new Map();
 guard.default({
+  outboundRouteDecisionContract: 1,
   pluginConfig: { auditLog: path.join(tempState, "guard.jsonl") },
   runtime: {
     agent: {

@@ -18,11 +18,13 @@ policy. Cross-surface route requests fail closed: the host route contract cannot
 redirect them without also forcing root delivery against that opt-out.
 It imports only Node built-ins. The source is preserved for reapplication and
 review, **not** registered as a bundled plugin or automatically installed.
-Version 2.1.0 requires the `outbound_route_decision` host hook and declares
-`openclaw.compat.pluginApi: >=2026.9.6`. The current 2026.9.5 stock-version
-host (including this fork before its host version is bumped) must reject this
-plugin rather than silently register only its older hooks. Do not reapply it
-until the compatible host version and hook are available.
+Version 2.1.0 declares `openclaw.compat.pluginApi: >=2026.9.5`, but requires
+the host-owned `outbound_route_decision` contract supplied by this HF-18 host
+patch. An unpatched stock 2026.9.5 host admits the package by version but lacks
+the contract: registration throws before any hooks are installed, rather than
+silently leaving cross-surface delivery on its original route. Install the
+plugin only alongside the patched host build; a plain stock install cannot
+provide this behavior.
 
 An ACP binding key such as `agent:codex:acp:binding:slack:default:<hash>`
 does not encode its conversation target. A session row alone cannot prove the

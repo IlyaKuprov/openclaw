@@ -30,6 +30,7 @@ it("declares the trusted pre-model result middleware contract", () => {
 function makeApi() {
   const hooks = new Map();
   const api = {
+    outboundRouteDecisionContract: 1,
     config: { channels: { slack: { enabled: true } } },
     pluginConfig: { auditLog: path.join(tempState, "guard.jsonl") },
     on(name, handler) {

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { resolvePackagePluginApiRange, satisfiesPluginApiRange } from "./package-compat.js";
 
 describe("package plugin API compatibility", () => {
-  it("rejects the HF-18 route hook plugin on the stock-version host", () => {
+  it("admits the HF-18 route hook plugin on a patched 2026.9.5 host", () => {
     const plugin = JSON.parse(
       readFileSync(
         new URL("../../local-hotfixes/hf18-slack-thread-guard/package.json", import.meta.url),
@@ -26,7 +26,8 @@ describe("package plugin API compatibility", () => {
     if (!resolved.ok) {
       return;
     }
-    expect(satisfiesPluginApiRange("2026.9.5", resolved.range)).toBe(false);
+    expect(satisfiesPluginApiRange("2026.9.4", resolved.range)).toBe(false);
+    expect(satisfiesPluginApiRange("2026.9.5", resolved.range)).toBe(true);
     expect(satisfiesPluginApiRange("2026.9.6", resolved.range)).toBe(true);
   });
   it("checks plugin api ranges with semver precedence", () => {

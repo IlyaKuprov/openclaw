@@ -11,7 +11,7 @@
     "extensions": ["./index.js"],
     "plugin": true,
     "compat": {
-      "pluginApi": ">=2026.9.6"
+      "pluginApi": ">=2026.9.5"
     }
   }
 }
