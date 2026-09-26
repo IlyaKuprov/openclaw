@@ -1395,6 +1395,97 @@ describe("compaction-safeguard recent-turn preservation", () => {
     },
   );
 
+  it("feeds audited evidence after an oversized orphan prefix to a strict first-pass summary", async () => {
+    const latestAsk = "Report the orphan measurement.";
+    const measurement = "17.3 Hz";
+    const sourcePath = "/tmp/late-linewidth.log";
+    // The measurement sits in the head lost to marker reservation; the path
+    // lies beyond the original 900-character preview altogether.
+    const toolOutput = `${"unremarkable output ".repeat(42)}Measured ${measurement} ${"routine trace ".repeat(25)}in ${sourcePath}`;
+    expect(toolOutput.length).toBeGreaterThan(900);
+    expect(toolOutput.indexOf(measurement)).toBeLessThan(900);
+    expect(toolOutput.indexOf(sourcePath)).toBeGreaterThan(900);
+    mockSummarizeInStages.mockReset().mockImplementation(async ({ messages }) => {
+      const input = JSON.stringify(messages);
+      if (!input.includes(measurement) || !input.includes(sourcePath)) {
+        return "The measurement and source were not in the supplied conversation.";
+      }
+      return [
+        "## Decisions\nNone.",
+        `## Results and evidence\nMeasured ${measurement} in ${sourcePath}.`,
+        "## Open TODOs\nNone.",
+        "## Constraints/Rules\nNone.",
+        `## Pending user asks\nLatest user request context: ${JSON.stringify(latestAsk)}`,
+        `## Exact identifiers\n${measurement}\n${sourcePath}`,
+      ].join("\n\n");
+    });
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 0,
+      identifierPolicy: "strict",
+    });
+    const orphan = castAgentMessage({
+      role: "toolResult",
+      toolCallId: "before-window",
+      toolName: "read",
+      content: [{ type: "text", text: toolOutput }],
+      isError: false,
+      timestamp: 2,
+    });
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "Inspect the output.", timestamp: 1 },
+          orphan,
+          { role: "user", content: latestAsk, timestamp: 3 },
+        ] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 500,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event,
+      apiKey: "***",
+      latestUnresolvedUserRequest: true,
+    });
+
+    const summary = expectCompactionResult(result).summary;
+    expect(summary).toContain(measurement);
+    expect(summary).toContain(sourcePath);
+    const messages = requireArray(
+      requireRecord(mockCallArg(mockSummarizeInStages)).messages,
+    ) as AgentMessage[];
+    const input = JSON.stringify(messages);
+    expect(input).toContain(measurement);
+    expect(input).toContain(sourcePath);
+    expect(input).toContain("omitted");
+    expect(input).not.toContain(toolOutput);
+    expect(messages).not.toContain(orphan);
+    expect(messages.filter((message) => message.role === "toolResult")).toHaveLength(0);
+    const receiptNote = messages.find(
+      (message) =>
+        message.role === "user" &&
+        typeof message.content === "string" &&
+        message.content.includes("Unpaired tool results"),
+    );
+    if (receiptNote?.role !== "user" || typeof receiptNote.content !== "string") {
+      throw new Error("expected bounded unpaired result note");
+    }
+    expect(receiptNote.content.length).toBeLessThan(1_100);
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+  });
+
   it("keeps an orphan receipt beside a partial tool frame while synthesizing its missing result", async () => {
     mockSummarizeInStages.mockReset().mockResolvedValue("partial frame summary");
     const sessionManager = stubSessionManager();

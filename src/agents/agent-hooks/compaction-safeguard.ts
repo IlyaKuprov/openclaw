@@ -642,7 +642,24 @@ function repairSummaryMessages(
         return "";
       }
       const name = typeof message.toolName === "string" ? message.toolName : "tool";
-      return `${truncateUtf16Safe(name, 80)}: ${truncateUtf16Safe(text, 900)}`;
+      // Reserve space for the marker before selecting anchors, so shrinking
+      // the preview cannot also hide an audited fact near its former end.
+      const receiptLimit = 900;
+      const anchorLimit = 240;
+      const omissionPrefix = "\n[tool result content omitted";
+      const evidencePrefix = `${omissionPrefix}; selected evidence: `;
+      const anchorStart = receiptLimit - evidencePrefix.length - anchorLimit - 1;
+      const omittedAnchors =
+        text.length > receiptLimit
+          ? extractOpaqueIdentifiers(text.slice(anchorStart), anchorLimit).filter(
+              (anchor) => anchor.length <= anchorLimit,
+            )
+          : [];
+      const omission =
+        text.length > receiptLimit
+          ? `${omissionPrefix}${omittedAnchors.length ? `; selected evidence: ${omittedAnchors.join(", ")}` : ""}]`
+          : "";
+      return `${truncateUtf16Safe(name, 80)}: ${truncateUtf16Safe(text, receiptLimit - omission.length)}${omission}`;
     })
     .filter(Boolean);
   const omissionMarker = "[earlier tool results omitted]";
