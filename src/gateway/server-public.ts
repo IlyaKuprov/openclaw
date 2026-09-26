@@ -39,6 +39,10 @@ export type GatewayServer = {
 };
 
 export type GatewayServerOptions = {
+  /** Internal CLI boot verifier, adopted by this server generation after lifecycle preparation. */
+  databaseIntegrityVerifier?: ReturnType<
+    typeof import("../state/openclaw-database-verify.js").startOpenClawDatabaseIntegrityVerifier
+  >;
   /** Internal native-host operation; direct readers retain their own execution owner. */
   prepareConfigSnapshot?: ConfigSnapshotPreparation;
   /** Internal, closure-bound host authority. Direct servers have no native lifecycle owner. */

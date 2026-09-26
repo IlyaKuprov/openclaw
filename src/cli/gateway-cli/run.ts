@@ -40,7 +40,7 @@ import type { GatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setGatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setVerbose } from "../../globals.js";
 import { isAbortError } from "../../infra/abort-signal.js";
-import { isTruthyEnvValue } from "../../infra/env.js";
+import { isTruthyEnvValue, isVitestRuntimeEnv } from "../../infra/env.js";
 import { collectNestedErrorCandidates } from "../../infra/error-graph-internal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
@@ -68,6 +68,7 @@ import { isTailscaleRouteOwnershipConflictError } from "../../infra/tailscale-ro
 import { setConsoleSubsystemFilter, setConsoleTimestampPrefix } from "../../logging/console.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { defaultRuntime } from "../../runtime.js";
+import type { startOpenClawDatabaseIntegrityVerifier } from "../../state/openclaw-database-verify.js";
 import { printClawBanner, type ClawBannerResult } from "../claw-banner.js";
 import { formatCliCommand } from "../command-format.js";
 import { formatInvalidConfigPort, formatInvalidPortOption } from "../error-format.js";
@@ -962,6 +963,7 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
   let tryRecoverChannelAutostartSuppression: (() => boolean) | undefined;
   let activeBootId: string | undefined;
   let bootRecorded = false;
+  let bootDatabaseVerifier: ReturnType<typeof startOpenClawDatabaseIntegrityVerifier> | undefined;
   let triageAttempted = false;
   const triageStartupFailure = async (error: unknown, signal?: AbortSignal) => {
     if (
@@ -1003,6 +1005,16 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
   const beginBoot = async (startedAtMs: number) => {
     // run-loop calls beginBoot before every startGatewayServer invocation, so
     // in-process restarts re-evaluate breaker state instead of reusing stale mode.
+    await bootDatabaseVerifier?.stop();
+    // The breaker is the first writable shared-state open in a normal CLI boot.
+    // Start its Gateway verifier before inspecting it, not after startup settles.
+    bootDatabaseVerifier =
+      opts.updateCanary ||
+      (isVitestRuntimeEnv() && process.env.OPENCLAW_TEST_MINIMAL_GATEWAY === "1")
+        ? undefined
+        : (
+            await import("../../state/openclaw-database-verify.js")
+          ).startOpenClawDatabaseIntegrityVerifier({ env: process.env });
     crashLoopDecision = inspectGatewayCrashLoopBreaker(process.env, startedAtMs);
     const bootStartReason = crashLoopDecision.tripped
       ? crashLoopDecision.shouldWriteStabilityBundle
@@ -1083,6 +1095,7 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
           bind,
           ...(opts.updateCanary ? { updateCanary: true } : {}),
           ...(activeBootId ? { bootId: activeBootId } : {}),
+          ...(bootDatabaseVerifier ? { databaseIntegrityVerifier: bootDatabaseVerifier } : {}),
           auth: authOverride,
           tailscale: tailscaleOverride,
           ...(processStartedAt !== undefined ? { processStartedAt } : {}),
@@ -1148,6 +1161,9 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
     );
     await triageStartupFailure(err);
     defaultRuntime.exit(resolveGatewayStartupFailureExitCode(err));
+  } finally {
+    // Also cover a failed beginBoot or startup before the server can adopt the sidecar.
+    await bootDatabaseVerifier?.stop();
   }
 }
 
