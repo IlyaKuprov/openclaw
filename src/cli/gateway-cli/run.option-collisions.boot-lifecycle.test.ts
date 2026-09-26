@@ -102,6 +102,55 @@ describe("gateway run option collisions", () => {
     );
   });
 
+  it("keeps the CLI boot verifier registered without starting its timer during slow startup", async () => {
+    const stateDir = stateDirs.make("gateway-slow-start-state-open-");
+    await withEnvAsync(
+      { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_TEST_MINIMAL_GATEWAY: undefined },
+      async () => {
+        const { openOpenClawStateDatabase, closeOpenClawStateDatabaseForTest } =
+          await import("../../state/openclaw-state-db.js");
+        await import("../../state/openclaw-database-verify.js");
+        openOpenClawStateDatabase({ env: process.env });
+        closeOpenClawStateDatabaseForTest();
+        const checks: string[] = [];
+        let timersBeforeStartupOpen = -1;
+        // oxlint-disable-next-line typescript/unbound-method -- Forward the native method with its exact receiver.
+        const prepare = DatabaseSync.prototype.prepare;
+        const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+          this: DatabaseSync,
+          sql: string,
+        ) {
+          if (sql.startsWith("PRAGMA integrity_check") || sql.startsWith("PRAGMA quick_check")) {
+            checks.push(sql);
+          }
+          return prepare.call(this, sql);
+        });
+        runGatewayLoop.mockImplementationOnce(async ({ beginBoot }) => {
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          try {
+            await beginBoot?.(1000);
+            timersBeforeStartupOpen = vi.getTimerCount();
+            if (timersBeforeStartupOpen === 0) {
+              await vi.advanceTimersByTimeAsync(300_001);
+              openOpenClawStateDatabase({ env: process.env });
+            }
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+        try {
+          await runGatewayCli(["gateway", "run", "--allow-unconfigured"]);
+          expect(timersBeforeStartupOpen).toBe(0);
+          expect(checks).toContain("PRAGMA quick_check;");
+          expect(checks).not.toContain("PRAGMA integrity_check;");
+        } finally {
+          spy.mockRestore();
+          closeOpenClawStateDatabaseForTest();
+        }
+      },
+    );
+  });
+
   it("re-inspects crash-loop breaker state for each boot iteration", async () => {
     let firstBootRecovery: (() => boolean) | undefined;
     bootLifecycle.record.mockReturnValueOnce("boot-1").mockReturnValueOnce("boot-2");
