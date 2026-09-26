@@ -4230,6 +4230,109 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(mockSummarizeInStages).not.toHaveBeenCalled();
   });
 
+  it.each(["strict", "off"] as const)(
+    "retains a prior measured result in the fitted Results body with current messages (identifier policy %s)",
+    async (identifierPolicy) => {
+      mockSummarizeInStages
+        .mockReset()
+        .mockResolvedValue(
+          [
+            "## Decisions",
+            "New conversation status. ".repeat(160),
+            "## Results and evidence\nNone captured.",
+            "## Open TODOs\nReport status.",
+            "## Constraints/Rules\nPreserve measured evidence.",
+            "## Pending user asks\nReport status.",
+            "## Exact identifiers\nNone captured.",
+          ].join("\n\n"),
+        );
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 0,
+        qualityGuardEnabled: true,
+        qualityGuardMaxRetries: 0,
+        identifierPolicy,
+      });
+      const event = {
+        preparation: {
+          ...createCompactionEvent({ messageText: "Report status.", tokensBefore: 1_500 })
+            .preparation,
+          previousSummary: "## Results and evidence\nMeasured linewidth 17.3 Hz.",
+          settings: { reserveTokens: 4_000 },
+          summaryTokenBudget: 650,
+          isSplitTurn: false,
+        },
+      };
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+      const summary = expectCompactionResult(result).summary;
+      expect(summary.length).toBeLessThanOrEqual(650 * 4);
+      expect(summary).toMatch(/## Results and evidence[\s\S]*17\.3 Hz[\s\S]*## Open TODOs/u);
+      expect(mockSummarizeInStages).toHaveBeenCalledOnce();
+      expect(mockAuditSummaryQuality).toHaveBeenCalledWith(
+        expect.objectContaining({ identifierPolicy, identifiers: ["17.3 Hz"] }),
+      );
+      expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+    },
+  );
+
+  it("retains a dropped-history measured result when the current window is redistilled", async () => {
+    mockSummarizeInStages
+      .mockReset()
+      .mockResolvedValueOnce("## Results and evidence\nMeasured linewidth 17.3 Hz.")
+      .mockResolvedValueOnce(
+        [
+          "## Decisions",
+          "New conversation status. ".repeat(160),
+          "## Results and evidence\nNone captured.",
+          "## Open TODOs\nReport status.",
+          "## Constraints/Rules\nPreserve measured evidence.",
+          "## Pending user asks\nReport status.",
+          "## Exact identifiers\nNone captured.",
+        ].join("\n\n"),
+      );
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture({ contextWindow: 2_000 }),
+      maxHistoryShare: 0.5,
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 0,
+    });
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "x".repeat(4_000), timestamp: 1 },
+          { role: "user", content: "y".repeat(4_000), timestamp: 2 },
+          { role: "user", content: "Report status.", timestamp: 3 },
+        ] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 10_000,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+        summaryTokenBudget: 650,
+        isSplitTurn: false,
+      },
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+    const summary = expectCompactionResult(result).summary;
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(requireRecord(mockCallArg(mockSummarizeInStages, 1)).messages)).toContain(
+      "17.3 Hz",
+    );
+    expect(summary.length).toBeLessThanOrEqual(650 * 4);
+    expect(summary).toMatch(/## Results and evidence[\s\S]*17\.3 Hz[\s\S]*## Open TODOs/u);
+    expect(mockAuditSummaryQuality).toHaveBeenCalledWith(
+      expect.objectContaining({ identifiers: ["17.3 Hz"] }),
+    );
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+  });
+
   it.each([
     { summaryTokenBudget: 650, qualityGuardEnabled: true },
     { summaryTokenBudget: 650, qualityGuardEnabled: false },
