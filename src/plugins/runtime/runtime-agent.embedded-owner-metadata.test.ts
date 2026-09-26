@@ -9,8 +9,12 @@ const importGate = vi.hoisted(() => {
   let enter!: () => void;
   let release!: () => void;
   return {
-    entered: new Promise<void>((resolve) => (enter = resolve)),
-    waiting: new Promise<void>((resolve) => (release = resolve)),
+    entered: new Promise<void>((resolve) => {
+      enter = resolve;
+    }),
+    waiting: new Promise<void>((resolve) => {
+      release = resolve;
+    }),
     enter: () => enter(),
     release: () => release(),
   };

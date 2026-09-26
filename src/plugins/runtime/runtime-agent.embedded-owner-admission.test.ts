@@ -45,8 +45,12 @@ describe("registered plugin embedded-agent admission fence", () => {
     const original = loadExactSessionEntryReadOnly(scope)?.entry;
     let enter!: () => void;
     let release!: () => void;
-    const entered = new Promise<void>((resolve) => (enter = resolve));
-    const waiting = new Promise<void>((resolve) => (release = resolve));
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     runCore
       .mockReset()
       .mockImplementationOnce(
