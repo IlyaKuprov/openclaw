@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { detectMime, normalizeMimeType } from "@openclaw/media-core/mime";
 import {
+  normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
   normalizeStringifiedOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
@@ -19,6 +20,7 @@ import {
 import { updateAuthProfileStoreWithLock } from "../../agents/auth-profiles/store-runtime.js";
 import { buildExplicitSessionIdSessionKey } from "../../agents/command/session.js";
 import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
+import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
 import {
   buildModelAliasIndex,
   canonicalizeCaseOnlyCatalogModelRef,
@@ -83,8 +85,8 @@ async function loadModelCatalogForInspection(cfg: OpenClawConfig, rawAgentId?: s
 /**
  * Resolve a bare configured alias (`opus`) through the same alias index normal
  * model selection uses. Only alias hits are returned: other bare refs keep the
- * existing catalog/provider inference, and alias lookup drops auth-profile
- * suffixes, so profile-qualified refs are left untouched.
+ * existing catalog/provider inference. An exact alias wins before parsing an
+ * auth-profile suffix; unmatched profile-qualified refs are left untouched.
  */
 function resolveConfiguredModelAliasRef(params: {
   raw: string | undefined;
@@ -92,19 +94,31 @@ function resolveConfiguredModelAliasRef(params: {
   agentId?: string;
 }): string | undefined {
   const raw = normalizeOptionalString(params.raw);
-  if (!raw || raw.includes("/") || raw.includes("@")) {
+  if (!raw || raw.includes("/")) {
     return undefined;
   }
   const defaultProvider = resolveDefaultModelForAgent({
     cfg: params.cfg,
     agentId: params.agentId,
   }).provider;
+  const aliasIndex = buildModelAliasIndex({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    defaultProvider,
+  });
+  const exactAlias = aliasIndex.byAlias.get(normalizeLowercaseStringOrEmpty(raw));
+  if (exactAlias) {
+    return `${exactAlias.ref.provider}/${exactAlias.ref.model}`;
+  }
+  if (raw.includes("@")) {
+    return undefined;
+  }
   const resolved = resolveModelRefFromString({
     cfg: params.cfg,
     agentId: params.agentId,
     raw,
     defaultProvider,
-    aliasIndex: buildModelAliasIndex({ cfg: params.cfg, agentId: params.agentId, defaultProvider }),
+    aliasIndex,
   });
   return resolved?.alias ? `${resolved.ref.provider}/${resolved.ref.model}` : undefined;
 }
@@ -586,10 +600,16 @@ export function registerModelCapabilityCommands(capability: Command): void {
         const catalog = await loadModelCatalogForInspection(cfg, rawAgentId);
         // A resolved alias names exactly one target: never fall back to reading the
         // alias text as a catalog id, which could silently report another model.
-        const entry = aliasRef
-          ? catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === aliasRef)
-          : (catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === target) ??
-            catalog.find((candidate) => candidate.id === target));
+        const aliasSeparator = aliasRef?.indexOf("/") ?? -1;
+        const entry =
+          aliasRef && aliasSeparator > 0
+            ? findModelInCatalog(
+                catalog,
+                aliasRef.slice(0, aliasSeparator),
+                aliasRef.slice(aliasSeparator + 1),
+              )
+            : (catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === target) ??
+              catalog.find((candidate) => candidate.id === target));
         if (!entry) {
           throw new Error(
             aliasRef
