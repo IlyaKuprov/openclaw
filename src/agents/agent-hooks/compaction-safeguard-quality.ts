@@ -515,6 +515,18 @@ function isResultEvidenceAnchor(identifier: string): boolean {
   return NUMERIC_RESULT_ANCHOR.test(identifier) || MEASURED_VALUE_ANCHOR.test(identifier);
 }
 
+// A dotted word alone is not a repository artifact (and may be a domain).
+// Recognized file extensions plus file context or inline-code syntax keep
+// ordinary prose out of the bounded source-literal audit.
+const ROOT_FILENAME =
+  /^[A-Za-z0-9_-]+(?:[.-][A-Za-z0-9_-]+)*\.(?:c|cc|cpp|css|csv|dat|go|h|html|java|jpeg|jpg|js|json|jsonl|jsx|lock|log|m|md|mjs|pdf|png|py|rs|sh|svg|toml|ts|tsx|txt|xml|yaml|yml|zip)$/iu;
+const ROOT_FILENAME_CONTEXT =
+  /(?:^|[\s;:,.])(?:modified|edited|wrote|created|generated|saved|produced|output|artifact|file|log|report)(?:\s+(?:file|artifact|as|to|at|in|is))?[\s:]+[`'"]?$/iu;
+
+function isRootFilename(identifier: string): boolean {
+  return ROOT_FILENAME.test(identifier);
+}
+
 /** Reuse the source-literal budget and unit rules for persisted result migration. */
 export function extractResultEvidenceAnchors(text: string): string[] {
   return extractOpaqueIdentifiers(text).filter(isResultEvidenceAnchor);
@@ -526,9 +538,11 @@ function auditedIdentifierPriority(identifier: string): number {
     : /^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/iu.test(identifier) ||
         isPureHexIdentifier(identifier)
       ? 1
-      : identifier.startsWith("http://") || identifier.startsWith("https://")
-        ? 3
-        : 2;
+      : isRootFilename(identifier)
+        ? 1.5
+        : identifier.startsWith("http://") || identifier.startsWith("https://")
+          ? 3
+          : 2;
 }
 
 function summaryIncludesIdentifier(summary: string, identifier: string): boolean {
@@ -542,9 +556,9 @@ function summaryIncludesIdentifier(summary: string, identifier: string): boolean
     const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     return new RegExp(`(?<![A-Za-z0-9_#])${literal}(?![A-Za-z0-9_-])`, "u").test(summary);
   }
-  if (identifier.includes("/") && !identifier.includes("://")) {
+  if ((identifier.includes("/") && !identifier.includes("://")) || isRootFilename(identifier)) {
     const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    return new RegExp(`(?<![A-Za-z0-9_#./-])${literal}(?![A-Za-z0-9_./-])`, "u").test(summary);
+    return new RegExp(`(?<![A-Za-z0-9_#./\\-])${literal}(?![A-Za-z0-9_./\\-])`, "u").test(summary);
   }
   return summary.includes(identifier);
 }
@@ -565,6 +579,17 @@ export function extractOpaqueIdentifiers(
     ),
     (match) => ({ index: match.index, value: match[0] }),
   );
+  const rootFiles = Array.from(
+    text.matchAll(
+      /(?<![A-Za-z0-9._/\\-])[A-Za-z0-9_-]+(?:[.-][A-Za-z0-9_-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?![A-Za-z0-9_/-]|\.[A-Za-z0-9_-])/gu,
+    ),
+    (match) => ({ index: match.index, value: match[0] }),
+  ).filter(
+    ({ index, value }) =>
+      isRootFilename(value) &&
+      ((text[index - 1] === "`" && text[index + value.length] === "`") ||
+        ROOT_FILENAME_CONTEXT.test(text.slice(Math.max(0, index - 80), index))),
+  );
   const labeledCommits = Array.from(
     text.matchAll(/\bcommit(?:\s+(?:hash|sha))?(?:\s*[:#]\s*|\s+)([a-f0-9]{7,40})\b/giu),
     (match) => ({ index: match.index, value: match[1] ?? "" }),
@@ -578,6 +603,7 @@ export function extractOpaqueIdentifiers(
         (match) => ({ index: match.index, value: match[1] ?? match[2] ?? match[3] ?? "" }),
       ),
       ...pathsAndResults,
+      ...rootFiles,
       ...labeledCommits,
       ...measuredValues,
     ]

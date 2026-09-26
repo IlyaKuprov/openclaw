@@ -3418,6 +3418,54 @@ describe("compaction-safeguard recent-turn preservation", () => {
     },
   );
 
+  it.each(["strict", "off", "custom"] as const)(
+    "preserves root artifact evidence through the registered handler only under %s policy",
+    async (identifierPolicy) => {
+      mockSummarizeInStages.mockReset();
+      mockSummarizeInStages.mockResolvedValue(
+        summaryResult(
+          [
+            "## Decisions\nKeep the release paused.",
+            "## Results and evidence\nNone captured.",
+            "## Open TODOs\nInspect the release.",
+            "## Constraints/Rules\nDo not publish until verified.",
+            "## Pending user asks\nReport release status.",
+            "## Exact identifiers\nNone captured.",
+          ].join("\n\n"),
+        ),
+      );
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 0,
+        qualityGuardEnabled: true,
+        qualityGuardMaxRetries: 0,
+        identifierPolicy,
+        ...(identifierPolicy === "custom" ? { identifierInstructions: "Keep issue IDs." } : {}),
+      });
+      const event = createCompactionEvent({
+        messageText: "Report release status.",
+        tokensBefore: 1_500,
+      });
+      event.preparation.messagesToSummarize.unshift(
+        castAgentMessage(timestampedTextAssistant("Modified package.json; output report.csv.", 1)),
+      );
+      (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+        reserveTokens: 4_000,
+      };
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+      const summary = expectCompactionResult(result).summary;
+      expect(mockAuditSummaryQuality.mock.calls.at(-1)?.[0].identifiers).toEqual([
+        "package.json",
+        "report.csv",
+      ]);
+      expect(summary.includes("package.json")).toBe(identifierPolicy === "strict");
+      expect(summary.includes("report.csv")).toBe(identifierPolicy === "strict");
+      expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+    },
+  );
+
   it("selects audited literals from the actual small compaction budget", async () => {
     mockSummarizeInStages.mockReset();
     const urls = Array.from(

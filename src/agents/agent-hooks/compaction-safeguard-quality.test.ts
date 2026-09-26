@@ -218,6 +218,63 @@ describe("compaction summary quality contract", () => {
     expect(instructions).not.toContain("every numerical result");
   });
 
+  it("audits contextual root artifacts but not domains, prose, or filename near-matches", () => {
+    const identifiers = extractOpaqueIdentifiers(
+      "Modified package.json; output report.csv; artifact `README.md`. " +
+        "Read example.com and some.property; package.json.bak is not the artifact. " +
+        "file report.csv.old is a different filename; src/package.json lives in a directory.",
+    );
+    expect(identifiers).toEqual(["package.json", "report.csv", "README.md", "src/package.json"]);
+    expect(
+      extractOpaqueIdentifiers("example.com and package.json are mentioned in prose."),
+    ).toEqual([]);
+    expect(extractOpaqueIdentifiers("`README.md` and `example.com`; File: package.json")).toEqual([
+      "README.md",
+      "package.json",
+    ]);
+    const nearMatch = buildStructuredFallbackSummary(
+      "package.json.bak, report.csv.old and src/package.json; README.md5",
+    );
+    const quality = auditSummaryQuality({
+      summary: nearMatch,
+      structuralSummary: nearMatch,
+      identifiers: ["package.json", "report.csv", "README.md"],
+      latestAsk: null,
+    });
+    expect(quality.reasons).toContain("missing_identifiers:package.json,report.csv,README.md");
+    for (const identifierPolicy of ["off", "custom"] as const) {
+      expect(
+        auditSummaryQuality({
+          summary: nearMatch,
+          structuralSummary: nearMatch,
+          identifiers: ["package.json", "report.csv"],
+          latestAsk: null,
+          identifierPolicy,
+        }).ok,
+      ).toBe(true);
+      expect(
+        createSummaryQualityRetentionPlan(nearMatch, "[truncated]", {
+          identifiers: ["package.json", "report.csv"],
+          latestAsk: null,
+          identifierPolicy,
+        })?.render(16_000)?.text,
+      ).toBe(nearMatch);
+    }
+  });
+
+  it("prioritizes a late root artifact within forty audited candidates", () => {
+    const paths = Array.from({ length: 40 }, (_, index) => `src/evidence-${index}.txt`);
+    const incidental = Array.from({ length: 40 }, (_, index) => `prose${index}.example`);
+    const identifiers = extractOpaqueIdentifiers(
+      `${paths.join(" ")} ${incidental.join(" ")} Modified package.json; output report.csv`,
+    );
+    expect(identifiers).toHaveLength(40);
+    expect(identifiers).toContain("package.json");
+    expect(identifiers).toContain("report.csv");
+    expect(identifiers).not.toContain(paths[38]);
+    expect(identifiers).not.toContain("prose0.example");
+  });
+
   it("retains a labeled seven-character commit hash without accepting a longer near-match", () => {
     const identifiers = extractOpaqueIdentifiers("commit abc1234; commit: 1a2b3c4");
     expect(identifiers).toEqual(["ABC1234", "1A2B3C4"]);
