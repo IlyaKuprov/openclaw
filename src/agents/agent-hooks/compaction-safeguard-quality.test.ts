@@ -43,6 +43,44 @@ describe("compaction summary quality contract", () => {
         latestAsk: null,
       }).reasons,
     ).toContain("missing_identifiers:Job ID 42,Message ID: abc,MSG-9");
+
+    const longer = buildStructuredFallbackSummary("Job ID 420; Message ID: abcd; MSG-90");
+    expect(
+      auditSummaryQuality({
+        summary: longer,
+        structuralSummary: longer,
+        identifiers,
+        latestAsk: null,
+      }).reasons,
+    ).toContain("missing_identifiers:Job ID 42,Message ID: abc,MSG-9");
+    const plan = createSummaryQualityRetentionPlan(longer, "[truncated]", {
+      identifiers,
+      latestAsk: null,
+    });
+    expect(plan?.needsRebuild(16_000)).toBe(true);
+    const repaired = plan?.render(16_000)?.text ?? "";
+    expect(repaired).toContain("Job ID 42");
+    expect(repaired).toContain("Message ID: abc");
+    expect(repaired).toContain("MSG-9");
+    expect(
+      auditSummaryQuality({
+        summary: repaired,
+        structuralSummary: repaired,
+        identifiers,
+        latestAsk: null,
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("sets a feasible length target from the generation output budget", () => {
+    const low = buildCompactionStructureInstructions(undefined, undefined, undefined, 819);
+    expect(low).toContain("## Exact identifiers");
+    expect(low).not.toContain("6000 to 10000 characters");
+    expect(low).toContain("3276 characters");
+    const high = buildCompactionStructureInstructions(undefined, undefined, undefined, 13_107);
+    expect(high).toContain("6000 to 10000 characters");
+    const unknown = buildCompactionStructureInstructions();
+    expect(unknown).not.toContain("6000 to 10000 characters");
   });
 
   it("keeps an 8,000-character fitting summary with 5,000 characters of evidence intact", () => {
