@@ -228,4 +228,24 @@ describe("strict history literals", () => {
       4_000,
     );
   });
+
+  it.each(["strict", "off", "custom"] as const)(
+    "preserves a result count across capitalization under %s policy",
+    (identifierPolicy) => {
+      const source = "42 Tests Passed";
+      const summary = buildStructuredFallbackSummary("## Results and evidence\n42 tests passed");
+      expect(summaryIncludesIdentifier(summary, source)).toBe(true);
+      expect(summaryIncludesIdentifier("420 tests passed", source)).toBe(false);
+      expect(summaryIncludesIdentifier("42 tests failed", source)).toBe(false);
+      expect(
+        auditSummaryQuality({
+          summary,
+          structuralSummary: summary,
+          identifiers: [source],
+          latestAsk: null,
+          identifierPolicy,
+        }).ok,
+      ).toBe(true);
+    },
+  );
 });

@@ -89,7 +89,10 @@ export function summaryIncludesIdentifier(summary: string, identifier: string): 
     isResultEvidenceAnchor(identifier)
   ) {
     const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    return new RegExp(`(?<![A-Za-z0-9_#+-])${literal}(?![A-Za-z0-9_+-])`, "u").test(summary);
+    return new RegExp(
+      `(?<![A-Za-z0-9_#+-])${literal}(?![A-Za-z0-9_+-])`,
+      NUMERIC_RESULT_ANCHOR.test(identifier) ? "iu" : "u",
+    ).test(summary);
   }
   if ((identifier.includes("/") && !identifier.includes("://")) || isRootFilename(identifier)) {
     const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");

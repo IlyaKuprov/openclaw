@@ -270,6 +270,8 @@ describe("compaction-safeguard quality audit and structured summaries", () => {
         "A1B2C3D4",
         "/tmp/review/prune.ts",
         "https://example.test/pr/654321",
+        "report.csv",
+        "ABC1234",
       ];
       const priorIdentifier = "PR #987654";
       const urlNoise = Array.from(
@@ -303,7 +305,7 @@ describe("compaction-safeguard quality audit and structured summaries", () => {
           messagesToSummarize: [
             {
               role: "user",
-              content: `${discardedIdentifiers.slice(0, 3).join(" ")} ${urlNoise.join(" ")} ${discardedIdentifiers[3]} ${"x".repeat(4_000)}`,
+              content: `${discardedIdentifiers.slice(0, 3).join(" ")} artifact report.csv commit abc1234 ${urlNoise.join(" ")} ${discardedIdentifiers[3]} ${"x".repeat(4_000)}`,
               timestamp: 1,
             },
             { role: "user", content: "y".repeat(4_000), timestamp: 2 },
