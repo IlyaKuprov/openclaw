@@ -17,6 +17,7 @@ export {
   AUDITED_IDENTIFIER_CONTENT_SHARE,
   extractOpaqueIdentifiers,
   extractResultEvidenceAnchors,
+  isResultEvidenceAnchor,
   sourceResultEvidenceContexts,
   selectAuditedIdentifiers,
 } from "./compaction-safeguard-identifiers.js";
@@ -278,7 +279,12 @@ export function createSummaryQualityRetentionPlan(
   const resultLines = (results: string[]) => uniqueStrings(results.map(resultLine));
   const containsResult = (text: string, identifier: string) => {
     const context = params.resultContexts?.get(identifier);
-    return context ? text.includes(context) : summaryIncludesIdentifier(text, identifier);
+    const relatesResults =
+      context &&
+      /\b(?:correct(?:ed|ion)|invalidat(?:ed|ion)|supersed(?:ed|es)|retract(?:ed|ion))\b/iu.test(
+        context,
+      );
+    return relatesResults ? text.includes(context) : summaryIncludesIdentifier(text, identifier);
   };
   const marker = truncatedMarker.trim();
   const pendingAsk = contents[PENDING_ASK_SECTION_INDEX] ?? "";
@@ -458,41 +464,42 @@ export function createSummaryQualityRetentionPlan(
 /** Return a structured fallback summary when model output is missing/invalid. */
 export function buildStructuredFallbackSummary(previousSummary: string | undefined): string {
   const trimmedPreviousSummary = previousSummary?.trim() ?? "";
-  if (trimmedPreviousSummary && hasRequiredSummarySections(trimmedPreviousSummary)) {
-    return trimmedPreviousSummary;
-  }
+  const legacyContents = trimmedPreviousSummary
+    ? parseRequiredSummarySectionContents(trimmedPreviousSummary, LEGACY_SUMMARY_SECTIONS)
+    : null;
+  const hasCanonicalResultsBoundary =
+    /(?:^|\r?\n[ \t]*\r?\n)## Results and evidence(?:\r?\n|$)/u.test(trimmedPreviousSummary);
   if (
     trimmedPreviousSummary &&
-    !normalizedSummaryLines(trimmedPreviousSummary).includes(
-      REQUIRED_SUMMARY_SECTIONS[RESULTS_SECTION_INDEX],
-    )
+    parseRequiredSummarySectionContents(trimmedPreviousSummary) &&
+    (!legacyContents || hasCanonicalResultsBoundary)
   ) {
-    const legacyContents = parseRequiredSummarySectionContents(
-      trimmedPreviousSummary,
-      LEGACY_SUMMARY_SECTIONS,
+    return trimmedPreviousSummary;
+  }
+  if (legacyContents) {
+    const migratedContents = legacyContents.map((content) =>
+      content.replace(/^## Results and evidence$/gmu, "> ## Results and evidence"),
     );
-    if (legacyContents) {
-      const resultIdentifiers = extractResultEvidenceAnchors(trimmedPreviousSummary);
-      const resultLines = uniqueStrings(
-        legacyContents.flatMap((content) =>
-          content.split(/\r?\n/u).flatMap((line) => {
-            const matching = resultIdentifiers.filter((identifier) =>
-              summaryIncludesIdentifier(line, identifier),
-            );
-            return matching.length > 0
-              ? [line.length <= MAX_AUDITED_IDENTIFIER_CHARS ? line.trim() : matching.join(", ")]
-              : [];
-          }),
-        ),
-      );
-      return LEGACY_SUMMARY_SECTIONS.map((heading, index) => `${heading}\n${legacyContents[index]}`)
-        .toSpliced(
-          RESULTS_SECTION_INDEX,
-          0,
-          `## Results and evidence\n${resultLines.join("\n") || "None captured."}`,
-        )
-        .join("\n\n");
-    }
+    const resultIdentifiers = extractResultEvidenceAnchors(trimmedPreviousSummary);
+    const resultLines = uniqueStrings(
+      migratedContents.flatMap((content) =>
+        content.split(/\r?\n/u).flatMap((line) => {
+          const matching = resultIdentifiers.filter((identifier) =>
+            summaryIncludesIdentifier(line, identifier),
+          );
+          return matching.length > 0
+            ? [line.length <= MAX_AUDITED_IDENTIFIER_CHARS ? line.trim() : matching.join(", ")]
+            : [];
+        }),
+      ),
+    );
+    return LEGACY_SUMMARY_SECTIONS.map((heading, index) => `${heading}\n${migratedContents[index]}`)
+      .toSpliced(
+        RESULTS_SECTION_INDEX,
+        0,
+        `## Results and evidence\n${resultLines.join("\n") || "None captured."}`,
+      )
+      .join("\n\n");
   }
   const values = [
     trimmedPreviousSummary || "No prior history.",

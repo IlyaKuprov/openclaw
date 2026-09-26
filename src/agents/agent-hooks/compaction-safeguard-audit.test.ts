@@ -263,6 +263,7 @@ describe("compaction-safeguard quality audit and structured summaries", () => {
     ["corrected", "strict"],
     ["corrected", "off"],
     ["corrected", "custom"],
+    ["current-only", "strict"],
     ["long-corrected", "strict"],
     ["independent", "off"],
   ] as const)("keeps sourced %s results under %s policy", async (scenario, identifierPolicy) => {
@@ -276,9 +277,12 @@ describe("compaction-safeguard quality audit and structured summaries", () => {
         : isCorrection
           ? correction
           : independent;
-    const currentResult = isCorrection
-      ? "Corrected linewidth is 18.1 Hz."
-      : "Sample B measured 18.1 Hz.";
+    const currentResult =
+      scenario === "current-only"
+        ? "17.3 Hz; 18.1 Hz"
+        : isCorrection
+          ? "Corrected linewidth is 18.1 Hz."
+          : "Sample B measured 18.1 Hz.";
     mockSummarizeInStages
       .mockReset()
       .mockResolvedValue(
@@ -300,13 +304,18 @@ describe("compaction-safeguard quality audit and structured summaries", () => {
       identifierPolicy,
     });
     const event = createCompactionEvent({ messageText: source, tokensBefore: 1_500 });
-    event.preparation.messagesToSummarize.unshift({
-      role: "user",
-      content: "Earlier measurement: linewidth 17.3 Hz.",
-      timestamp: 0,
-    });
+    if (scenario !== "current-only") {
+      event.preparation.messagesToSummarize.unshift({
+        role: "user",
+        content: "Earlier measurement: linewidth 17.3 Hz.",
+        timestamp: 0,
+      });
+    }
     Object.assign(event.preparation, {
-      previousSummary: "## Results and evidence\nMeasured linewidth 17.3 Hz.",
+      previousSummary:
+        scenario === "current-only"
+          ? undefined
+          : "## Results and evidence\nMeasured linewidth 17.3 Hz.",
       settings: { reserveTokens: 4_000 },
       isSplitTurn: false,
     });

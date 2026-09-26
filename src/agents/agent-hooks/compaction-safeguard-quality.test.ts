@@ -548,6 +548,32 @@ describe("compaction summary quality contract", () => {
     ).toBe(true);
   });
 
+  it("migrates a legacy summary with a quoted Results line without nesting its pending ask", () => {
+    const previous = [
+      "## Decisions\nQuoted source text follows:\n## Results and evidence\n17.3 Hz was invalidated.",
+      "## Open TODOs\nInspect the corrected spectrum.",
+      "## Constraints/Rules\nKeep original evidence.",
+      "## Pending user asks\nReport the corrected result.",
+      "## Exact identifiers\n/tmp/spectrum.log",
+    ].join("\n\n");
+
+    const summary = buildStructuredFallbackSummary(previous);
+
+    expect(summary).toContain("## Pending user asks\nReport the corrected result.");
+    expect(summary).toContain("> ## Results and evidence");
+    expect(summary.split("\n").filter((line) => line === "## Results and evidence")).toHaveLength(
+      1,
+    );
+    expect(
+      auditSummaryQuality({
+        summary,
+        structuralSummary: summary,
+        identifiers: ["/tmp/spectrum.log", "17.3 Hz"],
+        latestAsk: null,
+      }).ok,
+    ).toBe(true);
+  });
+
   it("requires Results and evidence in order and reserves its content during budgeting", () => {
     const noResults = [
       "## Decisions",
@@ -612,6 +638,16 @@ describe("compaction summary quality contract", () => {
     const rendered = plan?.render(1000);
     expect(rendered?.text).toContain(source);
     expect(rendered?.text).not.toMatch(/(?:^|\n)17\.3 Hz(?:\n|$)/u);
+
+    const independent = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+      identifiers: ["17.3 Hz", "18.1 Hz"],
+      resultContexts: new Map([
+        ["17.3 Hz", "Source message: Independent samples: 17.3 Hz and 18.1 Hz."],
+      ]),
+      latestAsk: null,
+    });
+    expect(independent?.needsRebuild(1000)).toBe(false);
+    expect(independent?.render(1000)?.text).toBe(summary);
   });
 
   it("bounds a long single-line source while retaining both results and correction status", () => {
