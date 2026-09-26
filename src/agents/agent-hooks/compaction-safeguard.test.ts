@@ -5257,6 +5257,8 @@ describe("compaction-safeguard recent suffix eviction", () => {
       { length: 30 },
       (_, index) => `/workspace/long-file-${index}-${"r".repeat(30)}`,
     );
+    // Keep effective pressure at 16K even if HF-46 raises the absolute cap.
+    (event.preparation as { summaryTokenBudget?: number }).summaryTokenBudget = 4_000;
     (event.preparation as { settings?: { reserveTokens: number } }).settings = {
       reserveTokens: 4_000,
     };
