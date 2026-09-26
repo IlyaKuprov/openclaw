@@ -52,7 +52,12 @@ type WakeGroup = {
   event?: PendingWake;
   blockedUntil: number;
 };
-type ActiveWake = { generation: number; controller: AbortController };
+type ActiveWake = {
+  generation: number;
+  controller: AbortController;
+  /** Cancel only a pre-handler admission; a started turn retains its own completion. */
+  admitting?: { wake: PendingWake; controller: AbortController; started: boolean };
+};
 type RequestOptions = Omit<SessionEventWakeRequest, "retainedWork"> & { coalesceMs?: number };
 
 const SLOTS = ["task", "scheduled", "event"] as const;
@@ -354,50 +359,67 @@ function createSessionEventWakeRuntime() {
   ): Promise<void> {
     const signal = owner.controller.signal;
     try {
-      for (const [index, wake] of wakes.entries()) {
+      for (const [index, queued] of wakes.entries()) {
         // Busy backoff also owns wakes selected before the current attempt began.
         const blockedUntil = pending.get(key)?.blockedUntil ?? 0;
         if (owner.generation !== generation || blockedUntil > performance.now()) {
           handOff(wakes, index);
           return;
         }
+        let wake = withoutCancelledMembers(queued);
+        if (!wake) {
+          continue;
+        }
+        const admitting = { wake: queued, controller: new AbortController(), started: false };
+        owner.admitting = admitting;
         let result: SessionEventWakeResult;
         let onAbort: (() => void) | undefined;
         try {
-          result = await runWithGatewayDetachedWorkAdmission(() => {
-            signal.throwIfAborted();
-            for (const entry of wake.settlements) {
-              if (entry.active) {
-                entry.onAttemptStarted?.();
+          result = await runWithGatewayDetachedWorkAdmission(
+            () => {
+              signal.throwIfAborted();
+              admitting.controller.signal.throwIfAborted();
+              const retained = withoutCancelledMembers(queued);
+              if (!retained) {
+                throw new Error("Heartbeat wake was cancelled before admission");
               }
-            }
-            // Subscribe before calling the handler: it can synchronously replace its owner.
-            const aborted = new Promise<never>((_resolve, reject) => {
-              onAbort = () =>
-                reject(
-                  signal.reason instanceof Error
-                    ? signal.reason
-                    : new Error("Heartbeat handler was replaced"),
-                );
-              signal.addEventListener("abort", onAbort, { once: true });
-            });
-            const request: SessionEventWakeRequest = {
-              source: wake.source,
-              intent: wake.intent,
-              reason: wake.reason,
-              ...(wake.agentId ? { agentId: wake.agentId } : {}),
-              ...(wake.sessionKey ? { sessionKey: wake.sessionKey } : {}),
-              ...(wake.heartbeat ? { heartbeat: wake.heartbeat } : {}),
-              ...(wake.scheduledEveryMs !== undefined
-                ? { scheduledEveryMs: wake.scheduledEveryMs }
-                : {}),
-              ...(wake.tasks ? { tasks: wake.tasks } : {}),
-              ...(wake.retainedWork ? { retainedWork: true } : {}),
-            };
-            // A synchronous handler throw must not leave the abort promise unobserved.
-            const running = abortSignals.run(signal, async () => run(request, signal));
-            return Promise.race([running, aborted]);
-          }, "heartbeat:wake");
+              wake = retained;
+              admitting.started = true;
+              for (const entry of wake.settlements) {
+                if (entry.active) {
+                  entry.onAttemptStarted?.();
+                }
+              }
+              // Subscribe before calling the handler: it can synchronously replace its owner.
+              const aborted = new Promise<never>((_resolve, reject) => {
+                onAbort = () =>
+                  reject(
+                    signal.reason instanceof Error
+                      ? signal.reason
+                      : new Error("Heartbeat handler was replaced"),
+                  );
+                signal.addEventListener("abort", onAbort, { once: true });
+              });
+              const request: SessionEventWakeRequest = {
+                source: wake.source,
+                intent: wake.intent,
+                reason: wake.reason,
+                ...(wake.agentId ? { agentId: wake.agentId } : {}),
+                ...(wake.sessionKey ? { sessionKey: wake.sessionKey } : {}),
+                ...(wake.heartbeat ? { heartbeat: wake.heartbeat } : {}),
+                ...(wake.scheduledEveryMs !== undefined
+                  ? { scheduledEveryMs: wake.scheduledEveryMs }
+                  : {}),
+                ...(wake.tasks ? { tasks: wake.tasks } : {}),
+                ...(wake.retainedWork ? { retainedWork: true } : {}),
+              };
+              // A synchronous handler throw must not leave the abort promise unobserved.
+              const running = abortSignals.run(signal, async () => run(request, signal));
+              return Promise.race([running, aborted]);
+            },
+            "heartbeat:wake",
+            AbortSignal.any([signal, admitting.controller.signal]),
+          );
         } catch {
           if (owner.generation === generation) {
             retry(wake);
@@ -406,6 +428,9 @@ function createSessionEventWakeRuntime() {
           }
           continue;
         } finally {
+          if (owner.admitting === admitting) {
+            owner.admitting = undefined;
+          }
           if (onAbort) {
             signal.removeEventListener("abort", onAbort);
           }
@@ -509,6 +534,11 @@ function createSessionEventWakeRuntime() {
           if (wake) {
             wake.notBefore = 0;
             wake.retainedWork = false;
+            // Cancellation can later rebuild this projection from the original members.
+            for (const member of wake.members ?? []) {
+              member.notBefore = 0;
+              member.retainedWork = false;
+            }
           }
         }
       }
@@ -606,6 +636,18 @@ function createSessionEventWakeRuntime() {
               pending.delete(key);
             }
             schedulePending(0, key);
+            return;
+          }
+        }
+        for (const owner of active.values()) {
+          const admitting = owner.admitting;
+          if (
+            admitting &&
+            !admitting.started &&
+            admitting.wake.settlements.includes(settlement) &&
+            !withoutCancelledMembers(admitting.wake)
+          ) {
+            admitting.controller.abort();
             return;
           }
         }

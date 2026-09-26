@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
+import {
+  resetGatewayWorkAdmission,
+  tryBeginGatewaySuspendAdmission,
+} from "../process/gateway-work-admission.js";
 import {
   HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
   requestHeartbeatAndWait,
@@ -213,5 +216,81 @@ describe("heartbeat wake settlement", () => {
     });
     await vi.advanceTimersByTimeAsync(60_000);
     expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("drops an expired cron wake selected before detached-work admission without dropping its event handoff", async () => {
+    vi.useFakeTimers();
+    const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+    setHandler(handler);
+    const suspension = tryBeginGatewaySuspendAdmission(() => {});
+    expect(suspension?.commit()).toBe(true);
+    const controller = new AbortController();
+    const expired = requestHeartbeatAndWait(
+      {
+        source: "interval",
+        intent: "scheduled",
+        reason: "interval",
+        agentId: "main",
+        scheduledEveryMs: 60_000,
+        coalesceMs: 0,
+      },
+      { abortSignal: controller.signal, cancelQueuedOnAbort: true },
+    );
+    const event = requestHeartbeatAndWait({
+      source: "cron",
+      intent: "immediate",
+      reason: "system-event",
+      agentId: "main",
+      coalesceMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    controller.abort();
+    await expect(expired).resolves.toEqual({
+      status: "failed",
+      reason: "heartbeat wake cancelled",
+    });
+    expect(handler).not.toHaveBeenCalled();
+
+    expect(suspension?.release()).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(event).resolves.toMatchObject({ status: "ran" });
+    expect(handler.mock.calls.map(([request]) => request.reason)).toEqual(["system-event"]);
+    expect(handler.mock.calls[0]?.[0]).not.toHaveProperty("scheduledEveryMs");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("resets the surviving coalesced event after a guarded retry and handler replacement", async () => {
+    vi.useFakeTimers();
+    const oldHandler = vi.fn().mockResolvedValueOnce({
+      status: "skipped",
+      reason: "not-due",
+      retryAtMs: Date.now() + 30_000,
+    });
+    setHandler(oldHandler);
+    const controller = new AbortController();
+    const cancelled = requestHeartbeatAndWait(
+      { source: "cron", intent: "event", reason: "old-event", agentId: "main", coalesceMs: 0 },
+      { abortSignal: controller.signal, cancelQueuedOnAbort: true },
+    );
+    const live = requestHeartbeatAndWait({
+      source: "cron",
+      intent: "event",
+      reason: "live-event",
+      agentId: "main",
+      coalesceMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(oldHandler).toHaveBeenCalledOnce();
+    const replacement = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+    setHandler(replacement);
+    controller.abort();
+    await expect(cancelled).resolves.toMatchObject({ status: "failed" });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(replacement).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ reason: "live-event" }),
+    );
+    await expect(live).resolves.toMatchObject({ status: "ran" });
+    expect(replacement.mock.calls[0]?.[0]).not.toHaveProperty("retainedWork");
   });
 });
