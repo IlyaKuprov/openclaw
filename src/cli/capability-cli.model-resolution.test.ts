@@ -127,6 +127,47 @@ describe("capability cli model resolution", () => {
     });
   }
 
+  it("finds a configured alias target through the catalog identity matcher", async () => {
+    const catalogEntry = { id: "gpt-5.5", provider: "openai", name: "GPT-5.5" };
+    mocks.loadConfig.mockReturnValue({
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.4" },
+          models: { "OpenAI/GPT-5.5": { alias: "casey" } },
+        },
+      },
+    });
+    mocks.loadModelCatalog.mockResolvedValueOnce([catalogEntry] as never);
+
+    await runCap("capability", "model", "inspect", "--model", "casey", "--json");
+
+    expect(mocks.runtime.writeJson).toHaveBeenCalledWith(catalogEntry);
+  });
+
+  it.each(["run", "inspect"] as const)(
+    "resolves an exact configured @ alias before parsing a profile for %s",
+    async (action) => {
+      const catalogEntry = { id: "gpt-5.5", provider: "openai", name: "GPT-5.5" };
+      mocks.loadConfig.mockReturnValue({
+        agents: {
+          defaults: {
+            model: { primary: "openai/gpt-5.4" },
+            models: { "openai/gpt-5.5": { alias: "gpt@prod" } },
+          },
+        },
+      });
+      mocks.loadModelCatalog.mockResolvedValueOnce([catalogEntry] as never);
+
+      if (action === "run") {
+        await runModelRunWithModel("gpt@prod", "local");
+        expectModelRunDispatch("local", "openai/gpt-5.5");
+      } else {
+        await runCap("capability", "model", "inspect", "--model", "gpt@prod", "--json");
+        expect(mocks.runtime.writeJson).toHaveBeenCalledWith(catalogEntry);
+      }
+    },
+  );
+
   it.each(["local", "gateway"] as const)(
     "resolves configured bare model aliases before %s dispatch",
     async (transport) => {
