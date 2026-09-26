@@ -1415,6 +1415,66 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(section).not.toContain("[non-text content]");
   });
 
+  it("summarizes the oldest ask when six default preserved texts exceed the section budget", async () => {
+    mockSummarizeInStages.mockReset();
+    const oldestAsk = "earliest preserved user request: keep the baseline result";
+    mockSummarizeInStages.mockImplementation(async ({ messages }) =>
+      summaryResult(
+        JSON.stringify(messages).includes(oldestAsk)
+          ? `## Decisions\n${oldestAsk} remains active.`
+          : "## Decisions\nNo earlier request captured.",
+      ),
+    );
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, { model: createAnthropicModelFixture() });
+    const messagesToSummarize = Array.from({ length: 6 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `${index === 0 ? oldestAsk : `recent-${index}`} ${"x".repeat(1_420)}`,
+      timestamp: index + 1,
+    })) as AgentMessage[];
+    const event = createCompactionEvent({ messageText: "placeholder", tokensBefore: 20_000 });
+    (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+      reserveTokens: 4_000,
+    };
+    event.preparation.messagesToSummarize = messagesToSummarize;
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+
+    const summary = expectCompactionResult(result).summary;
+    expect(preservedTurnsText(messagesToSummarize)).not.toContain(oldestAsk);
+    expect(summary).toContain(oldestAsk);
+    expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(mockSummarizeInStages).toHaveBeenCalledOnce();
+    expect(JSON.stringify(requireRecord(mockCallArg(mockSummarizeInStages)).messages)).toContain(
+      oldestAsk,
+    );
+  });
+
+  it("summarizes a preserved ask whose final text is clipped by the per-message cap", async () => {
+    mockSummarizeInStages.mockReset();
+    const trailingAsk = "trailing user requirement: keep exact error code";
+    mockSummarizeInStages.mockImplementation(async ({ messages }) =>
+      summaryResult(
+        JSON.stringify(messages).includes(trailingAsk)
+          ? `## Decisions\n${trailingAsk}`
+          : "## Decisions\nNo trailing requirement captured.",
+      ),
+    );
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, { model: createAnthropicModelFixture() });
+    const longAsk = `${"x".repeat(1_600)} ${trailingAsk}`;
+    const event = createCompactionEvent({ messageText: longAsk, tokensBefore: 20_000 });
+    (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+      reserveTokens: 4_000,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+
+    expect(preservedTurnsText(event.preparation.messagesToSummarize)).not.toContain(trailingAsk);
+    expect(expectCompactionResult(result).summary).toContain(trailingAsk);
+    expect(mockSummarizeInStages).toHaveBeenCalledOnce();
+  });
+
   it("caps preserved tail when user turns are below preserve target", () => {
     const messages: AgentMessage[] = [
       { role: "user", content: "single user prompt", timestamp: 1 },
