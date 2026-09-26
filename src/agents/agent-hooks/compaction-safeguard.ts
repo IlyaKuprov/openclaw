@@ -1169,7 +1169,12 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           `Compaction safeguard: finalized artifact truncated; loss=${[...losses].join(",")}`,
         );
       }
-      return finalized;
+      return {
+        ...finalized,
+        preservedTurnsRetained:
+          !sections.preservedTurnsSection?.text ||
+          finalized.summary.includes(sections.preservedTurnsSection.text.trim()),
+      };
     };
     const compactionResult = (summary: string) => ({
       compaction: {
@@ -1376,8 +1381,33 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const preservedTurnsSectionLocal = buildPreservedTurnsSection(preservedRecentMessages);
       const latestPreparedAsk = extractLatestUserAsk(messagesToSummarize);
       const requiredAskContext = formatRequiredAskContext(latestUserAsk ?? "");
+      const preservedSuffix = assembleSuffix({
+        generatedSplitTurnSection:
+          preparation.isSplitTurn && turnPrefixMessages.length > 0
+            ? "x".repeat(MAX_SPLIT_TURN_CONTEXT_CHARS)
+            : undefined,
+        preservedTurnsSection: preservedTurnsSectionLocal,
+        toolFailureSection,
+        fileOpsSummary,
+        workspaceContext: await (workspaceContextPromise ??= readWorkspaceContextForSummary(
+          runtime?.postCompactionSections,
+          runtime?.workspaceDir,
+        )),
+      });
+      // The finalizer reserves at least half the artifact for the body. A
+      // preserved section in a larger combined suffix can be evicted by later
+      // diagnostics even when its producer-local section fitted in full.
+      const possibleArtifactChars = Math.min(
+        MAX_COMPACTION_SUMMARY_CHARS,
+        typeof preparation.summaryTokenBudget === "number" &&
+          Number.isFinite(preparation.summaryTokenBudget)
+          ? Math.max(0, preparation.summaryTokenBudget * CHARS_PER_TOKEN_ESTIMATE)
+          : MAX_COMPACTION_SUMMARY_CHARS,
+      );
       const includePreservedContext =
         preservedTurnsSectionLocal.needsSummarization ||
+        (Boolean(preservedTurnsSectionLocal.text) &&
+          preservedSuffix.text.length > possibleArtifactChars / 2) ||
         // Receipts omitted from the verbatim section must still reach the summarizer.
         preservedRecentMessages.some((message) => message.role === "toolResult") ||
         // Non-text user attachments also disappear from the text-only suffix.
@@ -1391,9 +1421,11 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           Boolean(latestPreparedAsk) &&
           (summaryTargetMessages.length > 0 ||
             !preservedTurnsSectionLocal.text.includes(requiredAskContext)));
+      const fullSourceMessages = messagesToSummarize;
+      const discardedResults = [...preparedPairing.discarded, ...(partitionDiscardedResults ?? [])];
       messagesToSummarize = repairSummaryMessages(
-        includePreservedContext ? messagesToSummarize : summaryTargetMessages,
-        [...preparedPairing.discarded, ...(partitionDiscardedResults ?? [])],
+        includePreservedContext ? fullSourceMessages : summaryTargetMessages,
+        discardedResults,
       );
 
       // Use adaptive chunk ratio based on message sizes, reserving headroom for
@@ -1414,6 +1446,18 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
 
       let correctiveInstructions = "";
       const totalAttempts = qualityGuardEnabled ? qualityGuardMaxRetries + 1 : 1;
+      const qualityRetentionFor = (auditSummary: string): SummaryQualityRetention | undefined =>
+        qualityGuardEnabled
+          ? {
+              auditSummary,
+              identifiers: identifierCandidates,
+              latestAsk: latestUserAsk,
+              latestAskInRetainedTurn: splitUserAsk !== null,
+              latestUnresolvedUserRequest: latestUnresolvedUserRequest ?? undefined,
+              requiredAskContext,
+              identifierPolicy,
+            }
+          : undefined;
 
       for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
         let splitTurnSectionLocal = "";
@@ -1471,33 +1515,56 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           }
           throw attemptError;
         }
-        const unbudgetedSummary = appendSummarySection(
+        let unbudgetedSummary = appendSummarySection(
           historySummary,
           splitTurnSectionLocal ? `\n\n${splitTurnSectionLocal}` : "",
         );
-        const structuralSummary = qualityGuardEnabled ? historySummary : unbudgetedSummary;
-        const finalized = await finalizeSummaryText(
-          structuralSummary,
-          {
-            generatedSplitTurnSection:
-              qualityGuardEnabled && splitTurnSectionLocal
-                ? `\n\n${splitTurnSectionLocal}`
-                : undefined,
-            preservedTurnsSection: preservedTurnsSectionLocal,
-          },
+        const sections = {
+          generatedSplitTurnSection:
+            qualityGuardEnabled && splitTurnSectionLocal
+              ? `\n\n${splitTurnSectionLocal}`
+              : undefined,
+          preservedTurnsSection: preservedTurnsSectionLocal,
+        };
+        let finalized = await finalizeSummaryText(
+          qualityGuardEnabled ? historySummary : unbudgetedSummary,
+          sections,
           producerLosses,
-          qualityGuardEnabled
-            ? {
-                auditSummary: unbudgetedSummary,
-                identifiers: identifierCandidates,
-                latestAsk: latestUserAsk,
-                latestAskInRetainedTurn: splitUserAsk !== null,
-                latestUnresolvedUserRequest: latestUnresolvedUserRequest ?? undefined,
-                requiredAskContext,
-                identifierPolicy,
-              }
-            : undefined,
+          qualityRetentionFor(unbudgetedSummary),
         );
+        if (!includePreservedContext && !finalized.preservedTurnsRetained) {
+          // A short producer-local section can still lose whole earlier turns
+          // after the actual body and all suffix sections are fitted. Re-run
+          // only this history summary with those turns, not the split-prefix
+          // summary; never commit a boundary that silently dropped them.
+          messagesToSummarize = repairSummaryMessages(fullSourceMessages, discardedResults);
+          const fullRatio = await computeAdaptiveChunkRatioWithWorker({
+            messages: [...messagesToSummarize, ...turnPrefixMessages],
+            contextWindow: contextWindowTokens,
+            signal,
+          });
+          historySummary = await summarizeViaLLM({
+            ...llmSummaryParams,
+            messages: messagesToSummarize,
+            maxChunkTokens: Math.max(
+              1,
+              Math.floor(contextWindowTokens * fullRatio) - SUMMARIZATION_OVERHEAD_TOKENS,
+            ),
+            summaryPrompt: { kind: "custom", instructions: structuredInstructions },
+            customInstructions: correctiveInstructions,
+            previousSummary: effectivePreviousSummary,
+          });
+          unbudgetedSummary = appendSummarySection(
+            historySummary,
+            splitTurnSectionLocal ? `\n\n${splitTurnSectionLocal}` : "",
+          );
+          finalized = await finalizeSummaryText(
+            qualityGuardEnabled ? historySummary : unbudgetedSummary,
+            sections,
+            producerLosses,
+            qualityRetentionFor(unbudgetedSummary),
+          );
+        }
 
         const canRegenerate =
           messagesToSummarize.length > 0 ||
