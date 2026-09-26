@@ -43,7 +43,8 @@ export const runEmbeddedAgentWithOwnerFence: PluginRuntime["agent"]["runEmbedded
           if (
             Boolean(current) !== Boolean(original) ||
             current?.sessionId !== original?.sessionId ||
-            current?.pluginOwnerId !== original?.pluginOwnerId
+            current?.pluginOwnerId !== original?.pluginOwnerId ||
+            current?.lifecycleRevision !== original?.lifecycleRevision
           ) {
             changed = true;
           }
@@ -63,6 +64,7 @@ export const runEmbeddedAgentWithOwnerFence: PluginRuntime["agent"]["runEmbedded
         Boolean(current) !== Boolean(original) ||
         current?.sessionId !== original?.sessionId ||
         current?.pluginOwnerId !== original?.pluginOwnerId ||
+        current?.lifecycleRevision !== original?.lifecycleRevision ||
         (current?.pluginOwnerId && current.pluginOwnerId !== pluginId) ||
         (current && target?.sessionId && current.sessionId !== target.sessionId)
       ) {
