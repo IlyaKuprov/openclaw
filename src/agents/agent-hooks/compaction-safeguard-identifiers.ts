@@ -31,6 +31,9 @@ const NUMERIC_RESULT_ANCHOR =
 // results; a decimal in prose or inside an ID is not evidence by itself.
 const MEASURED_VALUE_SOURCE = String.raw`(?<![A-Za-z0-9._/\\+-])[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?[ \t]*(?:Hz|kHz|MHz|GHz|mT|T|G|ppm|ms|[µμu]s|ns|s|K|%|[KMGT]i?B|B|°[CF])(?![A-Za-z0-9_+-])`;
 const MEASURED_VALUE_ANCHOR = new RegExp(`^${MEASURED_VALUE_SOURCE}$`, "u");
+// Standalone history literals, not substrings of paths, URLs, or longer IDs.
+const HISTORY_LITERAL_SOURCE = String.raw`(?<![A-Za-z0-9_./\\:+-])(?:\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])|(?:[01]\d|2[0-3]):[0-5]\d|localhost:\d{1,5})(?![A-Za-z0-9_/\\:+-]|\.[A-Za-z0-9_-])`;
+const HISTORY_LITERAL_ANCHOR = new RegExp(`^${HISTORY_LITERAL_SOURCE}$`, "u");
 
 export function isResultEvidenceAnchor(identifier: string): boolean {
   return NUMERIC_RESULT_ANCHOR.test(identifier) || MEASURED_VALUE_ANCHOR.test(identifier);
@@ -67,6 +70,17 @@ function auditedIdentifierPriority(identifier: string): number {
 }
 
 export function summaryIncludesIdentifier(summary: string, identifier: string): boolean {
+  if (identifier.startsWith("http://") || identifier.startsWith("https://")) {
+    // A longer URL cannot preserve its prefix as an exact source URL.
+    return Array.from(summary.matchAll(/(?<![A-Za-z0-9._/\\-])https?:\/\/\S+/gu)).some(
+      (match) => sanitizeExtractedIdentifier(match[0]) === identifier,
+    );
+  }
+  if (HISTORY_LITERAL_ANCHOR.test(identifier)) {
+    return Array.from(summary.matchAll(new RegExp(HISTORY_LITERAL_SOURCE, "gu"))).some(
+      (match) => match[0] === identifier,
+    );
+  }
   if (isPureHexIdentifier(identifier)) {
     return new RegExp(`(?<![A-Fa-f0-9])${identifier}(?![A-Fa-f0-9])`, "iu").test(summary);
   }
@@ -93,6 +107,15 @@ export function extractOpaqueIdentifiers(
   const measuredValues = Array.from(
     text.matchAll(new RegExp(MEASURED_VALUE_SOURCE, "gu")),
     (match) => ({ index: match.index, value: match[0] }),
+  );
+  const historyLiterals = Array.from(
+    text.matchAll(new RegExp(HISTORY_LITERAL_SOURCE, "gu")),
+    (match) => ({ index: match.index, value: match[0] }),
+  ).filter(({ value }) =>
+    value.startsWith("localhost:")
+      ? Number(value.slice("localhost:".length)) >= 1 &&
+        Number(value.slice("localhost:".length)) <= 65_535
+      : true,
   );
   const pathsAndResults = Array.from(
     text.matchAll(
@@ -127,6 +150,7 @@ export function extractOpaqueIdentifiers(
       ...rootFiles,
       ...labeledCommits,
       ...measuredValues,
+      ...historyLiterals,
     ]
       .filter(
         (match) =>
