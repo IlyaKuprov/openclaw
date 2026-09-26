@@ -484,6 +484,34 @@ describe("compaction summary quality contract", () => {
     expect(completed?.text).toContain("Job ID 42");
   });
 
+  it("spends the Results tail reservation only once when its measurements survive the prefix", () => {
+    const measurements = ["17.3 Hz", "512 MB", "23 °C", "85%"];
+    const summary = [
+      `## Decisions\n${"d".repeat(1200)}`,
+      `## Results and evidence\n${measurements.join("\n")}\n${"r".repeat(1200)}`,
+      `## Open TODOs\n${"t".repeat(1200)}`,
+      `## Constraints/Rules\n${"c".repeat(1200)}`,
+      "## Pending user asks\nNone.",
+      "## Exact identifiers\nNone.",
+    ].join("\n\n");
+    const plan = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+      identifiers: measurements,
+      latestAsk: null,
+      identifierPolicy: "off",
+    });
+    expect(plan?.render(8_000)).toEqual({ text: summary, trimmed: false });
+    const pressured = plan?.render(1_000);
+    expect(pressured?.text.length).toBeLessThanOrEqual(1_000);
+    expect(pressured?.text).toContain("[truncated]");
+    expect(pressured?.text).toContain(`## Results and evidence\n${measurements.join("\n")}`);
+    const unprotected = ["d", "t", "c"].reduce(
+      (total, char) =>
+        total + (pressured?.text.match(new RegExp(`${char}{2,}`, "u"))?.[0].length ?? 0),
+      0,
+    );
+    expect(unprotected).toBeGreaterThanOrEqual(635);
+  });
+
   it("migrates a persisted five-section summary without nesting or losing its evidence", () => {
     const previous = [
       "## Decisions\nKeep the measured result.",
