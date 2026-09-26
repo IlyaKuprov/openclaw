@@ -57,6 +57,7 @@ import {
   providerHasGenericConfig,
   requireProviderModelOverride,
   resolveCapabilityAgentOption,
+  resolveCapabilityInspectionAgentId,
   resolveCapabilityProviderAgentId,
   resolveLocalCapabilityRuntimeConfig,
   resolveSelectedProviderFromModelRef,
@@ -71,12 +72,8 @@ const HEIC_MODEL_RUN_MIMES = new Set([
   "image/heif-sequence",
 ]);
 
-function resolveInspectionAgentId(cfg: OpenClawConfig, rawAgentId?: string): string | undefined {
-  return rawAgentId === undefined ? undefined : resolveCapabilityProviderAgentId(cfg, rawAgentId);
-}
-
 async function loadModelCatalogForInspection(cfg: OpenClawConfig, rawAgentId?: string) {
-  const agentId = resolveInspectionAgentId(cfg, rawAgentId);
+  const agentId = resolveCapabilityInspectionAgentId(cfg, rawAgentId);
   const prepared = await readPreparedModelCatalog({ config: cfg, agentId, readOnly: true });
   return prepared.toSorted(
     (a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id),
@@ -224,7 +221,7 @@ async function resolveGatewayModelRunAgentId(): Promise<string> {
   });
   const agentId = normalizeOptionalString(selection.defaultId);
   if (
-    selection.selectionRequired !== false ||
+    selection.selectionRequired === true ||
     !agentId ||
     !selection.agents?.some((entry) => entry.id === agentId)
   ) {
@@ -623,12 +620,13 @@ export function registerModelCapabilityCommands(capability: Command): void {
         const target = normalizeStringifiedOptionalString(opts.model) ?? "";
         const cfg = getRuntimeConfig();
         const rawAgentId = resolveCapabilityAgentOption(command, opts.agent);
+        const agentId = resolveCapabilityProviderAgentId(cfg, rawAgentId);
         const aliasRef = resolveConfiguredModelAliasRef({
           raw: target,
           cfg,
-          agentId: resolveInspectionAgentId(cfg, rawAgentId),
+          agentId,
         });
-        const catalog = await loadModelCatalogForInspection(cfg, rawAgentId);
+        const catalog = await loadModelCatalogForInspection(cfg, agentId);
         // A resolved alias names exactly one target: never fall back to reading the
         // alias text as a catalog id, which could silently report another model.
         const aliasSeparator = aliasRef?.indexOf("/") ?? -1;
