@@ -214,6 +214,23 @@ describe("capability cli model resolution", () => {
     expect(mocks.runtime.writeJson).toHaveBeenCalledWith(catalogEntry);
   });
 
+  it("inspects a configured alias whose model target carries an auth profile", async () => {
+    const catalogEntry = { id: "test-model", provider: "anthropic", name: "Test model" };
+    mocks.loadConfig.mockReturnValue({
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-sonnet-4-6" },
+          models: { "anthropic/test-model@claude-cli:work": { alias: "work-model" } },
+        },
+      },
+    });
+    mocks.loadModelCatalog.mockResolvedValueOnce([catalogEntry] as never);
+
+    await runCap("capability", "model", "inspect", "--model", "work-model", "--json");
+
+    expect(mocks.runtime.writeJson).toHaveBeenCalledWith(catalogEntry);
+  });
+
   it("inspects an alias configured only for the implicitly selected sole agent", async () => {
     const catalogEntry = { id: "gpt-5.5", provider: "openai", name: "GPT-5.5" };
     mocks.loadConfig.mockReturnValue({

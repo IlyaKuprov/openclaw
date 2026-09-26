@@ -64,6 +64,29 @@ describe("gateway agent model aliases", () => {
     });
   });
 
+  it("accepts a case-normalized alias agent without a session key", async () => {
+    primeMainAgentRun();
+    mocks.loadConfigReturn = {
+      agents: {
+        entries: { main: { models: { "anthropic/claude-haiku-4-5": { alias: "remote-only" } } } },
+      },
+    };
+    await invokeAgent(
+      {
+        message: "alias probe",
+        agentId: "Main",
+        modelAlias: "remote-only",
+        modelRun: true,
+        idempotencyKey: "alias-probe-no-session-key",
+      },
+      { client: operatorWriteCliClient(["operator.admin"]) },
+    );
+    expectRecordFields(await waitForAgentCommandCall(), {
+      provider: "anthropic",
+      model: "claude-haiku-4-5",
+    });
+  });
+
   it.each([
     {
       name: "unknown",
