@@ -7,6 +7,7 @@ import { createAssistantMessageEventStream, type Model } from "openclaw/plugin-s
 /** Tests compaction safeguard summaries, quality audit, providers, and runtime settings. */
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { CompactionProvider } from "../../plugins/compaction-provider.js";
 import {
@@ -75,6 +76,7 @@ const actualCompactionQualityModule = await vi.importActual<typeof compactionQua
   "./compaction-safeguard-quality.js",
 );
 const mockAuditSummaryQuality = vi.mocked(compactionQualityModule.auditSummaryQuality);
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function summaryResult(text: string) {
   return text;
@@ -5200,6 +5202,74 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(summary).not.toContain("finalizer-tool-output-");
     expect(summary).not.toContain("- Tool result (read):");
     expect(summary).toContain("## Recent turns preserved verbatim");
+  });
+});
+
+describe("compaction-safeguard recent suffix eviction", () => {
+  it("summarizes recent text when later diagnostic suffixes evict its verbatim window", async () => {
+    const workspaceDir = tempDirs.make("openclaw-compaction-suffix-");
+    fs.writeFileSync(
+      path.join(workspaceDir, "AGENTS.md"),
+      `## Session Startup\n${"workspace rule ".repeat(170)}\n`,
+    );
+    const decision = "Keep the approved migration order despite the later diagnostics.";
+    const recent = [
+      { role: "user" as const, content: `${decision} ${"u".repeat(1_150)}`, timestamp: 20 },
+      castAgentMessage(timestampedTextAssistant(`Acknowledged ${"a".repeat(1_150)}`, 21)),
+      { role: "user" as const, content: `Next step ${"v".repeat(1_150)}`, timestamp: 22 },
+      castAgentMessage(timestampedTextAssistant(`Proceeding ${"b".repeat(1_150)}`, 23)),
+    ];
+    mockSummarizeInStages.mockReset();
+    mockSummarizeInStages.mockImplementation(async (params) =>
+      summaryResult(
+        `## Decisions\n${JSON.stringify(params.messages).includes(decision) ? decision : "Older context only."}\n${"h".repeat(6_800)}`,
+      ),
+    );
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 2,
+      qualityGuardEnabled: false,
+      workspaceDir,
+      postCompactionSections: ["Session Startup"],
+    });
+    const event = createCompactionEvent({ messageText: "older context", tokensBefore: 20_000 });
+    event.preparation.messagesToSummarize = [
+      { role: "user", content: "older context", timestamp: 1 },
+      castAgentMessage(timestampedTextAssistant("older reply", 2)),
+      ...Array.from({ length: 8 }, (_, index) =>
+        castAgentMessage({
+          role: "toolResult",
+          toolCallId: `failed_${index}`,
+          toolName: "exec",
+          isError: true,
+          content: [{ type: "text", text: `failure ${index} ${"f".repeat(205)}` }],
+          timestamp: index + 3,
+        }),
+      ),
+      ...recent,
+    ];
+    (event.preparation.fileOps as { read: string[] }).read = Array.from(
+      { length: 30 },
+      (_, index) => `/workspace/long-file-${index}-${"r".repeat(30)}`,
+    );
+    (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+      reserveTokens: 4_000,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+    const summary = expectCompactionResult(result).summary;
+    expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
+    expect(summary).toContain("## Tool Failures");
+    expect(summary).toContain("<read-files>");
+    expect(summary).toContain("<workspace-critical-rules>");
+    expect(summary).toContain(decision);
+    expect(JSON.stringify(requireRecord(mockCallArg(mockSummarizeInStages)).messages)).toContain(
+      decision,
+    );
+    expect(mockSummarizeInStages).toHaveBeenCalledOnce();
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
 });
 
