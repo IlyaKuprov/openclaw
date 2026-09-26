@@ -11,7 +11,9 @@ const runtimeImport = vi.hoisted(() => vi.fn());
 vi.mock("./tools.runtime.js", async () => {
   runtimeImport();
   // A cold runtime can be delayed independently of a registered wiki supplement.
-  await new Promise((resolve) => setTimeout(resolve, 3_200));
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 3_200);
+  });
   return {
     readAgentMemoryFile: async () => ({
       status: "not_found",
