@@ -88,6 +88,31 @@ describe("plugin embedded-agent session authority", () => {
           }),
         registry,
       );
+      const legacySessionKey = "agent:main:internal-session-effects:legacy-fenced";
+      const legacyId = "legacy-fenced";
+      const legacyScope = { agentId, sessionKey: legacySessionKey, storePath };
+      await runtime.agent.session.patchSessionEntry({
+        ...legacyScope,
+        fallbackEntry: { sessionId: legacyId, pluginOwnerId: "active-memory", updatedAt: 1 },
+        update: (entry) => entry,
+      });
+      const rawKey = "internal-session-effects:legacy-fenced";
+      const staleLegacy = withPluginRuntimePluginScope(
+        { pluginId: "active-memory" },
+        () =>
+          runtime.agent.runEmbeddedAgent({
+            config: {},
+            prompt: "legacy child",
+            runId: legacyId,
+            sessionId: legacyId,
+            sessionKey: rawKey,
+            agentId,
+            sessionTarget: { agentId, sessionKey: rawKey, sessionId: legacyId, storePath },
+            workspaceDir: "/tmp/workspace",
+            timeoutMs: 1000,
+          }),
+        registry,
+      );
       await importGate.entered;
       await runtime.agent.session.patchSessionEntry({
         ...scope,
@@ -103,9 +128,14 @@ describe("plugin embedded-agent session authority", () => {
       expect(loadExactSessionEntryReadOnly(generationScope)?.entry?.lifecycleRevision).toBe(
         "replacement-generation",
       );
+      await runtime.agent.session.patchSessionEntry({
+        ...legacyScope,
+        update: () => ({ pluginOwnerId: "foreign-plugin" }),
+      });
       importGate.release();
       await expect(pending).resolves.toEqual({ payloads: [] });
       await expect(staleGeneration).rejects.toThrow(/owner|session/i);
+      await expect(staleLegacy).rejects.toThrow(/owner|session/i);
       expect(runCore).toHaveBeenCalledOnce();
     });
   });

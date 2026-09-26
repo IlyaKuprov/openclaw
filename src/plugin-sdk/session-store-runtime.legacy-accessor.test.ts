@@ -26,6 +26,26 @@ async function seedEntries(storePath: string) {
 }
 
 describe("legacy whole-store accessor ownership", () => {
+  it("rejects an ordinary row that attempts to claim a hidden internal window", async () => {
+    const tempDir = tempDirs.make("openclaw-sdk-legacy-window-reject-");
+    const storePath = path.join(tempDir, "sessions.json");
+    const { protectedKey } = await seedEntries(storePath);
+    const ordinaryKey = "agent:main:ordinary-window-claim";
+    await expect(
+      updateSessionStore(
+        storePath,
+        (store) => {
+          store[ordinaryKey] = { sessionId: "protected-session", updatedAt: 11 };
+        },
+        { skipMaintenance: true },
+      ),
+    ).rejects.toThrow(/internal session|protected window|scoped plugin runtime/i);
+    expect(loadSessionEntry({ sessionKey: protectedKey, storePath })?.pluginOwnerId).toBe(
+      "original-plugin",
+    );
+    expect(loadSessionEntry({ sessionKey: ordinaryKey, storePath })).toBeUndefined();
+  });
+
   it("reads an accessor owner once for both the protected comparison and SQLite reconciliation", async () => {
     const tempDir = tempDirs.make("openclaw-sdk-legacy-accessor-");
     const storePath = path.join(tempDir, "sessions.json");

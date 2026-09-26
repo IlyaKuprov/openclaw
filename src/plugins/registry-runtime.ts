@@ -463,9 +463,10 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                     }
                     const patch = Object.freeze({ ...result });
                     assertRuntimeCurrent();
+                    const base = context.existingEntry ?? scopedParams.fallbackEntry ?? entry;
                     const next = scopedParams.replaceEntry
                       ? (patch as SessionEntry)
-                      : ({ ...entry, ...patch } satisfies SessionEntry);
+                      : ({ ...base, ...patch } satisfies SessionEntry);
                     assertStoreEntryOwned({
                       action: "patch",
                       before: context.existingEntry ?? entry,

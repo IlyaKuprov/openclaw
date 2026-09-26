@@ -92,6 +92,30 @@ function assertPublicSessionWriteTarget(sessionKey: string): void {
   }
 }
 
+function assertPublicSessionWindowWriteTarget(params: {
+  agentId?: string;
+  env?: NodeJS.ProcessEnv;
+  sessionId?: string;
+  sessionKey: string;
+  storePath?: string;
+}): void {
+  const sessionId = params.sessionId?.trim();
+  if (!sessionId) {
+    return;
+  }
+  const existingKey = resolveAccessorTranscriptSessionKeyBySessionId({
+    agentId: params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey),
+    env: params.env,
+    sessionId,
+    storePath: params.storePath,
+  });
+  if (existingKey && isInternalEffectsStoreKey(existingKey)) {
+    throw new Error(
+      `Writing session ID of internal session "${existingKey}" requires scoped plugin runtime.`,
+    );
+  }
+}
+
 function toPublicSessionWriteScope(params: SessionStoreReadParams) {
   const sessionKey = params.sessionKey;
   assertPublicSessionWriteTarget(sessionKey);
@@ -383,6 +407,19 @@ export async function updateSessionStore<T>(
             assertPublicSessionWriteTarget(sessionKey);
           }
         }
+        for (const [sessionKey, entry] of Object.entries(materializedPublicStore)) {
+          if (
+            !isInternalEffectsStoreKey(sessionKey) &&
+            internalStore[sessionKey]?.sessionId !== entry.sessionId
+          ) {
+            assertPublicSessionWindowWriteTarget({
+              agentId: target.agentId,
+              sessionId: entry.sessionId,
+              sessionKey,
+              storePath: target.storePath,
+            });
+          }
+        }
         // The deprecated callback owns public row changes and deletions, but
         // core recovery coordination remains invisible and non-overwritable.
         reconcilePluginSessionStore({ internalStore, publicStore: materializedPublicStore });
@@ -525,8 +562,13 @@ export function resolveTranscriptSessionKeyBySessionId(params: {
 export async function patchSessionEntry(
   params: PatchSessionEntryParams,
 ): Promise<SessionEntry | null> {
+  const scope = toPublicSessionWriteScope(params);
+  const fallbackEntry = params.fallbackEntry
+    ? projectPluginSessionEntry(params.fallbackEntry)
+    : undefined;
+  let plannedSessionId: string | undefined;
   const entry = await patchAccessorSessionEntry(
-    toPublicSessionWriteScope(params),
+    scope,
     async (internalEntry, context) => {
       const persistedEntry = internalEntry as InternalSessionEntry;
       const patch = await params.update(projectPluginSessionEntry(internalEntry), {
@@ -537,13 +579,21 @@ export async function patchSessionEntry(
       if (!patch) {
         return null;
       }
-      return preserveGenerationPrivateFields(persistedEntry, projectPluginSessionEntryPatch(patch));
+      const publicPatch = projectPluginSessionEntryPatch(patch);
+      plannedSessionId = Object.hasOwn(publicPatch, "sessionId")
+        ? publicPatch.sessionId
+        : (context.existingEntry?.sessionId ?? fallbackEntry?.sessionId ?? internalEntry.sessionId);
+      assertPublicSessionWindowWriteTarget({ ...scope, sessionId: plannedSessionId });
+      return preserveGenerationPrivateFields(persistedEntry, publicPatch);
     },
     {
-      assertCommitAllowed: params.assertCommitAllowed,
-      fallbackEntry: params.fallbackEntry
-        ? projectPluginSessionEntry(params.fallbackEntry)
-        : undefined,
+      assertCommitAllowed: () => {
+        params.assertCommitAllowed?.();
+        if (plannedSessionId) {
+          assertPublicSessionWindowWriteTarget({ ...scope, sessionId: plannedSessionId });
+        }
+      },
+      fallbackEntry,
       maintenanceConfig:
         params.maintenanceConfig !== undefined
           ? normalizeResolvedMaintenanceConfigInput(params.maintenanceConfig)
@@ -600,13 +650,20 @@ export async function updateSessionStoreEntry(
 /** Replaces or creates one session entry by agent/session identity. */
 export async function upsertSessionEntry(params: UpsertSessionEntryParams): Promise<void> {
   const publicEntry = projectPluginSessionEntry(params.entry);
+  const scope = toPublicSessionWriteScope(params);
+  assertPublicSessionWindowWriteTarget({ ...scope, sessionId: publicEntry.sessionId });
   await patchAccessorSessionEntry(
-    toPublicSessionWriteScope(params),
+    scope,
     (internalEntry) => {
       const persistedEntry = internalEntry as InternalSessionEntry;
       return preserveGenerationPrivateFields(persistedEntry, publicEntry);
     },
-    { fallbackEntry: publicEntry, replaceEntry: true },
+    {
+      assertCommitAllowed: () =>
+        assertPublicSessionWindowWriteTarget({ ...scope, sessionId: publicEntry.sessionId }),
+      fallbackEntry: publicEntry,
+      replaceEntry: true,
+    },
   );
 }
 

@@ -1,5 +1,10 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
+import {
+  loadSessionEntry,
+  loadTranscriptEvents,
+  upsertSessionEntryCore,
+} from "../config/sessions/session-accessor.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
 import { revokePluginRecord } from "../plugins/registry-lifecycle.js";
 import { createRuntimeTestRegistry } from "../plugins/registry-runtime.test-helpers.js";
@@ -11,6 +16,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
+import { chatHandlers } from "./server-methods/chat.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 
@@ -161,6 +167,79 @@ test("revocation during lazy Gateway dispatch import rejects a real sessions.pat
     } finally {
       release.resolve();
       vi.doUnmock("./server-plugins.js");
+      await Promise.allSettled([pending]);
+    }
+  });
+});
+
+test("trusted Gateway chat.inject cannot append after plugin revocation during admission", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const agentId = "main";
+    const sessionKey = "agent:main:plugin-inject-revocation";
+    const sessionId = "plugin-inject-revocation";
+    const storePath = resolveSessionStorePathCore(undefined, { agentId });
+    await upsertSessionEntryCore(
+      { agentId, sessionKey, storePath },
+      { sessionId, updatedAt: 1, pluginOwnerId: "inject-plugin" },
+    );
+    const before = await loadTranscriptEvents({ agentId, sessionKey, sessionId, storePath });
+    const context = {
+      trackExecution: trackAsyncWork,
+      getRuntimeConfig: () => ({}),
+      loadGatewayModelCatalogSnapshot: async () => ({ entries: [], routeVariants: [] }),
+      getSessionEventSubscriberConnIds: () => new Set(),
+      broadcastToConnIds: vi.fn(),
+      chatAbortControllers: new Map(),
+      chatQueuedTurns: new Map(),
+      dedupe: new Map(),
+      logGateway: { error: vi.fn(), warn: vi.fn() },
+      getGatewayMethodRegistry: () =>
+        createGatewayMethodRegistry([
+          {
+            name: "chat.inject",
+            scope: "operator.admin",
+            owner: { kind: "core", area: "chat" },
+            handler: chatHandlers["chat.inject"]!,
+          },
+        ]),
+    } as unknown as GatewayRequestContext;
+    const registry = createRuntimeTestRegistry(createPluginRuntime());
+    const record = createPluginRecord({
+      id: "inject-plugin",
+      source: "/plugins/inject-plugin/index.js",
+      origin: "bundled",
+      enabled: true,
+      configSchema: false,
+    });
+    const api = registry.createApi(record, { config: {} });
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    const original = sessionLifecycle.beginSessionWorkAdmission;
+    vi.spyOn(sessionLifecycle, "beginSessionWorkAdmission").mockImplementation(async (params) => {
+      const admission = await original(params);
+      entered.resolve();
+      await release.promise;
+      return admission;
+    });
+    const pending = withPluginRuntimeGatewayRequestScope(
+      { context, isWebchatConnect: () => false },
+      () =>
+        api.runtime.gateway.request(
+          "chat.inject",
+          { sessionKey, message: "stale plugin injection" },
+          { scopes: ["operator.admin"] },
+        ),
+    );
+    try {
+      await Promise.race([entered.promise, pending]);
+      revokePluginRecord(registry.registry, record);
+      release.resolve();
+      await expect(pending).rejects.toThrow();
+      expect(await loadTranscriptEvents({ agentId, sessionKey, sessionId, storePath })).toEqual(
+        before,
+      );
+    } finally {
+      release.resolve();
       await Promise.allSettled([pending]);
     }
   });

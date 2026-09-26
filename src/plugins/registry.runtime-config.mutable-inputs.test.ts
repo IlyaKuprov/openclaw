@@ -65,6 +65,36 @@ describe("plugin-scoped session writes with mutable caller input", () => {
     });
   });
 
+  it("checks the persisted fallback session ID rather than a mutated callback clone", async () => {
+    await withTempHome(async () => {
+      const scope = internalScope("callback-fallback-window");
+      const foreign = internalScope("foreign-window-owner");
+      const victim = { sessionId: "shared-window", pluginOwnerId: "other-plugin", updatedAt: 1 };
+      try {
+        await replaceSessionEntry(foreign, victim);
+        const api = createActiveMemorySessionApi();
+        await expect(
+          api.runtime.agent.session.patchSessionEntry({
+            ...scope,
+            fallbackEntry: {
+              sessionId: victim.sessionId,
+              pluginOwnerId: "active-memory",
+              updatedAt: 2,
+            },
+            update: (entry) => {
+              entry.sessionId = "safe-looking-window";
+              return { label: "only a label patch" };
+            },
+          }),
+        ).rejects.toThrow(/other-plugin|owned|internal session/i);
+        expect(loadSessionEntryReadOnly(foreign)).toMatchObject(victim);
+        expect(loadSessionEntryReadOnly(scope)).toBeUndefined();
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("upserts the same materialized owner that passed the internal-row check", async () => {
     await withTempHome(async () => {
       const scope = internalScope("entry-getter");

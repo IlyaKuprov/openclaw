@@ -606,6 +606,10 @@ describe("plugin registry SQLite session ownership", () => {
         } as Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0];
         await expect(api.runtime.agent.runEmbeddedAgent(params)).resolves.toEqual({ ok: true });
         expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+        await expect(
+          api.runtime.agent.runEmbeddedAgent({ ...params, sessionFile: sessionKey }),
+        ).resolves.toEqual({ ok: true });
+        expect(runEmbeddedAgent).toHaveBeenCalledTimes(2);
         const otherApi = registry.createApi(
           createPluginRecord({
             id: "other-plugin",
@@ -633,7 +637,7 @@ describe("plugin registry SQLite session ownership", () => {
             runId: coreTarget.sessionId,
           } as Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0]),
         ).rejects.toThrow(/ownerless internal session/);
-        expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+        expect(runEmbeddedAgent).toHaveBeenCalledTimes(2);
         await expect(
           otherApi.runtime.agent.session.patchSessionEntry({
             agentId,
@@ -661,7 +665,7 @@ describe("plugin registry SQLite session ownership", () => {
         await expect(otherApi.runtime.agent.runEmbeddedAgent(params)).rejects.toThrow(
           'owned by plugin "active-memory"',
         );
-        expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+        expect(runEmbeddedAgent).toHaveBeenCalledTimes(2);
         await expect(
           api.runtime.agent.runEmbeddedAgent({
             ...params,
@@ -672,7 +676,7 @@ describe("plugin registry SQLite session ownership", () => {
             }),
           }),
         ).rejects.toThrow("only with its exact session target identity");
-        expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+        expect(runEmbeddedAgent).toHaveBeenCalledTimes(2);
       } finally {
         closeOpenClawAgentDatabasesForTest();
       }

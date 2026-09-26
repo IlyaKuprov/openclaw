@@ -1,6 +1,7 @@
 import { isInternalSessionEffectsKey } from "../../config/sessions/internal-session-key.js";
 import { loadExactSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
-import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { normalizeStoreSessionKey } from "../../config/sessions/store-entry.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import {
@@ -22,16 +23,25 @@ export const runEmbeddedAgentWithOwnerFence: PluginRuntime["agent"]["runEmbedded
   // dispatch the same owned target, never the caller's nested object.
   const request = { ...params };
   const target = request.sessionTarget ? Object.freeze({ ...request.sessionTarget }) : undefined;
+  const normalizedKey = target?.sessionKey
+    ? normalizeStoreSessionKey(target.sessionKey)
+    : undefined;
   const internalTarget =
-    target?.sessionKey !== undefined &&
-    (isInternalSessionEffectsKey(target.sessionKey) ||
-      target.sessionKey.startsWith("internal-session-effects:"));
+    normalizedKey !== undefined &&
+    (isInternalSessionEffectsKey(normalizedKey) ||
+      normalizedKey.startsWith("internal-session-effects:"));
   const scopedAgentId =
     target?.agentId ??
     (target && !internalTarget ? parseAgentSessionKey(target.sessionKey)?.agentId : undefined);
+  const scopeKey =
+    internalTarget && scopedAgentId && normalizedKey
+      ? normalizedKey.startsWith("agent:")
+        ? normalizedKey
+        : `agent:${normalizeAgentId(scopedAgentId)}:${normalizedKey}`
+      : target?.sessionKey;
   const scope =
-    pluginId && scopedAgentId && target?.sessionKey && target.storePath
-      ? { agentId: scopedAgentId, sessionKey: target.sessionKey, storePath: target.storePath }
+    pluginId && scopedAgentId && scopeKey && target?.storePath
+      ? { agentId: scopedAgentId, sessionKey: scopeKey, storePath: target.storePath }
       : undefined;
   if (pluginId && internalTarget && (!scope || !target?.sessionId)) {
     throw new Error("Plugin embedded-agent execution requires exact session target identity.");

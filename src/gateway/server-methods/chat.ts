@@ -54,7 +54,7 @@ export const chatHandlers: GatewayRequestHandlers = {
     respond(true, { titles: {}, disabled: true });
   },
   "chat.send": handleDirectExternalChatSend,
-  "chat.inject": async ({ params, respond, context }) => {
+  "chat.inject": async ({ params, respond, context, sessionMutationCommitGuard }) => {
     if (!assertValidParams(params, validateChatInjectParams, "chat.inject", respond)) {
       return;
     }
@@ -106,6 +106,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         scope: storePath,
         identities: [sessionKey, sessionId],
         assertAllowed: () => {
+          sessionMutationCommitGuard?.();
           const latestEntry = loadSessionEntry(rawSessionKey, sessionLoadOptions).entry;
           if (!latestEntry) {
             throw new Error(`Session "${sessionKey}" was deleted while starting work. Retry.`);
@@ -120,19 +121,20 @@ export const chatHandlers: GatewayRequestHandlers = {
         },
       });
       try {
-        appended = await admission.run(
-          async () =>
-            await appendAssistantTranscriptMessage({
-              sessionKey,
-              message: p.message,
-              label: p.label,
-              sessionId,
-              storePath,
-              agentId,
-              createIfMissing: true,
-              cfg,
-            }),
-        );
+        appended = await admission.run(async () => {
+          sessionMutationCommitGuard?.();
+          return await appendAssistantTranscriptMessage({
+            sessionKey,
+            message: p.message,
+            label: p.label,
+            sessionId,
+            storePath,
+            agentId,
+            createIfMissing: true,
+            cfg,
+            assertCommitAllowed: sessionMutationCommitGuard,
+          });
+        });
       } finally {
         admission.release();
       }

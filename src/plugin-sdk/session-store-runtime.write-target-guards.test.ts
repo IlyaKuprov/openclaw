@@ -59,6 +59,43 @@ describe("session-store-runtime write target guards", () => {
     ).resolves.toBe(true);
   });
 
+  it.each(["patch", "upsert"] as const)(
+    "rejects a public ordinary %s that reuses a hidden internal session ID",
+    async (method) => {
+      const internalKey = "agent:main:internal-session-effects:protected-window";
+      const ordinaryKey = `agent:main:ordinary-${method}-protected-window`;
+      const victim = {
+        sessionId: "protected-window",
+        pluginOwnerId: "active-memory",
+        updatedAt: 1,
+      };
+      await seedSessionEntry(internalKey, victim);
+
+      const write =
+        method === "upsert"
+          ? upsertSessionEntry({
+              agentId: "main",
+              storePath,
+              sessionKey: ordinaryKey,
+              entry: { sessionId: victim.sessionId, updatedAt: 2 },
+            })
+          : patchSessionEntry({
+              agentId: "main",
+              storePath,
+              sessionKey: ordinaryKey,
+              fallbackEntry: { sessionId: victim.sessionId, updatedAt: 2 },
+              update: (entry) => entry,
+            });
+      await expect(write).rejects.toThrow(
+        /internal session|protected window|scoped plugin runtime/i,
+      );
+      expect(loadInternalSessionEntry({ sessionKey: internalKey, storePath })).toMatchObject(
+        victim,
+      );
+      expect(getSessionEntry({ sessionKey: ordinaryKey, storePath })).toBeUndefined();
+    },
+  );
+
   it("guards entry deletion when the earlier snapshot had no session id", async () => {
     const sessionKey = "agent:main:delete-guarded-absent-id";
     const updatedAt = Date.now();

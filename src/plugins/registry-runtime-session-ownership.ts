@@ -393,6 +393,22 @@ export function createPluginSessionOwnership(
         }
         continue;
       }
+      if (sessionKeys.has(sessionFile)) {
+        const target = resolveStoredSessionOwnershipTarget({
+          sessionKey: sessionFile,
+          ...(agentId ? { agentId } : {}),
+          ...(storePath ? { storePath } : {}),
+        });
+        if (target.entry) {
+          assertSessionEntryOwned({
+            action: params.action,
+            entry: target.entry,
+            sessionKey: target.sessionKey,
+          });
+          requireExactInternalRunTarget(target.sessionKey);
+          continue;
+        }
+      }
       const marker = parseSqliteSessionFileMarker(sessionFile);
       if (!marker) {
         throw new Error("Plugin session ownership checks require a SQLite transcript marker.");
