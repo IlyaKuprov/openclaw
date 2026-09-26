@@ -37,33 +37,6 @@ export type ContextSection = {
   truncatedLoss?: CompactionLoss;
 };
 
-const PREVIOUS_SUMMARY_REDISTILL_PREFIX =
-  "Previous compaction summary to re-distill with the current conversation. " +
-  "Prune stale, duplicate, or superseded details instead of preserving it verbatim.";
-
-export function prependPreviousSummaryForRedistill(params: {
-  messages: AgentMessage[];
-  previousSummary?: string;
-}): AgentMessage[] {
-  const previousSummary = params.previousSummary?.trim();
-  if (!previousSummary) {
-    return params.messages;
-  }
-  return [
-    {
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: `<previous-compaction-summary>\n${PREVIOUS_SUMMARY_REDISTILL_PREFIX}\n\n${previousSummary}\n</previous-compaction-summary>`,
-        },
-      ],
-      timestamp: 0,
-    } satisfies AgentMessage,
-    ...params.messages,
-  ];
-}
-
 function nestMarkdownHeadings(text: string): string {
   return text.replace(/^##(?=[ \t]+\S)/gmu, "###");
 }
