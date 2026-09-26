@@ -3254,7 +3254,9 @@ describe("compaction-safeguard recent-turn preservation", () => {
         `https://example.com/result-${index.toString().padStart(2, "0")}/${"a".repeat(370)}`,
     );
     const sourceChars = urls.reduce((total, url) => total + url.length + 1, 0);
-    expect(sourceChars).toBeGreaterThan(MAX_COMPACTION_SUMMARY_CHARS);
+    const auditedAllotment = Math.floor(MAX_COMPACTION_SUMMARY_CHARS / 4);
+    const expectedUrlCount = Math.floor(auditedAllotment / (urls[0].length + 1));
+    expect(sourceChars).toBeGreaterThan(auditedAllotment);
     expect(urls.every((url) => url.length <= 400)).toBe(true);
     const generatedSummary = [
       "## Decisions\nKeep deployment paused.",
@@ -3282,7 +3284,9 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
     const summary = expectCompactionResult(result).summary;
     expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
-    expect(mockAuditSummaryQuality.mock.calls.at(-1)?.[0].identifiers).toEqual(urls.slice(-9));
+    expect(mockAuditSummaryQuality.mock.calls.at(-1)?.[0].identifiers).toEqual(
+      urls.slice(-expectedUrlCount),
+    );
     expect(summary).toContain("## Decisions\nKeep deployment paused.");
     expect(summary).toContain("42 tests passed; see the test log.");
     expect(summary).toContain("## Open TODOs\nInspect the rollout.");

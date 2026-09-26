@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAX_COMPACTION_SUMMARY_CHARS } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
 import {
   auditSummaryQuality,
   buildCompactionStructureInstructions,
@@ -200,7 +201,7 @@ describe("compaction summary quality contract", () => {
     expect(bounded).toContain(urls[35]);
     expect(bounded).not.toContain(urls[0]);
     expect(bounded.reduce((total, value) => total + value.length + 1, 0)).toBeLessThanOrEqual(
-      4_000,
+      Math.floor(MAX_COMPACTION_SUMMARY_CHARS / 4),
     );
   });
 
