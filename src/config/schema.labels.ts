@@ -422,7 +422,6 @@ export const FIELD_LABELS: Record<string, string> = {
   "gateway.nodes.pairing.autoApproveCidrs": "Gateway Node Pairing Auto-Approve CIDRs",
   "gateway.nodes.pairing.sshVerify": "Gateway Node Pairing SSH Verification",
   ...NODE_CAPABILITY_FIELD_LABELS,
-  "gateway.nodes.commands.deny": "Gateway Node Denylist",
   nodeHost: "Node Host",
   "nodeHost.agentRuns": "Node Agent Runs",
   "nodeHost.agentRuns.claude": "Node Claude Agent Runs",

@@ -12,4 +12,5 @@ export const NODE_CAPABILITY_FIELD_LABELS: Record<string, string> = {
   "gateway.nodes.pluginTools.enabled": "Gateway Node Plugin Tools Enabled",
   "gateway.nodes.allowSkills": "Gateway Node Skills Enabled",
   "gateway.nodes.commands.allow": "Gateway Node Allowlist (Extra Commands)",
+  "gateway.nodes.commands.deny": "Gateway Node Denylist",
 };
