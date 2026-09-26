@@ -14,14 +14,21 @@ const MAX_ASK_OVERLAP_TOKENS = 12;
 const MIN_ASK_OVERLAP_TOKENS_FOR_DOUBLE_MATCH = 3;
 const REQUIRED_SUMMARY_SECTIONS = [
   "## Decisions",
+  "## Results and evidence",
   "## Open TODOs",
   "## Constraints/Rules",
   "## Pending user asks",
   "## Exact identifiers",
 ] as const;
-const QUALITY_PROTECTED_SECTION_START = 3;
-const PENDING_ASK_SECTION_INDEX = 3;
-const EXACT_IDENTIFIERS_SECTION_INDEX = 4;
+const RESULTS_SECTION_INDEX = 1;
+const QUALITY_PROTECTED_SECTION_START = 4;
+const PENDING_ASK_SECTION_INDEX = 4;
+const EXACT_IDENTIFIERS_SECTION_INDEX = 5;
+const PROTECTED_SECTION_INDEXES: readonly number[] = [
+  RESULTS_SECTION_INDEX,
+  PENDING_ASK_SECTION_INDEX,
+  EXACT_IDENTIFIERS_SECTION_INDEX,
+];
 const MAX_PROTECTED_SECTION_CONTENT_SHARE = 0.25;
 const LATEST_USER_REQUEST_CONTEXT_LABEL = "Latest user request context:";
 const STRICT_EXACT_IDENTIFIERS_INSTRUCTION =
@@ -76,13 +83,19 @@ export function buildCompactionStructureInstructions(
 ): string {
   const identifierSectionInstruction =
     resolveExactIdentifierSectionInstruction(summarizationInstructions);
+  const strictIdentifiers = (summarizationInstructions?.identifierPolicy ?? "strict") === "strict";
   const sectionsTemplate = [
     "Produce a complete, factual summary with these exact section headings:",
     ...REQUIRED_SUMMARY_SECTIONS,
     identifierSectionInstruction,
     "Aim for 6000 to 10000 characters of summary text; spend them on facts, not prose.",
-    "After ## Decisions, add a ## Results and evidence section: every numerical result with its units and the file, log, or command it came from; every artefact path produced; the working hypothesis with the evidence for and against it; the exact next command or step.",
-    "Write every PR number, commit hash, job id, message id, and file path in full; never compress identifiers into ranges or counts.",
+    "In ## Results and evidence, record every numerical result with its units and evidence source; the working hypothesis with evidence for and against it; and the exact next step.",
+    ...(strictIdentifiers
+      ? [
+          "Record every artefact path produced and the file, log, or command behind each result.",
+          "Write every PR number, commit hash, job id, message id, and file path in full; never compress identifiers into ranges or counts.",
+        ]
+      : []),
     "Do not omit unresolved asks from the user.",
     "Record completed requests outside ## Pending user asks; list only unresolved user requests there.",
     "When prior compaction summaries are present, re-distill them with new messages and remove stale duplicate detail.",
@@ -144,6 +157,9 @@ function parseRequiredSummarySectionContents(summary: string): string[] | null {
     if (nextHeading && line.trim() === nextHeading) {
       sectionIndex += 1;
       continue;
+    }
+    if (REQUIRED_SUMMARY_SECTIONS.some((heading) => line.trim() === heading)) {
+      return null;
     }
     (sectionIndex < 0 ? preamble : contents[sectionIndex])?.push(line);
   }
@@ -287,9 +303,9 @@ export function createSummaryQualityRetentionPlan(
   const protectedCapFor = (maxChars: number) =>
     Math.floor(Math.max(0, maxChars - minimumSummary.length) * MAX_PROTECTED_SECTION_CONTENT_SHARE);
   const protectedWithinCap = (maxChars: number) =>
-    contents
-      .slice(QUALITY_PROTECTED_SECTION_START)
-      .every((content) => content.length <= protectedCapFor(maxChars));
+    PROTECTED_SECTION_INDEXES.every(
+      (index) => (contents[index]?.length ?? 0) <= protectedCapFor(maxChars),
+    );
 
   return {
     minimumChars: minimumSummary.length,
@@ -313,15 +329,21 @@ export function createSummaryQualityRetentionPlan(
       const contentBudget = maxChars - minimumSummary.length;
       const protectedCap = protectedCapFor(maxChars);
       const allocations = contents.map((content, index) =>
-        index >= QUALITY_PROTECTED_SECTION_START ? Math.min(content.length, protectedCap) : 0,
+        PROTECTED_SECTION_INDEXES.includes(index) ? Math.min(content.length, protectedCap) : 0,
       );
       const optionalBudget = Math.max(
         0,
         contentBudget - allocations.reduce((total, chars) => total + chars, 0),
       );
-      const optionalContents = contents.slice(0, QUALITY_PROTECTED_SECTION_START);
-      const optionalTotal = optionalContents.reduce((total, content) => total + content.length, 0);
-      for (const [index, content] of optionalContents.entries()) {
+      const optionalIndexes = contents.flatMap((_, index) =>
+        PROTECTED_SECTION_INDEXES.includes(index) ? [] : [index],
+      );
+      const optionalTotal = optionalIndexes.reduce(
+        (total, index) => total + (contents[index]?.length ?? 0),
+        0,
+      );
+      for (const index of optionalIndexes) {
+        const content = contents[index] ?? "";
         allocations[index] =
           optionalTotal > 0 ? Math.floor((optionalBudget * content.length) / optionalTotal) : 0;
       }
@@ -329,10 +351,9 @@ export function createSummaryQualityRetentionPlan(
       // hard so short decisions cannot hand the budget back to the identifier dump.
       let remainder =
         optionalBudget -
-        allocations
-          .slice(0, QUALITY_PROTECTED_SECTION_START)
-          .reduce((total, chars) => total + chars, 0);
-      for (const [index, content] of optionalContents.entries()) {
+        optionalIndexes.reduce((total, index) => total + (allocations[index] ?? 0), 0);
+      for (const index of optionalIndexes) {
+        const content = contents[index] ?? "";
         const allocation = allocations[index] ?? 0;
         const extra = Math.min(remainder, Math.max(0, content.length - allocation));
         allocations[index] = allocation + extra;
@@ -364,6 +385,7 @@ export function buildStructuredFallbackSummary(previousSummary: string | undefin
   }
   const values = [
     trimmedPreviousSummary || "No prior history.",
+    "None captured.",
     "None.",
     "None.",
     "None.",
@@ -404,6 +426,10 @@ function summaryIncludesIdentifier(summary: string, identifier: string): boolean
   if (isPureHexIdentifier(identifier)) {
     return summary.toUpperCase().includes(identifier.toUpperCase());
   }
+  if (/^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/u.test(identifier)) {
+    const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    return new RegExp(`(?<![A-Za-z0-9_#])${literal}(?![A-Za-z0-9_-])`, "u").test(summary);
+  }
   return summary.includes(identifier);
 }
 
@@ -414,12 +440,12 @@ export function extractOpaqueIdentifiers(text: string): string[] {
   return uniqueStrings(
     Array.from(
       text.matchAll(
-        /(https?:\/\/\S+|(?<![A-Za-z0-9._-])\/[\w.-]{2,}(?:\/[\w.-]+)+|[A-Za-z]:\\[\w\\.-]+|(?<![A-Za-z0-9._-])[A-Za-z0-9._-]+\.[A-Za-z0-9._/-]+:\d{1,5})|(?:(?:(?:\d+\.\d+|\.\d+)(?:[eE][+-]?\d+)?|\d+\.[eE][+-]?\d+|\d+\.?[eE][+-]\d+|(?![A-Fa-f0-9]{8,}(?![A-Fa-f0-9]))\d+\.?[eE]\d+)(?:(?=[A-Za-z]+(?![A-Za-z0-9]))(?=[A-Za-z]*[G-Zg-z])[A-Za-z]+)?(?![A-Za-z0-9])|(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*(?:[A-Fa-f0-9]{8,}|\d{6,}))([A-Za-z0-9_-]+))/g,
+        /((?<![A-Za-z0-9_])#\d+\b|\b(?:PR\s+#\d+|(?:job|message|msg)(?:[-_#][A-Za-z0-9_-]+|\s+id\s*[:#]?\s*[A-Za-z0-9_-]+))\b)|(https?:\/\/\S+|(?<![A-Za-z0-9._-])\/[\w.-]{2,}(?:\/[\w.-]+)+|[A-Za-z]:\\[\w\\.-]+|(?<![A-Za-z0-9._-])[A-Za-z0-9._-]+\.[A-Za-z0-9._/-]+:\d{1,5})|(?:(?:(?:\d+\.\d+|\.\d+)(?:[eE][+-]?\d+)?|\d+\.[eE][+-]?\d+|\d+\.?[eE][+-]\d+|(?![A-Fa-f0-9]{8,}(?![A-Fa-f0-9]))\d+\.?[eE]\d+)(?:(?=[A-Za-z]+(?![A-Za-z0-9]))(?=[A-Za-z]*[G-Zg-z])[A-Za-z]+)?(?![A-Za-z0-9])|(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*(?:[A-Fa-f0-9]{8,}|\d{6,}))([A-Za-z0-9_-]+))/g,
       ),
-      (match) => match[1] ?? match[2] ?? "",
+      (match) => match[1] ?? match[2] ?? match[3] ?? "",
     )
       .map((value) => normalizeOpaqueIdentifier(sanitizeExtractedIdentifier(value)))
-      .filter((value) => value.length >= 4),
+      .filter((value) => value.length >= 4 || /^#\d+$/u.test(value)),
   ).slice(0, MAX_EXTRACTED_IDENTIFIERS);
 }
 
@@ -494,6 +520,12 @@ export function auditSummaryQuality(params: {
     ) {
       reasons.push(`duplicate_section:${section}`);
     }
+  }
+  if (
+    reasons.every((reason) => !reason.startsWith("missing_section:")) &&
+    !hasRequiredSummarySections(params.structuralSummary)
+  ) {
+    reasons.push("section_order_invalid");
   }
   const enforceIdentifiers = (params.identifierPolicy ?? "strict") === "strict";
   if (enforceIdentifiers) {
