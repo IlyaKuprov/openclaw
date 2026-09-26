@@ -515,14 +515,15 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             },
             cleanupSessionLifecycleArtifacts: cleanupSessionLifecycleArtifacts
               ? async (params: Parameters<typeof cleanupSessionLifecycleArtifacts>[0]) =>
-                  await runWithPluginScope(() =>
-                    cleanupSessionLifecycleArtifacts({
+                  await runWithPluginScope(() => {
+                    const ownerBoundParams = {
                       ...params,
                       pluginOwnerId: pluginId,
                       requireExactPluginOwnerId: true,
                       assertCommitAllowed: assertRuntimeCurrent,
-                    }),
-                  )
+                    };
+                    return cleanupSessionLifecycleArtifacts(ownerBoundParams);
+                  })
               : undefined,
             runWithWorkAdmission: async (params, run) => {
               const { resolveStoredSessionExecutionOwner } = await loadSessionOwnership();

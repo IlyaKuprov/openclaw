@@ -330,9 +330,6 @@ export type PluginRuntimeSessionLifecycleCleanupV1 = {
     agentId?: string;
     archiveRemovedEntryTranscripts?: boolean;
     orphanTranscriptMinAgeMs: number;
-    pluginOwnerId?: string;
-    requireExactPluginOwnerId?: boolean;
-    assertCommitAllowed?: () => void;
     sessionKeySegmentPrefix: string;
     storePath: string;
     transcriptContentMarker: string;
