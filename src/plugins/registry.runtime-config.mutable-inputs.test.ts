@@ -35,6 +35,36 @@ function internalScope(suffix: string) {
 }
 
 describe("plugin-scoped session writes with mutable caller input", () => {
+  it("creates an internal row from the fallback owner that passed validation", async () => {
+    await withTempHome(async () => {
+      const scope = internalScope("fallback-getter");
+      try {
+        const api = createActiveMemorySessionApi();
+        let ownerReads = 0;
+        const fallbackEntry = {
+          sessionId: "new-child",
+          updatedAt: 1,
+          get pluginOwnerId() {
+            ownerReads += 1;
+            return ownerReads === 1 ? "active-memory" : "other-plugin";
+          },
+        };
+        await api.runtime.agent.session.patchSessionEntry({
+          ...scope,
+          fallbackEntry,
+          update: (entry) => entry,
+        });
+        expect(loadSessionEntryReadOnly(scope)).toMatchObject({
+          sessionId: "new-child",
+          pluginOwnerId: "active-memory",
+        });
+        expect(ownerReads).toBe(1);
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("upserts the same materialized owner that passed the internal-row check", async () => {
     await withTempHome(async () => {
       const scope = internalScope("entry-getter");

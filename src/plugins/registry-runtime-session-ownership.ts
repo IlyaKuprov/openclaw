@@ -628,10 +628,39 @@ export function createPluginSessionOwnership(
   };
   const assertStoreEntryOwned = (params: {
     action: string;
+    agentId?: string;
     before?: SessionEntry;
     entry: SessionEntry;
     sessionKey: string;
+    storePath?: string;
   }): void => {
+    const sessionId = normalizeOptionalString(params.entry.sessionId);
+    if (sessionId) {
+      const window = resolveSessionOwnershipBySessionId({
+        agentId:
+          params.agentId ??
+          parseAgentSessionKey(params.sessionKey)?.agentId ??
+          resolveDefaultAgentId(currentSessionConfig()),
+        sessionId,
+        ...(params.storePath ? { storePath: params.storePath } : {}),
+      });
+      if (window) {
+        const windowOwner = normalizeOptionalString(window.pluginOwnerId);
+        if (windowOwner && windowOwner !== pluginId) {
+          throw new Error(
+            `Session window "${window.sessionKey}" is owned by plugin "${windowOwner}", not "${pluginId}".`,
+          );
+        }
+        if (
+          isInternalEffectsStoreKey(window.sessionKey) &&
+          (windowOwner !== pluginId ||
+            normalizeStoreSessionKey(window.sessionKey) !==
+              normalizeStoreSessionKey(params.sessionKey))
+        ) {
+          throw new Error(`Plugin "${pluginId}" cannot rehome an internal session window.`);
+        }
+      }
+    }
     const ownerPluginId = normalizeOptionalString(params.before?.pluginOwnerId);
     if (isInternalEffectsStoreKey(params.sessionKey)) {
       const incomingOwner = normalizeOptionalString(params.entry.pluginOwnerId);

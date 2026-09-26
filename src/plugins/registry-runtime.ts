@@ -432,20 +432,18 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             },
             patchSessionEntry: async (params) => {
               const { sessionKey, agentId, env, storePath, assertCommitAllowed } = params;
-              const scopedParams = { ...params, sessionKey, agentId, env, storePath };
+              const scope = { sessionKey, agentId, env, storePath };
+              const scopedParams = { ...params, ...scope };
+              if (scopedParams.fallbackEntry) {
+                scopedParams.fallbackEntry = Object.freeze({ ...scopedParams.fallbackEntry });
+              }
               const {
                 assertSessionEntryOwned,
                 assertStoredSessionEntryOwned,
                 assertStoreEntryOwned,
               } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {
-                assertStoredSessionEntryOwned({
-                  action: "patch",
-                  sessionKey,
-                  ...(agentId !== undefined ? { agentId } : {}),
-                  ...(env !== undefined ? { env } : {}),
-                  ...(storePath !== undefined ? { storePath } : {}),
-                });
+                assertStoredSessionEntryOwned({ action: "patch", ...scope });
                 return await session.patchSessionEntry({
                   ...scopedParams,
                   assertCommitAllowed: () => {
@@ -472,7 +470,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                       action: "patch",
                       before: context.existingEntry ?? entry,
                       entry: next,
-                      sessionKey,
+                      ...scope,
                     });
                     return patch;
                   },
@@ -481,13 +479,8 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             },
             upsertSessionEntry: async (params) => {
               const { sessionKey, agentId, env, storePath } = params;
-              const { entry: inputEntry, ...scopedParams } = {
-                ...params,
-                sessionKey,
-                agentId,
-                env,
-                storePath,
-              };
+              const scope = { sessionKey, agentId, env, storePath };
+              const { entry: inputEntry, ...scopedParams } = { ...params, ...scope };
               const entry = Object.freeze({ ...inputEntry });
               const { assertSessionEntryOwned, assertStoreEntryOwned } =
                 await loadSessionOwnership();
@@ -509,7 +502,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                       action: "upsert",
                       before,
                       entry,
-                      sessionKey,
+                      ...scope,
                     });
                     return entry;
                   },
@@ -589,6 +582,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                       before: entry,
                       entry: { ...entry, ...patch },
                       sessionKey,
+                      storePath,
                     });
                     return patch;
                   },
