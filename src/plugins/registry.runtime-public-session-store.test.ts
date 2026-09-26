@@ -138,12 +138,9 @@ describe("public plugin session-store writers", () => {
       sessionKey: "agent:main:internal-session-effects:core-hidden",
     };
     await upsertSessionEntryCore(coreScope, { sessionId: "core-hidden", updatedAt: 1 });
-    await expect(
-      foreignCleanup({
-        ...cleanup,
-        pluginOwnerId: "active-memory",
-      }),
-    ).resolves.toMatchObject({ removedEntries: 0 });
+    // A JavaScript caller can still pass extra fields; the host must ignore them.
+    const forgedCleanup = { ...cleanup, pluginOwnerId: "active-memory" };
+    await expect(foreignCleanup(forgedCleanup)).resolves.toMatchObject({ removedEntries: 0 });
     expect(readStoredEntry(scope)?.pluginOwnerId).toBe("active-memory");
     expect(readStoredEntry(coreScope)?.sessionId).toBe("core-hidden");
     await expect(ownerCleanup(cleanup)).resolves.toMatchObject({ removedEntries: 1 });
