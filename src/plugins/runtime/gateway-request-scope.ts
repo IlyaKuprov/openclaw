@@ -16,7 +16,7 @@ import type {
 } from "../plugin-instance-invocation.types.js";
 import type { PluginOrigin } from "../plugin-origin.types.js";
 import type { DeclaredProviderOwnerIndex } from "../provider-owner-index.js";
-import type { PluginRegistry } from "../registry-types.js";
+import type { PluginRecord, PluginRegistry } from "../registry-types.js";
 import { getPluginRegistryState } from "../runtime-state.js";
 import type { OpenClawPluginNodeWorkspace } from "../types.node-host.js";
 import { getPluginRuntimeLoadContextState } from "./load-context-state.js";
@@ -59,6 +59,12 @@ type PluginRuntimeGatewayRequestScope = {
   client?: GatewayRequestOptions["client"];
   isWebchatConnect: GatewayRequestOptions["isWebchatConnect"];
   pluginId?: string;
+  /** Closure-bound registered owner fence for awaited plugin work. */
+  assertPluginRuntimeCurrent?: () => void;
+  /** Host-issued exact record; Gateway dispatch independently checks its live custody. */
+  pluginRuntimeOwner?: { record: PluginRecord; registry: PluginRegistry; scopedRuntime: boolean };
+  /** Closure-bound exact session identity fence for an embedded run's later admission. */
+  assertEmbeddedRunSessionCurrent?: () => void;
   pluginSource?: string;
   pluginOrigin?: PluginOrigin;
   pluginTrustedOfficialInstall?: boolean;
@@ -69,6 +75,8 @@ type PluginRuntimeGatewayRequestScope = {
 
 type PluginRuntimePluginScope = {
   pluginId: string;
+  assertPluginRuntimeCurrent?: () => void;
+  pluginRuntimeOwner?: PluginRuntimeGatewayRequestScope["pluginRuntimeOwner"];
   pluginSource?: string;
   pluginOrigin?: PluginOrigin;
   pluginTrustedOfficialInstall?: boolean;
@@ -293,6 +301,16 @@ function applyPluginScope(
   scope: PluginRuntimePluginScope,
 ): void {
   scoped.pluginId = scope.pluginId;
+  if (scope.assertPluginRuntimeCurrent) {
+    scoped.assertPluginRuntimeCurrent = scope.assertPluginRuntimeCurrent;
+  } else {
+    delete scoped.assertPluginRuntimeCurrent;
+  }
+  if (scope.pluginRuntimeOwner) {
+    scoped.pluginRuntimeOwner = scope.pluginRuntimeOwner;
+  } else {
+    delete scoped.pluginRuntimeOwner;
+  }
   if (scope.pluginSource !== undefined) {
     scoped.pluginSource = scope.pluginSource;
   } else {
@@ -328,6 +346,17 @@ export function withPluginRuntimePluginScope<T>(
       : { isWebchatConnect: isNotWebchatConnect };
   applyPluginScope(scoped, scope);
   return runWithPluginGatewayScope(scoped, run, invocation);
+}
+
+/** Bind one embedded run's checked session identity without mutating a shared plugin scope. */
+export function withPluginRuntimeEmbeddedRunSessionScope<T>(
+  assertCurrent: () => void,
+  run: () => T,
+): T {
+  const current = getPluginGatewayScope();
+  return current
+    ? runWithPluginGatewayScope({ ...current, assertEmbeddedRunSessionCurrent: assertCurrent }, run)
+    : run();
 }
 
 /** Drops only generation selection; authenticated Gateway caller and authority stay attached. */

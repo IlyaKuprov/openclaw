@@ -183,6 +183,8 @@ export type OpenClawPluginApi = {
   id: string;
   name: string;
   version?: string;
+  /** Host-owned, validated pre-custody outbound route hook contract (absent on stock 2026.9.5). */
+  readonly outboundRouteDecisionContract: 1;
   description?: string;
   source: string;
   /** Selected runtime entrypoint, independent of setup; absent without runtime artifact selection. */

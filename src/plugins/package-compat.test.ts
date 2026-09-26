@@ -1,8 +1,35 @@
 // Verifies plugin package API compatibility ranges.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { satisfiesPluginApiRange } from "./package-compat.js";
+import { resolvePackagePluginApiRange, satisfiesPluginApiRange } from "./package-compat.js";
 
 describe("package plugin API compatibility", () => {
+  it("admits the HF-18 route hook plugin on a patched 2026.9.5 host", () => {
+    const plugin = JSON.parse(
+      readFileSync(
+        new URL("../../local-hotfixes/hf18-slack-thread-guard/package.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { version: string; openclaw: unknown };
+    const manifest = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../local-hotfixes/hf18-slack-thread-guard/openclaw.plugin.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as { version: string };
+    expect(plugin.version).toBe(manifest.version);
+    const resolved = resolvePackagePluginApiRange(plugin.openclaw);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) {
+      return;
+    }
+    expect(satisfiesPluginApiRange("2026.9.4", resolved.range)).toBe(false);
+    expect(satisfiesPluginApiRange("2026.9.5", resolved.range)).toBe(true);
+    expect(satisfiesPluginApiRange("2026.9.6", resolved.range)).toBe(true);
+  });
   it("checks plugin api ranges with semver precedence", () => {
     expect(satisfiesPluginApiRange("1.2.3", "^1.2.0")).toBe(true);
     expect(satisfiesPluginApiRange("1.2.3", "~1.2.0")).toBe(true);

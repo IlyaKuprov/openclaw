@@ -20,29 +20,16 @@ import {
   implicitMentionKindWhen,
   resolveInboundMentionDecision,
 } from "../channel-mention-gating.js";
+import { createTestInboundDebounceFlush } from "./plugin-runtime-mock-debounce.js";
 import {
   mergePluginRuntimeMockOverrides,
   type PluginRuntimeMockOverrides,
 } from "./plugin-runtime-mock-overrides.js";
 import { createPluginTasksRuntimeMock } from "./plugin-runtime-tasks-mock.js";
 
-type InboundDebounceFlush = ReturnType<InboundDebounceCreateParams<unknown>["onFlush"]>;
-type InboundDebounceFlushFactory = Parameters<InboundDebounceCreateParams<unknown>["onFlush"]>[1];
+export { createTestInboundDebounceFlush };
 
-export const createTestInboundDebounceFlush: InboundDebounceFlushFactory = (params) => {
-  const source = params.lifecycle;
-  const completion = params.dispatch({
-    abortSignal: source?.abortSignal ?? new AbortController().signal,
-    onAdopted: async () => await source?.onAdopted?.(),
-    onDeferred: () => source?.onDeferred?.(),
-    onDeferredHeartbeat: () => source?.onDeferredHeartbeat?.(),
-    deferredHeartbeatIntervalMs: source?.deferredHeartbeatIntervalMs,
-    onAdoptionFinalizing: () => source?.onAdoptionFinalizing?.(),
-    onFailed: source?.onFailed ? async (error) => await source.onFailed?.(error) : undefined,
-    onAbandoned: async () => await source?.onAbandoned?.(),
-  });
-  return { admission: completion, completion };
-};
+type InboundDebounceFlush = ReturnType<InboundDebounceCreateParams<unknown>["onFlush"]>;
 
 const DEFAULT_PROVIDER = "openai";
 const DEFAULT_MODEL = "gpt-6-astra";
@@ -609,6 +596,9 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
         upsertSessionEntry: vi
           .fn<PluginRuntime["agent"]["session"]["upsertSessionEntry"]>()
           .mockResolvedValue(undefined),
+        cleanupSessionLifecycleArtifacts: vi
+          .fn<NonNullable<PluginRuntime["agent"]["session"]["cleanupSessionLifecycleArtifacts"]>>()
+          .mockResolvedValue({ archivedTranscriptArtifacts: 0, removedEntries: 0 }),
         runWithWorkAdmission: vi.fn(
           async (_params, run) => await run(new AbortController().signal),
         ) as PluginRuntime["agent"]["session"]["runWithWorkAdmission"],

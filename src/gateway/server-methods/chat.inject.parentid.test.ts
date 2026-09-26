@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   appendTranscriptMessageSync,
   loadTranscriptEvents,
@@ -83,6 +83,32 @@ async function readLastTranscriptRecord(
 // Guardrail: Gateway-injected assistant transcript messages must attach to the
 // current leaf with a `parentId` and must not sever compaction history.
 describe("gateway chat.inject transcript writes", () => {
+  it("checks the trusted owner inside the transcript transaction before append", async () => {
+    const fixture = await createSqliteTranscriptFixture({
+      prefix: "openclaw-chat-inject-owner-guard-",
+      sessionId: "owner-guarded-inject",
+    });
+    try {
+      const before = await readTranscriptEvents(fixture);
+      const assertCommitAllowed = vi.fn(() => {
+        throw new Error("plugin runtime revoked");
+      });
+      const appended = await appendInjectedAssistantMessageToTranscript({
+        agentId: fixture.agentId,
+        sessionId: fixture.sessionId,
+        sessionKey: fixture.sessionKey,
+        storePath: fixture.storePath,
+        message: "must not persist",
+        assertCommitAllowed,
+      });
+      expect(assertCommitAllowed).toHaveBeenCalledOnce();
+      expect(appended).toMatchObject({ ok: false, error: expect.stringContaining("revoked") });
+      expect(await readTranscriptEvents(fixture)).toEqual(before);
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+
   it.each(["stop", "aborted"] as const)(
     "retains %s on both display and model content",
     async (stopReason) => {

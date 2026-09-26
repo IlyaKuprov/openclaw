@@ -70,6 +70,33 @@ Use message hooks for channel-level routing and delivery policy:
   `{ cancel: true }`.
 - `message_sent`: observe final success or failure.
 
+`outbound_route_decision` is a declarative, pre-custody route request, not a
+transport send. Its event contains only the canonical `sessionKey` and the
+original `{ channel, to, accountId, threadId }`; no message, media reader, or
+transport authority is supplied. The decision shape is channel-neutral:
+`{ channel, to, accountId?, threadPolicy: "root" }` (omit `accountId` only for
+accountless channels). The host validates the exact
+persisted session route and requires the channel's outbound adapter to prove
+that its canonical session peer denotes the persisted destination. Channels
+without this proof adapter cannot use the hook. For a Slack session whose
+canonical key decodes the persisted channel, group, or direct peer, return
+`{ channel: "slack", to: "channel:C123", accountId: "work", threadPolicy: "root" }`
+(direct user peers use `user:U123`; workspace-qualified targets and normalized
+lowercase IDs are also supported). An opaque ACP binding key does not encode its
+peer, so its session row alone cannot authorize a reroute; it requires a separate
+host-verified binding proof. The host must read the **exact** session entry's
+persisted delivery route and pass it with its `channelId` and
+`channel.outbound.validateSessionRoutePeer` to `runOutboundRouteDecision` before
+either direct or durable delivery takes custody. The runner requires matching
+session, channel, canonical target, account, and original/persisted thread facts;
+it rejects missing or conflicting facts and applies only the validated root
+request. A thrown handler or timeout rejects the decision, including if another
+handler previously requested a route; late results cannot change that outcome.
+The hook does not send or authorize a plugin-initiated send. Callers must stop
+delivery on rejection, revalidate current authority before the eventual send,
+and use their existing session-scoped media loader. Until a host caller wires
+this into both delivery paths, registering the hook has **no routing effect**.
+
 For audio-only TTS replies, `content` may contain the hidden spoken
 transcript even when the channel payload has no visible text/caption.
 Rewriting that `content` updates the hook-visible transcript only; it is not

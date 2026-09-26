@@ -128,6 +128,18 @@ function createQueuedDelivery(
     channel: params.channel,
     to: params.to,
     accountId: params.accountId,
+    routeAuthority: params.routeAuthority,
+    // Old builds ignore routeAuthority but refuse to replay a row with a
+    // settlement. Keep that shipped recovery fence until custody is settled.
+    ...(params.routeAuthority
+      ? {
+          settlement: {
+            outcome: "failed" as const,
+            error: "queued route requires a route-aware recovery build",
+            routeAuthorityRecoveryRequired: true as const,
+          },
+        }
+      : {}),
     queuePolicy: params.queuePolicy,
     requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
     ...(params.initialProducerClaim ??
@@ -622,7 +634,7 @@ export async function stageDeliveryFailureSettlement(
   claimedAttemptId?: string,
   context?: DeliveryQueueStateContext,
 ): Promise<QueuedDelivery | undefined> {
-  if (entry.settlement) {
+  if (entry.settlement && entry.settlement.routeAuthorityRecoveryRequired !== true) {
     const current = loadDeliveryQueueEntry(
       OUTBOUND_DELIVERY_QUEUE_NAME,
       entry.id,

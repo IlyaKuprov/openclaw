@@ -15,6 +15,10 @@ export type SessionLifecycleArtifactCleanupParams = {
   archiveRemovedEntryTranscripts?: boolean;
   /** Preserve explicitly foreign plugin-owned state while retaining ownerless legacy rows. */
   pluginOwnerId?: string;
+  /** Scoped plugin cleanup requires an exact owner, including for hidden/ownerless nodes. */
+  requireExactPluginOwnerId?: boolean;
+  /** Recheck a plugin's runtime authority inside queued planning and deletion commits. */
+  assertCommitAllowed?: () => void;
   sessionKeySegmentPrefix: string;
   transcriptContentMarker: string;
   orphanTranscriptMinAgeMs: number;

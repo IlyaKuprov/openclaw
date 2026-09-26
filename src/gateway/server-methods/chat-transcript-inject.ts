@@ -69,6 +69,7 @@ function resolveInjectedAssistantContent(params: {
 
 /** Append a gateway-authored assistant message while preserving transcript parent links. */
 export async function appendInjectedAssistantMessageToTranscript(params: {
+  assertCommitAllowed?: () => void;
   transcriptPath?: string;
   storePath?: string;
   sessionId?: string;
@@ -173,9 +174,13 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
           {
             message: messageBody,
             idempotencyLookup: "scan-assistant",
-            ...(params.abortMeta
+            ...(params.abortMeta || params.assertCommitAllowed
               ? {
                   shouldAppendInTransaction: (latestAssistantMessage: unknown) => {
+                    params.assertCommitAllowed?.();
+                    if (!params.abortMeta) {
+                      return true;
+                    }
                     const committedRunId = resolveTerminalAssistantTranscriptRunId(
                       latestAssistantMessage,
                       readSessionTranscriptRunId(latestAssistantMessage),

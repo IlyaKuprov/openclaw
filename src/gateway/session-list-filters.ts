@@ -88,6 +88,10 @@ export function* filterSessionEntries(
   const ownerId = normalizeOptionalString(opts.ownerId);
   const ownerFirstActorId = normalizeOptionalString(params.ownerFirstActorId);
   const activeCutoff = activeMinutes === undefined ? undefined : now - activeMinutes * 60_000;
+  // An explicit activeMinutesBy wins; otherwise the cutoff follows the sort mode.
+  const activeCutoffByActivity =
+    opts.activeMinutesBy === "activity" ||
+    (opts.activeMinutesBy === undefined && opts.sortBy === "activity");
   const entries: SessionEntryPair[] = [];
   const ownerEntries: SessionEntryPair[] = [];
   const ownerFacet = new Map<string, SessionOwnerFacetIdentity>();
@@ -248,7 +252,7 @@ export function* filterSessionEntries(
     }
     if (
       activeCutoff !== undefined &&
-      (opts.sortBy === "activity" ? sessionActivityTimestamp(entry) : (entry.updatedAt ?? 0)) <
+      (activeCutoffByActivity ? sessionActivityTimestamp(entry) : (entry.updatedAt ?? 0)) <
         activeCutoff
     ) {
       continue;

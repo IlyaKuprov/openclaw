@@ -13,6 +13,7 @@ import {
   type OutboundDeliveryIntent,
   resolveOutboundDurableFinalDeliverySupport,
 } from "../../infra/outbound/deliver.js";
+import type { QueuedOutboundRouteAuthority } from "../../infra/outbound/delivery-queue-types.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { deriveDurableFinalDeliveryRequirements } from "../message/capabilities.js";
 import {
@@ -46,6 +47,12 @@ export type DurableInboundReplyDeliveryParams = DurableInboundReplyDeliveryOptio
   info: ChannelDeliveryInfo;
   runId?: string;
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
+  /** Host-only root decision must survive reply-payload modifiers before queue admission. */
+  rootReplyOnly?: true;
+  /** Host-only persisted-route freshness fence, including the final adapter handoff. */
+  assertRouteAuthority?: () => void;
+  /** Host-selected route facts that survive durable queue admission. */
+  routeAuthority?: QueuedOutboundRouteAuthority;
 };
 
 /** Outcome of attempting durable final delivery for an inbound reply payload. */
@@ -158,7 +165,7 @@ export async function deliverInboundReplyWithMessageSendContextCore(
     return { status: "not_applicable", reason: "non_final" };
   }
 
-  const group = getGroupThreadDispatchContext();
+  const group = input.assertRouteAuthority ? undefined : getGroupThreadDispatchContext();
   const params = group
     ? {
         ...input,
@@ -209,6 +216,8 @@ export async function deliverInboundReplyWithMessageSendContextCore(
     };
   }
 
+  params.assertRouteAuthority?.();
+
   const session = buildOutboundSessionContext({
     cfg: params.cfg,
     sessionKey: params.ctxPayload.SessionKey,
@@ -226,6 +235,7 @@ export async function deliverInboundReplyWithMessageSendContextCore(
     channel,
     to,
     accountId: params.accountId,
+    routeAuthority: params.routeAuthority,
     payloads: [params.payload],
     ...((params.runId ?? params.executionIdentityToken?.runId)
       ? { runId: params.runId ?? params.executionIdentityToken?.runId }
@@ -238,6 +248,7 @@ export async function deliverInboundReplyWithMessageSendContextCore(
     threadId,
     replyToId,
     replyToMode: params.replyToMode,
+    rootReplyOnly: params.rootReplyOnly,
     formatting: params.formatting,
     identity: params.identity,
     deps: params.deps,
@@ -249,6 +260,15 @@ export async function deliverInboundReplyWithMessageSendContextCore(
       : {}),
     session,
     gatewayClientScopes: params.ctxPayload.GatewayClientScopes ?? [],
+    // Modifier hooks and presentation may await after the initial route check.
+    // Keep the exact host decision at the direct adapter's synchronous fence.
+    ...(params.assertRouteAuthority
+      ? {
+          assertBeforeQueueAdmission: params.assertRouteAuthority,
+          assertDirectAdapterHandoff: params.assertRouteAuthority,
+          onPlatformSendDispatch: async () => params.assertRouteAuthority?.(),
+        }
+      : {}),
   });
   if (send.status === "failed") {
     return { status: "failed" as const, error: send.error };

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { detectMime, normalizeMimeType } from "@openclaw/media-core/mime";
 import {
+  normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
   normalizeStringifiedOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
@@ -11,6 +12,7 @@ import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
+import type { AgentsListResult } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { resolveAgentDir, resolveAgentEffectiveModelPrimary } from "../../agents/agent-scope.js";
 import {
   listProfilesForProvider,
@@ -19,7 +21,14 @@ import {
 import { updateAuthProfileStoreWithLock } from "../../agents/auth-profiles/store-runtime.js";
 import { buildExplicitSessionIdSessionKey } from "../../agents/command/session.js";
 import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
-import { canonicalizeCaseOnlyCatalogModelRef } from "../../agents/model-selection.js";
+import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
+import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
+import {
+  buildModelAliasIndex,
+  canonicalizeCaseOnlyCatalogModelRef,
+  resolveDefaultModelForAgent,
+  resolveModelRefFromString,
+} from "../../agents/model-selection.js";
 import { readPreparedModelCatalog } from "../../agents/prepared-model-catalog.js";
 import {
   acquireSimpleCompletionModelForAgent,
@@ -49,6 +58,7 @@ import {
   providerHasGenericConfig,
   requireProviderModelOverride,
   resolveCapabilityAgentOption,
+  resolveCapabilityInspectionAgentId,
   resolveCapabilityProviderAgentId,
   resolveLocalCapabilityRuntimeConfig,
   resolveSelectedProviderFromModelRef,
@@ -64,12 +74,52 @@ const HEIC_MODEL_RUN_MIMES = new Set([
 ]);
 
 async function loadModelCatalogForInspection(cfg: OpenClawConfig, rawAgentId?: string) {
-  const agentId =
-    rawAgentId === undefined ? undefined : resolveCapabilityProviderAgentId(cfg, rawAgentId);
+  const agentId = resolveCapabilityInspectionAgentId(cfg, rawAgentId);
   const prepared = await readPreparedModelCatalog({ config: cfg, agentId, readOnly: true });
   return prepared.toSorted(
     (a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id),
   );
+}
+
+/**
+ * Resolve a bare configured alias (`opus`) through the same alias index normal
+ * model selection uses. Only alias hits are returned: other bare refs keep the
+ * existing catalog/provider inference. An exact alias wins before parsing an
+ * auth-profile suffix; unmatched profile-qualified refs are left untouched.
+ */
+function resolveConfiguredModelAliasRef(params: {
+  raw: string | undefined;
+  cfg: OpenClawConfig;
+  agentId?: string;
+}): string | undefined {
+  const raw = normalizeOptionalString(params.raw);
+  if (!raw || raw.includes("/")) {
+    return undefined;
+  }
+  const defaultProvider = resolveDefaultModelForAgent({
+    cfg: params.cfg,
+    agentId: params.agentId,
+  }).provider;
+  const aliasIndex = buildModelAliasIndex({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    defaultProvider,
+  });
+  const exactAlias = aliasIndex.byAlias.get(normalizeLowercaseStringOrEmpty(raw));
+  if (exactAlias) {
+    return `${exactAlias.ref.provider}/${exactAlias.ref.model}`;
+  }
+  if (raw.includes("@")) {
+    return undefined;
+  }
+  const resolved = resolveModelRefFromString({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    raw,
+    defaultProvider,
+    aliasIndex,
+  });
+  return resolved?.alias ? `${resolved.ref.provider}/${resolved.ref.model}` : undefined;
 }
 
 async function canonicalizeModelRunRef(params: {
@@ -78,6 +128,10 @@ async function canonicalizeModelRunRef(params: {
   agentId: string;
   preserveAuthProfile: boolean;
 }): Promise<string | undefined> {
+  const aliasRef = resolveConfiguredModelAliasRef(params);
+  if (aliasRef) {
+    return aliasRef;
+  }
   return await canonicalizeCaseOnlyCatalogModelRef({
     cfg: params.cfg,
     raw: params.raw,
@@ -161,6 +215,22 @@ function normalizeModelRunThinking(value: unknown): ThinkLevel | undefined {
   return normalized;
 }
 
+async function resolveGatewayModelRunAgentId(): Promise<string> {
+  const selection = await callGateway<Partial<AgentsListResult>>({
+    method: "agents.list",
+    params: {},
+  });
+  const agentId = normalizeOptionalString(selection.defaultId);
+  if (
+    selection.selectionRequired === true ||
+    !agentId ||
+    !selection.agents?.some((entry) => entry.id === agentId)
+  ) {
+    throw new Error("Gateway agent selection is ambiguous. Pass --agent <id> for model run.");
+  }
+  return agentId;
+}
+
 async function runModelRun(params: {
   prompt: string;
   files?: string[];
@@ -169,22 +239,35 @@ async function runModelRun(params: {
   transport: CapabilityTransport;
   agent?: string;
 }) {
-  const explicitModelOverride = requireProviderModelOverride(params.model);
   const cfg =
     params.transport === "local"
       ? await resolveLocalCapabilityRuntimeConfig({
           commandName: "infer model run",
           targetIds: getModelsCommandSecretTargetIds(),
         })
-      : getRuntimeConfig();
-  const agentId = resolveCapabilityProviderAgentId(cfg, params.agent, "infer model run");
-  const modelRef = await canonicalizeModelRunRef({
-    raw: params.model,
-    cfg,
-    agentId,
-    preserveAuthProfile: params.transport === "local",
-  });
-  const hasExplicitProviderModelOverride = Boolean(explicitModelOverride);
+      : undefined;
+  const localAgentId =
+    cfg && resolveCapabilityProviderAgentId(cfg, params.agent, "infer model run");
+  const agentId = localAgentId ?? (cfg ? undefined : params.agent?.trim() || undefined);
+  if (params.agent !== undefined && !agentId) {
+    throw new Error("--agent must not be blank");
+  }
+  const modelAlias =
+    params.transport === "gateway" && params.model && !params.model.includes("/")
+      ? normalizeOptionalString(params.model)
+      : undefined;
+  const modelRef =
+    cfg && localAgentId
+      ? await canonicalizeModelRunRef({
+          raw: params.model,
+          cfg,
+          agentId: localAgentId,
+          preserveAuthProfile: true,
+        })
+      : modelAlias
+        ? undefined
+        : normalizeOptionalString(params.model);
+  const hasExplicitProviderModelOverride = Boolean(requireProviderModelOverride(modelRef));
   const imageFiles = await readModelRunImageFiles(params.files);
   const messageContent =
     imageFiles.length > 0
@@ -197,15 +280,15 @@ async function runModelRun(params: {
           })),
         ]
       : params.prompt;
-  if (params.transport === "local") {
+  if (cfg && localAgentId) {
     const callerResult = createDeferredCore<CapabilityEnvelope>();
     const trackOwner = captureAsyncWorkTracker();
     // Command completion can precede response callbacks and cancellation drainage.
     void trackOwner(async () => {
-      await prepareLocalCapabilityAccountSecrets({ cfg, agentId });
+      await prepareLocalCapabilityAccountSecrets({ cfg, agentId: localAgentId });
       const prepared = await acquireSimpleCompletionModelForAgent({
         cfg,
-        agentId,
+        agentId: localAgentId,
         modelRef,
         allowMissingApiKeyModes: ["aws-sdk"],
         ...(hasExplicitProviderModelOverride ? { allowBundledStaticCatalogFallback: true } : {}),
@@ -296,11 +379,13 @@ async function runModelRun(params: {
   }
 
   const { provider, model } = requireProviderModelOverride(modelRef) ?? {};
+  // Remote defaults must be read from the Gateway, never inferred from the CLI's config.
+  const remoteAgentId = agentId ?? (await resolveGatewayModelRunAgentId());
   // Provider/model overrides require trusted-operator scope. Use the backend
   // shared-secret lane so local gateway smokes do not depend on paired CLI device scopes.
-  const hasModelOverride = Boolean(provider || model);
+  const hasModelOverride = Boolean(provider || model || modelAlias);
   const sessionId = `model-run-${randomUUID()}`;
-  const sessionKey = buildExplicitSessionIdSessionKey({ agentId, sessionId });
+  const sessionKey = buildExplicitSessionIdSessionKey({ agentId: remoteAgentId, sessionId });
   const response: {
     result?: {
       payloads?: Array<{ text?: string; mediaUrl?: string | null; mediaUrls?: string[] }>;
@@ -315,7 +400,7 @@ async function runModelRun(params: {
   } = await callGateway({
     method: "agent",
     params: {
-      agentId,
+      agentId: remoteAgentId,
       sessionId,
       sessionKey,
       message: params.prompt,
@@ -328,8 +413,8 @@ async function runModelRun(params: {
               content: image.data,
             }))
           : undefined,
-      provider,
-      model,
+      ...(provider && model ? { provider, model } : {}),
+      ...(modelAlias ? { modelAlias } : {}),
       ...(params.thinking ? { thinking: params.thinking } : {}),
       modelRun: true,
       promptMode: "none",
@@ -475,7 +560,10 @@ export function registerModelCapabilityCommands(capability: Command): void {
     .description("Run a one-shot model turn")
     .requiredOption("--prompt <text>", "Prompt text")
     .option("--file <path>", "Image file", collectOption, [])
-    .option("--model <provider/model>", "Model override")
+    .option(
+      "--model <provider/model|alias>",
+      "Model override: provider/model, or a bare alias configured for the selected agent",
+    )
     .option("--thinking <level>", "Thinking level override")
     .option("--local", "Force local execution", false)
     .option("--gateway", "Force gateway execution", false)
@@ -523,20 +611,37 @@ export function registerModelCapabilityCommands(capability: Command): void {
   model
     .command("inspect")
     .description("Inspect one model catalog entry")
-    .requiredOption("--model <provider/model>", "Model id")
+    .requiredOption(
+      "--model <provider/model|alias>",
+      "Model id: provider/model, a catalog id, or a bare alias configured under agents.defaults.models",
+    )
     .option("--json", "Output JSON", false)
     .action(async (opts, command) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const target = normalizeStringifiedOptionalString(opts.model) ?? "";
-        const catalog = await loadModelCatalogForInspection(
-          getRuntimeConfig(),
-          resolveCapabilityAgentOption(command, opts.agent),
-        );
+        const cfg = getRuntimeConfig();
+        const rawAgentId = resolveCapabilityAgentOption(command, opts.agent);
+        const agentId = resolveCapabilityProviderAgentId(cfg, rawAgentId);
+        const aliasRef = resolveConfiguredModelAliasRef({ raw: target, cfg, agentId });
+        const catalog = await loadModelCatalogForInspection(cfg, agentId);
+        // A resolved alias must not fall back to an unrelated catalog ID.
+        const catalogAliasRef = aliasRef ? splitTrailingAuthProfile(aliasRef).model : undefined;
+        const aliasSeparator = catalogAliasRef?.indexOf("/") ?? -1;
         const entry =
-          catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === target) ??
-          catalog.find((candidate) => candidate.id === target);
+          catalogAliasRef && aliasSeparator > 0
+            ? findModelInCatalog(
+                catalog,
+                catalogAliasRef.slice(0, aliasSeparator),
+                catalogAliasRef.slice(aliasSeparator + 1),
+              )
+            : (catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === target) ??
+              catalog.find((candidate) => candidate.id === target));
         if (!entry) {
-          throw new Error(`Model not found: ${target}`);
+          throw new Error(
+            aliasRef
+              ? `Model not found: ${target} (configured alias for ${aliasRef}, which is not in the selected catalog)`
+              : `Model not found: ${target}`,
+          );
         }
         emitJsonOrText(defaultRuntime, Boolean(opts.json), entry, (value) =>
           JSON.stringify(value, null, 2),

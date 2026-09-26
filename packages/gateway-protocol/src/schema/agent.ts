@@ -296,6 +296,8 @@ export const AgentParamsSchema = closedObject({
   agentId: Type.Optional(NonEmptyString),
   provider: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
+  // Additive one-shot override: the receiving Gateway owns alias resolution.
+  modelAlias: Type.Optional(NonEmptyString),
   to: Type.Optional(Type.String()),
   replyTo: Type.Optional(Type.String()),
   sessionId: Type.Optional(Type.String()),

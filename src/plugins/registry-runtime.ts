@@ -210,6 +210,8 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         );
       }
     };
+    const scopedRuntime = registryParams.activateGlobalSideEffects === false;
+    const runtimeOwner = { record, registry, scopedRuntime };
     const runtime = new Proxy(registryParams.runtime, {
       get(target, prop, receiver) {
         const runWithPluginScope = <T>(run: () => T, requireActive = true): T => {
@@ -220,6 +222,8 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             withPluginRuntimePluginScope(
               {
                 pluginId,
+                assertPluginRuntimeCurrent: assertRuntimeCurrent,
+                pluginRuntimeOwner: runtimeOwner,
                 pluginSource: record.source,
                 pluginOrigin: record.origin,
                 pluginTrustedOfficialInstall: record.trustedOfficialInstall,
@@ -376,6 +380,8 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
           }
           const agent: PluginRuntime["agent"] = getRuntimeProperty();
           const session = agent.session;
+          const cleanupSessionLifecycleArtifacts =
+            session.cleanupSessionLifecycleArtifacts?.bind(session);
           const scopedSession = {
             resolveStorePath: session.resolveStorePath,
             getSessionEntry: session.getSessionEntry,
@@ -425,32 +431,47 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
             patchSessionEntry: async (params) => {
-              const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
-                await loadSessionOwnership();
+              const { sessionKey, agentId, env, storePath, assertCommitAllowed } = params;
+              const scope = { sessionKey, agentId, env, storePath };
+              const scopedParams = { ...params, ...scope };
+              if (scopedParams.fallbackEntry) {
+                scopedParams.fallbackEntry = Object.freeze({ ...scopedParams.fallbackEntry });
+              }
+              const {
+                assertSessionEntryOwned,
+                assertStoredSessionEntryOwned,
+                assertStoreEntryOwned,
+              } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {
-                assertStoredSessionEntryOwned({
-                  action: "patch",
-                  sessionKey: params.sessionKey,
-                  ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
-                  ...(params.env !== undefined ? { env: params.env } : {}),
-                  ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
-                });
+                assertStoredSessionEntryOwned({ action: "patch", ...scope });
                 return await session.patchSessionEntry({
-                  ...params,
-                  update: async (entry, context) => {
-                    const patch = await params.update(entry, context);
+                  ...scopedParams,
+                  assertCommitAllowed: () => {
                     assertRuntimeCurrent();
-                    if (!patch) {
-                      return patch;
+                    assertCommitAllowed?.();
+                  },
+                  update: async (entry, context) => {
+                    assertSessionEntryOwned({
+                      action: "patch",
+                      entry: context.existingEntry,
+                      sessionKey,
+                    });
+                    const result = await scopedParams.update(entry, context);
+                    assertRuntimeCurrent();
+                    if (!result) {
+                      return result;
                     }
-                    const next = params.replaceEntry
+                    const patch = Object.freeze({ ...result });
+                    assertRuntimeCurrent();
+                    const base = context.existingEntry ?? scopedParams.fallbackEntry ?? entry;
+                    const next = scopedParams.replaceEntry
                       ? (patch as SessionEntry)
-                      : ({ ...entry, ...patch } satisfies SessionEntry);
+                      : ({ ...base, ...patch } satisfies SessionEntry);
                     assertStoreEntryOwned({
                       action: "patch",
                       before: context.existingEntry ?? entry,
                       entry: next,
-                      sessionKey: params.sessionKey,
+                      ...scope,
                     });
                     return patch;
                   },
@@ -458,25 +479,49 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
             upsertSessionEntry: async (params) => {
-              const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
+              const { sessionKey, agentId, env, storePath } = params;
+              const scope = { sessionKey, agentId, env, storePath };
+              const { entry: inputEntry, ...scopedParams } = { ...params, ...scope };
+              const entry = Object.freeze({ ...inputEntry });
+              const { assertSessionEntryOwned, assertStoreEntryOwned } =
                 await loadSessionOwnership();
               return await runWithPluginScope(async () => {
-                const before = assertStoredSessionEntryOwned({
-                  action: "upsert",
-                  sessionKey: params.sessionKey,
-                  ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
-                  ...(params.env !== undefined ? { env: params.env } : {}),
-                  ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
+                await session.patchSessionEntry({
+                  ...scopedParams,
+                  fallbackEntry: entry,
+                  replaceEntry: true,
+                  assertCommitAllowed: assertRuntimeCurrent,
+                  update: (_entry, context) => {
+                    assertRuntimeCurrent();
+                    const before = context.existingEntry;
+                    assertSessionEntryOwned({
+                      action: "upsert",
+                      entry: before,
+                      sessionKey,
+                    });
+                    assertStoreEntryOwned({
+                      action: "upsert",
+                      before,
+                      entry,
+                      ...scope,
+                    });
+                    return entry;
+                  },
                 });
-                assertStoreEntryOwned({
-                  action: "upsert",
-                  before,
-                  entry: params.entry,
-                  sessionKey: params.sessionKey,
-                });
-                await session.upsertSessionEntry(params);
               });
             },
+            cleanupSessionLifecycleArtifacts: cleanupSessionLifecycleArtifacts
+              ? async (params: Parameters<typeof cleanupSessionLifecycleArtifacts>[0]) =>
+                  await runWithPluginScope(() => {
+                    const ownerBoundParams = {
+                      ...params,
+                      pluginOwnerId: pluginId,
+                      requireExactPluginOwnerId: true,
+                      assertCommitAllowed: assertRuntimeCurrent,
+                    };
+                    return cleanupSessionLifecycleArtifacts(ownerBoundParams);
+                  })
+              : undefined,
             runWithWorkAdmission: async (params, run) => {
               const { resolveStoredSessionExecutionOwner } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {
@@ -505,27 +550,40 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
             updateSessionStoreEntry: async (params) => {
-              const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
-                await loadSessionOwnership();
+              const { sessionKey, storePath, assertCommitAllowed } = params;
+              const scopedParams = { ...params, sessionKey, storePath };
+              const ownership = await loadSessionOwnership();
               return await runWithPluginScope(async () => {
-                assertStoredSessionEntryOwned({
+                ownership.assertStoredSessionEntryOwned({
                   action: "update",
-                  sessionKey: params.sessionKey,
-                  storePath: params.storePath,
+                  sessionKey,
+                  storePath,
                 });
                 return await session.updateSessionStoreEntry({
-                  ...params,
-                  update: async (entry) => {
-                    const patch = await params.update(entry);
+                  ...scopedParams,
+                  assertCommitAllowed: () => {
                     assertRuntimeCurrent();
-                    if (!patch) {
-                      return patch;
+                    assertCommitAllowed?.();
+                  },
+                  update: async (entry) => {
+                    ownership.assertSessionEntryOwned({
+                      action: "update",
+                      entry,
+                      sessionKey,
+                    });
+                    const result = await scopedParams.update(entry);
+                    assertRuntimeCurrent();
+                    if (!result) {
+                      return result;
                     }
-                    assertStoreEntryOwned({
+                    const patch = Object.freeze({ ...result });
+                    assertRuntimeCurrent();
+                    ownership.assertStoreEntryOwned({
                       action: "update",
                       before: entry,
                       entry: { ...entry, ...patch },
-                      sessionKey: params.sessionKey,
+                      sessionKey,
+                      storePath,
                     });
                     return patch;
                   },
@@ -535,6 +593,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
           } satisfies PluginRuntime["agent"]["session"];
           const runEmbeddedAgent: PluginRuntime["agent"]["runEmbeddedAgent"] = async (params) => {
             const runParams = { ...params };
+            if (runParams.sessionTarget) {
+              // Preflight and runtime dispatch must read the same nested target,
+              // not re-evaluate plugin-controlled getters after the owner check.
+              runParams.sessionTarget = Object.freeze({ ...runParams.sessionTarget });
+            }
             const { prepareRunSessionExecution } = await loadSessionOwnership();
             return await runWithPluginScope(async () => {
               const { ownerPluginId, agentHarnessRuntimeOverride } =

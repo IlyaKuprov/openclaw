@@ -74,6 +74,7 @@ type WorkerEnvironmentStartupLoader = () => Promise<
 export async function prepareGatewayServerBootstrap(input: {
   port: number;
   opts: GatewayServerOptions;
+  databaseIntegrityVerifier?: NonNullable<GatewayServerOptions["databaseIntegrityVerifier"]>;
   log: GatewayLogger;
   logSecrets: GatewayLogger;
   loadWorkerEnvironmentStartupModule: WorkerEnvironmentStartupLoader;
@@ -117,6 +118,9 @@ export async function prepareGatewayServerBootstrap(input: {
           measure: (name, run) => startupTrace.measure(name, run),
         }),
       ));
+    // Config env may select another state directory. Rebind the Gateway's
+    // early registration before the first shared-state preflight/open.
+    input.databaseIntegrityVerifier?.syncStatePath();
     await assertConfiguredWorkspaceStateReady({
       cfg: captureConfigOverrideApplier()(read.snapshot.config),
     });

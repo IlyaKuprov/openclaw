@@ -18,28 +18,33 @@ const MEMORY_FLUSH_TARGET_HINT =
 const MEMORY_FLUSH_APPEND_ONLY_HINT =
   "If memory/YYYY-MM-DD.md already exists, APPEND new content only and do not overwrite existing entries.";
 const MEMORY_FLUSH_READ_ONLY_HINT =
-  "Treat workspace bootstrap/reference files such as MEMORY.md, DREAMS.md, SOUL.md, and AGENTS.md as read-only during this flush; never overwrite, replace, or edit them.";
+  "Treat workspace bootstrap/reference files such as MEMORY.md, DREAMS.md, SOUL.md, TOOLS.md, and AGENTS.md as read-only during this flush; never overwrite, replace, or edit them.";
+const MEMORY_FLUSH_CONTENT_HINT =
+  "Write only durable facts, decisions, outcomes, and blockers; do not copy this maintenance prompt, task label, or raw instructions into memory.";
 const MEMORY_FLUSH_REQUIRED_HINTS = [
   MEMORY_FLUSH_TARGET_HINT,
   MEMORY_FLUSH_APPEND_ONLY_HINT,
   MEMORY_FLUSH_READ_ONLY_HINT,
+  MEMORY_FLUSH_CONTENT_HINT,
 ];
 
 const DEFAULT_MEMORY_FLUSH_PROMPT = [
-  "Pre-compaction memory flush.",
+  "Memory preservation before context compaction.",
   MEMORY_FLUSH_TARGET_HINT,
   MEMORY_FLUSH_READ_ONLY_HINT,
   MEMORY_FLUSH_APPEND_ONLY_HINT,
+  MEMORY_FLUSH_CONTENT_HINT,
   "Do NOT create timestamped variant files (e.g., YYYY-MM-DD-HHMM.md); always use the canonical YYYY-MM-DD.md filename.",
   `If nothing to store, reply with ${SILENT_REPLY_TOKEN}.`,
 ].join(" ");
 
 const DEFAULT_MEMORY_FLUSH_SYSTEM_PROMPT = [
-  "Pre-compaction memory flush turn.",
+  "Context-preservation memory turn.",
   "The session is near auto-compaction; capture durable memories to disk.",
   MEMORY_FLUSH_TARGET_HINT,
   MEMORY_FLUSH_READ_ONLY_HINT,
   MEMORY_FLUSH_APPEND_ONLY_HINT,
+  MEMORY_FLUSH_CONTENT_HINT,
   `You may reply, but usually ${SILENT_REPLY_TOKEN} is correct.`,
 ].join(" ");
 

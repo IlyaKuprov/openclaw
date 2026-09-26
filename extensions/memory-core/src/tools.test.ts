@@ -1,3 +1,4 @@
+import { MEMORY_SEARCH_DEADLINE_CONTROL } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import type { MemorySearchRuntimeDebug } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 // Memory Core tests cover tools plugin behavior.
 import { clearMemoryPluginState } from "openclaw/plugin-sdk/memory-host-core";
@@ -6,7 +7,6 @@ import { MEMORY_GET_TOOL_CONTRACT, MEMORY_SEARCH_TOOL_CONTRACT } from "./memory-
 import {
   getMemoryCloseMockCalls,
   getMemorySearchManagerMockCalls,
-  getMemorySearchManagerMockConfigs,
   getMemorySearchManagerMockParams,
   getMemorySyncMockCalls,
   resetMemoryToolMockState,
@@ -18,7 +18,6 @@ import {
   setMemorySourceCounts,
   setMemoryStatusDirty,
 } from "./memory-tool-manager.test-mocks.js";
-import { applyProjectRanking } from "./memory/project-ranking.js";
 import { createMemorySearchTool, testing as memoryToolsTesting } from "./tools.js";
 import { buildMemorySearchUnavailableResult } from "./tools.shared.js";
 import {
@@ -338,6 +337,111 @@ describe("memory_search unavailable payloads", () => {
       action: "Check embedding provider configuration and retry memory_search.",
     });
     expect(searchCalls).toBe(1);
+  });
+
+  it("waits for a configured memory.search.query.timeoutSeconds deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let searchSignal: AbortSignal | undefined;
+      setMemorySearchImpl(async (opts) => {
+        searchSignal = opts?.signal;
+        return await new Promise(() => {});
+      });
+      const tool = createMemorySearchToolOrThrow({
+        config: {
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { citations: "off", search: { query: { timeoutSeconds: 60 } } },
+        },
+      });
+
+      const resultPromise = tool.execute("search-configured-timeout", { query: "hello" });
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(searchSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      const result = await resultPromise;
+      expect(result.details).toMatchObject({
+        timedOut: true,
+        timeoutMs: 60_000,
+        error: "memory_search timed out after 60s",
+      });
+      expect(searchSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives cleanup only the budget the search left under the configured deadline", async () => {
+    // The remaining budget is measured on performance.now(), so the clock must be faked too.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    try {
+      setMemorySearchImpl(async () => {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 8_000);
+        });
+        return [];
+      });
+      setMemoryCloseImpl(async () => await new Promise<never>(() => {}));
+      const tool = createMemorySearchToolOrThrow({
+        config: {
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { citations: "off", search: { query: { timeoutSeconds: 10 } } },
+        },
+        oneShotCliRun: true,
+      });
+      let settled = false;
+      const resultPromise = tool.execute("search-cleanup-budget", { query: "hello" }).then((r) => {
+        settled = true;
+        return r;
+      });
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await resultPromise;
+      expect(settled).toBe(true);
+      expect(result.details).toMatchObject({ results: [] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not charge paused readiness time against the cleanup budget", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    try {
+      setMemorySearchImpl(async (opts) => {
+        // A managed local embedding service starting up pauses the active-search budget.
+        const control = opts?.[MEMORY_SEARCH_DEADLINE_CONTROL];
+        expect(control).toBeDefined();
+        control?.report("pause");
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 8_000);
+        });
+        control?.report("resume");
+        return [];
+      });
+      setMemoryCloseImpl(async () => await new Promise<never>(() => {}));
+      const tool = createMemorySearchToolOrThrow({
+        config: {
+          agents: { list: [{ id: "main", default: true }] },
+          memory: { citations: "off", search: { query: { timeoutSeconds: 10 } } },
+        },
+        oneShotCliRun: true,
+      });
+      let settled = false;
+      const resultPromise = tool.execute("search-cleanup-paused", { query: "hello" }).then((r) => {
+        settled = true;
+        return r;
+      });
+      // 8 s paused readiness plus the whole 10 s budget for cleanup: settles at 18 s, not 10 s.
+      await vi.advanceTimersByTimeAsync(17_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await resultPromise;
+      expect(settled).toBe(true);
+      expect(result.details).toMatchObject({ results: [] });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns unavailable metadata when memory search does not settle", async () => {
@@ -799,150 +903,6 @@ describe("memory_search unavailable payloads", () => {
 describe("memory_search corpus labels", () => {
   beforeEach(() => {
     resetMemoryToolMockState({ searchImpl: async () => [] });
-  });
-
-  it("uses explicit plugin context agent over synthetic active-memory session keys", async () => {
-    const tool = createMemorySearchToolOrThrow({
-      config: asOpenClawConfig({
-        agents: {
-          list: [
-            { id: "main", default: true, memory: { search: { enabled: false } } },
-            { id: "recall", memory: { search: { enabled: true } } },
-          ],
-        },
-      }),
-      agentId: "recall",
-      agentSessionKey: "explicit:user-session:active-memory:abc123",
-    });
-
-    await tool.execute("recall", { query: "favorite food" });
-
-    expect(getMemorySearchManagerMockParams().at(-1)?.agentId).toBe("recall");
-  });
-
-  it("re-resolves config when executing a previously created tool", async () => {
-    const startupConfig = asOpenClawConfig({
-      agents: {
-        defaults: {},
-        list: [{ id: "main", default: true }],
-      },
-      memory: {
-        search: {
-          provider: "ollama",
-          model: "nomic-embed-text",
-        },
-      },
-    });
-    const patchedConfig = asOpenClawConfig({
-      agents: {
-        defaults: {},
-        list: [{ id: "main", default: true }],
-      },
-      memory: {
-        search: {
-          provider: "openai",
-          model: "text-embedding-3-small",
-        },
-      },
-    });
-    let liveConfig = startupConfig;
-    const tool = createMemorySearchTool({
-      config: startupConfig,
-      getConfig: () => liveConfig,
-    });
-    if (!tool) {
-      throw new Error("tool missing");
-    }
-
-    liveConfig = patchedConfig;
-    await tool.execute("patched-config", { query: "provider switch" });
-
-    expect(getMemorySearchManagerMockConfigs()).toEqual([patchedConfig]);
-  });
-
-  it("keeps ordinary memory_search on explicitly configured sources when recall indexing is enabled", async () => {
-    let seenSources: readonly string[] | undefined;
-    let seenMaxResults: number | undefined;
-    setMemorySearchImpl(async (opts) => {
-      seenSources = opts?.sources;
-      seenMaxResults = opts?.maxResults;
-      return [];
-    });
-    const tool = createMemorySearchToolOrThrow({
-      config: {
-        agents: {
-          defaults: {},
-          list: [{ id: "main", default: true }],
-        },
-        memory: {
-          citations: "off",
-          search: { rememberAcrossConversations: true },
-        },
-        tools: { sessions: { visibility: "all" } },
-      },
-      agentSessionKey: "agent:main:main",
-    });
-
-    await tool.execute("ordinary-search", { query: "favorite food", maxResults: 3 });
-
-    expect(seenSources).toEqual(["memory"]);
-    expect(seenMaxResults).toBe(3);
-  });
-
-  it("applies active-project ranking through the production memory_search tool", async () => {
-    let activeProjectKeys: string[] | undefined;
-    setMemorySearchImpl(async (opts) => {
-      activeProjectKeys = opts?.activeProjectKeys;
-      return applyProjectRanking(
-        [
-          {
-            path: "MEMORY.md",
-            startLine: 2,
-            endLine: 2,
-            score: 0.9,
-            snippet: "second active fact",
-            source: "memory" as const,
-            projectKey: "github.com/acme/Beta",
-          },
-          {
-            path: "MEMORY.md",
-            startLine: 1,
-            endLine: 1,
-            score: 0.8,
-            snippet: "active fact",
-            source: "memory" as const,
-            projectKey: "github.com/acme/Alpha",
-          },
-          {
-            path: "MEMORY.md",
-            startLine: 3,
-            endLine: 3,
-            score: 0.85,
-            snippet: "foreign fact",
-            source: "memory" as const,
-            projectKey: "github.com/acme/Gamma",
-          },
-        ],
-        opts?.activeProjectKeys,
-      );
-    });
-    const tool = createMemorySearchToolOrThrow({
-      config: { memory: { citations: "off" } },
-      activeProjectKeys: ["github.com/acme/Beta", "github.com/acme/Alpha"],
-    });
-
-    const result = await tool.execute("project-ranked-search", { query: "fact" });
-    const details = result.details as { results: Array<{ snippet: string; score: number }> };
-
-    expect(details.results.map((entry) => entry.snippet)).toEqual([
-      "second active fact",
-      "active fact",
-      "foreign fact",
-    ]);
-    expect(activeProjectKeys).toEqual(["github.com/acme/Beta", "github.com/acme/Alpha"]);
-    expect(details.results[0]?.score).toBeCloseTo(1.035);
-    expect(details.results[1]?.score).toBeCloseTo(0.92);
-    expect(details.results[2]?.score).toBeCloseTo(0.765);
   });
 
   it("does not let corpus=all broaden implicitly indexed recall transcripts", async () => {

@@ -42,7 +42,9 @@ import {
 import { resolveSessionRenamePatch, resolveSessionRenameValue } from "../../lib/session-rename.ts";
 import type { SessionsGroupBy } from "../../lib/sessions/grouping.ts";
 import {
+  SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
   SESSIONS_PAGE_DEFAULT_LIMIT,
+  SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
   filterSessionRows,
   scopedAgentParamsForSession,
   type SessionArchivedFilter,
@@ -83,6 +85,7 @@ import { prepareArchiveOutcome } from "./archive-outcome.ts";
 import { rememberSessionCustomGroup, sessionCategoryNames } from "./custom-groups.ts";
 import { buildSessionsListQuery } from "./list-query.ts";
 import { loadStoredGroupBy, saveStoredGroupBy } from "./page-state.ts";
+import { routeRosterFilters } from "./roster-filter-defaults.ts";
 import type { SessionsRouteData } from "./route.ts";
 import { renderSessions, type SessionsProps } from "./view.ts";
 
@@ -124,8 +127,8 @@ class SessionsPage extends OpenClawLightDomElement {
   @state() private loading = false;
   @state() private refreshing = false;
   @state() private error: string | null = null;
-  @state() private activeMinutes = "";
-  @state() private limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
+  @state() private activeMinutes = String(SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES);
+  @state() private limit = String(SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT);
   @state() private includeGlobal = true;
   @state() private includeUnknown = false;
   @state() private statusFilter: SessionArchivedFilter = "active";
@@ -421,19 +424,11 @@ class SessionsPage extends OpenClawLightDomElement {
       return;
     }
     this.statusFilter = data.statusFilter;
+    Object.assign(this, routeRosterFilters(data.statusFilter, Boolean(data.expandedSessionKey)));
     if (data.expandedSessionKey) {
-      this.activeMinutes = "";
-      this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
-      this.includeGlobal = true;
-      this.includeUnknown = true;
       this.searchQuery = "";
       this.page = 0;
       this.selectedKeys = new Set();
-    } else {
-      this.activeMinutes = "";
-      this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
-      this.includeGlobal = true;
-      this.includeUnknown = false;
     }
     this.expandedSessionKey = data.expandedSessionKey;
     // Only route-driven expansion narrows the list query; interactive drawer
@@ -706,10 +701,12 @@ class SessionsPage extends OpenClawLightDomElement {
       return;
     }
     this.statusFilter = statusFilter;
+    Object.assign(this, routeRosterFilters(statusFilter));
     this.clearSearchTimer();
     this.page = 0;
     this.selectedKeys = new Set();
     this.deepLinkSessionKey = null;
+    this.routeDataEnabled = false;
     // Route navigation changes the managed query; mask the old view's rows
     // until its current list subscription publishes.
     this.loading = true;
@@ -1313,6 +1310,7 @@ class SessionsPage extends OpenClawLightDomElement {
     const leavingDeepLink = this.deepLinkSessionKey !== null;
     this.deepLinkSessionKey = null;
     if (leavingDeepLink) {
+      Object.assign(this, routeRosterFilters(this.statusFilter));
       void this.refreshSessionList();
     }
     if (this.expandedSessionKey === sessionKey) {

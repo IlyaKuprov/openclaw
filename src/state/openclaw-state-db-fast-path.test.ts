@@ -2,6 +2,10 @@ import { realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { registerOpenClawStateAuditIntegrityVerifier } from "./openclaw-state-audit-verifier-registration.js";
+import { isOpenClawStateSchemaFastPathEligible } from "./openclaw-state-db-fast-path.js";
+import { corruptIndexContent } from "./openclaw-state-db-fast-path.test-support.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -14,6 +18,93 @@ const dirs = useAutoCleanupTempDirTracker((cleanup) =>
     cleanup();
   }),
 );
+
+describe("state schema fast-path integrity proof", () => {
+  it.each([
+    {
+      name: "refuses audit ledger index corruption without a background verifier",
+      index: "idx_audit_events_direction_sequence",
+      from: "direction",
+      to: "channel  ",
+      refused: true,
+    },
+    {
+      name: "refuses a corrupt non-ledger table on every open",
+      index: "idx_state_leases_owner",
+      from: "owner",
+      to: "scope",
+      refused: true,
+    },
+  ])("$name", ({ index, from, to, refused }) => {
+    const env = { OPENCLAW_STATE_DIR: dirs.make("state-fast-path-integrity-") };
+    const opened = openOpenClawStateDatabase({ env });
+    const pathname = realpathSync(opened.path);
+    opened.db.exec(`
+      INSERT INTO audit_events (
+        event_id, source_id, source_sequence, occurred_at, kind, action, status,
+        actor_type, actor_id, direction, channel
+      ) VALUES
+        ('event-1', 'source-1', 1, 1, 'message', 'send', 'ok', 'system', 'talos', 'inbound', 'slack'),
+        ('event-2', 'source-2', 2, 2, 'message', 'send', 'ok', 'system', 'talos', 'outbound', 'discord');
+      INSERT INTO state_leases (scope, lease_key, owner, created_at, updated_at) VALUES
+        ('scope-a', 'key-1', 'owner-1', 1, 1),
+        ('scope-b', 'key-2', 'owner-2', 2, 2);
+    `);
+    closeOpenClawStateDatabaseForTest();
+    // The rewrite targets the main database file, so fold the WAL back in first.
+    const checkpoint = new DatabaseSync(pathname);
+    checkpoint.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    checkpoint.close();
+
+    corruptIndexContent(pathname, index, from, to);
+
+    const database = new DatabaseSync(pathname);
+    try {
+      // The whole-file page structure stays provable; only index content drifted.
+      expect(database.prepare("PRAGMA quick_check;").all()).toEqual([{ quick_check: "ok" }]);
+      // The background verifier keeps the full proof and still sees the damage.
+      expect(() => assertSqliteIntegrity(database, pathname)).toThrow(
+        new RegExp(`integrity_check failed for .*${index}`, "u"),
+      );
+      if (refused) {
+        expect(() => isOpenClawStateSchemaFastPathEligible(database, pathname)).toThrow(
+          new RegExp(`integrity_check failed for .*${index}`, "u"),
+        );
+      }
+      const unrelatedVerifier = registerOpenClawStateAuditIntegrityVerifier(`${pathname}.other`);
+      try {
+        expect(() => isOpenClawStateSchemaFastPathEligible(database, pathname)).toThrow(
+          new RegExp(`integrity_check failed for .*${index}`, "u"),
+        );
+      } finally {
+        unrelatedVerifier();
+      }
+      const unregister = registerOpenClawStateAuditIntegrityVerifier(pathname);
+      try {
+        if (index.startsWith("idx_audit_events")) {
+          expect(isOpenClawStateSchemaFastPathEligible(database, pathname)).toBe(true);
+        } else {
+          expect(() => isOpenClawStateSchemaFastPathEligible(database, pathname)).toThrow(
+            new RegExp(`integrity_check failed for .*${index}`, "u"),
+          );
+        }
+      } finally {
+        unregister();
+      }
+    } finally {
+      database.close();
+    }
+    if (index.startsWith("idx_audit_events")) {
+      // The real direct-local open detects the failed proof, rebuilds the canonical
+      // index in its existing repair path, and verifies the result before exposure.
+      const repaired = openOpenClawStateDatabase({ env });
+      expect(() => assertSqliteIntegrity(repaired.db, pathname)).not.toThrow();
+      expect(
+        repaired.db.prepare("SELECT event_id FROM audit_events ORDER BY event_id").all(),
+      ).toEqual([{ event_id: "event-1" }, { event_id: "event-2" }]);
+    }
+  });
+});
 
 describe("state schema fast-path failure settlement", () => {
   it.each([

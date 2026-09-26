@@ -23,10 +23,15 @@ import {
 } from "../infra/state-database-coordinator.js";
 import { migrateLegacyCronRunLogsToTaskRuns } from "../infra/state-migrations.cron-run-logs.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { isOpenClawStateAuditIntegrityVerifierRegistered } from "./openclaw-state-audit-verifier-registration.js";
 import {
   getOpenClawDatabaseMaintenanceScope,
   observeOpenClawDatabaseMaintenanceResource,
 } from "./openclaw-state-db-async-lifecycle.js";
+import {
+  assertOpenClawStateAuditIntegrity,
+  markOpenClawStateAuditIntegrityDeferred,
+} from "./openclaw-state-db-audit-integrity.js";
 import {
   openClawStateDatabaseCache as stateDbCache,
   recordOpenClawStateDatabaseOpenFailure,
@@ -205,6 +210,10 @@ function ensureSchema(
   busyTimeoutMs = OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   initializeNativeOnly = false,
 ): void {
+  if (isOpenClawStateAuditIntegrityVerifierRegistered(pathname)) {
+    // A fast-path miss can fall through schema repair without a full physical audit proof.
+    markOpenClawStateAuditIntegrityDeferred(db);
+  }
   try {
     if (isOpenClawStateSchemaFastPathEligible(db, pathname)) {
       // Recheck ownership so a claim made during validation cannot retain a writable handle.
@@ -366,6 +375,7 @@ function openOpenClawStateDatabaseWithBusyTimeout(
       databasePath: options.database.path,
       env,
     });
+    assertOpenClawStateAuditIntegrity(options.database, recordOpenClawStateDatabaseOpenFailure);
     observeOpenClawDatabaseMaintenanceResource(options.database.db);
     return options.database;
   }

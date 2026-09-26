@@ -19,6 +19,7 @@ import { getRuntimeConfig } from "../../config/config.js";
 import * as session from "../../config/sessions/lifecycle.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
+  cleanupSessionLifecycleArtifactsCore,
   deleteSessionEntryLifecycle,
   listSessionEntriesCore as listAccessorSessionEntries,
   listSessionEntriesReadOnly as listAccessorSessionEntriesReadOnly,
@@ -43,9 +44,11 @@ import {
 } from "../../sessions/session-lifecycle-admission.js";
 import { createLazyRuntimeMethod, createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
+import { runEmbeddedAgentWithOwnerFence } from "./runtime-agent-embedded-owner.js";
 import { resolveAgentCatalogCreateTarget } from "./runtime-agent-session-catalog.js";
 import { resolveRuntimeThinkingCatalog } from "./runtime-agent-thinking.js";
 import { defineCachedValue } from "./runtime-cache.js";
+import type { PluginRuntimeSessionLifecycleCleanupV1 } from "./types-core.js";
 import type { PluginRuntime } from "./types.js";
 
 type RuntimeSession = PluginRuntime["agent"]["session"];
@@ -59,9 +62,6 @@ type RuntimeSessionStoreEntryUpdateParams = Parameters<
 >[0];
 type RuntimeUpsertSessionEntryParams = Parameters<RuntimeSession["upsertSessionEntry"]>[0];
 
-const loadEmbeddedAgentRuntime = createLazyRuntimeModule(
-  () => import("./runtime-embedded-agent.runtime.js"),
-);
 const loadAgentCommandRuntime = createLazyRuntimeModule(async () => {
   const [command, identity] = await Promise.all([
     import("../../agents/agent-command.js"),
@@ -117,6 +117,7 @@ async function patchSessionEntry(
         : undefined,
     preserveActivity: params.preserveActivity,
     replaceEntry: params.replaceEntry,
+    skipMaintenance: params.skipMaintenance,
   });
 }
 
@@ -132,6 +133,7 @@ async function updateSessionStoreEntry(
     },
     params.update,
     {
+      assertCommitAllowed: params.assertCommitAllowed,
       skipMaintenance: params.skipMaintenance,
       takeCacheOwnership: params.takeCacheOwnership,
       requireWriteSuccess: params.requireWriteSuccess,
@@ -690,19 +692,23 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
           ),
     ),
   );
-  defineCachedValue(agentRuntime, "runEmbeddedAgent", () =>
-    createLazyRuntimeMethod(loadEmbeddedAgentRuntime, (runtime) => runtime.runPluginEmbeddedAgent),
+  defineCachedValue(agentRuntime, "runEmbeddedAgent", () => runEmbeddedAgentWithOwnerFence);
+  defineCachedValue(
+    agentRuntime,
+    "session",
+    () =>
+      ({
+        resolveStorePath: resolveSessionStorePathCore,
+        createSessionEntry,
+        getSessionEntry,
+        listSessionEntries,
+        patchSessionEntry,
+        upsertSessionEntry,
+        cleanupSessionLifecycleArtifacts: cleanupSessionLifecycleArtifactsCore,
+        runWithWorkAdmission: runWithSessionWorkAdmission,
+        updateSessionStoreEntry,
+      }) satisfies PluginRuntime["agent"]["session"] & PluginRuntimeSessionLifecycleCleanupV1,
   );
-  defineCachedValue(agentRuntime, "session", () => ({
-    resolveStorePath: resolveSessionStorePathCore,
-    createSessionEntry,
-    getSessionEntry,
-    listSessionEntries,
-    patchSessionEntry,
-    upsertSessionEntry,
-    runWithWorkAdmission: runWithSessionWorkAdmission,
-    updateSessionStoreEntry,
-  }));
 
   return agentRuntime as PluginRuntime["agent"];
 }

@@ -32,6 +32,205 @@ afterEach(() => {
 });
 
 describe("sessions page managed roster", () => {
+  it("offers an unfiltered roster when the default recency window finds no active sessions", async () => {
+    const managed = createManagedSessions();
+    const context = createContext(
+      createGateway({} as GatewayBrowserClient).gateway,
+      managed.sessions,
+    );
+    const page = await createRenderedPage(context, {
+      count: 0,
+      sessions: [],
+      ts: 1,
+      path: "",
+      defaults: { modelProvider: null, model: null, contextTokens: null },
+    });
+    try {
+      const empty = page.querySelector<HTMLElement>(".data-table-empty-state");
+      expect(empty?.getAttribute("role")).toBe("status");
+      expect(empty?.textContent).toContain("No sessions match your filters.");
+      const showAll = empty?.querySelector<HTMLButtonElement>("button");
+      expect(showAll?.textContent?.trim()).toBe("Show all");
+      showAll?.click();
+      await vi.waitFor(() => expect(managed.subscribeList).toHaveBeenCalledTimes(2));
+      const unfilteredQuery = vi.mocked(managed.subscribeList).mock.calls[1]?.[0];
+      expect(unfilteredQuery).toMatchObject({
+        archivedFilter: "active",
+        limit: 50,
+      });
+      expect(unfilteredQuery).not.toHaveProperty("activeMinutes");
+      if (!unfilteredQuery) {
+        throw new Error("Expected the unfiltered roster subscription");
+      }
+      managed.publish(unfilteredQuery, {
+        result: {
+          count: 1,
+          sessions: [{ key: "agent:main:older", kind: "direct", updatedAt: 1 }],
+          ts: 2,
+          path: "",
+          defaults: { modelProvider: null, model: null, contextTokens: null },
+        },
+        agentId: "main",
+        loading: false,
+        error: null,
+      });
+      await page.updateComplete;
+      expect(page.textContent).toContain("agent:main:older");
+    } finally {
+      page.remove();
+    }
+  });
+
+  it.each([
+    { status: "active" as const, limit: 20, activeMinutes: 2880 },
+    { status: "archived" as const, limit: 50, activeMinutes: undefined },
+    { status: "all" as const, limit: 50, activeMinutes: undefined },
+  ])(
+    "restores the $status roster after closing a route deep-link drawer",
+    async ({ status, limit, activeMinutes }) => {
+      const managed = createManagedSessions();
+      const context = createContext(
+        createGateway({} as GatewayBrowserClient).gateway,
+        managed.sessions,
+      );
+      const key = "agent:main:linked";
+      const page = await createRenderedPage(
+        context,
+        {
+          count: 1,
+          sessions: [{ key, kind: "direct", updatedAt: 1, archived: status === "archived" }],
+          ts: 1,
+          path: "",
+          defaults: { modelProvider: null, model: null, contextTokens: null },
+        },
+        status,
+        key,
+      );
+      try {
+        expect(vi.mocked(managed.subscribeList).mock.calls[0]?.[0]).toMatchObject({
+          limit: 50,
+          search: key,
+        });
+        page.querySelector<HTMLButtonElement>(".session-details-toggle")?.click();
+        await vi.waitFor(() => expect(managed.subscribeList).toHaveBeenCalledTimes(2));
+        expect(vi.mocked(managed.subscribeList).mock.calls[1]?.[0]).toMatchObject({
+          archivedFilter: status,
+          limit,
+        });
+        expect(vi.mocked(managed.subscribeList).mock.calls[1]?.[0].activeMinutes).toBe(
+          activeMinutes,
+        );
+      } finally {
+        page.remove();
+      }
+    },
+  );
+
+  it("retains explicitly edited filters after a deep-link drawer closes", async () => {
+    const managed = createManagedSessions();
+    const context = createContext(
+      createGateway({} as GatewayBrowserClient).gateway,
+      managed.sessions,
+    );
+    const key = "agent:main:linked";
+    const page = await createRenderedPage(
+      context,
+      {
+        count: 1,
+        sessions: [{ key, kind: "direct", updatedAt: 1 }],
+        ts: 1,
+        path: "",
+        defaults: { modelProvider: null, model: null, contextTokens: null },
+      },
+      "active",
+      key,
+    );
+    try {
+      const limit = page.querySelector<HTMLInputElement>(".session-filter-input--limit")!;
+      limit.value = "70";
+      limit.dispatchEvent(new Event("input", { bubbles: true }));
+      await vi.waitFor(() => expect(managed.subscribeList).toHaveBeenCalledTimes(2));
+      expect(vi.mocked(managed.subscribeList).mock.calls[1]?.[0]).toMatchObject({ limit: 70 });
+      page.querySelector<HTMLButtonElement>(".session-details-toggle")?.click();
+      await page.updateComplete;
+      expect(managed.subscribeList).toHaveBeenCalledTimes(2);
+      expect(limit.value).toBe("70");
+    } finally {
+      page.remove();
+    }
+  });
+
+  it.each([
+    { from: "archived" as const, to: "active" as const, limit: 20, activeMinutes: 2880 },
+    { from: "active" as const, to: "archived" as const, limit: 50, activeMinutes: undefined },
+    { from: "all" as const, to: "archived" as const, limit: 50, activeMinutes: undefined },
+  ])(
+    "issues only the correct $to query from $from while route data is asynchronous",
+    async ({ from, to, limit, activeMinutes }) => {
+      const managed = createManagedSessions();
+      const context = createContext(
+        createGateway({} as GatewayBrowserClient).gateway,
+        managed.sessions,
+      );
+      const routeReady = deferred();
+      context.runtimeConfig.ensureLoaded = () => routeReady.promise;
+      const page = await createRenderedPage(
+        context,
+        {
+          count: 0,
+          sessions: [],
+          ts: 1,
+          path: "",
+          defaults: { modelProvider: null, model: null, contextTokens: null },
+        },
+        from,
+      );
+      try {
+        const group = page.querySelector<HTMLElement & { value: string }>(
+          "wa-radio-group.sessions-view-segment",
+        );
+        expect(group).toBeTruthy();
+        group!.value = to;
+        group!.dispatchEvent(new Event("change", { bubbles: true }));
+        const pendingRoute = sessionsRoute.loader!(context, {
+          signal: new AbortController().signal,
+          shouldRun: () => true,
+          revalidating: false,
+          location: {
+            pathname: "/sessions",
+            search: to === "active" ? "" : `?status=${to}`,
+            hash: "",
+          },
+          deps: "",
+          cause: "navigation",
+        });
+        await page.updateComplete;
+        expect(context.navigate).toHaveBeenCalledWith(
+          "sessions",
+          to === "active" ? undefined : { search: `?status=${to}` },
+        );
+        expect(managed.subscribeList).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(managed.subscribeList).mock.calls[1]?.[0]).toMatchObject({
+          archivedFilter: to,
+          limit,
+        });
+        expect(vi.mocked(managed.subscribeList).mock.calls[1]?.[0].activeMinutes).toBe(
+          activeMinutes,
+        );
+        page.context = { ...context };
+        await page.updateComplete;
+        expect(managed.subscribeList).toHaveBeenCalledTimes(2);
+        routeReady.resolve();
+        page.routeData = (await pendingRoute) as SessionsRouteData;
+        await page.updateComplete;
+        expect(managed.subscribeList).toHaveBeenCalledTimes(2);
+      } finally {
+        routeReady.resolve();
+        page.remove();
+      }
+    },
+  );
+
   it.each([null, "agent:main:initial"])(
     "replaces the managed search, discards late results, and exposes errors (deep link: %s)",
     async (deepLink) => {
@@ -140,7 +339,7 @@ describe("sessions page managed roster", () => {
       await vi.waitFor(() =>
         expect(request).toHaveBeenCalledWith(
           "sessions.list",
-          expect.objectContaining({ search: "server-only metadata", limit: 50 }),
+          expect.objectContaining({ search: "server-only metadata", limit: 20 }),
         ),
       );
       await vi.waitFor(() => expect(page.result?.sessions).toHaveLength(50));
@@ -153,7 +352,7 @@ describe("sessions page managed roster", () => {
       await vi.waitFor(() => expect(page.result?.sessions).toHaveLength(57));
       expect(request).toHaveBeenCalledWith(
         "sessions.list",
-        expect.objectContaining({ search: "server-only metadata", offset: 50, limit: 50 }),
+        expect.objectContaining({ search: "server-only metadata", offset: 50, limit: 20 }),
       );
       await page.updateComplete;
       button("Next").click();
@@ -371,7 +570,9 @@ describe("sessions page managed roster", () => {
     await vi.waitFor(() => expect(managed.subscribeList).toHaveBeenCalledOnce());
     const selectedQuery = vi.mocked(managed.subscribeList).mock.calls[0]?.[0];
     expect(selectedQuery).toEqual({
-      limit: 50,
+      limit: 20,
+      activeMinutes: 2880,
+      activeMinutesBy: "activity",
       includeGlobal: true,
       includeUnknown: false,
       includeDerivedTitles: false,

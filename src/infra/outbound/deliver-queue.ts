@@ -20,8 +20,10 @@ import { OUTBOUND_DELIVERY_LOG_SCOPE } from "./deliver-log.js";
 import { buildPayloadSummary } from "./deliver-payload.js";
 import { prepareOutboundPayloadBatch } from "./deliver-prepare.js";
 import {
+  assertStableRouteCustodyMatchesCurrent,
   restoreQueuedDeliveryCustody,
   stageAndEnqueueOutboundDelivery,
+  OutboundQueueAdmissionAuthorityError,
 } from "./deliver-queue-admission.js";
 import { deliverOutboundPayloadsWithQueueCleanup } from "./deliver-queue-execute.js";
 import { createQueuedDeliveryOwner } from "./deliver-queue-state.js";
@@ -259,6 +261,9 @@ async function runOutboundDeliveryWithQueue(
         params.deliveryQueueStateContext,
       )
     : null;
+  if (existingStableDelivery) {
+    assertStableRouteCustodyMatchesCurrent(params, existingStableDelivery);
+  }
   if (params.deliveryIntentId && !existingStableDelivery && !stablePreparationOwner) {
     const owner = findDeliveryIntentOwner(
       params.deliveryIntentId,
@@ -380,7 +385,11 @@ async function runOutboundDeliveryWithQueue(
             ? { getStablePreparation: stablePreparationOwner.current }
             : {}),
         }).catch((err: unknown) => {
-          if (queuePolicy === "required" || err instanceof StableDeliveryPreparationLostError) {
+          if (
+            queuePolicy === "required" ||
+            err instanceof StableDeliveryPreparationLostError ||
+            err instanceof OutboundQueueAdmissionAuthorityError
+          ) {
             emitPreQueueFailure();
             throw err;
           }

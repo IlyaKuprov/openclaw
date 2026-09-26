@@ -16,7 +16,7 @@ function formatGitHubPublicationResult(result: SessionGitHubPublicationResult): 
   const acting = publisher ? ` Using @${publisher.login} (${source}).` : "";
   switch (result.status) {
     case "published":
-      return `Published ${result.repository} branch ${result.branch}: ${result.url}${acting}`;
+      return `Pull request published or reused for ${result.repository} branch ${result.branch}: ${result.url}${acting} Review pending; if the PR is a draft, mark it ready, then obtain a clean Codex review of the current head before reporting the PR task complete.`;
     case "failed":
       return `GitHub publication failed: ${result.message} ${result.nextAction}${acting}`;
     case "publishing":

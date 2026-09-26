@@ -6,10 +6,13 @@ import type {
   SessionsListResult,
 } from "../../api/types.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
-import type {
-  SessionCapability,
-  SessionListOptions,
-  SessionListSnapshot,
+import {
+  SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
+  SESSIONS_PAGE_DEFAULT_LIMIT,
+  SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
+  type SessionCapability,
+  type SessionListOptions,
+  type SessionListSnapshot,
 } from "../../lib/sessions/index.ts";
 import { createSessionArchiveState } from "../../lib/sessions/session-archive-state.ts";
 import type { SessionRefreshOptions } from "../../lib/sessions/session-capability.ts";
@@ -237,8 +240,12 @@ export async function createRenderedPage(
   statusFilter: "active" | "archived" | "all" = "active",
   expandedSessionKey: string | null = null,
 ): Promise<TestSessionsPage> {
+  // Mirror the defaults the mounted page opens with: the compact roster window
+  // for the active view, the documented page limit for archived/all.
   const query = buildSessionsListQuery(context, {
-    limit: 50,
+    limit:
+      statusFilter === "active" ? SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT : SESSIONS_PAGE_DEFAULT_LIMIT,
+    activeMinutes: statusFilter === "active" ? SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES : undefined,
     includeGlobal: true,
     includeUnknown: false,
     statusFilter,

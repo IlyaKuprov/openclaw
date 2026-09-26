@@ -16,6 +16,8 @@ type WakeHandler = (
 ) => Promise<SessionEventWakeResult>;
 export type SessionEventWakeWaitOptions = {
   abortSignal?: AbortSignal;
+  /** Remove this request's queued work on abort; other coalesced requests remain. */
+  cancelQueuedOnAbort?: boolean;
   /** Called when the queue starts an attempt for this waiter. */
   onAttemptStarted?: () => void;
   /** Called whenever this waiter enters the queue, including retained retries. */
@@ -29,6 +31,7 @@ export type SessionEventWakeWaitOptions = {
 type Settlement = {
   active: boolean;
   settle: (result: SessionEventWakeResult) => void;
+  cancelQueuedOnAbort?: boolean;
   onAttemptStarted?: SessionEventWakeWaitOptions["onAttemptStarted"];
   onQueued?: SessionEventWakeWaitOptions["onQueued"];
   stopWaitingOnRetry?: SessionEventWakeWaitOptions["stopWaitingOnRetry"];
@@ -40,6 +43,8 @@ type PendingWake = SessionEventWakeRequest & {
   readyAt: number;
   notBefore: number;
   settlements: Settlement[];
+  /** Cancellable owners plus at most one aggregate of other requests. */
+  members?: PendingWake[];
 };
 type WakeGroup = {
   task?: PendingWake;
@@ -47,7 +52,12 @@ type WakeGroup = {
   event?: PendingWake;
   blockedUntil: number;
 };
-type ActiveWake = { generation: number; controller: AbortController };
+type ActiveWake = {
+  generation: number;
+  controller: AbortController;
+  /** Cancel the admitted turn only when all its coalesced owners have left. */
+  admitting?: { wake: PendingWake; controller: AbortController };
+};
 type RequestOptions = Omit<SessionEventWakeRequest, "retainedWork"> & { coalesceMs?: number };
 
 const SLOTS = ["task", "scheduled", "event"] as const;
@@ -79,7 +89,7 @@ function priority(wake: SessionEventWakeRequest): number {
         : 2;
 }
 
-function merge(previous: PendingWake, next: PendingWake): PendingWake {
+function merge(previous: PendingWake, next: PendingWake, retainMembers = true): PendingWake {
   const preferred =
     (previous.intent === "task") !== (next.intent === "task")
       ? previous.intent === "task"
@@ -95,6 +105,22 @@ function merge(previous: PendingWake, next: PendingWake): PendingWake {
   );
   const bypass =
     (preferred.intent === "manual" || preferred.intent === "immediate") && !preferred.retainedWork;
+  const originals = retainMembers
+    ? [...(previous.members ?? [previous]), ...(next.members ?? [next])]
+    : [];
+  const cancellable = originals.filter((member) =>
+    member.settlements.some((entry) => entry.cancelQueuedOnAbort),
+  );
+  // Only cancellable owners need individual provenance. Fold settlement-free
+  // requests into one aggregate instead of copying every fire-and-forget wake.
+  const unowned = cancellable.length
+    ? originals
+        .filter((member) => !member.settlements.some((entry) => entry.cancelQueuedOnAbort))
+        .reduce<PendingWake | undefined>(
+          (current, member) => (current ? merge(current, member, false) : member),
+          undefined,
+        )
+    : undefined;
   return {
     ...preferred,
     // A scheduled reason must not discard the event's guard-retry semantics.
@@ -117,7 +143,22 @@ function merge(previous: PendingWake, next: PendingWake): PendingWake {
       : undefined,
     retainedWork: !bypass && (previous.retainedWork || next.retainedWork),
     settlements: [...previous.settlements, ...next.settlements].filter((entry) => entry.active),
+    members: cancellable.length ? [...cancellable, ...(unowned ? [unowned] : [])] : undefined,
   };
+}
+
+function withoutCancelledMembers(wake: PendingWake): PendingWake | undefined {
+  const originals = wake.members ?? [wake];
+  const members = originals.filter(
+    (member) => !member.settlements.some((entry) => entry.cancelQueuedOnAbort && !entry.active),
+  );
+  if (members.length === originals.length) {
+    return wake;
+  }
+  return members.reduce<PendingWake | undefined>(
+    (current, member) => (current ? merge(current, member) : member),
+    undefined,
+  );
 }
 
 function targetKey(request: SessionEventWakeRequest): string {
@@ -160,13 +201,17 @@ function createSessionEventWakeRuntime() {
 
   function enqueue(wake: PendingWake, blockedUntil = 0): string {
     const key = targetKey(wake);
+    const retained = withoutCancelledMembers(wake);
+    if (!retained) {
+      return key;
+    }
     const group = pending.get(key) ?? { blockedUntil: 0 };
     const slot =
-      wake.intent === "task" ? "task" : wake.intent === "scheduled" ? "scheduled" : "event";
-    group[slot] = group[slot] ? merge(group[slot], wake) : wake;
+      retained.intent === "task" ? "task" : retained.intent === "scheduled" ? "scheduled" : "event";
+    group[slot] = group[slot] ? merge(group[slot], retained) : retained;
     group.blockedUntil = Math.max(group.blockedUntil, blockedUntil);
     pending.set(key, group);
-    for (const entry of wake.settlements) {
+    for (const entry of retained.settlements) {
       if (entry.active) {
         entry.onQueued?.();
       }
@@ -295,12 +340,22 @@ function createSessionEventWakeRuntime() {
         }
       }
     }
+    const retryReadyAt = performance.now();
+    const members = wake.members ?? [wake];
+    for (const member of members) {
+      member.readyAt = retryReadyAt;
+      member.notBefore = guard ? deadline : 0;
+      if (guard) {
+        member.retainedWork = true;
+      }
+    }
     enqueue(
       {
         ...wake,
-        readyAt: performance.now(),
+        readyAt: retryReadyAt,
         notBefore: guard ? deadline : 0,
         retainedWork: guard ? true : wake.retainedWork,
+        members,
       },
       guard ? 0 : deadline,
     );
@@ -320,50 +375,70 @@ function createSessionEventWakeRuntime() {
   ): Promise<void> {
     const signal = owner.controller.signal;
     try {
-      for (const [index, wake] of wakes.entries()) {
+      for (const [index, queued] of wakes.entries()) {
         // Busy backoff also owns wakes selected before the current attempt began.
         const blockedUntil = pending.get(key)?.blockedUntil ?? 0;
         if (owner.generation !== generation || blockedUntil > performance.now()) {
           handOff(wakes, index);
           return;
         }
+        let wake = withoutCancelledMembers(queued);
+        if (!wake) {
+          continue;
+        }
+        const admitting = { wake: queued, controller: new AbortController() };
+        owner.admitting = admitting;
+        const attemptSignal = AbortSignal.any([signal, admitting.controller.signal]);
         let result: SessionEventWakeResult;
         let onAbort: (() => void) | undefined;
         try {
-          result = await runWithGatewayDetachedWorkAdmission(() => {
-            signal.throwIfAborted();
-            for (const entry of wake.settlements) {
-              if (entry.active) {
-                entry.onAttemptStarted?.();
+          result = await runWithGatewayDetachedWorkAdmission(
+            () => {
+              signal.throwIfAborted();
+              admitting.controller.signal.throwIfAborted();
+              const retained = withoutCancelledMembers(queued);
+              if (!retained) {
+                throw new Error("Heartbeat wake was cancelled before admission");
               }
-            }
-            // Subscribe before calling the handler: it can synchronously replace its owner.
-            const aborted = new Promise<never>((_resolve, reject) => {
-              onAbort = () =>
-                reject(
-                  signal.reason instanceof Error
-                    ? signal.reason
-                    : new Error("Heartbeat handler was replaced"),
-                );
-              signal.addEventListener("abort", onAbort, { once: true });
-            });
-            const request: SessionEventWakeRequest = {
-              source: wake.source,
-              intent: wake.intent,
-              reason: wake.reason,
-              ...(wake.agentId ? { agentId: wake.agentId } : {}),
-              ...(wake.sessionKey ? { sessionKey: wake.sessionKey } : {}),
-              ...(wake.heartbeat ? { heartbeat: wake.heartbeat } : {}),
-              ...(wake.scheduledEveryMs !== undefined
-                ? { scheduledEveryMs: wake.scheduledEveryMs }
-                : {}),
-              ...(wake.tasks ? { tasks: wake.tasks } : {}),
-              ...(wake.retainedWork ? { retainedWork: true } : {}),
-            };
-            // A synchronous handler throw must not leave the abort promise unobserved.
-            const running = abortSignals.run(signal, async () => run(request, signal));
-            return Promise.race([running, aborted]);
-          }, "heartbeat:wake");
+              wake = retained;
+              for (const entry of wake.settlements) {
+                if (entry.active) {
+                  entry.onAttemptStarted?.();
+                }
+              }
+              attemptSignal.throwIfAborted();
+              // Subscribe before calling the handler: it can synchronously replace its owner.
+              const aborted = new Promise<never>((_resolve, reject) => {
+                onAbort = () =>
+                  reject(
+                    attemptSignal.reason instanceof Error
+                      ? attemptSignal.reason
+                      : new Error("Heartbeat wake was interrupted"),
+                  );
+                attemptSignal.addEventListener("abort", onAbort, { once: true });
+              });
+              const request: SessionEventWakeRequest = {
+                source: wake.source,
+                intent: wake.intent,
+                reason: wake.reason,
+                ...(wake.agentId ? { agentId: wake.agentId } : {}),
+                ...(wake.sessionKey ? { sessionKey: wake.sessionKey } : {}),
+                ...(wake.heartbeat ? { heartbeat: wake.heartbeat } : {}),
+                ...(wake.scheduledEveryMs !== undefined
+                  ? { scheduledEveryMs: wake.scheduledEveryMs }
+                  : {}),
+                ...(wake.tasks ? { tasks: wake.tasks } : {}),
+                ...(wake.retainedWork ? { retainedWork: true } : {}),
+              };
+              // A synchronous handler throw must not leave the abort promise unobserved.
+              const running = abortSignals.run(attemptSignal, async () =>
+                run(request, attemptSignal),
+              );
+              return Promise.race([running, aborted]);
+            },
+            "heartbeat:wake",
+            AbortSignal.any([signal, admitting.controller.signal]),
+          );
         } catch {
           if (owner.generation === generation) {
             retry(wake);
@@ -372,8 +447,11 @@ function createSessionEventWakeRuntime() {
           }
           continue;
         } finally {
+          if (owner.admitting === admitting) {
+            owner.admitting = undefined;
+          }
           if (onAbort) {
-            signal.removeEventListener("abort", onAbort);
+            attemptSignal.removeEventListener("abort", onAbort);
           }
         }
         if (result.status === "skipped" && shouldRetain(wake, result)) {
@@ -475,6 +553,11 @@ function createSessionEventWakeRuntime() {
           if (wake) {
             wake.notBefore = 0;
             wake.retainedWork = false;
+            // Cancellation can later rebuild this projection from its owners.
+            for (const member of wake.members ?? []) {
+              member.notBefore = 0;
+              member.retainedWork = false;
+            }
           }
         }
       }
@@ -532,6 +615,7 @@ function createSessionEventWakeRuntime() {
       const signal = lifecycle?.abortSignal;
       const settlement: Settlement = {
         active: true,
+        cancelQueuedOnAbort: lifecycle?.cancelQueuedOnAbort,
         onAttemptStarted: lifecycle?.onAttemptStarted,
         onQueued: lifecycle?.onQueued,
         stopWaitingOnRetry: lifecycle?.stopWaitingOnRetry,
@@ -543,8 +627,49 @@ function createSessionEventWakeRuntime() {
           }
         },
       };
-      const onAbort = () =>
+      const onAbort = () => {
         settlement.settle({ status: "failed", reason: "heartbeat wake cancelled" });
+        if (!settlement.cancelQueuedOnAbort) {
+          return;
+        }
+        for (const [key, group] of pending) {
+          for (const slot of SLOTS) {
+            const wake = group[slot];
+            if (!wake?.settlements.includes(settlement)) {
+              continue;
+            }
+            delete group[slot];
+            const retained = withoutCancelledMembers(wake);
+            if (retained) {
+              const retainedSlot =
+                retained.intent === "task"
+                  ? "task"
+                  : retained.intent === "scheduled"
+                    ? "scheduled"
+                    : "event";
+              group[retainedSlot] = group[retainedSlot]
+                ? merge(group[retainedSlot], retained)
+                : retained;
+            }
+            if (!SLOTS.some((candidate) => group[candidate])) {
+              pending.delete(key);
+            }
+            schedulePending(0, key);
+            return;
+          }
+        }
+        for (const owner of active.values()) {
+          const admitting = owner.admitting;
+          if (
+            admitting &&
+            admitting.wake.settlements.includes(settlement) &&
+            !withoutCancelledMembers(admitting.wake)
+          ) {
+            admitting.controller.abort();
+            return;
+          }
+        }
+      };
       if (signal?.aborted) {
         onAbort();
       } else {

@@ -872,9 +872,9 @@ describe("sessions view", () => {
       filters?.querySelectorAll<HTMLElement>("openclaw-tooltip") ?? [],
     ).map((tooltip) => (tooltip as HTMLElement & { content: string }).content);
 
-    expect(activeField?.querySelector(".session-filter-label")?.textContent).toBe("Updated within");
+    expect(activeField?.querySelector(":scope > span")?.textContent).toBe("Activity within");
     expect(tooltips).toEqual([
-      "Loads sessions updated in the last 120 minutes.",
+      "Loads sessions with activity in the last 120 minutes.",
       "Max sessions to load.",
       "Include global sessions.",
       "Include unknown sessions.",
@@ -1728,7 +1728,7 @@ describe("sessions view", () => {
 
   it.each([
     { activeMinutes: "60minutes", limit: "1e2", filtered: false },
-    { activeMinutes: "+30", limit: "060", filtered: true },
+    { activeMinutes: "+30", limit: "060", filtered: false },
   ])("keeps numeric-filter empty state consistent: $activeMinutes / $limit", async (testCase) => {
     const container = document.createElement("div");
     render(

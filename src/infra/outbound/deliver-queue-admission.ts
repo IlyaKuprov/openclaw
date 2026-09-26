@@ -1,5 +1,6 @@
 // Owns durable outbound admission, immutable payload custody, and media staging.
 import { createRenderedMessageBatchPlan } from "../../channels/message/rendered-batch.js";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { resolveOutboundMediaMaxBytes } from "../../media/configured-max-bytes.js";
 import { createInitialDeliveryProducerClaim } from "../delivery-queue-sqlite-claim.js";
 import type { InternalDeliverOutboundPayloadsParams } from "./deliver-contracts.js";
@@ -12,6 +13,7 @@ import { resolveConversationDeliveryScope } from "./delivery-completion.js";
 import { releaseSpoolArtifacts, stageQueuePayloadMedia } from "./delivery-queue-media-spool.js";
 import { cancelDeliveryQueueMediaRetention } from "./delivery-queue-media-staging.js";
 import type { StableDeliveryPreparation } from "./delivery-queue-preparation.js";
+import { assertRecoveredRouteAuthority } from "./delivery-queue-recovery.js";
 import {
   loadPendingDelivery,
   type QueuedDelivery,
@@ -19,6 +21,7 @@ import {
   enqueueDeliveryOnce,
   enqueuePreparedDeliveryOnce,
 } from "./delivery-queue-storage.js";
+import type { QueuedOutboundRouteAuthority } from "./delivery-queue-types.js";
 import {
   acceptedPreparedOutboundEntries,
   mapPreparedOutboundAcceptedPayloads,
@@ -26,10 +29,94 @@ import {
 } from "./prepared-batch.js";
 import { normalizeOutboundReplyFacts } from "./reply-policy.js";
 
+/** A revoked host decision must never degrade into a best-effort, live-only send. */
+export class OutboundQueueAdmissionAuthorityError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "OutboundQueueAdmissionAuthorityError";
+  }
+}
+
+function resolveCurrentRouteAuthority(
+  params: InternalDeliverOutboundPayloadsParams,
+): QueuedOutboundRouteAuthority | undefined {
+  if (params.routeAuthority) {
+    return params.routeAuthority;
+  }
+  if (
+    !params.rootReplyOnly ||
+    !params.assertBeforeQueueAdmission ||
+    !params.session?.agentId ||
+    !params.session.key
+  ) {
+    return undefined;
+  }
+  return {
+    agentId: params.session.agentId,
+    storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
+      agentId: params.session.agentId,
+    }),
+    sessionKey: params.session.key,
+    channel: params.channel,
+    to: params.to,
+    ...(params.accountId ? { accountId: params.accountId } : {}),
+  };
+}
+
+/** A routed row requires a current decision; ordinary stable intents do not. */
+export function assertStableRouteCustodyMatchesCurrent(
+  params: InternalDeliverOutboundPayloadsParams,
+  entry: QueuedDelivery,
+): void {
+  if (!entry.routeAuthority && !params.rootReplyOnly) {
+    return;
+  }
+  try {
+    params.assertBeforeQueueAdmission?.();
+  } catch (error) {
+    throw new OutboundQueueAdmissionAuthorityError(error);
+  }
+  const expected = resolveCurrentRouteAuthority(params);
+  const actual = entry.routeAuthority;
+  if (
+    !params.assertBeforeQueueAdmission ||
+    !expected ||
+    !actual ||
+    !expected.agentId ||
+    !expected.storePath ||
+    !expected.sessionKey ||
+    expected.channel !== params.channel ||
+    expected.to !== params.to ||
+    expected.accountId !== params.accountId ||
+    actual.agentId !== expected.agentId ||
+    actual.storePath !== expected.storePath ||
+    actual.sessionKey !== expected.sessionKey ||
+    actual.channel !== expected.channel ||
+    actual.to !== expected.to ||
+    actual.accountId !== expected.accountId ||
+    actual.sourceChannel !== expected.sourceChannel ||
+    entry.channel !== expected.channel ||
+    entry.to !== expected.to ||
+    entry.accountId !== expected.accountId
+  ) {
+    throw new OutboundQueueAdmissionAuthorityError(
+      "Stable delivery route differs from current host decision",
+    );
+  }
+  try {
+    // The regenerated callback is not the row's authority. Check the exact
+    // physical row again, including when this runs at the adapter handoff.
+    assertRecoveredRouteAuthority(entry);
+  } catch (error) {
+    throw new OutboundQueueAdmissionAuthorityError(error);
+  }
+}
+
 export function restoreQueuedDeliveryCustody(
   params: InternalDeliverOutboundPayloadsParams,
   entry: QueuedDelivery,
 ): InternalDeliverOutboundPayloadsParams {
+  assertStableRouteCustodyMatchesCurrent(params, entry);
   // A regenerated caller owns current runtime authority, never the durable
   // effect. Recipient, staged payload, and completion stay with the first row.
   const {
@@ -67,7 +154,19 @@ export function restoreQueuedDeliveryCustody(
   const payloads = acceptedPreparedOutboundEntries(custody.preparedBatch).map(
     (prepared) => prepared.payload,
   );
-  return { ...params, ...custody, payloads };
+  return {
+    ...params,
+    ...custody,
+    payloads,
+    ...(entry.routeAuthority
+      ? {
+          assertDirectAdapterHandoff: () => {
+            params.assertDirectAdapterHandoff?.();
+            assertStableRouteCustodyMatchesCurrent(params, entry);
+          },
+        }
+      : {}),
+  };
 }
 
 /** Stages producer-owned media and atomically admits one durable outbound intent. */
@@ -95,6 +194,7 @@ export async function stageAndEnqueueOutboundDelivery(
       params.deliveryQueueStateContext,
     );
     if (existing) {
+      assertStableRouteCustodyMatchesCurrent(params, existing);
       // Durable custody owns its already-staged media. A regenerated TTS or
       // producer file may have vanished, so claim the row before staging it.
       return { id: existing.id, created: false };
@@ -140,10 +240,17 @@ export async function stageAndEnqueueOutboundDelivery(
       ? createInitialDeliveryProducerClaim()
       : undefined;
     const queuedPreparedBatch = mapPreparedOutboundAcceptedPayloads(preparedBatch, staged.payloads);
+    // Channel-turn finals carry their exact store path. Routed followup/block
+    // replies use the standard agent store selected by decideOutboundRoute.
+    const routeAuthority = resolveCurrentRouteAuthority(params);
+    if (params.rootReplyOnly && (!routeAuthority || !params.assertBeforeQueueAdmission)) {
+      throw new OutboundQueueAdmissionAuthorityError("Host route is missing durable authority");
+    }
     const delivery = {
       channel,
       to,
       accountId: params.accountId,
+      routeAuthority,
       queuePolicy,
       requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
       ...(params.reusePendingDeliveryIntent ? { requiresProducerClaim: true } : {}),
@@ -166,12 +273,21 @@ export async function stageAndEnqueueOutboundDelivery(
       maxRetries: params.maxRetries,
       deliveryCompletion: params.deliveryCompletion,
     };
+    const stablePreparation =
+      params.deliveryIntentId && options?.getStablePreparation
+        ? await options.getStablePreparation()
+        : undefined;
+    try {
+      params.assertBeforeQueueAdmission?.();
+    } catch (error) {
+      throw new OutboundQueueAdmissionAuthorityError(error);
+    }
     if (params.deliveryIntentId) {
-      const queued = options?.getStablePreparation
+      const queued = stablePreparation
         ? await enqueuePreparedDeliveryOnce(
             delivery,
             params.deliveryIntentId,
-            await options.getStablePreparation(),
+            stablePreparation,
             stateDir,
             staged.mediaStageId,
             params.deliveryQueueStateContext,

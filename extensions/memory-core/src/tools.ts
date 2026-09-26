@@ -116,6 +116,7 @@ function readMemorySearchToolCooldown(
     error: entry.error,
     deadline: entry.deadline,
     ...(entry.code ? { code: entry.code } : {}),
+    ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {}),
   };
 }
 
@@ -146,6 +147,7 @@ function isActiveMemoryManagerContext(
 async function closeMemoryManagers(
   managers: Iterable<ActiveMemoryManagerContext["manager"]>,
   parentSignal?: AbortSignal,
+  timeoutMs = DEFAULT_MEMORY_SEARCH_TIMEOUT_MS,
 ): Promise<void> {
   const pending = Array.from(managers, async (manager) => await manager.close?.());
   if (pending.length === 0) {
@@ -153,7 +155,7 @@ async function closeMemoryManagers(
   }
   try {
     await runMemorySearchWithDeadline({
-      timeoutMs: DEFAULT_MEMORY_SEARCH_TIMEOUT_MS,
+      timeoutMs,
       parentSignal,
       run: async () => {
         await Promise.allSettled(pending);
@@ -243,6 +245,10 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
           throw resolveMemorySearchAbortError(callerSignal);
         }
         const query = readStringParam(rawParams, "query", { required: true });
+        // Configured deadline for this call; undefined keeps the shipped default.
+        const timeoutMs = settings.query.timeoutMs;
+        // Cleanup shares the call's deadline: whatever active budget the search leaves.
+        let cleanupBudgetMs = timeoutMs ?? DEFAULT_MEMORY_SEARCH_TIMEOUT_MS;
         const maxResults = readPositiveIntegerParam(rawParams, "maxResults");
         const minScore = readFiniteNumberParam(rawParams, "minScore");
         const modelRequestedCorpus = readCorpusParam(rawParams, [
@@ -375,6 +381,9 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
                     error: attempted.error,
                     deadline: attempted.deadline,
                     ...(attempted.code ? { code: attempted.code } : {}),
+                    ...(attempted.timeoutMs !== undefined
+                      ? { timeoutMs: attempted.timeoutMs }
+                      : {}),
                   }
                 : { error: "memory search unavailable", deadline: false };
             recordMemorySearchToolCooldown(agentId, cfg, failure);
@@ -432,7 +441,11 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
         try {
           return await runMemoryCorpusDeadline({
             operation: "memory_search",
+            timeoutMs,
             parentSignal: callerSignal,
+            onRemainingBudget: (remainingMs) => {
+              cleanupBudgetMs = remainingMs;
+            },
             run: async (signal, deadlineControl) => {
               searchSignal = signal;
               const [memory, wiki] = await Promise.all([
@@ -440,6 +453,7 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
                 searchesWiki
                   ? runMemoryCorpusDeadline({
                       operation: "memory_search",
+                      timeoutMs,
                       parentSignal: callerSignal,
                       // Managed memory readiness must not extend concurrent wiki work.
                       run: (wikiSignal) =>
@@ -462,6 +476,7 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
                       warning: readRebuildWarning(),
                       agentId,
                       deadline: memory.deadline,
+                      timeoutMs: memory.timeoutMs,
                       code: memory.code,
                     }),
                 );
@@ -572,6 +587,7 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
               warning: readRebuildWarning(),
               agentId,
               deadline: failed.deadline,
+              timeoutMs: failed.timeoutMs,
               code: failed.code,
             }),
           );
@@ -582,7 +598,7 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
             // must not add another cleanup timeout to an already expired reply.
             void closeMemoryManagers(memoryManagersToClose);
           } else {
-            await closeMemoryManagers(memoryManagersToClose, callerSignal);
+            await closeMemoryManagers(memoryManagersToClose, callerSignal, cleanupBudgetMs);
           }
         }
       },
@@ -594,14 +610,13 @@ export function createMemoryGetTool(options: MemoryToolOptions) {
     options,
     contract: MEMORY_GET_TOOL_CONTRACT,
     execute:
-      ({ cfg, agentId }) =>
+      ({ cfg, agentId, settings }) =>
       async (_toolCallId, params, callerSignal) => {
         const rawParams = asToolParamsRecord(params);
         const relPath = readStringParam(rawParams, "path", { required: true });
         const from = readPositiveIntegerParam(rawParams, "from");
         const lines = readPositiveIntegerParam(rawParams, "lines");
         const requestedCorpus = readCorpusParam(rawParams, ["memory", "wiki", "all"]);
-        const { readAgentMemoryFile } = await loadMemoryToolRuntime();
         if (requestedCorpus === "wiki") {
           return await executeWikiMemoryReadResult({
             relPath,
@@ -612,17 +627,20 @@ export function createMemoryGetTool(options: MemoryToolOptions) {
             sandboxed: options.sandboxed,
             requestedCorpus,
             signal: callerSignal,
+            timeoutMs: settings.query.timeoutMs,
           });
         }
         return await executeMemoryReadResult({
-          read: async () =>
-            await readAgentMemoryFile({
+          read: async () => {
+            const { readAgentMemoryFile } = await loadMemoryToolRuntime();
+            return await readAgentMemoryFile({
               cfg,
               agentId,
               relPath,
               from: from ?? undefined,
               lines: lines ?? undefined,
-            }),
+            });
+          },
           requestedCorpus,
           relPath,
           from: from ?? undefined,
@@ -631,6 +649,7 @@ export function createMemoryGetTool(options: MemoryToolOptions) {
           agentSessionKey: options.agentSessionKey,
           sandboxed: options.sandboxed,
           signal: callerSignal,
+          timeoutMs: settings.query.timeoutMs,
         });
       },
   });

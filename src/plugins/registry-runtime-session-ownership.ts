@@ -1,14 +1,18 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeOptionalAgentRuntimeId } from "../agents/agent-runtime-id.js";
+import { resolveDefaultAgentId } from "../agents/agent-scope-config.js";
 import { resolveInitialEmbeddedRunModel } from "../agents/embedded-agent-runner/run/runtime-resolution.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
+import { isInternalSessionEffectsKey } from "../config/sessions/internal-session-key.js";
 import {
   parseSqliteSessionFileMarker,
   sqliteSessionFileMarkerMatchesTarget,
 } from "../config/sessions/legacy-sqlite-marker.js";
 import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.entry.js";
+import { resolveSessionOwnershipBySessionId } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
+import { normalizeStoreSessionKey } from "../config/sessions/store-entry.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -25,6 +29,14 @@ import {
 import type { PluginRegistryState } from "./registry-state.js";
 import type { PluginRegistry } from "./registry-types.js";
 import type { PluginRuntime } from "./runtime/types.js";
+
+function isInternalEffectsStoreKey(sessionKey: string): boolean {
+  const normalized = normalizeStoreSessionKey(sessionKey);
+  // SQLite adds the agent wrapper to legacy keys; both spellings reach the same row.
+  return (
+    isInternalSessionEffectsKey(normalized) || normalized.startsWith("internal-session-effects:")
+  );
+}
 
 const PLUGIN_GATEWAY_SESSION_MUTATION_METHODS = new Set([
   "agent",
@@ -180,6 +192,14 @@ export function createPluginSessionOwnership(
     sessionKey: string;
   }): void => {
     if (params.entry) {
+      const ownerPluginId = normalizeOptionalString(params.entry.pluginOwnerId);
+      if (isInternalEffectsStoreKey(params.sessionKey) && ownerPluginId !== pluginId) {
+        throw new Error(
+          ownerPluginId
+            ? `Internal session "${params.sessionKey}" is owned by plugin "${ownerPluginId}", not "${pluginId}".`
+            : `Plugin "${pluginId}" cannot ${params.action} ownerless internal session "${params.sessionKey}".`,
+        );
+      }
       // Before harness locking shipped, plugins could create ordinary sessions
       // whose user-chosen key happened to start with `harness:`.
       assertLockedSessionEntryOwned(params.sessionKey, params.entry, params.action);
@@ -262,9 +282,17 @@ export function createPluginSessionOwnership(
     sessionIds?: unknown[];
     sessionKeys?: unknown[];
     storePath?: unknown;
+    requireExactInternalRunTarget?: boolean;
   }): void => {
     const agentId = normalizeOptionalString(params.agentId);
     const storePath = normalizeOptionalString(params.storePath);
+    const requireExactInternalRunTarget = (sessionKey: string) => {
+      if (params.requireExactInternalRunTarget && isInternalEffectsStoreKey(sessionKey)) {
+        throw new Error(
+          `Plugin "${pluginId}" may execute a persisted internal session only with its exact session target identity.`,
+        );
+      }
+    };
     const sessionKeys = new Set<string>();
     for (const value of params.sessionKeys ?? []) {
       const sessionKey = normalizeOptionalString(value);
@@ -306,7 +334,35 @@ export function createPluginSessionOwnership(
     for (const { sessionKey, entry } of entries) {
       if (sessionIds.has(entry.sessionId)) {
         assertSessionEntryOwned({ action: params.action, entry, sessionKey });
+        requireExactInternalRunTarget(sessionKey);
       }
+    }
+    const lookupAgentId =
+      sessionIds.size > 0 ? (agentId ?? resolveDefaultAgentId(currentSessionConfig())) : undefined;
+    for (const sessionId of sessionIds) {
+      const window = resolveSessionOwnershipBySessionId({
+        agentId: lookupAgentId,
+        sessionId,
+        ...(storePath ? { storePath } : {}),
+      });
+      if (!window) {
+        continue;
+      }
+      const ownerPluginId = normalizeOptionalString(window.pluginOwnerId);
+      if (isInternalEffectsStoreKey(window.sessionKey) && ownerPluginId !== pluginId) {
+        throw new Error(
+          ownerPluginId
+            ? `Internal session "${window.sessionKey}" is owned by plugin "${ownerPluginId}", not "${pluginId}".`
+            : `Plugin "${pluginId}" cannot ${params.action} ownerless internal session "${window.sessionKey}".`,
+        );
+      }
+      requireExactInternalRunTarget(window.sessionKey);
+      assertStoredSessionEntryOwned({
+        action: params.action,
+        agentId: lookupAgentId,
+        sessionKey: window.sessionKey,
+        ...(storePath ? { storePath } : {}),
+      });
     }
     for (const sessionFile of sessionFiles) {
       const sessionKeyMatches = entries.filter(({ sessionKey }) => sessionKey === sessionFile);
@@ -317,6 +373,7 @@ export function createPluginSessionOwnership(
             entry: match.entry,
             sessionKey: match.sessionKey,
           });
+          requireExactInternalRunTarget(match.sessionKey);
         }
         const matchedSessionIds = new Set(
           sessionKeyMatches
@@ -331,9 +388,26 @@ export function createPluginSessionOwnership(
               entry: match.entry,
               sessionKey: match.sessionKey,
             });
+            requireExactInternalRunTarget(match.sessionKey);
           }
         }
         continue;
+      }
+      if (sessionKeys.has(sessionFile)) {
+        const target = resolveStoredSessionOwnershipTarget({
+          sessionKey: sessionFile,
+          ...(agentId ? { agentId } : {}),
+          ...(storePath ? { storePath } : {}),
+        });
+        if (target.entry) {
+          assertSessionEntryOwned({
+            action: params.action,
+            entry: target.entry,
+            sessionKey: target.sessionKey,
+          });
+          requireExactInternalRunTarget(target.sessionKey);
+          continue;
+        }
       }
       const marker = parseSqliteSessionFileMarker(sessionFile);
       if (!marker) {
@@ -346,6 +420,30 @@ export function createPluginSessionOwnership(
       });
       const matches = markerEntries.filter(({ entry }) => entry.sessionId === marker.sessionId);
       if (matches.length === 0) {
+        // Full listings deliberately hide internal-effects rows. A plugin child
+        // nested under such a parent must still prove its exact persisted key.
+        for (const sessionKey of sessionKeys) {
+          if (!isInternalEffectsStoreKey(sessionKey)) {
+            continue;
+          }
+          const entry = registryParams.runtime.agent.session.getSessionEntry({
+            agentId: marker.agentId,
+            sessionKey,
+            storePath: marker.storePath,
+            readConsistency: "latest",
+          });
+          if (entry?.sessionId === marker.sessionId) {
+            const ownerPluginId = normalizeOptionalString(entry.pluginOwnerId);
+            if (ownerPluginId !== pluginId) {
+              throw new Error(
+                `Plugin "${pluginId}" cannot ${params.action} internal session owned by plugin "${ownerPluginId ?? "unknown"}".`,
+              );
+            }
+            matches.push({ entry, sessionKey });
+          }
+        }
+      }
+      if (matches.length === 0) {
         throw new Error(`Plugin session ownership target not found: ${marker.sessionId}`);
       }
       for (const match of matches) {
@@ -354,6 +452,7 @@ export function createPluginSessionOwnership(
           entry: match.entry,
           sessionKey: match.sessionKey,
         });
+        requireExactInternalRunTarget(match.sessionKey);
       }
     }
   };
@@ -367,6 +466,13 @@ export function createPluginSessionOwnership(
       throw new Error("Delegated agent execution requires one exact session key.");
     }
     const sessionKey = targetSessionKey ?? directSessionKey;
+    // Legacy key/ID pairs do not identify the SQLite store or the same-row
+    // generation after an await. Internal plugin work needs the exact target.
+    if (sessionKey && isInternalEffectsStoreKey(sessionKey) && !target) {
+      throw new Error(
+        `Plugin "${pluginId}" may execute a persisted internal session only with its exact session target identity.`,
+      );
+    }
     const storePath = normalizeOptionalString(target?.storePath);
     const agentId = normalizeOptionalString(target?.agentId ?? params.agentId);
     const sessionKeyAgentId = parseAgentSessionKey(sessionKey)?.agentId;
@@ -466,6 +572,7 @@ export function createPluginSessionOwnership(
       sessionIds: [target?.sessionId ?? params.sessionId],
       sessionKeys: [target?.sessionKey ?? params.sessionKey],
       storePath: ownershipStorePath,
+      requireExactInternalRunTarget: !target,
     });
     // Reuse the authorized snapshot, but never manufacture a native pin or replace
     // a turn-local request (including auto). Detached and raw-model runs own their selection.
@@ -537,10 +644,53 @@ export function createPluginSessionOwnership(
   };
   const assertStoreEntryOwned = (params: {
     action: string;
+    agentId?: string;
     before?: SessionEntry;
     entry: SessionEntry;
     sessionKey: string;
+    storePath?: string;
   }): void => {
+    const sessionId = normalizeOptionalString(params.entry.sessionId);
+    if (sessionId) {
+      const window = resolveSessionOwnershipBySessionId({
+        agentId:
+          params.agentId ??
+          parseAgentSessionKey(params.sessionKey)?.agentId ??
+          resolveDefaultAgentId(currentSessionConfig()),
+        sessionId,
+        ...(params.storePath ? { storePath: params.storePath } : {}),
+      });
+      if (window) {
+        const windowOwner = normalizeOptionalString(window.pluginOwnerId);
+        if (windowOwner && windowOwner !== pluginId) {
+          throw new Error(
+            `Session window "${window.sessionKey}" is owned by plugin "${windowOwner}", not "${pluginId}".`,
+          );
+        }
+        if (
+          isInternalEffectsStoreKey(window.sessionKey) &&
+          (windowOwner !== pluginId ||
+            normalizeStoreSessionKey(window.sessionKey) !==
+              normalizeStoreSessionKey(params.sessionKey))
+        ) {
+          throw new Error(`Plugin "${pluginId}" cannot rehome an internal session window.`);
+        }
+      }
+    }
+    const ownerPluginId = normalizeOptionalString(params.before?.pluginOwnerId);
+    if (isInternalEffectsStoreKey(params.sessionKey)) {
+      const incomingOwner = normalizeOptionalString(params.entry.pluginOwnerId);
+      if (ownerPluginId && incomingOwner !== ownerPluginId) {
+        throw new Error(`Plugin "${pluginId}" cannot change the owner of an internal session.`);
+      }
+      if (incomingOwner !== pluginId) {
+        throw new Error(
+          incomingOwner
+            ? `Internal session "${params.sessionKey}" is owned by plugin "${incomingOwner}", not "${pluginId}".`
+            : `Internal session "${params.sessionKey}" requires its plugin owner "${pluginId}".`,
+        );
+      }
+    }
     if (params.entry.modelSelectionLocked === true) {
       assertLockedSessionEntryOwned(params.sessionKey, params.entry, params.action);
       return;
@@ -556,6 +706,7 @@ export function createPluginSessionOwnership(
   return {
     assertOwnedHarness,
     assertReservedSessionKeyOwned,
+    assertSessionEntryOwned,
     assertStoredSessionEntryOwned,
     assertStoreEntryOwned,
     resolveStoredSessionExecutionOwner,

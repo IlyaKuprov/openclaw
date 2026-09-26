@@ -490,6 +490,39 @@ it.each([{ activeMinutes: 1 }, { activeOnly: true }])(
   },
 );
 
+it.each([
+  // updatedAt inside the window, real activity outside it: only the metadata cutoff keeps the row.
+  { updatedAt: 400, lastActivityAt: 100, byUpdatedAt: ["agent:main:active"], byActivity: [] },
+  // updatedAt outside the window, real activity inside it: only the activity cutoff keeps the row.
+  { updatedAt: 100, lastActivityAt: 400, byUpdatedAt: [], byActivity: ["agent:main:active"] },
+])(
+  "compares the activeMinutes cutoff against real activity when activeMinutesBy is activity: %j",
+  async ({ updatedAt, lastActivityAt, byUpdatedAt, byActivity }) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const { clock, config } = await seedSessionsWithActivityTimes();
+      const scope = { agentId: "main", sessionKey: "agent:main:active" };
+      await replaceSessionEntry(scope, {
+        ...expectDefined(loadSessionEntry(scope)),
+        updatedAt,
+        lastActivityAt,
+      });
+      const context = requestContext(config);
+      const client = identifiedClient("owner@example.com");
+      clock.mockReturnValue(60_400);
+      await initializeSessionReadContext(context);
+      const base = { activeMinutes: 1, agentId: "main", limit: 100 } as const;
+      const metadata = await listSessions({ client, context, request: base });
+      const activity = await listSessions({
+        client,
+        context,
+        request: { ...base, activeMinutesBy: "activity" },
+      });
+      expect(metadata.sessions.map((row) => row.key)).toEqual(byUpdatedAt);
+      expect(activity.sessions.map((row) => row.key)).toEqual(byActivity);
+    });
+  },
+);
+
 it.each(["settled", "replaced"] as const)(
   "refills active work after the selected run is %s during projection",
   async (transition) => {

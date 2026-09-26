@@ -2,8 +2,10 @@ import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { readAcpSessionMetaForEntry } from "../../acp/runtime/session-meta-readonly.js";
+import { listAgentIds } from "../../agents/agent-scope-config.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../agents/agent-scope.js";
 import { parseExecApprovalFollowupApprovalId } from "../../agents/bash-tools.exec-approval-followup-state.js";
+import { buildModelAliasIndex, resolveDefaultModelForAgent } from "../../agents/model-selection.js";
 import { normalizeSpawnedRunMetadata } from "../../agents/spawned-context.js";
 import {
   findAuthorizedSwarmCollectorRequest,
@@ -14,7 +16,7 @@ import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js
 import { validateStructuredOutputSchema } from "../../agents/subagents/swarm/swarm-output-schema.js";
 import { resolveSessionStorePathCore } from "../../config/sessions.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
-import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   isMainSessionRestartRecoveryInputProvenance,
   normalizeInputProvenance,
@@ -82,12 +84,13 @@ export function prepareAgentRequestPreflight(params: {
     params.io.emitAcceptance([false, undefined, bareSessionAgent.error]);
     return undefined;
   }
-  const selectedAgentId = requestSessionKey
+  const selectedAgentIdRaw = requestSessionKey
     ? (parsedRequestSessionKey?.agentId ??
       bareSessionAgent?.agentId ??
       normalizeOptionalString(request.agentId) ??
       tryResolveLegacyCompatibilityAgentId(cfg))
     : (normalizeOptionalString(request.agentId) ?? tryResolveLegacyCompatibilityAgentId(cfg));
+  const selectedAgentId = selectedAgentIdRaw ? normalizeAgentId(selectedAgentIdRaw) : undefined;
   const refusal = selectedAgentId ? readAgentDatabaseAdmissionRefusal(selectedAgentId) : undefined;
   if (refusal) {
     params.io.emitAcceptance([
@@ -206,9 +209,10 @@ export function prepareAgentRequestPreflight(params: {
   }
   const requestedPromptPersistenceSuppression = request.suppressPromptPersistence === true;
   const requestedInternalSessionEffects = request.sessionEffects === "internal";
-  const requestedModelOverride = Boolean(request.provider || request.model);
+  const requestedModelOverride = Boolean(request.provider || request.model || request.modelAlias);
   const isOneShotModelRun = request.modelRun === true;
   const isRawModelRun = isOneShotModelRun || request.promptMode === "none";
+  let aliasOverride: { provider: string; model: string } | undefined;
   if (request.promptMode === "none" && !isOneShotModelRun) {
     params.io.emitAcceptance([
       false,
@@ -230,6 +234,50 @@ export function prepareAgentRequestPreflight(params: {
       ),
     ]);
     return undefined;
+  }
+  if (request.modelAlias !== undefined) {
+    const alias = normalizeOptionalString(request.modelAlias);
+    const explicitAgentId = normalizeOptionalString(request.agentId);
+    if (
+      !isOneShotModelRun ||
+      request.provider !== undefined ||
+      request.model !== undefined ||
+      !alias ||
+      alias.includes("/") ||
+      !selectedAgentId ||
+      !listAgentIds(cfg).includes(selectedAgentId) ||
+      (explicitAgentId &&
+        parsedRequestSessionKey?.agentId !== undefined &&
+        normalizeAgentId(explicitAgentId) !== parsedRequestSessionKey.agentId)
+    ) {
+      params.io.emitAcceptance([
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "modelAlias requires a selected Gateway agent, modelRun=true, and no provider/model override.",
+        ),
+      ]);
+      return undefined;
+    }
+    const defaultProvider = resolveDefaultModelForAgent({ cfg, agentId: selectedAgentId }).provider;
+    const match = buildModelAliasIndex({
+      cfg,
+      agentId: selectedAgentId,
+      defaultProvider,
+    }).byAlias.get(alias.toLowerCase());
+    if (!match) {
+      params.io.emitAcceptance([
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `Unknown model alias "${alias}" for agent "${selectedAgentId}".`,
+        ),
+      ]);
+      return undefined;
+    }
+    aliasOverride = match.ref;
   }
   if (
     (requestedInternalSessionEffects || requestedPromptPersistenceSuppression) &&
@@ -344,8 +392,10 @@ export function prepareAgentRequestPreflight(params: {
     canUseCronRunContinuation,
     expectedSession: expectedSessionResult.constraint,
     expectedExistingSessionId: expectedSessionResult.constraint?.sessionId,
-    providerOverride: allowModelOverride ? request.provider : undefined,
-    modelOverride: allowModelOverride ? request.model : undefined,
+    providerOverride: allowModelOverride
+      ? (aliasOverride?.provider ?? request.provider)
+      : undefined,
+    modelOverride: allowModelOverride ? (aliasOverride?.model ?? request.model) : undefined,
     execApprovalFollowupApprovalId,
     normalizedSpawned: normalizeSpawnedRunMetadata({
       groupId: request.groupId,

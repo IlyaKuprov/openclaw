@@ -397,15 +397,27 @@ it and the active profile or container hint. See [memory index](/cli/memory#memo
 
 All under `memory.search.query`:
 
-| Key          | Type     | Default | Description                               |
-| ------------ | -------- | ------- | ----------------------------------------- |
-| `maxResults` | `number` | `6`     | Max memory hits returned before injection |
-| `minScore`   | `number` | `0.35`  | Minimum relevance score to include a hit  |
+| Key              | Type     | Default | Description                                                                                        |
+| ---------------- | -------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `maxResults`     | `number` | `6`     | Max memory hits returned before injection                                                          |
+| `minScore`       | `number` | `0.35`  | Minimum relevance score to include a hit                                                           |
+| `timeoutSeconds` | `number` | unset   | Active-search budget for one `memory_search` or `memory_get` call; unset keeps the shipped budgets |
 
 Without a per-call `maxResults`, primary-only `memory_search` calls use this
 configured limit, including `corpus=memory` and `corpus=sessions`. Wiki and
 combined searches (`corpus=wiki` or `corpus=all`) keep their separate default
 of 10 results. An explicit tool `maxResults` overrides the applicable default.
+
+`timeoutSeconds` is the active-search budget of one `memory_search` or `memory_get`
+call, including the cleanup of the search managers after a search; the timeout
+message names the configured value. The budget pauses while a managed local
+embedding service (`localService`) is starting up, which runs under its own
+readiness limit, so a cold start can add to the wall-clock time of the call. Leave
+it unset to keep the shipped behavior: a 30 s budget for `memory_search` and for
+wiki or combined (`corpus=all`) `memory_get` reads, and no limit at all on a
+memory-only `memory_get` read. Set it to bound every call, or raise it for large
+indexes whose first search after a restart runs longer. A per-agent
+value under `agents.entries.<id>.memory.search.query.timeoutSeconds` overrides it.
 
 Hybrid retrieval remains enabled. The builtin engine always applies a fixed
 30-day recency half-life to dated daily notes and a fixed importance

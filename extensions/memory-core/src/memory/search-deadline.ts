@@ -14,16 +14,28 @@ export function resolveMemorySearchAbortError(signal: AbortSignal): Error {
 // this error as `signal.reason` and could copy any marker on it onto a failure
 // of its own.
 const memorySearchDeadlineErrors = new WeakSet<object>();
+const memorySearchDeadlineTimeouts = new WeakMap<object, number>();
 
-export function createMemorySearchDeadlineError(message: string): Error {
+export function createMemorySearchDeadlineError(message: string, timeoutMs?: number): Error {
   const error = new Error(message);
   memorySearchDeadlineErrors.add(error);
+  if (timeoutMs !== undefined) {
+    memorySearchDeadlineTimeouts.set(error, timeoutMs);
+  }
   return error;
+}
+
+/** The configured deadline behind a deadline error, when the owner recorded one. */
+export function readMemorySearchDeadlineTimeoutMs(error: unknown): number | undefined {
+  return typeof error === "object" && error !== null
+    ? memorySearchDeadlineTimeouts.get(error)
+    : undefined;
 }
 
 function createMemorySearchTimeoutError(timeoutMs: number): Error {
   return createMemorySearchDeadlineError(
     `memory_search timed out after ${Math.round(timeoutMs / 1000)}s`,
+    timeoutMs,
   );
 }
 

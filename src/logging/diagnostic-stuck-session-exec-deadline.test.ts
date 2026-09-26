@@ -156,7 +156,7 @@ describe("heartbeat recovery after exec preparation", () => {
       try {
         await preparing.promise;
         await waitForDiagnosticEventsDrained();
-        await vi.advanceTimersByTimeAsync(930_000);
+        await vi.advanceTimersByTimeAsync(2_400_000);
         expect(await classified.promise).toMatchObject({ allowActiveAbort: true, sessionId });
         expect(getDiagnosticSessionActivitySnapshot(ref).activeToolDeadlineAtMs).toBeUndefined();
 

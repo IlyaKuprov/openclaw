@@ -8,11 +8,9 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { triageAfterFailure } from "../../commands/triage-failure.js";
 import type {
-  ConfigFileSnapshot,
   GatewayAuthMode,
   GatewayBindMode,
   GatewayTailscaleMode,
-  ReadConfigFileSnapshotWithPluginMetadataResult,
 } from "../../config/config.js";
 import { ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS_ENV } from "../../config/future-version-guard.js";
 import {
@@ -40,7 +38,7 @@ import type { GatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setGatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setVerbose } from "../../globals.js";
 import { isAbortError } from "../../infra/abort-signal.js";
-import { isTruthyEnvValue } from "../../infra/env.js";
+import { isTruthyEnvValue, isVitestRuntimeEnv } from "../../infra/env.js";
 import { collectNestedErrorCandidates } from "../../infra/error-graph-internal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
@@ -59,30 +57,25 @@ import {
   GatewayLockError,
   isGatewayLifecycleContentionError,
 } from "../../infra/gateway-lock.js";
-import {
-  findVerifiedGatewayListenerPidsOnPortSync,
-  formatGatewayPidList,
-} from "../../infra/gateway-processes.js";
 import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
 import { isTailscaleRouteOwnershipConflictError } from "../../infra/tailscale-route-ownership-error.js";
 import { setConsoleSubsystemFilter, setConsoleTimestampPrefix } from "../../logging/console.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { defaultRuntime } from "../../runtime.js";
+import type { startOpenClawDatabaseIntegrityVerifier } from "../../state/openclaw-database-verify.js";
 import { printClawBanner, type ClawBannerResult } from "../claw-banner.js";
 import { formatCliCommand } from "../command-format.js";
 import { formatInvalidConfigPort, formatInvalidPortOption } from "../error-format.js";
 import type { InvalidConfigRecoveryDeps } from "../invalid-config-recovery.js";
 import { withProgress } from "../progress.js";
 import { parsePort } from "../shared/parse-port.js";
-import {
-  isTerminalInteractive,
-  NON_INTERACTIVE_GATEWAY_RUN_FORCE_MESSAGE,
-} from "../terminal-interactivity.js";
 import { enforceGatewayRunFutureConfigGuard } from "./future-config-guard.js";
 import { getGatewayStartGuardErrors } from "./pre-bootstrap.js";
 import { installQaParentWatchdog } from "./qa-parent-watchdog.js";
+import { prepareGatewayRunForcedPort } from "./run-force-port.js";
 import { runGatewayLoop } from "./run-loop.js";
 import type { GatewayRunOpts } from "./run-options.js";
+import { readGatewayStartupConfigWithShellEnv } from "./run-startup-config.js";
 import type { GatewayRunRuntimeHooks } from "./runtime-hooks.js";
 import { resolveGatewayStartupMaintenanceReason } from "./startup-maintenance.js";
 import { createGatewayCliStartupTrace } from "./startup-trace.js";
@@ -91,7 +84,6 @@ const gatewayLog = createSubsystemLogger("gateway");
 
 const SUPERVISED_GATEWAY_LOCK_RETRY_MS = 5000;
 const SUPERVISED_GATEWAY_HEALTH_PROBE_TIMEOUT_MS = 1000;
-const GATEWAY_SHELL_ENV_CONVERGENCE_MAX_READS = 4;
 
 type GatewayRunLogger = Pick<ReturnType<typeof createSubsystemLogger>, "info" | "warn">;
 
@@ -191,151 +183,6 @@ function shouldBlockGatewayBindWithoutExplicitAuth(params: {
     !isLoopbackHost(params.bindHost) &&
     !params.hasSharedSecret &&
     params.resolvedAuthMode !== "trusted-proxy"
-  );
-}
-
-async function readGatewayStartupConfig(params: {
-  lowerPrecedenceEnv: Readonly<Record<string, string>>;
-  startupTrace: ReturnType<typeof createGatewayCliStartupTrace>;
-}): Promise<{
-  cfg: OpenClawConfig;
-  snapshot: ConfigFileSnapshot | null;
-  startupConfigSnapshotRead?: ReadConfigFileSnapshotWithPluginMetadataResult;
-}> {
-  const { readConfigFileSnapshotWithPluginMetadata } = await import("../../config/config.js");
-  const snapshotRead: ReadConfigFileSnapshotWithPluginMetadataResult | null =
-    await params.startupTrace.measure("cli.config-snapshot", () =>
-      readConfigFileSnapshotWithPluginMetadata({
-        isolateEnv: true,
-        observe: false,
-        ...(Object.keys(params.lowerPrecedenceEnv).length > 0
-          ? { lowerPrecedenceEnv: params.lowerPrecedenceEnv }
-          : {}),
-      }).catch(() => null),
-    );
-  const snapshot: ConfigFileSnapshot | null = snapshotRead?.snapshot ?? null;
-  const cfg = snapshot?.config ?? {};
-  return {
-    cfg,
-    snapshot,
-    ...(snapshotRead ? { startupConfigSnapshotRead: snapshotRead } : {}),
-  };
-}
-
-type GatewayRunShellEnvFallbackPlan =
-  | { enabled: false }
-  | {
-      enabled: true;
-      expectedKeys: string[];
-      timeoutMs: number;
-    };
-
-async function resolveGatewayRunShellEnvFallbackPlan(
-  cfg: OpenClawConfig,
-): Promise<GatewayRunShellEnvFallbackPlan> {
-  const { createConfigRuntimeEnv } = await import("../../config/env-vars.js");
-  const {
-    resolveShellEnvFallbackTimeoutMs,
-    shouldDeferShellEnvFallback,
-    shouldEnableShellEnvFallback,
-  } = await import("../../infra/shell-env.js");
-  const planEnv = createConfigRuntimeEnv(cfg, process.env);
-  const enabled =
-    (shouldEnableShellEnvFallback(planEnv) || cfg.env?.shellEnv?.enabled === true) &&
-    !shouldDeferShellEnvFallback(planEnv);
-  if (!enabled) {
-    return { enabled: false };
-  }
-  const { resolveShellEnvExpectedKeys } = await import("../../config/shell-env-expected-keys.js");
-  return {
-    enabled: true,
-    expectedKeys: resolveShellEnvExpectedKeys(planEnv, cfg),
-    timeoutMs: cfg.env?.shellEnv?.timeoutMs ?? resolveShellEnvFallbackTimeoutMs(planEnv),
-  };
-}
-
-async function loadGatewayRunShellEnvFallback(
-  plan: Extract<GatewayRunShellEnvFallbackPlan, { enabled: true }>,
-): Promise<Record<string, string>> {
-  const { loadShellEnvFallback } = await import("../../infra/shell-env.js");
-  const valuesBeforeLoad = new Map(plan.expectedKeys.map((key) => [key, process.env[key]]));
-  loadShellEnvFallback({
-    enabled: true,
-    env: process.env,
-    expectedKeys: plan.expectedKeys,
-    logger: gatewayLog,
-    timeoutMs: plan.timeoutMs,
-  });
-  return Object.fromEntries(
-    plan.expectedKeys.flatMap((key) => {
-      const value = process.env[key];
-      return value !== undefined && value !== valuesBeforeLoad.get(key) ? [[key, value]] : [];
-    }),
-  );
-}
-
-async function clearGatewayRunShellEnvFallback(
-  values: Readonly<Record<string, string>>,
-): Promise<void> {
-  const keys = Object.keys(values);
-  if (keys.length === 0) {
-    return;
-  }
-  for (const [key, value] of Object.entries(values)) {
-    if (process.env[key] === value) {
-      delete process.env[key];
-    }
-  }
-  const { clearShellEnvAppliedKeys } = await import("../../infra/shell-env.js");
-  clearShellEnvAppliedKeys(keys);
-}
-
-function gatewayRunShellEnvFallbackPlanSignature(plan: GatewayRunShellEnvFallbackPlan): string {
-  return JSON.stringify(plan);
-}
-
-async function readGatewayStartupConfigWithShellEnv(params: {
-  startupTrace: ReturnType<typeof createGatewayCliStartupTrace>;
-}): Promise<
-  Awaited<ReturnType<typeof readGatewayStartupConfig>> & {
-    lowerPrecedenceEnv: Readonly<Record<string, string>>;
-  }
-> {
-  let lowerPrecedenceEnv: Record<string, string> = {};
-  let loadedPlanSignature: string | undefined;
-  try {
-    for (let readCount = 0; readCount < GATEWAY_SHELL_ENV_CONVERGENCE_MAX_READS; readCount += 1) {
-      const startupConfig = await readGatewayStartupConfig({
-        lowerPrecedenceEnv,
-        startupTrace: params.startupTrace,
-      });
-      const plan = await resolveGatewayRunShellEnvFallbackPlan(
-        startupConfig.snapshot?.valid === true ? startupConfig.cfg : {},
-      );
-      const planSignature = gatewayRunShellEnvFallbackPlanSignature(plan);
-      if (!plan.enabled) {
-        if (Object.keys(lowerPrecedenceEnv).length === 0) {
-          return { ...startupConfig, lowerPrecedenceEnv };
-        }
-        await clearGatewayRunShellEnvFallback(lowerPrecedenceEnv);
-        lowerPrecedenceEnv = {};
-        loadedPlanSignature = undefined;
-        continue;
-      }
-      if (loadedPlanSignature === planSignature) {
-        return { ...startupConfig, lowerPrecedenceEnv };
-      }
-      await clearGatewayRunShellEnvFallback(lowerPrecedenceEnv);
-      lowerPrecedenceEnv = await loadGatewayRunShellEnvFallback(plan);
-      loadedPlanSignature = planSignature;
-    }
-  } catch (err) {
-    await clearGatewayRunShellEnvFallback(lowerPrecedenceEnv);
-    throw err;
-  }
-  await clearGatewayRunShellEnvFallback(lowerPrecedenceEnv);
-  throw new Error(
-    "Gateway shell environment fallback settings changed repeatedly during startup. Retry startup.",
   );
 }
 
@@ -618,6 +465,7 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
   const { cfg, lowerPrecedenceEnv, snapshot, startupConfigSnapshotRead } =
     await readGatewayStartupConfigWithShellEnv({
       startupTrace,
+      gatewayLog,
     });
   if (
     !enforceGatewayRunFutureConfigGuard({
@@ -720,80 +568,17 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
       }
     }
   }
-  if (opts.force) {
-    const interactive = isTerminalInteractive();
-    const describeNonInteractiveGatewayOwner = () => {
-      const gatewayPids = findVerifiedGatewayListenerPidsOnPortSync(port);
-      if (gatewayPids.length === 0) {
-        return undefined;
-      }
-      return `${NON_INTERACTIVE_GATEWAY_RUN_FORCE_MESSAGE} Existing gateway listener pid${gatewayPids.length === 1 ? "" : "s"}: ${formatGatewayPidList(gatewayPids)}.`;
-    };
-    if (!interactive) {
-      const refusal = describeNonInteractiveGatewayOwner();
-      if (refusal) {
-        defaultRuntime.error(refusal);
-        defaultRuntime.exit(1);
-        return;
-      }
-    }
-    try {
-      const { forceFreePortAndWait, waitForPortBindable } = await import("../ports.js");
-      const { killed, waitedMs, escalatedToSigkill } = await forceFreePortAndWait(port, {
-        timeoutMs: 2000,
-        intervalMs: 100,
-        sigtermTimeoutMs: 700,
-        ...(interactive
-          ? {}
-          : {
-              beforeSignal: () => {
-                const refusal = describeNonInteractiveGatewayOwner();
-                if (refusal) {
-                  throw new Error(refusal);
-                }
-              },
-            }),
-      });
-      if (killed.length === 0) {
-        // Nothing was freed; keep the no-op out of normal startup output.
-        gatewayLog.debug(`force: no listeners on port ${port}`);
-      } else {
-        for (const proc of killed) {
-          gatewayLog.info(
-            `force: killed pid ${proc.pid}${proc.command ? ` (${proc.command})` : ""} on port ${port}`,
-          );
-        }
-        if (escalatedToSigkill) {
-          gatewayLog.info(`force: escalated to SIGKILL while freeing port ${port}`);
-        }
-        if (waitedMs > 0) {
-          gatewayLog.info(`force: waited ${waitedMs}ms for port ${port} to free`);
-        }
-      }
-      // After killing, verify the port is actually bindable (handles TIME_WAIT).
-      const bindProbeHost =
-        bindExplicitRaw === "loopback"
-          ? "127.0.0.1"
-          : bindExplicitRaw === "lan"
-            ? "0.0.0.0"
-            : bindExplicitRaw === "custom"
-              ? toOptionString(cfg.gateway?.customBindHost)
-              : undefined;
-      const bindWaitMs = await waitForPortBindable(port, {
-        timeoutMs: 3000,
-        intervalMs: 150,
-        host: bindProbeHost,
-      });
-      if (bindWaitMs > 0) {
-        gatewayLog.info(`force: waited ${bindWaitMs}ms for port ${port} to become bindable`);
-      }
-    } catch (err) {
-      defaultRuntime.error(
-        `Could not free port ${port}: ${formatErrorMessage(err)}. Run ${formatCliCommand("openclaw gateway status --deep")} to inspect the listener.`,
-      );
-      defaultRuntime.exit(1);
-      return;
-    }
+  if (
+    !(await prepareGatewayRunForcedPort({
+      force: Boolean(opts.force),
+      port,
+      bindExplicitRaw,
+      cfg,
+      gatewayLog,
+      toOptionString,
+    }))
+  ) {
+    return;
   }
   if (opts.token) {
     const token = toOptionString(opts.token);
@@ -962,6 +747,7 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
   let tryRecoverChannelAutostartSuppression: (() => boolean) | undefined;
   let activeBootId: string | undefined;
   let bootRecorded = false;
+  let bootDatabaseVerifier: ReturnType<typeof startOpenClawDatabaseIntegrityVerifier> | undefined;
   let triageAttempted = false;
   const triageStartupFailure = async (error: unknown, signal?: AbortSignal) => {
     if (
@@ -1003,6 +789,16 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
   const beginBoot = async (startedAtMs: number) => {
     // run-loop calls beginBoot before every startGatewayServer invocation, so
     // in-process restarts re-evaluate breaker state instead of reusing stale mode.
+    await bootDatabaseVerifier?.stop();
+    // The breaker is the first writable shared-state open in a normal CLI boot.
+    // Start its Gateway verifier before inspecting it, not after startup settles.
+    bootDatabaseVerifier =
+      opts.updateCanary ||
+      (isVitestRuntimeEnv() && process.env.OPENCLAW_TEST_MINIMAL_GATEWAY === "1")
+        ? undefined
+        : (
+            await import("../../state/openclaw-database-verify.js")
+          ).startOpenClawDatabaseIntegrityVerifier({ env: process.env });
     crashLoopDecision = inspectGatewayCrashLoopBreaker(process.env, startedAtMs);
     const bootStartReason = crashLoopDecision.tripped
       ? crashLoopDecision.shouldWriteStabilityBundle
@@ -1083,6 +879,7 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
           bind,
           ...(opts.updateCanary ? { updateCanary: true } : {}),
           ...(activeBootId ? { bootId: activeBootId } : {}),
+          ...(bootDatabaseVerifier ? { databaseIntegrityVerifier: bootDatabaseVerifier } : {}),
           auth: authOverride,
           tailscale: tailscaleOverride,
           ...(processStartedAt !== undefined ? { processStartedAt } : {}),
@@ -1148,6 +945,9 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
     );
     await triageStartupFailure(err);
     defaultRuntime.exit(resolveGatewayStartupFailureExitCode(err));
+  } finally {
+    // Also cover a failed beginBoot or startup before the server can adopt the sidecar.
+    await bootDatabaseVerifier?.stop();
   }
 }
 

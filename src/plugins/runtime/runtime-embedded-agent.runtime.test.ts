@@ -80,6 +80,7 @@ describe("plugin embedded-agent runtime admission", () => {
       expect(mocks.prepareAgentRunAdmission).toHaveBeenCalledWith({
         cfg: config,
         operationalRunInstance: { instanceId: "instance:run-plugin", runId: "run-plugin" },
+        assertSourceCurrent: expect.any(Function),
         facts: {
           runId: "run-plugin",
           agentId: "researcher",

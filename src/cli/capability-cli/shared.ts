@@ -103,6 +103,13 @@ export function resolveCapabilityProviderAgentId(
   return resolveConfiguredAgentId(cfg, agentId);
 }
 
+export function resolveCapabilityInspectionAgentId(
+  cfg: OpenClawConfig,
+  rawAgentId?: string,
+): string | undefined {
+  return rawAgentId === undefined ? undefined : resolveCapabilityProviderAgentId(cfg, rawAgentId);
+}
+
 export function resolveCapabilityAgentOption(
   command: Command | undefined,
   rawAgentId: unknown,

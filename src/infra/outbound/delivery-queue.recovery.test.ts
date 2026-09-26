@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateSlackSessionRoutePeer } from "../../../extensions/slack/src/outbound-route-peer.js";
 import { controlNextRecoverySleep } from "../../../test/helpers/infra/delivery-recovery.js";
 import type { TrustedMessageAuditEvent } from "../../audit/message-audit-events.js";
 import { onTrustedMessageAuditEventForTest as onTrustedMessageAuditEvent } from "../../audit/message-audit-events.test-support.js";
@@ -17,6 +18,8 @@ import {
   replaceSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry.js";
+import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { buildConversationRef } from "../../routing/conversation-ref.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
@@ -24,7 +27,13 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
+import {
+  createDirectOutboundTestAdapter,
+  createOutboundTestPlugin,
+  createTestRegistry,
+} from "../../test-utils/channel-plugins.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
+import { stageAndEnqueueOutboundDelivery } from "./deliver-queue-admission.js";
 import {
   OutboundDeliveryError,
   PlatformMessageNotDispatchedError,
@@ -51,6 +60,7 @@ import {
   readQueuedEntry,
   setQueuedEntryState,
 } from "./delivery-queue.test-helpers.js";
+import { createUnmodifiedPreparedOutboundBatch } from "./prepared-batch.js";
 const RECOVERY_REPLAY_SPACING_MS = 250;
 const MAX_RETRIES = 5;
 const BLIND_REPLAY_LOG = "refusing blind replay without adapter reconciliation";
@@ -251,6 +261,10 @@ describe("delivery-queue recovery", () => {
     sleepMock.mockReset();
     sleepMock.mockResolvedValue(undefined);
   });
+  afterEach(() => {
+    resetPluginRuntimeStateForTest();
+    setActivePluginRegistry(createEmptyPluginRegistry());
+  });
   const enqueueCrashRecoveryEntries = async () => {
     await enqueueRecoveryDelivery({
       preparedMessageId: "prepared-message-a",
@@ -447,6 +461,94 @@ describe("delivery-queue recovery", () => {
     expect(result).toEqual(RECOVERY_SUMMARY.twoRecovered);
     expect(await loadPendingDeliveries(tmpDir())).toHaveLength(0);
   });
+  it.each(["stale-target", "stale-account", "stale-at-handoff", "current"] as const)(
+    "%s persisted Slack route fences recovery after process-style restart",
+    async (routeState) => {
+      const sessionKey = "agent:main:slack:channel:c123";
+      const storePath = path.join(tmpDir(), "route-sessions.json");
+      const proof = {
+        agentId: "main",
+        storePath,
+        sessionKey,
+        channel: "slack" as const,
+        to: "channel:C123",
+        accountId: "work",
+      };
+      const routeEntry = (to: string, accountId = "work") => ({
+        sessionId: "routed-session",
+        updatedAt: Date.now(),
+        delivery: normalizeSessionDeliveryState({
+          context: { channel: "slack", to, accountId },
+        }),
+      });
+      await replaceSessionEntry({ sessionKey, storePath }, routeEntry(proof.to));
+      const payloads = [{ text: "root reply" }];
+      const queued = await stageAndEnqueueOutboundDelivery(
+        {
+          cfg: baseCfg,
+          channel: "slack",
+          to: proof.to,
+          accountId: proof.accountId,
+          payloads,
+          queuePolicy: "required",
+          rootReplyOnly: true,
+          routeAuthority: proof,
+          assertBeforeQueueAdmission: () => {},
+          deliveryQueueStateDir: tmpDir(),
+        },
+        createUnmodifiedPreparedOutboundBatch(payloads),
+      );
+      if (!queued) {
+        throw new Error("test invariant: routed reply must enter durable queue");
+      }
+      const deliveryId = queued.id;
+      expect(readQueuedEntry(tmpDir(), deliveryId)).toMatchObject({
+        channel: "slack",
+        to: proof.to,
+        accountId: proof.accountId,
+        routeAuthority: proof,
+      });
+      if (routeState === "stale-target") {
+        await replaceSessionEntry({ sessionKey, storePath }, routeEntry("channel:C456"));
+      } else if (routeState === "stale-account") {
+        await replaceSessionEntry({ sessionKey, storePath }, routeEntry(proof.to, "personal"));
+      }
+      closeOpenClawAgentDatabasesForTest();
+      closeOpenClawStateDatabaseForTest();
+      const platformSend = vi.fn();
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "slack",
+            source: "test",
+            plugin: createOutboundTestPlugin({
+              id: "slack",
+              outbound: {
+                ...createDirectOutboundTestAdapter({ channel: "slack" }),
+                validateSessionRoutePeer: validateSlackSessionRoutePeer,
+              },
+            }),
+          },
+        ]),
+      );
+      const deliver = vi.fn(async (params: Parameters<DeliverFn>[0]) => {
+        await params.onDirectAdapterHandoff?.();
+        if (routeState === "stale-at-handoff") {
+          await replaceSessionEntry({ sessionKey, storePath }, routeEntry("channel:C456"));
+        }
+        params.assertDirectAdapterHandoff?.();
+        await params.onPlatformSendDispatch?.();
+        platformSend();
+        return [];
+      });
+      const { result } = await runRecovery({ deliver });
+      expect(deliver).toHaveBeenCalledOnce();
+      expect(platformSend).toHaveBeenCalledTimes(routeState === "current" ? 1 : 0);
+      expect(result).toEqual(
+        routeState === "current" ? RECOVERY_SUMMARY.recovered : RECOVERY_SUMMARY.failed,
+      );
+    },
+  );
   it("finalizes a persisted conversation operation during queue recovery", async () => {
     const scope = await createConversationRecoveryFixture("operation-recovery");
     const deliveryResult = { channel: "reef" as const, messageId: "reef-platform" };

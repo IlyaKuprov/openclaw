@@ -1,9 +1,11 @@
 import { sha256Hex } from "../../infra/crypto-digest.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import type {
   CliBackendLiveSessionCapability,
   CliBackendLiveSessionCloseReason,
   CliBackendLiveSessionHandle,
 } from "../../plugins/cli-backend.types.js";
+import { isFailoverError } from "../failover-error.js";
 import { runCliCleanup } from "./cleanup.js";
 import { createCliRunCurrentAssertion } from "./execution-target.js";
 import { createCliFailoverError } from "./exit-error.js";
@@ -84,13 +86,60 @@ export function getCliLiveSessionApprovalGrants(
   return liveSessions.get(buildCliLiveSessionKey(context))?.approvalGrants;
 }
 
+/**
+ * Renders why a live session is being closed so a killed turn stays diagnosable
+ * from the log. No trailing detail when the close carries no cause.
+ */
+export function formatCliLiveSessionClose(
+  reason: CliBackendLiveSessionCloseReason,
+  error?: unknown,
+): string {
+  let detail = "";
+  if (error !== undefined) {
+    try {
+      detail = ` detail=${formatErrorMessage(error)}`;
+    } catch {
+      detail = " detail=unavailable";
+    }
+  }
+  return `cli live session close: reason=${reason}${detail}`;
+}
+
+/**
+ * Renders a failed plugin turn with its cause. A FailoverError carries the reason
+ * (no-output watchdog, overall budget, expired session) that the bare error name
+ * hides, and the message distinguishes those causes from an injected abort.
+ */
+export function formatCliLiveTurnFailure(error: unknown): string {
+  // Best-effort diagnostics on the catch path: a backend error whose `name`,
+  // `reason` or message accessors throw must never replace the original failure.
+  let name = "unknown";
+  let failoverReason = "";
+  let detail = "unavailable";
+  try {
+    name = error instanceof Error ? String(error.name) : "unknown";
+  } catch {}
+  try {
+    failoverReason = isFailoverError(error) ? String(error.reason ?? "") : "";
+  } catch {}
+  try {
+    detail = formatErrorMessage(error);
+  } catch {}
+  return (
+    `cli plugin turn failed: error=${name}` +
+    (failoverReason ? ` failoverReason=${failoverReason}` : "") +
+    ` detail=${detail}`
+  );
+}
+
 /** Closes the live execution session associated with a prepared run context, if one exists. */
 export async function closeCliLiveSession(
   context: PreparedCliRunContext,
   reason: CliBackendLiveSessionCloseReason,
+  error?: unknown,
 ): Promise<void> {
   await runCliCleanup(context.params, "cli-live-session-close", async () => {
-    await context.preparedBackend.closeLiveSession?.(reason);
+    await context.preparedBackend.closeLiveSession?.(reason, error);
   });
 }
 
@@ -132,9 +181,14 @@ export async function restartCliLiveSession(
 async function closeRecord(
   record: CliLiveSessionRecord,
   reason: CliBackendLiveSessionCloseReason,
+  error?: unknown,
 ): Promise<void> {
   if (!record.cleanupPromise) {
-    record.handle.close(reason);
+    if (error === undefined) {
+      record.handle.close(reason);
+    } else {
+      record.handle.close(reason, error);
+    }
   }
   await (record.cleanupPromise ?? record.handle.waitForExit());
 }
@@ -142,11 +196,11 @@ async function closeRecord(
 function retainCleanup(context: PreparedCliRunContext, record: CliLiveSessionRecord): void {
   const owner = context.preparedBackend;
   record.owner = owner;
-  owner.closeLiveSession = async (reason) => {
+  owner.closeLiveSession = async (reason, error) => {
     // Natural removal retains this exact cleanup promise. A later turn may
     // borrow the live process, but the old turn cannot close that successor.
     if (record.owner === owner || record.cleanupPromise) {
-      await closeRecord(record, reason);
+      await closeRecord(record, reason, error);
     }
   };
 }
@@ -305,10 +359,18 @@ export function createCliLiveSessionCapability(params: {
       }
       retainCleanup(params.context, record);
     },
-    remove: (handle) => {
+    remove: (handle, reason, error) => {
       const record = liveSessions.get(ownerKey);
       if (record?.handle !== handle) {
         return;
+      }
+      if (reason !== undefined) {
+        const line = formatCliLiveSessionClose(reason, error);
+        if (error === undefined) {
+          cliBackendLog.info(line);
+        } else {
+          cliBackendLog.warn(line);
+        }
       }
       record.capture?.revoke();
       liveSessions.delete(ownerKey);
@@ -326,8 +388,8 @@ export function createCliLiveSessionCapability(params: {
         });
       // A fresh prepared context must still join the retired owner after a timeout.
       retiredSessionCleanup.set(ownerKey, record.cleanupPromise);
-      void record.cleanupPromise.catch((error: unknown) => {
-        cliBackendLog.warn(`cli live session cleanup failed: ${String(error)}`);
+      void record.cleanupPromise.catch((cleanupError: unknown) => {
+        cliBackendLog.warn(`cli live session cleanup failed: ${String(cleanupError)}`);
       });
     },
   });

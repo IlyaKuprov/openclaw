@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { assertSqliteIntegrity, assertSqliteIntegrityExcept } from "../infra/sqlite-integrity.js";
 import {
   collectSqliteSchemaIssues,
   createSqliteTableContractReader,
@@ -9,6 +9,7 @@ import {
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { hasLegacyCronRunLogs } from "../infra/state-migrations.cron-run-logs.js";
 import { VERSION } from "../version.js";
+import { isOpenClawStateAuditIntegrityVerifierRegistered } from "./openclaw-state-audit-verifier-registration.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import { assertOpenClawStateDatabaseForMaintenance } from "./openclaw-state-db-maintenance.js";
 import {
@@ -24,6 +25,8 @@ import {
   isOpenClawStateStartupRepairableSchemaIssue,
   STATE_PERSISTENT_SCHEMA_COMPATIBILITY,
 } from "./openclaw-state-schema-compatibility.js";
+
+const OPEN_PATH_DEFERRED_LEDGER_TABLES = ["audit_events"] as const;
 
 export function needsOpenClawStateDatabaseSchemaRepair(pathname: string): boolean {
   let database: DatabaseSync | undefined;
@@ -63,7 +66,13 @@ export function isOpenClawStateSchemaFastPathEligible(
     if (readStateSchemaMigrationVersion(database) !== OPENCLAW_STATE_SCHEMA_VERSION) {
       return false;
     }
-    assertSqliteIntegrity(database, pathname);
+    // A direct-local opener has no Gateway-owned background verifier. Prove its
+    // audit indexes before writing; only the active Gateway may defer them.
+    if (isOpenClawStateAuditIntegrityVerifierRegistered(pathname)) {
+      assertSqliteIntegrityExcept(database, pathname, OPEN_PATH_DEFERRED_LEDGER_TABLES);
+    } else {
+      assertSqliteIntegrity(database, pathname);
+    }
     // Both policies see this read transaction; repair must collect fresh facts after it ends.
     const readTable = createSqliteTableContractReader(database);
     assertCurrentStateRuntimeSchema(database, pathname, readTable);

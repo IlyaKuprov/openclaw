@@ -69,6 +69,8 @@ export type SessionListOptions = {
   boardFace?: "chat" | "dashboard";
   hasBoard?: boolean;
   activeMinutes?: number;
+  /** Timestamp the activeMinutes cutoff compares; "activity" keeps pin-first ordering while filtering on real activity. */
+  activeMinutesBy?: "updatedAt" | "activity";
   search?: string;
   ownerId?: string;
   ownerFirst?: boolean;

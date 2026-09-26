@@ -1031,7 +1031,7 @@ export const en: TranslationMap & {
     title: "Sessions",
     subtitle: "Browse sessions and manage per-session overrides.",
     store: "Store: {path}",
-    active: "Updated within",
+    active: "Activity within",
     limit: "Limit",
     createdBy: "Created by {name}",
     ownedBy: "Owned by {name}",
@@ -1068,7 +1068,7 @@ export const en: TranslationMap & {
     deleteAllArchived: "Delete all archived…",
     deleteAllArchivedConfirm:
       "Delete {count} archived sessions and their transcripts? Any attached workers will be stopped safely first.",
-    activeTooltip: "Loads sessions updated in the last {count} minutes.",
+    activeTooltip: "Loads sessions with activity in the last {count} minutes.",
     limitTooltip: "Max sessions to load.",
     globalTooltip: "Include global sessions.",
     unknownTooltip: "Include unknown sessions.",

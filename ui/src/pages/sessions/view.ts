@@ -1,8 +1,4 @@
-import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
-import {
-  normalizeLowercaseStringOrEmpty,
-  normalizeOptionalString,
-} from "@openclaw/normalization-core/string-coerce";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { html, nothing } from "lit";
 import type { SessionsSearchHit } from "../../../../packages/gateway-protocol/src/index.js";
 import type {
@@ -58,7 +54,7 @@ import {
 } from "../../lib/sessions/route-navigation.ts";
 import { formatSessionArchiveReason } from "../../lib/sessions/session-archive-reason.ts";
 import { parseAgentSessionKey, parseSessionKeyParts } from "../../lib/sessions/session-key.ts";
-import { SESSIONS_PAGE_DEFAULT_LIMIT } from "../../lib/sessions/session-requests.ts";
+import { hasActiveRosterFilters, rosterFilterDefaults } from "./roster-filter-defaults.ts";
 
 type TranscriptSearchState =
   | { status: "idle" }
@@ -580,14 +576,6 @@ function paginateRows<T>(rows: T[], page: number, pageSize: number): T[] {
   return rows.slice(start, start + pageSize);
 }
 
-function hasActiveFilters(props: SessionsProps): boolean {
-  return (
-    normalizeLowercaseStringOrEmpty(props.searchQuery).length > 0 ||
-    parseStrictPositiveInteger(props.activeMinutes) !== undefined ||
-    !props.includeGlobal
-  );
-}
-
 const CHECKPOINT_REASON_LABELS = {
   manual: "sessionsView.manual",
   "auto-threshold": "sessionsView.autoThreshold",
@@ -966,7 +954,7 @@ export function renderSessions(props: SessionsProps) {
       : null;
   const displayRows = groups ? groups.flatMap((group) => group.rows) : sorted;
   const paginated = paginateRows(displayRows, page, props.pageSize);
-  const emptyBecauseFiltered = rawRows.length === 0 && hasActiveFilters(props);
+  const emptyBecauseFiltered = rawRows.length === 0 && hasActiveRosterFilters(props);
   const liveCount = rawRows.filter((row) => isSessionRunActive(row)).length;
   const archivedCount = rawRows.filter((row) => row.archived === true).length;
   const emptyMessage =
@@ -1106,9 +1094,10 @@ function renderSessionsAdvancedFilters(props: SessionsProps) {
     key: keyof Parameters<SessionsProps["onFiltersChange"]>[0],
     value: string | boolean,
   ) => props.onFiltersChange({ activeMinutes, limit, includeGlobal, includeUnknown, [key]: value });
+  const defaults = rosterFilterDefaults(props.statusFilter);
   const active =
-    activeMinutes.trim() !== "" ||
-    limit.trim() !== String(SESSIONS_PAGE_DEFAULT_LIMIT) ||
+    activeMinutes.trim() !== defaults.activeMinutes ||
+    limit.trim() !== defaults.limit ||
     !includeGlobal ||
     includeUnknown ||
     props.groupBy !== "none";

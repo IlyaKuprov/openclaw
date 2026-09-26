@@ -1,0 +1,52 @@
+{
+  "id": "slack-thread-guard",
+  "name": "Slack Session and Thread Guard",
+  "version": "2.1.0",
+  "description": "Routes every Slack-named session exclusively to its persisted Slack target and enforces channel-root delivery",
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": [
+      "hook"
+    ]
+  },
+  "contracts": {
+    "agentToolResultMiddleware": ["openclaw"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mainChannelOnly": {
+        "type": "boolean",
+        "default": true
+      },
+      "stripThreadFields": {
+        "type": "boolean",
+        "default": true
+      },
+      "forceTopLevel": {
+        "type": "boolean",
+        "default": true
+      },
+      "enforceRootDelivery": {
+        "type": "boolean",
+        "default": true
+      },
+      "enforceSessionIdentity": {
+        "type": "boolean",
+        "default": true
+      },
+      "rerouteNonSlackDelivery": {
+        "type": "boolean",
+        "default": true
+      },
+      "failClosed": {
+        "type": "boolean",
+        "default": true
+      },
+      "auditLog": {
+        "type": "string"
+      }
+    }
+  }
+}

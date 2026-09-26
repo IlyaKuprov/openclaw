@@ -897,7 +897,12 @@ describe("Gateway startup lifetime", () => {
     const resumed = vi.fn<(state: { closing: boolean; listening: boolean }) => void>();
     let barrierReleased = false;
     let emergencyUsed = false;
-    let kernel: Awaited<ReturnType<typeof createGatewayKernel>> | undefined;
+    let kernel:
+      | Pick<
+          Awaited<ReturnType<typeof createGatewayKernel>>,
+          "closeOnStartupFailure" | "transportBridge"
+        >
+      | undefined;
     let postReadyWork: Promise<void> | undefined;
     let startupOutcome: Promise<unknown> | undefined;
     let unexpectedServer: GatewayServer | undefined;

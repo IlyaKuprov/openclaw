@@ -16,13 +16,302 @@ import {
 } from "./agent-session-loop-correctness.test-support.js";
 import { createResourceLoader } from "./agent-session-loop-resource-loader.test-support.js";
 import type { AgentSessionEvent } from "./agent-session-types.js";
-import { createCompactionRequestBudget } from "./compaction/request-budget.js";
+import {
+  createCompactionRequestBudget,
+  estimateCompactedRequestTokens,
+} from "./compaction/request-budget.js";
+import type { ExtensionEvent } from "./extensions/types.js";
 import { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 
 registerAgentSessionLoopTestLifecycle();
 
 describe("AgentSession small-context compaction", () => {
+  it("budgets manual replay against effective contextTokens rather than native window", async () => {
+    const model = { ...testModel, contextWindow: 32_768, contextTokens: 8_192, maxTokens: 1_024 };
+    const settingsManager = SettingsManager.inMemory({
+      compaction: { reserveTokens: 1_024, keepRecentTokens: 1 },
+    });
+    const sessionManager = SessionManager.inMemory();
+    sessionManager.appendMessage(makeUserMessage("Earlier decision", 1));
+    sessionManager.appendMessage(createAssistant(model, [{ type: "text", text: "Recorded." }]));
+    const keptId = sessionManager.appendMessage(makeUserMessage("Continue", 3));
+    const { session } = await createTestSession({
+      model,
+      settingsManager,
+      sessionManager,
+      resourceLoader: createResourceLoader(
+        new Map([
+          [
+            "session_before_compact",
+            [
+              async () => ({
+                compaction: {
+                  summary: "保".repeat(40_000),
+                  firstKeptEntryId: keptId,
+                  tokensBefore: 100,
+                },
+              }),
+            ],
+          ],
+        ]),
+      ),
+    });
+    const result = await session.compact();
+    const budget = createCompactionRequestBudget({
+      contextWindow: model.contextTokens,
+      reserveTokens: 1_024,
+      systemPrompt: session.systemPrompt,
+      tools: session.state.tools,
+    });
+    expect(result.summary).toContain("保");
+    expect(estimateCompactedRequestTokens(session.messages, budget)).toBeLessThanOrEqual(
+      model.contextTokens - budget.reserveTokens,
+    );
+  });
+
+  it("leaves bounded ingress headroom even when manual summary consumes its allowance", async () => {
+    const model = { ...testModel, contextWindow: 8_192, maxTokens: 1_024 };
+    const settingsManager = SettingsManager.inMemory({
+      compaction: { reserveTokens: 1_024, keepRecentTokens: 1 },
+    });
+    const sessionManager = SessionManager.inMemory();
+    sessionManager.appendMessage(makeUserMessage("Earlier decision", 1));
+    sessionManager.appendMessage(createAssistant(model, [{ type: "text", text: "Recorded." }]));
+    const keptId = sessionManager.appendMessage(makeUserMessage("Continue", 3));
+    const { session } = await createTestSession({
+      model,
+      settingsManager,
+      sessionManager,
+      resourceLoader: createResourceLoader(
+        new Map([
+          [
+            "session_before_compact",
+            [
+              async () => ({
+                compaction: {
+                  summary: "保".repeat(40_000),
+                  firstKeptEntryId: keptId,
+                  tokensBefore: 100,
+                },
+              }),
+            ],
+          ],
+        ]),
+      ),
+    });
+    const nextInput = "Continue that decision. ".repeat(110);
+    const result = await session.compact();
+    const budget = createCompactionRequestBudget({
+      contextWindow: model.contextWindow,
+      reserveTokens: 1_024,
+      systemPrompt: session.systemPrompt,
+      tools: session.state.tools,
+      pendingPrompt: nextInput,
+    });
+    expect(result.summary.length).toBeLessThan(40_000);
+    expect(budget.pendingTokens).toBeLessThanOrEqual(1_024);
+    expect(estimateCompactedRequestTokens(session.messages, budget)).toBeLessThanOrEqual(
+      model.contextWindow - budget.reserveTokens,
+    );
+    streamMocks.streamSimple.mockImplementation((activeModel: Model) =>
+      createAssistantResultStream(
+        createAssistant(activeModel, [{ type: "text", text: "Follow-up accepted." }]),
+      ),
+    );
+    await session.prompt(nextInput);
+    expect(session.getLastAssistantText()).toBe("Follow-up accepted.");
+  });
+
+  it("moves the manual cut before an oversized default retained tail and reserves next-input headroom", async () => {
+    const model = { ...testModel, contextWindow: 8_192, maxTokens: 1_024 };
+    const settingsManager = SettingsManager.inMemory({
+      compaction: { reserveTokens: 1_024, keepRecentTokens: 20_000 },
+      retry: { enabled: false },
+    });
+    const sessionManager = SessionManager.inMemory();
+    for (let index = 0; index < 8; index += 1) {
+      sessionManager.appendMessage(
+        makeUserMessage(`Archived decision ${index}. ` + "context ".repeat(430), index * 2 + 1),
+      );
+      sessionManager.appendMessage(
+        createAssistant(model, [{ type: "text", text: `Done ${index}.` }]),
+      );
+    }
+    const { session } = await createTestSession({ model, settingsManager, sessionManager });
+    streamMocks.streamSimple.mockImplementation((activeModel: Model) =>
+      createAssistantResultStream(
+        createAssistant(activeModel, [{ type: "text", text: "保".repeat(40_000) }]),
+      ),
+    );
+    const result = await session.compact();
+    const nextInput = "Follow up on the archived decision. ".repeat(70);
+    const budget = createCompactionRequestBudget({
+      contextWindow: model.contextWindow,
+      reserveTokens: settingsManager.getCompactionReserveTokens(),
+      systemPrompt: session.systemPrompt,
+      tools: session.state.tools,
+      pendingPrompt: nextInput,
+    });
+    expect(result.summary).toContain("保");
+    expect(budget.pendingTokens).toBeLessThanOrEqual(settingsManager.getCompactionReserveTokens());
+    expect(estimateCompactedRequestTokens(session.messages, budget)).toBeLessThanOrEqual(
+      model.contextWindow - budget.reserveTokens,
+    );
+  });
+
+  it("bounds a 40K previous CJK summary before invoking a smaller-model summarizer", async () => {
+    const model = { ...testModel, contextWindow: 32_768, contextTokens: 8_192, maxTokens: 1_024 };
+    const settingsManager = SettingsManager.inMemory({
+      compaction: { reserveTokens: 1_024, keepRecentTokens: 1 },
+      retry: { enabled: false },
+    });
+    const sessionManager = SessionManager.inMemory();
+    sessionManager.appendMessage(makeUserMessage("Original work", 1));
+    sessionManager.appendMessage(createAssistant(model, [{ type: "text", text: "Done." }]));
+    const retainedId = sessionManager.appendMessage(makeUserMessage("Retained decision", 3));
+    sessionManager.appendCompaction("保".repeat(39_900), retainedId, 12_000);
+    sessionManager.appendMessage(makeUserMessage("New work", 4));
+    sessionManager.appendMessage(createAssistant(model, [{ type: "text", text: "Proceed." }]));
+    const { session } = await createTestSession({ model, settingsManager, sessionManager });
+    const summarizerInputs: string[] = [];
+    streamMocks.streamSimple.mockImplementation((activeModel: Model, context: Context) => {
+      const user = context.messages.at(-1);
+      const summarizerInput =
+        typeof user?.content === "string"
+          ? user.content
+          : (user?.content.map((part) => (part.type === "text" ? part.text : "")).join("") ?? "");
+      summarizerInputs.push(summarizerInput);
+      if (summarizerInput.length / 2 > model.contextTokens - model.maxTokens) {
+        throw new Error("summarizer input exceeds effective context cap");
+      }
+      return createAssistantResultStream(
+        createAssistant(activeModel, [{ type: "text", text: "Previous and new decisions." }]),
+      );
+    });
+    await session.compact();
+    expect(summarizerInputs.some((text) => text.includes("<previous-summary>"))).toBe(true);
+    expect(summarizerInputs.every((text) => text.length < 39_900)).toBe(true);
+  });
+
+  it("bounds a 40K previous summary before an extension-owned summarizer receives it", async () => {
+    const model = { ...testModel, contextWindow: 32_768, contextTokens: 8_192, maxTokens: 1_024 };
+    const sessionManager = SessionManager.inMemory();
+    sessionManager.appendMessage(makeUserMessage("Original work", 1));
+    sessionManager.appendMessage(createAssistant(model, [{ type: "text", text: "Done." }]));
+    const retainedId = sessionManager.appendMessage(makeUserMessage("Retained decision", 3));
+    sessionManager.appendCompaction("保".repeat(39_900), retainedId, 12_000);
+    sessionManager.appendMessage(makeUserMessage("New work", 4));
+    sessionManager.appendMessage(createAssistant(model, [{ type: "text", text: "Proceed." }]));
+    let previousSummary = "";
+    const { session } = await createTestSession({
+      model,
+      sessionManager,
+      settingsManager: SettingsManager.inMemory({
+        compaction: { reserveTokens: 1_024, keepRecentTokens: 1 },
+      }),
+      resourceLoader: createResourceLoader(
+        new Map([
+          [
+            "session_before_compact",
+            [
+              async (event: unknown) => {
+                if (
+                  !event ||
+                  typeof event !== "object" ||
+                  !("type" in event) ||
+                  event.type !== "session_before_compact"
+                ) {
+                  throw new Error("Unexpected compaction hook event");
+                }
+                const preparation = (
+                  event as Extract<ExtensionEvent, { type: "session_before_compact" }>
+                ).preparation;
+                previousSummary = preparation.previousSummary ?? "";
+                return {
+                  compaction: {
+                    summary: "Previous and new decisions.",
+                    firstKeptEntryId: preparation.firstKeptEntryId,
+                    tokensBefore: preparation.tokensBefore,
+                  },
+                };
+              },
+            ],
+          ],
+        ]),
+      ),
+    });
+    await session.compact();
+    expect(previousSummary).toContain("保");
+    expect(previousSummary.length).toBeLessThan(39_900);
+    expect(streamMocks.streamSimple).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { contextWindow: 8_192, producer: "extension" },
+    { contextWindow: 16_384, producer: "extension" },
+    { contextWindow: 8_192, producer: "core" },
+    { contextWindow: 16_384, producer: "core" },
+  ] as const)(
+    "fits a $producer manual summary to a $contextWindow-token model without a request budget",
+    async ({ contextWindow, producer }) => {
+      const model = { ...testModel, contextWindow, maxTokens: 1_024 };
+      const settingsManager = SettingsManager.inMemory({
+        compaction: { reserveTokens: 1_024, keepRecentTokens: 1 },
+        retry: { enabled: false },
+      });
+      const sessionManager = SessionManager.inMemory();
+      sessionManager.appendMessage(makeUserMessage("Earlier decision", 1));
+      sessionManager.appendMessage(createAssistant(model, [{ type: "text", text: "Recorded." }]));
+      const keptId = sessionManager.appendMessage(makeUserMessage("Continue the work", 3));
+      const oversized = "保".repeat(40_000);
+      const resourceLoader = createResourceLoader(
+        producer === "extension"
+          ? new Map([
+              [
+                "session_before_compact",
+                [
+                  async () => ({
+                    compaction: { summary: oversized, firstKeptEntryId: keptId, tokensBefore: 100 },
+                  }),
+                ],
+              ],
+            ])
+          : undefined,
+      );
+      const { session } = await createTestSession({
+        model,
+        settingsManager,
+        sessionManager,
+        resourceLoader: { ...resourceLoader, getSystemPrompt: () => "Preserve the decision." },
+      });
+      if (producer === "core") {
+        streamMocks.streamSimple.mockImplementation((activeModel: Model) =>
+          createAssistantResultStream(
+            createAssistant(activeModel, [{ type: "text", text: oversized }]),
+          ),
+        );
+      }
+      const budget = createCompactionRequestBudget({
+        contextWindow,
+        reserveTokens: settingsManager.getCompactionReserveTokens(),
+        systemPrompt: session.systemPrompt,
+        tools: session.state.tools,
+      });
+
+      const result = await session.compact();
+      const replayTokens = estimateCompactedRequestTokens(session.messages, budget);
+      expect(replayTokens).toBeLessThanOrEqual(contextWindow - budget.reserveTokens);
+      expect(result.summary).toContain("保");
+      expect(result.summary.length).toBeLessThan(40_000);
+      expect(
+        sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
+      ).toMatchObject({
+        summary: result.summary,
+      });
+    },
+  );
+
   it("defers a one-archive retention no-op until the foreground request budget is prepared", async () => {
     const model = { ...testModel, contextWindow: 32_768, maxTokens: 8_192 };
     const settingsManager = SettingsManager.inMemory({ retry: { enabled: false } });
@@ -262,10 +551,12 @@ describe("AgentSession small-context compaction", () => {
       expect(
         sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
       ).toMatchObject({ summary: result.summary });
-      if (mode === "automatic") {
-        expect(result.summary.length).toBeLessThan(generatedSummary.length);
-      } else {
-        expect(result.summary).toContain(generatedSummary);
+      expect(result.summary).toContain("保留项目的蓝色按钮");
+      expect(result.summary.length).toBeLessThan(generatedSummary.length);
+      if (mode === "manual") {
+        expect(estimateCompactedRequestTokens(session.messages, budget)).toBeLessThanOrEqual(
+          model.contextWindow - budget.reserveTokens,
+        );
       }
     },
   );

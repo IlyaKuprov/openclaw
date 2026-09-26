@@ -5,8 +5,13 @@ import type { NodePluginToolDescriptor } from "../../../packages/gateway-protoco
 import type { AgentWaitResult } from "../../agents/run-wait.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { OperatorScope } from "../../gateway/operator-scopes.js";
-import type { PluginRuntimeCore, RuntimeLogger } from "./types-core.js";
+import type {
+  PluginRuntimeCore,
+  PluginRuntimeSessionLifecycleCleanupV1,
+  RuntimeLogger,
+} from "./types-core.js";
 
+export type { PluginRuntimeSessionLifecycleCleanupV1 } from "./types-core.js";
 export type { RuntimeLogger };
 
 type PluginRuntimeChannel = import("./types-channel.js").PluginRuntimeChannel;
@@ -210,6 +215,13 @@ export type PluginRuntime = PluginRuntimeCore & {
     }) => Promise<boolean>;
   };
   channel: PluginRuntimeChannel;
+};
+
+/** Required owner-bound lifecycle cleanup for hosts that advertise the V1 capability. */
+export type PluginRuntimeWithSessionLifecycleCleanupV1 = PluginRuntime & {
+  agent: PluginRuntime["agent"] & {
+    session: PluginRuntime["agent"]["session"] & PluginRuntimeSessionLifecycleCleanupV1;
+  };
 };
 
 export type CreatePluginRuntimeOptions = {

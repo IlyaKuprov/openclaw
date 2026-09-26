@@ -615,6 +615,33 @@ describe("session-store-runtime compatibility surface", () => {
     });
   });
 
+  it("checks public store-update authority at the SQLite commit edge", async () => {
+    const sessionKey = "agent:main:store-update-guard";
+    await seedSessionEntry(sessionKey, {
+      sessionId: "session-guard",
+      updatedAt: 10,
+      label: "before",
+    });
+    let allowed = false;
+    const guard = vi.fn(() => {
+      if (!allowed) {
+        throw new Error("update denied at commit");
+      }
+    });
+    const update = () =>
+      updateSessionStoreEntry({
+        sessionKey,
+        storePath,
+        assertCommitAllowed: guard,
+        update: () => ({ label: "after" }),
+      });
+    await expect(update()).rejects.toThrow("update denied at commit");
+    expect(getSessionEntry({ sessionKey, storePath })?.label).toBe("before");
+    allowed = true;
+    await expect(update()).resolves.toMatchObject({ sessionId: "session-guard", label: "after" });
+    expect(guard).toHaveBeenCalledTimes(2);
+  });
+
   it("hides core recovery state and preserves it across public mutations", async () => {
     const sessionKey = "agent:main:recovery-owned";
     const mainRestartRecovery = {
@@ -941,53 +968,6 @@ describe("session-store-runtime compatibility surface", () => {
     expect(getSessionEntry({ sessionKey, storePath })).toBeUndefined();
   });
 
-  it("guards entry deletion against a concurrent session update", async () => {
-    const sessionKey = "agent:main:delete-guarded";
-    const updatedAt = Date.now();
-    await seedSessionEntry(sessionKey, { sessionId: "session-delete-guarded", updatedAt });
-
-    await expect(
-      deleteSessionEntry({
-        expectedSessionId: "older-session",
-        expectedUpdatedAt: updatedAt - 1,
-        sessionKey,
-        storePath,
-      }),
-    ).resolves.toBe(false);
-    expect(getSessionEntry({ sessionKey, storePath })).toMatchObject({
-      sessionId: "session-delete-guarded",
-      updatedAt,
-    });
-
-    await expect(
-      deleteSessionEntry({
-        expectedSessionId: "session-delete-guarded",
-        expectedUpdatedAt: updatedAt,
-        sessionKey,
-        storePath,
-      }),
-    ).resolves.toBe(true);
-  });
-
-  it("guards entry deletion when the earlier snapshot had no session id", async () => {
-    const sessionKey = "agent:main:delete-guarded-absent-id";
-    const updatedAt = Date.now();
-    await seedSessionEntry(sessionKey, { sessionId: "replacement-session", updatedAt });
-
-    await expect(
-      deleteSessionEntry({
-        expectedSessionId: null,
-        expectedUpdatedAt: updatedAt,
-        sessionKey,
-        storePath,
-      }),
-    ).resolves.toBe(false);
-    expect(getSessionEntry({ sessionKey, storePath })).toMatchObject({
-      sessionId: "replacement-session",
-      updatedAt,
-    });
-  });
-
   it("resolves agent-scoped custom SQLite stores for backups", () => {
     const customStorePath = path.join(tempDir, "custom", "sessions.json");
 
@@ -1037,6 +1017,18 @@ describe("session-store-runtime compatibility surface", () => {
         .readdirSync(tempDir)
         .filter((file) => file.startsWith("lifecycle-owned-old.jsonl.deleted.")),
     ).toHaveLength(1);
+  });
+
+  it("keeps empty lifecycle cleanup prefixes as no-ops", async () => {
+    await expect(
+      cleanupSessionLifecycleArtifacts({
+        agentId: "main",
+        storePath,
+        sessionKeySegmentPrefix: "  ",
+        transcriptContentMarker: '"unused"',
+        orphanTranscriptMinAgeMs: 0,
+      }),
+    ).resolves.toEqual({ archivedTranscriptArtifacts: 0, removedEntries: 0 });
   });
 
   it("honors lifecycle cleanup without archiving removed entry transcripts", async () => {

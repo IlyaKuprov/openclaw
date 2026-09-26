@@ -8,6 +8,13 @@ export const SessionsListParamsSchema = closedObject({
   offset: Type.Optional(Type.Integer({ minimum: 0 })),
   /** Activity age for sortBy: "activity"; otherwise metadata update age. */
   activeMinutes: Type.Optional(Type.Integer({ minimum: 1 })),
+  /**
+   * Which timestamp the activeMinutes cutoff compares: "activity" (the later of
+   * the last completed run and last user/channel input) or "updatedAt" (metadata
+   * update age). Defaults to the sortBy rule above, so a caller can keep the
+   * pin-first updatedAt ordering while filtering on real activity.
+   */
+  activeMinutesBy: Type.Optional(Type.Union([Type.Literal("updatedAt"), Type.Literal("activity")])),
   /** Select sessions with current direct running or queued work before pagination. */
   activeOnly: Type.Optional(Type.Boolean()),
   /** Require a real user/channel interaction; excludes synthetic isolated heartbeat rows. */

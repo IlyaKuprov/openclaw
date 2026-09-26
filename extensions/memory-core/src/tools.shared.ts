@@ -97,6 +97,8 @@ export function buildMemorySearchUnavailableResult(
     action?: string;
     agentId?: string;
     deadline?: boolean;
+    /** Configured deadline behind a deadline failure (ms). */
+    timeoutMs?: number;
     code?: string;
   },
 ) {
@@ -138,7 +140,9 @@ export function buildMemorySearchUnavailableResult(
     results: [],
     disabled: true,
     unavailable: true,
-    ...(isSearchDeadline ? { timedOut: true, timeoutMs: DEFAULT_MEMORY_SEARCH_TIMEOUT_MS } : {}),
+    ...(isSearchDeadline
+      ? { timedOut: true, timeoutMs: overrides?.timeoutMs ?? DEFAULT_MEMORY_SEARCH_TIMEOUT_MS }
+      : {}),
     error: reason,
     warning,
     action,

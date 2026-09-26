@@ -495,7 +495,7 @@ describe("Sessions page typing ownership", () => {
       expect(page.textContent).not.toContain("No sessions match your filters.");
       await vi.advanceTimersByTimeAsync(200);
       expect.soft(requests).toHaveLength(2);
-      expect(requests.at(-1)).toMatchObject({ search: "older", limit: 50 });
+      expect(requests.at(-1)).toMatchObject({ search: "older", limit: 20 });
 
       await type("superseded");
       await vi.advanceTimersByTimeAsync(200);
@@ -509,7 +509,7 @@ describe("Sessions page typing ownership", () => {
       pending[0]!.resolve(result("agent:main:retired"));
       await vi.advanceTimersByTimeAsync(0);
       expect.soft(requests).toHaveLength(3);
-      expect(requests.at(-1)).toMatchObject({ search: "latest", limit: 50 });
+      expect(requests.at(-1)).toMatchObject({ search: "latest", limit: 20 });
       expect(page.result).toBeNull();
       expect(page.loading).toBe(true);
       expect(page.textContent).not.toContain("agent:main:retired");

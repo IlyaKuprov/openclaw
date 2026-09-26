@@ -284,7 +284,8 @@ describe("GitHub publication transcript reporting", () => {
         branch: "openclaw/task",
         headCommit: "a".repeat(40),
       } satisfies SessionGitHubPublicationResult,
-      visibleText: "https://github.com/openclaw/openclaw/pull/1",
+      visibleText:
+        "Review pending; if the PR is a draft, mark it ready, then obtain a clean Codex review of the current head before reporting the PR task complete.",
     },
     {
       label: "failed",
@@ -332,6 +333,9 @@ describe("GitHub publication transcript reporting", () => {
         );
         expect(messages).toHaveLength(1);
         expect(JSON.stringify(messages[0])).toContain(visibleText);
+        if (result.status === "published") {
+          expect(JSON.stringify(messages[0])).toContain(result.url);
+        }
         expect(markReported).toHaveBeenCalledWith(result.requestId);
       });
     },

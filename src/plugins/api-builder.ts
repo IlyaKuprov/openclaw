@@ -138,6 +138,7 @@ export function buildPluginApi(params: BuildPluginApiParams): OpenClawPluginApi 
     id: params.id,
     name: params.name,
     version: params.version,
+    outboundRouteDecisionContract: 1,
     description: params.description,
     source: params.source,
     runtimeSource: params.runtimeSource,

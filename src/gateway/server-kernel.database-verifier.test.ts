@@ -1,0 +1,176 @@
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { expect, it, vi } from "vitest";
+import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { prepareCorruptAuditIndex } from "../state/openclaw-state-db-fast-path.test-support.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
+import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { getFreePort } from "../test-utils/ports.js";
+import { createGatewayKernel } from "./server-kernel.js";
+import { startGatewayServerCore } from "./server-start.js";
+
+it("defers audit integrity on the direct Gateway first state open and restores full local checks on failed bootstrap", async () => {
+  const state = await createOpenClawTestState({
+    label: "gateway-direct-first-state-open",
+    layout: "home",
+    env: { OPENCLAW_TEST_MINIMAL_GATEWAY: undefined, VITEST: "1" },
+  });
+  state.applyEnv();
+  const bootstrapModule = await import("./server-startup-bootstrap.js");
+  const checks: string[] = [];
+  // oxlint-disable-next-line typescript/unbound-method -- Forward the native method with its database receiver.
+  const prepare = DatabaseSync.prototype.prepare;
+  const sqlSpy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+    this: DatabaseSync,
+    sql: string,
+  ) {
+    if (sql.startsWith("PRAGMA integrity_check") || sql.startsWith("PRAGMA quick_check")) {
+      checks.push(sql);
+    }
+    return prepare.call(this, sql);
+  });
+  try {
+    openOpenClawStateDatabase({ env: process.env });
+    closeOpenClawStateDatabaseForTest();
+    checks.length = 0;
+    const failure = new Error("synthetic bootstrap interruption");
+    const bootstrap = vi
+      .spyOn(bootstrapModule, "prepareGatewayServerBootstrap")
+      .mockImplementation(async () => {
+        // Exercise the real first writable open inside the Gateway entrypoint.
+        openOpenClawStateDatabase({ env: process.env });
+        throw failure;
+      });
+    try {
+      await expect(createGatewayKernel()).rejects.toThrow(failure);
+      expect(checks).toContain("PRAGMA quick_check;");
+      expect(checks).not.toContain("PRAGMA integrity_check;");
+      closeOpenClawStateDatabaseForTest();
+      checks.length = 0;
+      openOpenClawStateDatabase({ env: process.env });
+      expect(checks).toContain("PRAGMA integrity_check;");
+    } finally {
+      bootstrap.mockRestore();
+    }
+  } finally {
+    sqlSpy.mockRestore();
+    closeOpenClawStateDatabaseForTest();
+    await state.cleanup();
+  }
+});
+
+it("refuses the cached Gateway state handle after a failed pre-adoption bootstrap", async () => {
+  const state = await createOpenClawTestState({
+    label: "gateway-failed-bootstrap-audit-cache",
+    layout: "home",
+    env: { OPENCLAW_TEST_MINIMAL_GATEWAY: undefined, VITEST: "1" },
+  });
+  state.applyEnv();
+  const bootstrapModule = await import("./server-startup-bootstrap.js");
+  const pathname = prepareCorruptAuditIndex(process.env);
+  const failure = new Error("synthetic pre-adoption bootstrap failure");
+  const bootstrap = vi
+    .spyOn(bootstrapModule, "prepareGatewayServerBootstrap")
+    .mockImplementation(async () => {
+      const opened = openOpenClawStateDatabase({ env: process.env });
+      expect(() => assertSqliteIntegrity(opened.db, pathname)).toThrow(/integrity_check failed/u);
+      throw failure;
+    });
+  try {
+    await expect(createGatewayKernel()).rejects.toThrow(failure);
+    // This must not rely on a test-only close: the shared handle stays cached.
+    expect(() => openOpenClawStateDatabase({ env: process.env })).toThrow(
+      /integrity_check failed/u,
+    );
+  } finally {
+    bootstrap.mockRestore();
+    closeOpenClawStateDatabaseForTest();
+    await state.cleanup();
+  }
+});
+
+it("registers the state selected by config env before the direct Gateway's first writable open", async () => {
+  const state = await createOpenClawTestState({
+    label: "gateway-config-env-state-open",
+    layout: "home",
+    env: { OPENCLAW_STATE_DIR: undefined, OPENCLAW_TEST_MINIMAL_GATEWAY: undefined, VITEST: "1" },
+  });
+  const selectedStateDir = path.join(state.root, "selected-state");
+  await state.writeConfig({ env: { vars: { OPENCLAW_STATE_DIR: selectedStateDir } }, plugins: {} });
+  state.applyEnv();
+  const selectedEnv = { ...process.env, OPENCLAW_STATE_DIR: selectedStateDir };
+  openOpenClawStateDatabase({ env: selectedEnv });
+  closeOpenClawStateDatabaseForTest();
+  const checks: string[] = [];
+  // oxlint-disable-next-line typescript/unbound-method -- Forward the native method with its exact receiver.
+  const prepare = DatabaseSync.prototype.prepare;
+  const sqlSpy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+    this: DatabaseSync,
+    sql: string,
+  ) {
+    if (sql.startsWith("PRAGMA integrity_check") || sql.startsWith("PRAGMA quick_check")) {
+      checks.push(sql);
+    }
+    return prepare.call(this, sql);
+  });
+  let kernel: Awaited<ReturnType<typeof createGatewayKernel>> | undefined;
+  try {
+    kernel = await createGatewayKernel(await getFreePort(), { sidecarStartup: "defer" });
+    expect(process.env.OPENCLAW_STATE_DIR).toBe(selectedStateDir);
+    expect(checks).toContain("PRAGMA quick_check;");
+    expect(checks).not.toContain("PRAGMA integrity_check;");
+    expect(checks.some((sql) => sql.includes("audit_events"))).toBe(false);
+  } finally {
+    await kernel?.closeOnStartupFailure();
+    sqlSpy.mockRestore();
+    closeOpenClawStateDatabaseForTest();
+    await state.cleanup();
+  }
+});
+
+it("adopts the CLI verifier once and joins it on normal Gateway close", async () => {
+  const state = await createOpenClawTestState({
+    label: "gateway-adopt-boot-verifier",
+    layout: "home",
+    env: {
+      OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
+      OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
+      OPENCLAW_SKIP_CANVAS_HOST: "1",
+      OPENCLAW_SKIP_CHANNELS: "1",
+      OPENCLAW_SKIP_CRON: "1",
+      OPENCLAW_SKIP_GMAIL_WATCHER: "1",
+      OPENCLAW_SKIP_PROVIDERS: "1",
+      VITEST: "1",
+    },
+  });
+  const token = "synthetic-verifier-lifetime-token";
+  await state.writeConfig({ gateway: { auth: { mode: "token", token } }, plugins: {} });
+  state.applyEnv();
+  const verifier = {
+    syncStatePath: vi.fn(),
+    arm: vi.fn(),
+    stop: vi.fn(async () => {}),
+  };
+  let server: Awaited<ReturnType<typeof startGatewayServerCore>> | undefined;
+  try {
+    server = await startGatewayServerCore(await getFreePort(), {
+      auth: { mode: "token", token },
+      bind: "loopback",
+      controlUiEnabled: false,
+      sidecarStartup: "defer",
+      databaseIntegrityVerifier: verifier,
+    });
+    await server.startupSettled;
+    expect(verifier.syncStatePath).toHaveBeenCalledOnce();
+    expect(verifier.arm).toHaveBeenCalledOnce();
+    expect(verifier.stop).not.toHaveBeenCalled();
+    await server.close();
+    expect(verifier.stop).toHaveBeenCalledOnce();
+  } finally {
+    await server?.close();
+    await state.cleanup();
+  }
+});

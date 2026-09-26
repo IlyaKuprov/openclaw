@@ -373,6 +373,7 @@ async function transcriptExists(scope: SessionTranscriptWriteScope): Promise<boo
 }
 
 export async function appendAssistantTranscriptMessage(params: {
+  assertCommitAllowed?: () => void;
   expectedSessionId?: string;
   expectedLifecycleRevision?: SessionLifecycleRevisionExpectation;
   sessionKey: string;
@@ -402,6 +403,7 @@ export async function appendAssistantTranscriptMessage(params: {
     return { ok: false, error: "transcript not found" };
   }
   const appended = await appendInjectedAssistantMessageToTranscript({
+    assertCommitAllowed: params.assertCommitAllowed,
     expectedSessionId: params.expectedSessionId,
     expectedLifecycleRevision: params.expectedLifecycleRevision,
     sessionKey: params.sessionKey,

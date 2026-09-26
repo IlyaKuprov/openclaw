@@ -160,6 +160,7 @@ type RuntimeSessionStoreEntryPatchParams = RuntimeSessionStoreReadParams & {
   maintenanceConfig?: import("../../config/sessions/store-maintenance.js").ResolvedSessionMaintenanceConfigInput;
   preserveActivity?: boolean;
   replaceEntry?: boolean;
+  skipMaintenance?: boolean;
   update: (
     entry: RuntimeSessionEntry,
     context: { existingEntry?: RuntimeSessionEntry },
@@ -179,6 +180,8 @@ type RuntimeSessionStoreEntryUpdateParams = {
   update: (
     entry: RuntimeSessionEntry,
   ) => Promise<Partial<RuntimeSessionEntry> | null> | Partial<RuntimeSessionEntry> | null;
+  /** Synchronous final ownership check executed inside the commit transaction. */
+  assertCommitAllowed?: () => void;
   skipMaintenance?: boolean;
   takeCacheOwnership?: boolean;
   requireWriteSuccess?: boolean;
@@ -324,6 +327,18 @@ type RuntimeRunEmbeddedAgent = (
   params: RuntimeRunEmbeddedAgentParams,
 ) => Promise<import("../../agents/embedded-agent-runner/types.js").EmbeddedAgentRunResult>;
 
+export type PluginRuntimeSessionLifecycleCleanupV1 = {
+  cleanupSessionLifecycleArtifacts: (params: {
+    agentId?: string;
+    archiveRemovedEntryTranscripts?: boolean;
+    orphanTranscriptMinAgeMs: number;
+    sessionKeySegmentPrefix: string;
+    storePath: string;
+    transcriptContentMarker: string;
+    nowMs?: number;
+  }) => Promise<{ archivedTranscriptArtifacts: number; removedEntries: number }>;
+};
+
 /** Core runtime helpers exposed to trusted native plugins. */
 export type PluginRuntimeCore = {
   version: string;
@@ -394,6 +409,8 @@ export type PluginRuntimeCore = {
         params: RuntimeSessionStoreEntryPatchParams,
       ) => Promise<RuntimeSessionEntry | null>;
       upsertSessionEntry: (params: RuntimeUpsertSessionEntryParams) => Promise<void>;
+      /** Optional V1 owner-bound cleanup capability; older external runtime adapters omit it. */
+      cleanupSessionLifecycleArtifacts?: PluginRuntimeSessionLifecycleCleanupV1["cleanupSessionLifecycleArtifacts"];
       runWithWorkAdmission: <T>(
         params: RuntimeSessionWorkAdmissionParams,
         run: (signal: AbortSignal) => Promise<T>,

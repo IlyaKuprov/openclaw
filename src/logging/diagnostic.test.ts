@@ -2747,7 +2747,7 @@ describe("stuck session diagnostics threshold", () => {
 
   it("uses fixed session attention thresholds", () => {
     expect(resolveStuckSessionWarnMs()).toBe(120_000);
-    expect(resolveStuckSessionAbortMs(30_000)).toBe(5 * 60_000);
+    expect(resolveStuckSessionAbortMs(30_000)).toBe(30 * 60_000);
   });
 });
 

@@ -93,6 +93,17 @@ function getConfiguredMemoryEmbeddingProvider(providerId: string, cfg: OpenClawC
   return getMemoryEmbeddingProvider(providerId, cfg);
 }
 
+// Node timers saturate above this; a larger configured deadline would fire at once.
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** Configured memory_search/memory_get deadline in ms; undefined keeps the shipped deadlines. */
+function resolveMemorySearchTimeoutMs(timeoutSeconds: number | undefined): number | undefined {
+  if (timeoutSeconds === undefined || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+    return undefined;
+  }
+  return clampNumber(Math.round(timeoutSeconds * 1000), 1, MAX_TIMER_MS);
+}
+
 /** Resolves source and query settings without loading an embedding provider runtime. */
 export function resolveMemorySearchIndexConfig(cfg: OpenClawConfig, agentId: string) {
   const defaults = cfg.memory?.search;
@@ -127,6 +138,9 @@ export function resolveMemorySearchIndexConfig(cfg: OpenClawConfig, agentId: str
         overrides?.query?.minScore ?? defaults?.query?.minScore ?? DEFAULT_MIN_SCORE,
         0,
         1,
+      ),
+      timeoutMs: resolveMemorySearchTimeoutMs(
+        overrides?.query?.timeoutSeconds ?? defaults?.query?.timeoutSeconds,
       ),
       hybrid: {
         enabled: DEFAULT_HYBRID_ENABLED,

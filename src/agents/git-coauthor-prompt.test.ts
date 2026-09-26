@@ -19,7 +19,8 @@ describe("resolveSessionGitCoauthorPrompt", () => {
   const expectedPrompt =
     "Git co-authors: add these exact trailers to every commit you make from this session.\n" +
     "Co-authored-by: ada <20+ada@users.noreply.github.com>\n" +
-    "Co-authored-by: grace <10+grace@users.noreply.github.com>";
+    "Co-authored-by: grace <10+grace@users.noreply.github.com>\n" +
+    "Worked on by (verified GitHub logins, in order): @ada, @grace";
 
   beforeEach(() => {
     vi.mocked(resolveGitCoauthorAttribution).mockReset();

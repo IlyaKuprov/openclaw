@@ -1,0 +1,14 @@
+{
+  "name": "hf09-stage",
+  "version": "2026.9.5",
+  "private": true,
+  "dependencies": {
+    "@a2ui/lit": "0.10.3",
+    "@a2ui/web_core": "0.10.7",
+    "@lit/context": "1.1.6",
+    "lit": "3.3.3",
+    "mdast-util-from-markdown": "2.0.3",
+    "jsonc-parser": "3.3.1",
+    "markdown-it": "15.0.2"
+  }
+}

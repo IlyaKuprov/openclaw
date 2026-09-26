@@ -14,10 +14,13 @@ import type { ChannelTurnResult } from "./types.js";
 
 export type DurableSendRequest = {
   accountId?: string;
+  assertBeforeQueueAdmission?: () => void;
   channel?: string;
   durability?: string;
   payloads?: ReplyPayload[];
+  replyToId?: string | null;
   replyToMode?: string;
+  rootReplyOnly?: true;
   session?: {
     key?: string;
     agentId?: string;
@@ -87,7 +90,7 @@ export function expectDispatched<TDispatchResult>(
 
 export function createDispatch(
   events: string[] = [],
-  deliverPayload: { text: string } = { text: "reply" },
+  deliverPayload: ReplyPayload = { text: "reply" },
   onDelivery?: (result: unknown) => void,
 ): DispatchReplyWithBufferedBlockDispatcher {
   return vi.fn(async (params) => {

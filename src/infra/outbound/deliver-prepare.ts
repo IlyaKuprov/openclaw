@@ -247,7 +247,16 @@ export async function prepareOutboundPayloadBatch(
       });
       continue;
     }
-    const compactPayload = compactPreparedPayload(preparedPayload);
+    // A host-decided root route outranks reply directives added by later payload hooks.
+    const rootedPayload = params.rootReplyOnly
+      ? copyReplyPayloadMetadata(preparedPayload, {
+          ...preparedPayload,
+          replyToId: undefined,
+          replyToCurrent: undefined,
+          replyToTag: undefined,
+        })
+      : preparedPayload;
+    const compactPayload = compactPreparedPayload(rootedPayload);
     entries.push({
       sourceIndex,
       status: "accepted",

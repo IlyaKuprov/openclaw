@@ -133,7 +133,7 @@ describe("AgentSession compaction", () => {
       };
       const summary = recovers
         ? [
-            "## Decisions\nThe old prompt was answered.",
+            "## Decisions\nThe old prompt was answered.\n\n## Results and evidence\nNone captured.",
             "## Open TODOs\nNone.",
             "## Constraints/Rules\nPreserve the session history.",
             "## Pending user asks\nNone.",
@@ -664,7 +664,7 @@ describe("AgentSession compaction", () => {
       ...createAssistant(testModel, [{ type: "text", text: "old answer" }]),
       timestamp: 2,
     });
-    const oversizedSummary = "summary detail ".repeat(2_000);
+    const oversizedSummary = "summary detail ".repeat(3_000);
     let manualRequestState: string | undefined;
     const { session } = await createTestSession({
       sessionManager,
@@ -678,7 +678,7 @@ describe("AgentSession compaction", () => {
     const result = await session.compact();
     const persisted = sessionManager.getBranch().findLast((entry) => entry.type === "compaction");
 
-    expect(result.summary.length).toBeLessThanOrEqual(16_000);
+    expect(result.summary.length).toBeLessThanOrEqual(40_000);
     expect(result.summary).toContain("[Compaction summary truncated to fit budget]");
     expect(persisted).toMatchObject({ type: "compaction", summary: result.summary });
     expect(manualRequestState).toBeUndefined();

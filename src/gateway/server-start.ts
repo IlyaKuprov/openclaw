@@ -113,6 +113,7 @@ async function startGatewayServerWithSdkHost(
       if (gatewayKernel.lifecycle.closePreludeStarted) {
         return;
       }
+      gatewayKernel.armDatabaseIntegrityVerifier();
       // Deferred sidecars must finish before the I/O window for background work begins.
       postReadyWorkTimer = setTimeout(releasePostReadyWork, POST_READY_WORK_START_DELAY_MS);
       postReadyWorkTimer.unref?.();
