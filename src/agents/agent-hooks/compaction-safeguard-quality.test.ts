@@ -205,6 +205,22 @@ describe("compaction summary quality contract", () => {
     );
   });
 
+  it("does not discard late measured results, commits and PRs behind forty earlier URLs", () => {
+    const urls = Array.from(
+      { length: 40 },
+      (_, index) => `https://example.com/result-${index}/${"a".repeat(370)}`,
+    );
+    const identifiers = extractOpaqueIdentifiers(
+      `${urls.join("\n")}\nPR #47\ncommit abc1234\n42 tests passed\n17.3 Hz`,
+    );
+    expect(identifiers).toContain("PR #47");
+    expect(identifiers).toContain("ABC1234");
+    expect(identifiers).toContain("42 tests passed");
+    expect(identifiers).toContain("17.3 Hz");
+    expect(identifiers).toContain(urls.at(-1));
+    expect(identifiers).not.toContain(urls[0]);
+  });
+
   it("audits short PR, job, and message references without classifying ordinary counts", () => {
     const identifiers = extractOpaqueIdentifiers(
       "PR #13, #14, job id 42, message id 7; job-8, msg-9. 13 files, 42 tests and 7 retries.",

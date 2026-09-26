@@ -3293,7 +3293,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     });
     event.preparation.messagesToSummarize.push({
       role: "assistant",
-      content: [{ type: "text", text: urls.join("\n") }],
+      content: [{ type: "text", text: `${urls.join("\n")}\nPR #47\n42 tests passed` }],
       timestamp: Date.now(),
     } as AgentMessage);
     (event.preparation as { settings?: { reserveTokens: number } }).settings = {
@@ -3303,14 +3303,17 @@ describe("compaction-safeguard recent-turn preservation", () => {
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
     const summary = expectCompactionResult(result).summary;
     expect(summary.length).toBeLessThanOrEqual(MAX_COMPACTION_SUMMARY_CHARS);
-    expect(mockAuditSummaryQuality.mock.calls.at(-1)?.[0].identifiers).toEqual(
-      urls.slice(-expectedUrlCount),
-    );
+    expect(mockAuditSummaryQuality.mock.calls.at(-1)?.[0].identifiers).toEqual([
+      ...urls.slice(-expectedUrlCount),
+      "PR #47",
+      "42 tests passed",
+    ]);
     expect(summary).toContain("## Decisions\nKeep deployment paused.");
     expect(summary).toContain("42 tests passed; see the test log.");
     expect(summary).toContain("## Open TODOs\nInspect the rollout.");
     expect(summary).toContain("## Pending user asks\nReport deployment status.");
     expect(summary).toContain(urls.at(-1));
+    expect(summary).toContain("PR #47");
     expect(summary).not.toContain(urls[0]);
     expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
