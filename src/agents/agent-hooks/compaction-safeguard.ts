@@ -81,6 +81,7 @@ import {
   extractResultEvidenceAnchors,
   nestRequiredSummaryHeadings,
   selectAuditedIdentifiers,
+  sourceResultEvidenceContexts,
   wrapUntrustedInstructionBlock,
 } from "./compaction-safeguard-quality.js";
 import {
@@ -234,6 +235,7 @@ type CompactionSuffix = {
 type SummaryQualityRetention = {
   auditSummary?: string;
   identifiers: string[];
+  resultContexts?: ReadonlyMap<string, string>;
   latestAsk: string | null;
   latestAskInRetainedTurn?: boolean;
   latestUnresolvedUserRequest?: string;
@@ -1176,6 +1178,10 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           ...droppedResultEvidence,
         ]),
       ];
+      const resultContexts = sourceResultEvidenceContexts(
+        preparedMessages.map(extractMessageText),
+        persistedResults,
+      );
       // Keep the no-LLM legacy migration when the quality guard is disabled.
       const fallbackResults = messagesToSummarize.length === 0 ? persistedResults : [];
 
@@ -1188,6 +1194,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               identifiers: qualityGuardEnabled
                 ? [...new Set([...identifierCandidates, ...persistedResults])]
                 : fallbackResults,
+              resultContexts,
               latestAsk: latestUserAsk,
               latestAskInRetainedTurn: splitUserAsk !== null,
               latestUnresolvedUserRequest: latestUnresolvedUserRequest ?? undefined,
