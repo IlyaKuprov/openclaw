@@ -55,9 +55,14 @@ describe("plugin registry SQLite session ownership", () => {
     });
   });
 
-  it.each(["revoked", "replaced"] as const)(
-    "rejects an upsert when its plugin runtime is %s after the callback but before SQLite commit",
-    async (change) => {
+  it.each([
+    ["patch", "revoked"],
+    ["patch", "replaced"],
+    ["upsert", "revoked"],
+    ["upsert", "replaced"],
+  ] as const)(
+    "rejects a %s when its plugin runtime is %s after the callback but before SQLite commit",
+    async (method, change) => {
       await withTempHome(async () => {
         const agentId = "main";
         const sessionKey = "agent:main:internal-session-effects:commit-edge-child";
@@ -102,12 +107,17 @@ describe("plugin registry SQLite session ownership", () => {
                 },
               }),
           });
-          await expect(
-            api.runtime.agent.session.upsertSessionEntry({
-              ...scope,
-              entry: { ...original, label: "stale" },
-            }),
-          ).rejects.toThrow(/runtime is no longer active/);
+          const pending =
+            method === "patch"
+              ? api.runtime.agent.session.patchSessionEntry({
+                  ...scope,
+                  update: () => ({ label: "stale" }),
+                })
+              : api.runtime.agent.session.upsertSessionEntry({
+                  ...scope,
+                  entry: { ...original, label: "stale" },
+                });
+          await expect(pending).rejects.toThrow(/runtime is no longer active/);
           expect(callbackFinished).toBe(true);
           expect(loadSessionEntryReadOnly(scope)).toMatchObject(original);
         } finally {
@@ -116,6 +126,151 @@ describe("plugin registry SQLite session ownership", () => {
       });
     },
   );
+
+  it("combines the patch caller's commit guard with the live runtime guard", async () => {
+    await withTempHome(async () => {
+      const scope = {
+        agentId: "main",
+        sessionKey: "agent:main:internal-session-effects:caller-guard",
+        storePath: resolveSessionStorePathCore(undefined, { agentId: "main" }),
+      };
+      const original = { sessionId: "owned", pluginOwnerId: "active-memory", updatedAt: 1 };
+      try {
+        await replaceSessionEntry(scope, original);
+        const registry = createRuntimeTestRegistry(createPluginRuntime());
+        const api = registry.createApi(
+          createPluginRecord({
+            id: "active-memory",
+            source: "/plugins/active-memory/index.js",
+            origin: "bundled",
+            enabled: true,
+            configSchema: false,
+          }),
+          { config: {} as OpenClawConfig },
+        );
+        let allowed = false;
+        const guard = vi.fn(() => {
+          if (!allowed) {
+            throw new Error("caller denied commit");
+          }
+        });
+        const patch = () =>
+          api.runtime.agent.session.patchSessionEntry({
+            ...scope,
+            assertCommitAllowed: guard,
+            update: () => ({ label: "written" }),
+          });
+        await expect(patch()).rejects.toThrow("caller denied commit");
+        expect(loadSessionEntryReadOnly(scope)).toMatchObject(original);
+        allowed = true;
+        await expect(patch()).resolves.toMatchObject({
+          sessionId: original.sessionId,
+          pluginOwnerId: original.pluginOwnerId,
+          label: "written",
+        });
+        expect(guard).toHaveBeenCalledTimes(2);
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
+  it.each(["patchSessionEntry", "updateSessionStoreEntry"] as const)(
+    "uses one captured SQLite target throughout %s with an accessor-backed key",
+    async (method) => {
+      await withTempHome(async () => {
+        const agentId = "main";
+        const storePath = resolveSessionStorePathCore(undefined, { agentId });
+        const ordinary = { agentId, sessionKey: "agent:main:ordinary", storePath };
+        const foreign = {
+          agentId,
+          sessionKey: "agent:main:internal-session-effects:foreign-child",
+          storePath,
+        };
+        const original = { sessionId: "foreign", pluginOwnerId: "other-plugin", updatedAt: 1 };
+        try {
+          await replaceSessionEntry(ordinary, { sessionId: "ordinary", updatedAt: 1 });
+          await replaceSessionEntry(foreign, original);
+          const registry = createRuntimeTestRegistry(createPluginRuntime());
+          const api = registry.createApi(
+            createPluginRecord({
+              id: "active-memory",
+              source: "/plugins/active-memory/index.js",
+              origin: "bundled",
+              enabled: true,
+              configSchema: false,
+            }),
+            { config: {} as OpenClawConfig },
+          );
+          const params = {
+            ...ordinary,
+            update: () => ({ label: "legitimate write" }),
+          };
+          let keyReads = 0;
+          Object.defineProperty(params, "sessionKey", {
+            enumerable: true,
+            get: () => (++keyReads === 2 ? foreign.sessionKey : ordinary.sessionKey),
+          });
+          await expect(api.runtime.agent.session[method](params)).resolves.toMatchObject({
+            sessionId: "ordinary",
+            label: "legitimate write",
+          });
+          expect(keyReads).toBeGreaterThanOrEqual(2);
+          expect(loadSessionEntryReadOnly(foreign)).toMatchObject(original);
+          expect(loadSessionEntryReadOnly(ordinary)?.label).toBe("legitimate write");
+        } finally {
+          closeOpenClawAgentDatabasesForTest();
+        }
+      });
+    },
+  );
+
+  it("does not upsert an accessor-switched foreign internal key", async () => {
+    await withTempHome(async () => {
+      const agentId = "main";
+      const storePath = resolveSessionStorePathCore(undefined, { agentId });
+      const ordinary = { agentId, sessionKey: "agent:main:ordinary-upsert", storePath };
+      const foreign = {
+        agentId,
+        sessionKey: "agent:main:internal-session-effects:foreign-upsert",
+        storePath,
+      };
+      const original = { sessionId: "foreign", pluginOwnerId: "other-plugin", updatedAt: 1 };
+      try {
+        await replaceSessionEntry(foreign, original);
+        const registry = createRuntimeTestRegistry(createPluginRuntime());
+        const api = registry.createApi(
+          createPluginRecord({
+            id: "active-memory",
+            source: "/plugins/active-memory/index.js",
+            origin: "bundled",
+            enabled: true,
+            configSchema: false,
+          }),
+          { config: {} as OpenClawConfig },
+        );
+        const params = { ...ordinary, entry: { ...original, label: "foreign write" } };
+        let keyReads = 0;
+        Object.defineProperty(params, "sessionKey", {
+          enumerable: true,
+          get: () => (++keyReads === 1 ? foreign.sessionKey : ordinary.sessionKey),
+        });
+        await expect(api.runtime.agent.session.upsertSessionEntry(params)).rejects.toThrow(
+          'owned by plugin "other-plugin"',
+        );
+        expect(loadSessionEntryReadOnly(foreign)).toMatchObject(original);
+        await expect(
+          api.runtime.agent.session.upsertSessionEntry({
+            ...ordinary,
+            entry: { sessionId: "own-upsert", updatedAt: 2 },
+          }),
+        ).resolves.toBeUndefined();
+        expect(loadSessionEntryReadOnly(ordinary)?.sessionId).toBe("own-upsert");
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
 
   it("upserts current-owner metadata on only the addressed store and session", async () => {
     await withTempHome(async (home) => {
