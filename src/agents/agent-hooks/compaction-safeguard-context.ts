@@ -59,7 +59,7 @@ export function prependPreviousSummaryForRedistill(params: {
         },
       ],
       timestamp: 0,
-    } as AgentMessage,
+    } satisfies AgentMessage,
     ...params.messages,
   ];
 }
