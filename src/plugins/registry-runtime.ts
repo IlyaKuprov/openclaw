@@ -455,11 +455,13 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                       entry: context.existingEntry,
                       sessionKey,
                     });
-                    const patch = await scopedParams.update(entry, context);
+                    const result = await scopedParams.update(entry, context);
                     assertRuntimeCurrent();
-                    if (!patch) {
-                      return patch;
+                    if (!result) {
+                      return result;
                     }
+                    const patch = Object.freeze({ ...result });
+                    assertRuntimeCurrent();
                     const next = scopedParams.replaceEntry
                       ? (patch as SessionEntry)
                       : ({ ...entry, ...patch } satisfies SessionEntry);
@@ -571,11 +573,13 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                       entry,
                       sessionKey,
                     });
-                    const patch = await params.update(entry);
+                    const result = await scopedParams.update(entry);
                     assertRuntimeCurrent();
-                    if (!patch) {
-                      return patch;
+                    if (!result) {
+                      return result;
                     }
+                    const patch = Object.freeze({ ...result });
+                    assertRuntimeCurrent();
                     assertStoreEntryOwned({
                       action: "update",
                       before: entry,

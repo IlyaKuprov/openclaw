@@ -89,4 +89,48 @@ describe("plugin-scoped session writes with mutable caller input", () => {
       }
     });
   });
+
+  it.each(["patch", "update" as const])(
+    "persists the same %s callback patch owner that passed the internal-row check",
+    async (method) => {
+      await withTempHome(async () => {
+        const scope = internalScope(`callback-${method}`);
+        const original = {
+          sessionId: "owned-child",
+          pluginOwnerId: "active-memory",
+          updatedAt: 1,
+        };
+        try {
+          await replaceSessionEntry(scope, original);
+          const api = createActiveMemorySessionApi();
+          let ownerReads = 0;
+          const update = () => ({
+            sessionId: "owned-child",
+            updatedAt: 2,
+            get pluginOwnerId() {
+              ownerReads += 1;
+              return ownerReads === 1 ? "active-memory" : "other-plugin";
+            },
+          });
+          if (method === "patch") {
+            await api.runtime.agent.session.patchSessionEntry({
+              ...scope,
+              replaceEntry: true,
+              update,
+            });
+          } else {
+            await api.runtime.agent.session.updateSessionStoreEntry({
+              sessionKey: scope.sessionKey,
+              storePath: scope.storePath,
+              update,
+            });
+          }
+          expect(loadSessionEntryReadOnly(scope)?.pluginOwnerId).toBe("active-memory");
+          expect(ownerReads).toBe(1);
+        } finally {
+          closeOpenClawAgentDatabasesForTest();
+        }
+      });
+    },
+  );
 });
