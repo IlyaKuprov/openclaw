@@ -106,3 +106,125 @@ describe("signed measurement evidence", () => {
     );
   });
 });
+
+describe("strict history literals", () => {
+  it("extracts dates, times and localhost ports for the strict quality audit", () => {
+    const identifiers = extractOpaqueIdentifiers(
+      "Maintenance starts 2026-09-26 at 10:18; dashboard at localhost:8080.",
+    );
+    expect(identifiers).toEqual(["2026-09-26", "10:18", "localhost:8080"]);
+    const summary = buildStructuredFallbackSummary(
+      "Maintenance starts 2026-09-27 at 10:19; dashboard at localhost:8081.",
+    );
+    expect(
+      auditSummaryQuality({
+        summary,
+        structuralSummary: summary,
+        identifiers,
+        latestAsk: null,
+        identifierPolicy: "strict",
+      }).reasons,
+    ).toContain("missing_identifiers:2026-09-26,10:18,localhost:8080");
+    const repaired = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+      identifiers,
+      latestAsk: null,
+      identifierPolicy: "strict",
+    })?.render(16_000)?.text;
+    expect(repaired).toBeDefined();
+    expect(
+      auditSummaryQuality({
+        summary: repaired ?? "",
+        structuralSummary: repaired ?? "",
+        identifiers,
+        latestAsk: null,
+        identifierPolicy: "strict",
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("rejects malformed history literals and adjacent near-matches", () => {
+    expect(
+      extractOpaqueIdentifiers(
+        "2026-13-26 2026-09-260 30:18 10:80 10:18:00 localhost:65536 localhost:80801 " +
+          "http://localhost:8080 src/2026-09-26/report.log",
+      ),
+    ).toEqual(["http://localhost:8080", "src/2026-09-26/report.log"]);
+    for (const [source, nearMatch] of [
+      ["2026-09-26", "2026-09-260"],
+      ["10:18", "10:180"],
+      ["localhost:8080", "localhost:80800"],
+      ["localhost:8080", "x-localhost:8080"],
+    ] as const) {
+      expect(summaryIncludesIdentifier(nearMatch, source)).toBe(false);
+      expect(summaryIncludesIdentifier(`Recorded (${source}).`, source)).toBe(true);
+    }
+  });
+
+  it("does not accept a longer URL as the exact source URL", () => {
+    const [identifier] = extractOpaqueIdentifiers("See https://example.com/issues/42 for details.");
+    expect(identifier).toBe("https://example.com/issues/42");
+    if (!identifier) {
+      throw new Error("Expected an extracted URL");
+    }
+    const summary = buildStructuredFallbackSummary(
+      "See https://example.com/issues/420 for details.",
+    );
+    expect(
+      auditSummaryQuality({
+        summary,
+        structuralSummary: summary,
+        identifiers: [identifier],
+        latestAsk: null,
+        identifierPolicy: "strict",
+      }).reasons,
+    ).toContain(`missing_identifiers:${identifier}`);
+    for (const nearMatch of [
+      "https://example.com/issues/420",
+      "https://example.com/issues/42/extra",
+      "https://example.com/issues/42?view=full",
+      "https://example.com/issues/42#detail",
+      "https://example.com/issues/42.example",
+      `https://mirror.test/redirect/${identifier}`,
+    ]) {
+      expect(summaryIncludesIdentifier(nearMatch, identifier)).toBe(false);
+    }
+    expect(summaryIncludesIdentifier(`Source [link](${identifier}).`, identifier)).toBe(true);
+    expect(summaryIncludesIdentifier(`Source <${identifier}>.`, identifier)).toBe(true);
+    expect(summaryIncludesIdentifier(`URL:${identifier}`, identifier)).toBe(true);
+    const repaired = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+      identifiers: [identifier],
+      latestAsk: null,
+      identifierPolicy: "strict",
+    })?.render(16_000)?.text;
+    expect(repaired).toContain(identifier);
+    expect(
+      auditSummaryQuality({
+        summary: repaired ?? "",
+        structuralSummary: repaired ?? "",
+        identifiers: [identifier],
+        latestAsk: null,
+        identifierPolicy: "strict",
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("prioritizes late history literals without displacing measured results under source budgets", () => {
+    const urls = Array.from(
+      { length: 40 },
+      (_, index) => `https://example.com/${index}/${"a".repeat(370)}`,
+    );
+    const identifiers = extractOpaqueIdentifiers(
+      `${urls.join("\n")}\n2026-09-26 10:18 localhost:8080 -5%`,
+    );
+    expect(identifiers).toEqual(
+      expect.arrayContaining(["2026-09-26", "10:18", "localhost:8080", "-5%"]),
+    );
+    expect(identifiers.length).toBeLessThanOrEqual(40);
+    expect(identifiers).toContain(urls.at(-1));
+    expect(identifiers).not.toContain(urls[0]);
+    expect(identifiers.at(-1)).toBe("-5%");
+    expect(identifiers.reduce((sum, value) => sum + value.length + 1, 0)).toBeLessThanOrEqual(
+      4_000,
+    );
+  });
+});
