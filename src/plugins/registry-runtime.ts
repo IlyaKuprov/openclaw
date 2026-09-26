@@ -455,12 +455,12 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                       entry: context.existingEntry,
                       sessionKey,
                     });
-                    const patch = await params.update(entry, context);
+                    const patch = await scopedParams.update(entry, context);
                     assertRuntimeCurrent();
                     if (!patch) {
                       return patch;
                     }
-                    const next = params.replaceEntry
+                    const next = scopedParams.replaceEntry
                       ? (patch as SessionEntry)
                       : ({ ...entry, ...patch } satisfies SessionEntry);
                     assertStoreEntryOwned({
@@ -477,12 +477,14 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             upsertSessionEntry: async (params) => {
               const { sessionKey, agentId, env, storePath } = params;
               const scopedParams = { ...params, sessionKey, agentId, env, storePath };
+              const entry = Object.freeze({ ...scopedParams.entry });
               const { assertSessionEntryOwned, assertStoreEntryOwned } =
                 await loadSessionOwnership();
               return await runWithPluginScope(async () => {
                 await session.patchSessionEntry({
                   ...scopedParams,
-                  fallbackEntry: params.entry,
+                  entry,
+                  fallbackEntry: entry,
                   replaceEntry: true,
                   assertCommitAllowed: assertRuntimeCurrent,
                   update: (_entry, context) => {
@@ -496,10 +498,10 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                     assertStoreEntryOwned({
                       action: "upsert",
                       before,
-                      entry: params.entry,
+                      entry,
                       sessionKey,
                     });
-                    return params.entry;
+                    return entry;
                   },
                 });
               });
