@@ -16,7 +16,7 @@ import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js
 import { validateStructuredOutputSchema } from "../../agents/subagents/swarm/swarm-output-schema.js";
 import { resolveSessionStorePathCore } from "../../config/sessions.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
-import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   isMainSessionRestartRecoveryInputProvenance,
   normalizeInputProvenance,
@@ -247,7 +247,7 @@ export function prepareAgentRequestPreflight(params: {
       !listAgentIds(cfg).includes(selectedAgentId) ||
       (explicitAgentId &&
         parsedRequestSessionKey?.agentId !== undefined &&
-        explicitAgentId !== parsedRequestSessionKey.agentId)
+        normalizeAgentId(explicitAgentId) !== parsedRequestSessionKey.agentId)
     ) {
       params.io.emitAcceptance([
         false,
