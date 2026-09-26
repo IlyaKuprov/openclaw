@@ -138,7 +138,7 @@ function prependPreviousSummaryForRedistill(params: {
         },
       ],
       timestamp: 0,
-    } as AgentMessage,
+    } satisfies AgentMessage,
     ...params.messages,
   ];
 }
@@ -1018,6 +1018,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           : undefined;
 
       let droppedSummary: string | undefined;
+      let droppedResultEvidence: string[] = [];
 
       if (tokensBefore !== undefined) {
         const prunePlan = buildHistoryPrunePlan({
@@ -1043,6 +1044,10 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
 
             // Summarize dropped messages so context isn't lost
             if (pruned.droppedMessagesList.length > 0) {
+              // Keep a bounded source audit independent of the lossy intermediate summary.
+              droppedResultEvidence = extractResultEvidenceAnchors(
+                pruned.droppedMessagesList.map(extractMessageText).join("\n"),
+              );
               try {
                 const droppedChunkRatio = await computeAdaptiveChunkRatioWithWorker({
                   messages: pruned.droppedMessagesList,
@@ -1160,9 +1165,13 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const effectivePreviousSummary = droppedSummary ?? previousSummary;
       // Re-distilled history is source evidence even when current messages still
       // reach the model; the new summary can otherwise silently drop its results.
-      const persistedResults = effectivePreviousSummary
-        ? extractResultEvidenceAnchors(effectivePreviousSummary)
-        : [];
+      const persistedResults = [
+        ...new Set([
+          ...extractResultEvidenceAnchors(previousSummary ?? ""),
+          ...extractResultEvidenceAnchors(droppedSummary ?? ""),
+          ...droppedResultEvidence,
+        ]),
+      ];
       // Keep the no-LLM legacy migration when the quality guard is disabled.
       const fallbackResults = messagesToSummarize.length === 0 ? persistedResults : [];
 
