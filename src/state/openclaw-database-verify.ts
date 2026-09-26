@@ -15,18 +15,20 @@ import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 const log = createSubsystemLogger("state/database-verify");
 const MAX_STATE_AUDIT_VERIFIER_FAILURES = 3;
 
-/** Start the Gateway-owned delayed daily integrity verifier. */
+/** Register the Gateway-owned integrity verifier; arm its worker after startup settles. */
 export function startOpenClawDatabaseIntegrityVerifier(options: { env: NodeJS.ProcessEnv }): {
+  syncStatePath: () => void;
+  arm: () => void;
   stop: () => Promise<void>;
 } {
   let activeWorker: ChildProcess | undefined;
   let activeRun: Promise<void> | undefined;
   let stopped = false;
+  let armed = false;
   let consecutiveFailures = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const unregisterStateAuditVerifier = registerOpenClawStateAuditIntegrityVerifier(
-    path.resolve(resolveOpenClawStateSqlitePath(options.env)),
-  );
+  let statePath = path.resolve(resolveOpenClawStateSqlitePath(options.env));
+  let unregisterStateAuditVerifier = registerOpenClawStateAuditIntegrityVerifier(statePath);
 
   const schedule = (delayMs: number) => {
     timer = setTimeout(() => {
@@ -77,8 +79,26 @@ export function startOpenClawDatabaseIntegrityVerifier(options: { env: NodeJS.Pr
     }
   };
 
-  schedule(OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS);
   return {
+    syncStatePath: () => {
+      if (stopped || armed) {
+        return;
+      }
+      const selected = path.resolve(resolveOpenClawStateSqlitePath(options.env));
+      if (selected !== statePath) {
+        // Register the new physical target before releasing the old one.
+        const unregisterSelected = registerOpenClawStateAuditIntegrityVerifier(selected);
+        unregisterStateAuditVerifier();
+        unregisterStateAuditVerifier = unregisterSelected;
+        statePath = selected;
+      }
+    },
+    arm: () => {
+      if (!stopped && !armed) {
+        armed = true;
+        schedule(OPENCLAW_DATABASE_VERIFY_INITIAL_DELAY_MS);
+      }
+    },
     stop: async () => {
       if (stopped) {
         return await activeRun;

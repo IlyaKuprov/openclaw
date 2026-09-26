@@ -206,6 +206,7 @@ async function createGatewayKernelWithSdkHost(
       prepareGatewayServerBootstrap({
         port,
         opts,
+        ...(databaseIntegrityVerifier ? { databaseIntegrityVerifier } : {}),
         log,
         logSecrets,
         loadWorkerEnvironmentStartupModule,
@@ -291,7 +292,7 @@ async function createGatewayKernelWithSdkHost(
       await coreRuntime.startEarlyRuntime();
     }
     await pluginMetadata.waitForRetirement();
-    return await runtime.startupTrace.measure("gateway.request-runtime", () =>
+    const requestRuntime = await runtime.startupTrace.measure("gateway.request-runtime", () =>
       prepareGatewayKernelRequestRuntime({
         coreRuntime,
         log,
@@ -299,6 +300,10 @@ async function createGatewayKernelWithSdkHost(
         hostLifecycle: opts.hostLifecycle,
       }),
     );
+    return {
+      ...requestRuntime,
+      armDatabaseIntegrityVerifier: () => databaseIntegrityVerifier?.arm(),
+    };
   } catch (error) {
     startupError = error;
   }
