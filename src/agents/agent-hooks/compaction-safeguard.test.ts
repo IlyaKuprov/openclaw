@@ -1336,6 +1336,48 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(section).toBe("");
   });
 
+  it.each([
+    { label: "image", block: { type: "image", data: "aW1n", mimeType: "image/png" } },
+    { label: "file", block: { type: "file", name: "scan.pdf" } },
+  ])(
+    "sends a preserved $label-only user turn to the built-in summarizer",
+    async ({ label, block }) => {
+      mockSummarizeInStages
+        .mockReset()
+        .mockResolvedValue(summaryResult(`Recent user sent a ${label} attachment.`));
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 1,
+      });
+      const attachmentTurn = castAgentMessage({
+        role: "user",
+        content: [block],
+        timestamp: 3,
+      });
+      const event = createCompactionEvent({ messageText: "older task", tokensBefore: 1_500 });
+      (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+        reserveTokens: 4_000,
+      };
+      event.preparation.messagesToSummarize = [
+        { role: "user", content: "older task", timestamp: 1 },
+        castAgentMessage(timestampedTextAssistant("older answer", 2)),
+        attachmentTurn,
+      ];
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+      expect(mockSummarizeInStages).toHaveBeenCalledOnce();
+      expect(
+        requireArray(requireRecord(mockCallArg(mockSummarizeInStages)).messages),
+      ).toContainEqual(attachmentTurn);
+      expectCompactionResult(result);
+      expect(result.compaction?.summary).toContain(`Recent user sent a ${label} attachment.`);
+      expect(result.compaction?.summary).not.toContain("[non-text content");
+      expect(result.compaction?.summary).not.toContain("- Tool result (");
+    },
+  );
+
   it("keeps only the text of mixed-content preserved messages (HF-47)", () => {
     const section = preservedTurnsText([
       castAgentMessage({
