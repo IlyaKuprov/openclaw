@@ -8,6 +8,82 @@ import {
 } from "./compaction-safeguard-quality.js";
 
 describe("compaction summary quality contract", () => {
+  it("rejects a missing integer test result in Results and evidence", () => {
+    const identifiers = extractOpaqueIdentifiers(
+      "42 tests passed; next: inspect artifacts/run.log",
+    );
+    expect(identifiers).toContain("42 tests passed");
+    const summary = buildStructuredFallbackSummary(undefined);
+    expect(
+      auditSummaryQuality({ summary, structuralSummary: summary, identifiers, latestAsk: null })
+        .reasons,
+    ).toContain("missing_result_evidence:42 tests passed");
+
+    const misplaced = summary.replace("## Decisions\n", "## Decisions\n42 tests passed\n");
+    expect(
+      auditSummaryQuality({
+        summary: misplaced,
+        structuralSummary: misplaced,
+        identifiers,
+        latestAsk: null,
+      }).reasons,
+    ).toContain("missing_result_evidence:42 tests passed");
+    const restored = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+      identifiers,
+      latestAsk: null,
+    })?.render(16_000)?.text;
+    expect(restored).toContain("## Exact identifiers\nNone captured.\n42 tests passed");
+    expect(
+      auditSummaryQuality({
+        summary: restored ?? "",
+        structuralSummary: restored ?? "",
+        identifiers,
+        latestAsk: null,
+      }).reasons,
+    ).toContain("missing_result_evidence:42 tests passed");
+    const repaired = summary.replace(
+      "## Results and evidence\nNone captured.",
+      "## Results and evidence\n42 tests passed; evidence: artifacts/run.log; next: inspect failures.",
+    );
+    expect(
+      auditSummaryQuality({
+        summary: repaired,
+        structuralSummary: repaired,
+        identifiers,
+        latestAsk: null,
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("extracts repository-relative paths and requires literal preservation", () => {
+    const identifiers = extractOpaqueIdentifiers(
+      "Modified `src/foo.ts`; output artifacts/run.log; link https://example.com/a/b.",
+    );
+    expect(identifiers).toContain("src/foo.ts");
+    expect(identifiers).toContain("artifacts/run.log");
+    expect(extractOpaqueIdentifiers("./src/foo.ts and ../artifacts/run.log")).toEqual([
+      "./src/foo.ts",
+      "../artifacts/run.log",
+    ]);
+    const summary = buildStructuredFallbackSummary(undefined);
+    expect(
+      auditSummaryQuality({ summary, structuralSummary: summary, identifiers, latestAsk: null })
+        .reasons,
+    ).toContain("missing_identifiers:src/foo.ts,artifacts/run.log,https://example.com/a/b");
+    const nearMatch = buildStructuredFallbackSummary("src/foo.ts.bak and artifacts/run.log.old");
+    expect(
+      auditSummaryQuality({
+        summary: nearMatch,
+        structuralSummary: nearMatch,
+        identifiers: ["src/foo.ts", "artifacts/run.log"],
+        latestAsk: null,
+      }).reasons,
+    ).toContain("missing_identifiers:src/foo.ts,artifacts/run.log");
+    const instructions = buildCompactionStructureInstructions();
+    expect(instructions).not.toContain("every artefact path");
+    expect(instructions).not.toContain("every numerical result");
+  });
+
   it("audits short PR, job, and message references without classifying ordinary counts", () => {
     const identifiers = extractOpaqueIdentifiers(
       "PR #13, #14, job id 42, message id 7; job-8, msg-9. 13 files, 42 tests and 7 retries.",

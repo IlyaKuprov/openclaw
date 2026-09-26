@@ -37,7 +37,7 @@ const PROTECTED_SECTION_INDEXES: readonly number[] = [
 const MAX_PROTECTED_SECTION_CONTENT_SHARE = 0.25;
 const LATEST_USER_REQUEST_CONTEXT_LABEL = "Latest user request context:";
 const STRICT_EXACT_IDENTIFIERS_INSTRUCTION =
-  "For ## Exact identifiers, preserve literal values exactly as seen (IDs, URLs, file paths, ports, hashes, dates, times).";
+  "For ## Exact identifiers, preserve important literal values exactly as seen (IDs, URLs, file paths, ports, hashes, dates, times).";
 const POLICY_OFF_EXACT_IDENTIFIERS_INSTRUCTION =
   "For ## Exact identifiers, include identifiers only when needed for continuity; do not enforce literal-preservation rules.";
 
@@ -109,11 +109,11 @@ export function buildCompactionStructureInstructions(
     ...REQUIRED_SUMMARY_SECTIONS,
     identifierSectionInstruction,
     lengthInstruction,
-    "In ## Results and evidence, record every numerical result with its units and evidence source; the working hypothesis with evidence for and against it; and the exact next step.",
+    "In ## Results and evidence, record numerical results with units and evidence sources when available; the working hypothesis with evidence for and against it when present; and the next step when known.",
     ...(strictIdentifiers
       ? [
-          "Record every artefact path produced and the file, log, or command behind each result.",
-          "Write every PR number, commit hash, job id, message id, and file path in full; never compress identifiers into ranges or counts.",
+          "Record important artefact paths produced and the file, log, or command behind each result.",
+          "Write important PR numbers, commit hashes, job ids, message ids, and file paths in full; do not compress retained identifiers into ranges or counts.",
         ]
       : []),
     "Do not omit unresolved asks from the user.",
@@ -459,29 +459,49 @@ function normalizeOpaqueIdentifier(value: string): string {
   return isPureHexIdentifier(value) ? value.toUpperCase() : value;
 }
 
+const NUMERIC_RESULT_ANCHOR =
+  /^\d+\s+(?:tests?|checks?|assertions?|cases?)\s+(?:passed|failed|succeeded)$/iu;
+
 function summaryIncludesIdentifier(summary: string, identifier: string): boolean {
   if (isPureHexIdentifier(identifier)) {
     return summary.toUpperCase().includes(identifier.toUpperCase());
   }
-  if (/^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/iu.test(identifier)) {
+  if (
+    /^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/iu.test(identifier) ||
+    NUMERIC_RESULT_ANCHOR.test(identifier)
+  ) {
     const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     return new RegExp(`(?<![A-Za-z0-9_#])${literal}(?![A-Za-z0-9_-])`, "u").test(summary);
+  }
+  if (identifier.includes("/") && !identifier.includes("://")) {
+    const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    return new RegExp(`(?<![A-Za-z0-9_#./-])${literal}(?![A-Za-z0-9_./-])`, "u").test(summary);
   }
   return summary.includes(identifier);
 }
 
-/** Extracts likely exact identifiers that summaries should preserve literally. */
+/** Extracts bounded literal anchors: IDs, paths, and explicit numeric test outcomes. */
 export function extractOpaqueIdentifiers(text: string): string[] {
-  // Decimal/scientific syntax is unambiguous numeric data, including unit suffixes. Integer tokens
-  // with letters remain opaque because the suffix may be part of an exact identifier.
+  // Plain counts are not IDs; capture only integer test outcomes with a result verb.
+  // Decimal/scientific syntax is unambiguous numeric data, including unit suffixes.
+  const pathsAndResults = Array.from(
+    text.matchAll(
+      /(?<![A-Za-z0-9._/\\-])(?:\.\.\/|\.\/)*(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+(?![A-Za-z0-9._/-])|(?<![A-Za-z0-9_])\d+\s+(?:tests?|checks?|assertions?|cases?)\s+(?:passed|failed|succeeded)\b/giu,
+    ),
+    (match) => ({ index: match.index, value: match[0] }),
+  );
   return uniqueStrings(
-    Array.from(
-      text.matchAll(
-        /((?<![A-Za-z0-9_])#\d+\b|\b(?:PR\s+#\d+|(?:job|message|msg)(?:[-_#][A-Za-z0-9_-]+|\s+id\s*[:#]?\s*[A-Za-z0-9_-]+))\b)|(https?:\/\/\S+|(?<![A-Za-z0-9._-])\/[\w.-]{2,}(?:\/[\w.-]+)+|[A-Za-z]:\\[\w\\.-]+|(?<![A-Za-z0-9._-])[A-Za-z0-9._-]+\.[A-Za-z0-9._/-]+:\d{1,5})|(?:(?:(?:\d+\.\d+|\.\d+)(?:[eE][+-]?\d+)?|\d+\.[eE][+-]?\d+|\d+\.?[eE][+-]\d+|(?![A-Fa-f0-9]{8,}(?![A-Fa-f0-9]))\d+\.?[eE]\d+)(?:(?=[A-Za-z]+(?![A-Za-z0-9]))(?=[A-Za-z]*[G-Zg-z])[A-Za-z]+)?(?![A-Za-z0-9])|(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*(?:[A-Fa-f0-9]{8,}|\d{6,}))([A-Za-z0-9_-]+))/gi,
+    [
+      ...Array.from(
+        text.matchAll(
+          /((?<![A-Za-z0-9_])#\d+\b|\b(?:PR\s+#\d+|(?:job|message|msg)(?:[-_#][A-Za-z0-9_-]+|\s+id\s*[:#]?\s*[A-Za-z0-9_-]+))\b)|(https?:\/\/\S+|(?<![A-Za-z0-9._-])\/[\w.-]{2,}(?:\/[\w.-]+)+|[A-Za-z]:\\[\w\\.-]+|(?<![A-Za-z0-9._-])[A-Za-z0-9._-]+\.[A-Za-z0-9._/-]+:\d{1,5})|(?:(?:(?:\d+\.\d+|\.\d+)(?:[eE][+-]?\d+)?|\d+\.[eE][+-]?\d+|\d+\.?[eE][+-]\d+|(?![A-Fa-f0-9]{8,}(?![A-Fa-f0-9]))\d+\.?[eE]\d+)(?:(?=[A-Za-z]+(?![A-Za-z0-9]))(?=[A-Za-z]*[G-Zg-z])[A-Za-z]+)?(?![A-Za-z0-9])|(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*(?:[A-Fa-f0-9]{8,}|\d{6,}))([A-Za-z0-9_-]+))/gi,
+        ),
+        (match) => ({ index: match.index, value: match[1] ?? match[2] ?? match[3] ?? "" }),
       ),
-      (match) => match[1] ?? match[2] ?? match[3] ?? "",
-    )
-      .map((value) => normalizeOpaqueIdentifier(sanitizeExtractedIdentifier(value)))
+      ...pathsAndResults,
+    ]
+      .toSorted((left, right) => left.index - right.index)
+      .map((match) => normalizeOpaqueIdentifier(sanitizeExtractedIdentifier(match.value)))
       .filter((value) => value.length >= 4 || /^#\d+$/u.test(value)),
   ).slice(0, MAX_EXTRACTED_IDENTIFIERS);
 }
@@ -571,6 +591,19 @@ export function auditSummaryQuality(params: {
     );
     if (missingIdentifiers.length > 0) {
       reasons.push(`missing_identifiers:${missingIdentifiers.slice(0, 3).join(",")}`);
+    }
+    // This checks a literal result anchor in the actual results section, not
+    // whether the generated explanation or its evidence is semantically complete.
+    const resultsSection = parseRequiredSummarySectionContents(params.structuralSummary)?.[
+      RESULTS_SECTION_INDEX
+    ];
+    if (resultsSection !== undefined) {
+      const missingResults = params.identifiers
+        .filter((identifier) => NUMERIC_RESULT_ANCHOR.test(identifier))
+        .filter((identifier) => !summaryIncludesIdentifier(resultsSection, identifier));
+      if (missingResults.length > 0) {
+        reasons.push(`missing_result_evidence:${missingResults.slice(0, 3).join(",")}`);
+      }
     }
   }
   const leadingPendingAsk = extractLeadingPendingAsk(params.structuralSummary);
