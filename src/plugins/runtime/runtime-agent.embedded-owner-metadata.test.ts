@@ -109,4 +109,67 @@ describe("plugin embedded-agent session authority", () => {
       expect(runCore).toHaveBeenCalledOnce();
     });
   });
+
+  it("accepts a qualified ordinary session target without an explicit agent ID", async () => {
+    await withOpenClawTestState({ label: "plugin-embedded-partial-ordinary" }, async () => {
+      runCore.mockClear();
+      const runtime = createPluginRuntime();
+      const agentId = "main";
+      const sessionKey = "agent:main:telegram:direct:ordinary-partial";
+      const sessionId = "ordinary-partial";
+      const storePath = runtime.agent.session.resolveStorePath(undefined, { agentId });
+      await runtime.agent.session.patchSessionEntry({
+        agentId,
+        sessionKey,
+        storePath,
+        fallbackEntry: { sessionId, updatedAt: 1 },
+        update: (entry) => entry,
+      });
+      await expect(
+        withPluginRuntimePluginScope(
+          { pluginId: "active-memory" },
+          () =>
+            runtime.agent.runEmbeddedAgent({
+              config: {},
+              prompt: "ordinary work",
+              runId: sessionId,
+              sessionId,
+              sessionKey,
+              sessionTarget: { sessionKey, sessionId, storePath },
+              workspaceDir: "/tmp/workspace",
+              timeoutMs: 1000,
+            }),
+          createEmptyPluginRegistry(),
+        ),
+      ).resolves.toEqual({ payloads: [] });
+      expect(runCore).toHaveBeenCalledOnce();
+      const internalKey = "agent:main:internal-session-effects:partial-denied";
+      const internalId = "partial-denied";
+      await runtime.agent.session.patchSessionEntry({
+        agentId,
+        sessionKey: internalKey,
+        storePath,
+        fallbackEntry: { sessionId: internalId, pluginOwnerId: "active-memory", updatedAt: 1 },
+        update: (entry) => entry,
+      });
+      await expect(
+        withPluginRuntimePluginScope(
+          { pluginId: "active-memory" },
+          () =>
+            runtime.agent.runEmbeddedAgent({
+              config: {},
+              prompt: "internal work",
+              runId: internalId,
+              sessionId: internalId,
+              sessionKey: internalKey,
+              sessionTarget: { sessionKey: internalKey, sessionId: internalId, storePath },
+              workspaceDir: "/tmp/workspace",
+              timeoutMs: 1000,
+            }),
+          createEmptyPluginRegistry(),
+        ),
+      ).rejects.toThrow(/exact session target identity/);
+      expect(runCore).toHaveBeenCalledOnce();
+    });
+  });
 });
