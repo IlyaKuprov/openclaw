@@ -157,4 +157,61 @@ describe("heartbeat wake settlement", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(handler).toHaveBeenCalledOnce();
   });
+
+  it("removes only a cancelled cron tick from a merged queued task wake", async () => {
+    vi.useFakeTimers();
+    const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+    setHandler(handler);
+    const controller = new AbortController();
+    const expired = requestHeartbeatAndWait(
+      {
+        source: "interval",
+        intent: "task",
+        reason: "heartbeat-task:expired",
+        tasks: [{ jobId: "expired", name: "expired", prompt: "Old work" }],
+        coalesceMs: 100,
+      },
+      { abortSignal: controller.signal, cancelQueuedOnAbort: true },
+    );
+    const live = requestHeartbeatAndWait({
+      source: "interval",
+      intent: "task",
+      reason: "heartbeat-task:live",
+      tasks: [{ jobId: "live", name: "live", prompt: "Current work" }],
+      coalesceMs: 100,
+    });
+    controller.abort();
+    await expect(expired).resolves.toEqual({
+      status: "failed",
+      reason: "heartbeat wake cancelled",
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(live).resolves.toEqual({ status: "ran", durationMs: 1 });
+    expect(handler).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ tasks: [{ jobId: "live", name: "live", prompt: "Current work" }] }),
+    );
+  });
+
+  it("does not execute a cron tick cancelled while waiting for a retry", async () => {
+    vi.useFakeTimers();
+    const handler = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "skipped", reason: "requests-in-flight" })
+      .mockResolvedValue({ status: "ran", durationMs: 1 });
+    setHandler(handler);
+    const controller = new AbortController();
+    const expired = requestHeartbeatAndWait(
+      { source: "interval", intent: "scheduled", reason: "interval", coalesceMs: 0 },
+      { abortSignal: controller.signal, cancelQueuedOnAbort: true },
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    expect(handler).toHaveBeenCalledOnce();
+    controller.abort();
+    await expect(expired).resolves.toEqual({
+      status: "failed",
+      reason: "heartbeat wake cancelled",
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(handler).toHaveBeenCalledOnce();
+  });
 });

@@ -197,6 +197,7 @@ export async function executeJobCore(
     try {
       heartbeatResult = await (state.deps.requestHeartbeatAndWait?.(heartbeatWake, {
         ...(abortSignal ? { abortSignal } : {}),
+        cancelQueuedOnAbort: true,
         ...heartbeatWaitLifecycle,
       }) ?? { status: "failed", reason: "heartbeat wake settlement unavailable" });
     } finally {
