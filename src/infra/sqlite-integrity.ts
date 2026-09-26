@@ -194,8 +194,11 @@ export function assertSqliteIntegrityExcept(
   runSqliteCheck(database, databaseLabel, "quick_check");
   const tables = database
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
-    .all() as Array<{ name: string }>;
+    .all();
   for (const { name } of tables) {
+    if (typeof name !== "string") {
+      throw new TypeError(`${databaseLabel}: sqlite_master table name must be text`);
+    }
     if (!deferredTables.includes(name)) {
       runSqliteCheck(database, databaseLabel, "integrity_check", name);
     }
