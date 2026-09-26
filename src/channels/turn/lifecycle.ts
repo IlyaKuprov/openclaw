@@ -31,6 +31,8 @@ import { recordInboundSession } from "../session.js";
 import {
   createSuppressedChannelDeliveryResult,
   isChannelPartialDeliveryError,
+  isExplicitlyNonVisibleChannelDelivery,
+  runChannelDeliveryObserver,
 } from "./delivery-result.js";
 import {
   createDirectPendingFinalCustody,
@@ -44,6 +46,10 @@ import {
   throwIfDurableInboundReplyDeliveryFailed,
 } from "./durable-delivery.js";
 import { runPreparedChannelTurnCore } from "./execution.js";
+import {
+  createFinalOutboundRouteDispatch,
+  deliverDecidedFinalOutboundRoute,
+} from "./outbound-route-delivery.js";
 import { applyRouteDmScope } from "./route-dm-scope.js";
 import type {
   AssembledChannelTurn,
@@ -150,47 +156,6 @@ function resolveAssembledReplyPipeline(
       ...replyOptions,
     },
   };
-}
-
-function isExplicitlyNonVisibleChannelDelivery(result: unknown): boolean {
-  return (
-    typeof result === "object" &&
-    result !== null &&
-    !Array.isArray(result) &&
-    (result as { visibleReplySent?: unknown }).visibleReplySent === false
-  );
-}
-
-function markChannelDeliveryErrorVisible(error: unknown): unknown {
-  if (typeof error === "object" && error !== null && !Array.isArray(error)) {
-    try {
-      Object.assign(error, { sentBeforeError: true, visibleReplySent: true });
-      return error;
-    } catch {
-      // Fall back to a wrapper when a platform error object is non-extensible.
-    }
-  }
-  const visibleError = new Error("visible channel reply delivery failed", { cause: error });
-  Object.assign(visibleError, { sentBeforeError: true, visibleReplySent: true });
-  return visibleError;
-}
-
-async function runChannelDeliveryObserver(params: {
-  onDelivered: AnyChannelDeliveryAdapter["onDelivered"] | undefined;
-  payload: ReplyPayload;
-  info: Parameters<NonNullable<ChannelEventDeliveryAdapter["onDelivered"]>>[1];
-  result: Parameters<NonNullable<ChannelEventDeliveryAdapter["onDelivered"]>>[2];
-}): Promise<void> {
-  if (!params.onDelivered || isReplyDispatchDeliveryPending(params.result)) {
-    return;
-  }
-  try {
-    await params.onDelivered(params.payload, params.info, params.result);
-  } catch (error: unknown) {
-    throw isExplicitlyNonVisibleChannelDelivery(params.result)
-      ? error
-      : markChannelDeliveryErrorVisible(error);
-  }
 }
 
 function resolveChannelDeliveryMessageId(
@@ -396,6 +361,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
     params.admission?.kind === "observeOnly" ? createObserveOnlyDeliveryAdapter() : params.delivery;
   const pendingDeliveryAttempts: PendingChannelDeliveryAttempt[] = [];
   const normalizationSuppressionAttempts: PendingChannelDeliveryAttempt[] = [];
+  const routeDispatch = createFinalOutboundRouteDispatch(params, delivery.onError);
   let agentRun: [runId?: string, executionIdentityToken?: ExecutionToken] = [];
   const onAgentRunStart = replyPipeline.replyOptions?.onAgentRunStart;
   const replyOptions: NonNullable<AssembledChannelTurn["replyOptions"]> = {
@@ -458,6 +424,8 @@ async function dispatchChannelTurnWithDeliveryOwner(
           }
         : {}),
       runDispatch: async () => {
+        // The route is chosen once for this turn; the decided route separately checks
+        // current authority at queue admission and before adapter handoff.
         let dispatchResult:
           | Awaited<ReturnType<AssembledChannelTurn["dispatchReplyWithBufferedBlockDispatcher"]>>
           | undefined;
@@ -508,6 +476,41 @@ async function dispatchChannelTurnWithDeliveryOwner(
                     });
                   },
                   deliver: async (payload: ReplyPayload, info: ChannelDeliveryInfo) => {
+                    // Select the owner before entering source-channel preparation: a preparer
+                    // may flush previously deferred provider media as a visible side effect.
+                    // Probe the final route for intermediate kinds, then suppress those kinds
+                    // rather than presenting them to the final-only chosen owner as finals.
+                    const outboundRoute =
+                      params.admission?.kind === "observeOnly"
+                        ? undefined
+                        : await routeDispatch.decide(info);
+                    if (outboundRoute) {
+                      if (info.kind !== "final") {
+                        // The chosen owner only accepts final replies. Suppress intermediate
+                        // output rather than leaking it through the original provider.
+                        const suppression = createSuppressedChannelDeliveryResult({
+                          reason: "no_visible_result",
+                        });
+                        await runChannelDeliveryObserver({
+                          onDelivered: delivery.onDelivered,
+                          payload,
+                          info,
+                          result: suppression,
+                        });
+                        return suppression;
+                      }
+                      const routed = await deliverDecidedFinalOutboundRoute({
+                        turn: params,
+                        route: outboundRoute,
+                        payload,
+                        info,
+                        durableOptions: undefined,
+                        executionIdentityToken: agentRun[1],
+                      });
+                      // Host-owned durable settlement must not invoke the bypassed source
+                      // adapter's observer, which can have source-transport side effects.
+                      return routed.delivery;
+                    }
                     const preparedPayloadResult = delivery.preparePayload
                       ? await delivery.preparePayload(payload, info)
                       : payload;
@@ -654,7 +657,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
                     }
                     return result;
                   },
-                  onError: delivery.onError,
+                  onError: routeDispatch.onError,
                 },
                 dispatchReplyFromConfig: params.dispatchReplyFromConfig,
                 toolsAllow: params.toolsAllow,

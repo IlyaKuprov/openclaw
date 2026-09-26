@@ -5,8 +5,12 @@ import type {
   ChannelMessageSendCommitContext,
   ChannelMessageUnknownSendReconciliationResult,
 } from "../../channels/message/types.js";
+import { getChannelPlugin } from "../../channels/plugins/index.js";
+import { loadExactSessionEntryReadOnly } from "../../config/sessions/session-accessor.entry.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { validateOutboundRouteDecision } from "../../plugins/outbound-route-decision.js";
+import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
 import {
   captureDeliveryQueueStateContext,
   type DeliveryQueueStateContext,
@@ -254,6 +258,58 @@ function needsUnknownSendReconciliation(entry: QueuedDelivery): boolean {
   );
 }
 
+export function assertRecoveredRouteAuthority(entry: QueuedDelivery): void {
+  const proof = entry.routeAuthority;
+  if (!proof) {
+    return;
+  }
+  if (
+    proof.channel !== entry.channel ||
+    proof.to !== entry.to ||
+    proof.accountId !== entry.accountId ||
+    !proof.agentId ||
+    !proof.storePath ||
+    !proof.sessionKey
+  ) {
+    throw new Error("recovered outbound route differs from durable custody");
+  }
+  const stored = loadExactSessionEntryReadOnly({
+    agentId: proof.agentId,
+    storePath: proof.storePath,
+    sessionKey: proof.sessionKey,
+  });
+  const context = stored ? deliveryContextFromSession(stored.entry) : undefined;
+  // Reuse the host validator against the exact stored row and the originally
+  // chosen destination. Never call the decision hook a second time on replay.
+  validateOutboundRouteDecision(
+    {
+      sessionKey: proof.sessionKey,
+      original: {
+        channel: proof.channel,
+        to: proof.to,
+        accountId: proof.accountId,
+        threadId: context?.threadId,
+      },
+    },
+    stored
+      ? {
+          sessionKey: stored.sessionKey,
+          channel: context?.channel,
+          to: context?.to,
+          accountId: context?.accountId,
+          threadId: context?.threadId,
+        }
+      : undefined,
+    {
+      channel: proof.channel,
+      to: proof.to,
+      ...(proof.accountId ? { accountId: proof.accountId } : {}),
+      threadPolicy: "root",
+    },
+    getChannelPlugin(proof.channel)?.outbound?.validateSessionRoutePeer,
+  );
+}
+
 export async function withActiveDeliveryClaim<T>(
   entryId: string,
   fn: () => Promise<T>,
@@ -314,18 +370,21 @@ function buildRecoveryDeliverParams(
         }
       : {}),
     // Recovery owns durable terminal settlement, so it cannot forward the
-    // completion itself. Reconstruct only its writer fence at the two final
+    // completion itself. Reconstruct writer and selected-route fences at the
     // transport boundaries used by normal live delivery.
-    ...(pendingFinalWriterAuthority
+    ...(pendingFinalWriterAuthority || entry.routeAuthority
       ? {
           onDirectAdapterHandoff: async () => {
             assertSessionWriterDeliveryAuthorized(pendingFinalWriterAuthority);
+            assertRecoveredRouteAuthority(entry);
           },
           assertDirectAdapterHandoff: () => {
             assertSessionWriterDeliveryAuthorized(pendingFinalWriterAuthority);
+            assertRecoveredRouteAuthority(entry);
           },
           onPlatformSendDispatch: async () => {
             assertSessionWriterDeliveryAuthorized(pendingFinalWriterAuthority);
+            assertRecoveredRouteAuthority(entry);
           },
         }
       : {}),
@@ -356,7 +415,10 @@ async function settleQueuedFailure(
   let terminalized = false;
   try {
     const unknownSend = needsUnknownSendReconciliation(params.entry);
-    const settlement: DeliveryFailureSettlement = params.entry.settlement ?? {
+    const settlement: DeliveryFailureSettlement = (params.entry.settlement
+      ?.routeAuthorityRecoveryRequired === true
+      ? undefined
+      : params.entry.settlement) ?? {
       error: params.error,
       ...(params.terminals ? { terminals: params.terminals } : {}),
       ...(unknownSend ? { unknownSendCleanup: true as const } : {}),
@@ -1230,7 +1292,14 @@ async function processQueuedRecovery(
   }
   const label =
     context.kind === "startup" ? `Delivery ${entry.id}` : `${context.logLabel}: entry ${entry.id}`;
-  if (entry.settlement) {
+  if (entry.settlement?.routeAuthorityRecoveryRequired === true && !entry.routeAuthority) {
+    await settleQueuedFailure(
+      { ...opts, error: "queued route is missing its durable authority" },
+      stateContext,
+    );
+    return "continue";
+  }
+  if (entry.settlement && entry.settlement.routeAuthorityRecoveryRequired !== true) {
     await settleQueuedFailure({ ...opts, error: entry.settlement.error }, stateContext);
     return "continue";
   }
@@ -1369,7 +1438,9 @@ export async function drainPendingDeliveriesCore(
   const drained = await recoveryCoordinator.withDrain(opts.drainKey, async () => {
     const now = Date.now();
     const matchingEntries = (await loadUnfinishedDeliveries(opts.stateDir, stateContext)).filter(
-      (entry) => entry.settlement || opts.selectEntry(entry, now).match,
+      (entry) =>
+        (entry.settlement && entry.settlement.routeAuthorityRecoveryRequired !== true) ||
+        opts.selectEntry(entry, now).match,
     );
     await recoveryCoordinator.scan({
       entries: matchingEntries,

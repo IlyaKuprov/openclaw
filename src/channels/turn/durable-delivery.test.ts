@@ -40,6 +40,7 @@ type SendDurableMessageBatchRequest = {
   gatewayClientScopes?: readonly string[];
   runId?: string;
   executionIdentityToken?: unknown;
+  routeAuthority?: unknown;
 };
 
 type DeliverySupportRequest = {
@@ -114,6 +115,7 @@ describe("durable inbound reply delivery", () => {
     expect(request.threadId).toBeNull();
     expect(request.durability).toBe("best_effort");
     expect(request.gatewayClientScopes).toEqual([]);
+    expect(request.routeAuthority).toBeUndefined();
   });
 
   it("does not require unknown-send reconciliation for the default best-effort final path", async () => {

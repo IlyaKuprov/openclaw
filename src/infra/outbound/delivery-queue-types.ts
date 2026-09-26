@@ -19,6 +19,18 @@ import type { OutboundSessionContext } from "./session-context.js";
 
 export type QueuedRenderedMessageBatchPlan = RenderedMessageBatchPlan;
 
+/** Host-selected route, bound to one exact physical session row for replay. */
+export type QueuedOutboundRouteAuthority = {
+  agentId: string;
+  storePath: string;
+  sessionKey: string;
+  channel: string;
+  to: string;
+  accountId?: string;
+  /** Original reply surface, distinct from the host-selected destination. */
+  sourceChannel?: string;
+};
+
 export type QueuedReplyPayloadSendingHook = {
   kind: ReplyDispatchKind;
   channel?: string;
@@ -31,6 +43,7 @@ export type QueuedDeliveryPayload = {
   channel: string;
   to: string;
   accountId?: string;
+  routeAuthority?: QueuedOutboundRouteAuthority;
   queuePolicy?: "required" | "best_effort";
   requireUnknownSendReconciliation?: boolean;
   requiresProducerClaim?: boolean;
@@ -90,6 +103,8 @@ export type LegacyQueuedDeliveryPreparation = LegacyQueuedDelivery & {
 
 export type DeliveryFailureSettlement = {
   error: string;
+  /** Shipped recovery treats any settlement as non-sendable; current recovery ignores this fence. */
+  routeAuthorityRecoveryRequired?: true;
   unknownSendCleanup?: true;
   terminals?: readonly IndexedOutboundAuditTerminal[];
 } & ({ outcome: "unknown" } | { outcome: "failed"; rejectionError?: string });

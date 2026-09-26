@@ -51,7 +51,6 @@ const readRecentUserAssistantTextForSession = vi.hoisted(() => vi.fn());
 const settlePendingFinalDelivery = vi.hoisted(() =>
   vi.fn(async (_completion: unknown, state: string) => ({ state })),
 );
-
 vi.mock("../../auto-reply/reply/provider-dispatcher.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../auto-reply/reply/provider-dispatcher.js")>();

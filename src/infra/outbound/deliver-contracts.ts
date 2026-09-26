@@ -30,6 +30,7 @@ import type {
   QueuedReplyPayloadSendingHook,
   QueuedRenderedMessageBatchPlan,
 } from "./delivery-queue-storage.js";
+import type { QueuedOutboundRouteAuthority } from "./delivery-queue-types.js";
 import type { OutboundDeliveryFormattingOptions } from "./formatting.js";
 import type { OutboundIdentity } from "./identity.js";
 import type { OutboundMessageSendOverrides } from "./message-plan.js";
@@ -178,6 +179,8 @@ export type DeliverOutboundPayloadsCoreParams = {
   channel: string;
   to: string;
   accountId?: string;
+  /** @internal Host-selected physical route; recovery revalidates it without rerunning plugins. */
+  routeAuthority?: QueuedOutboundRouteAuthority;
   payloads: ReplyPayload[];
   /** Admitted run correlation copied into the prepared durable batch. */
   runId?: string;
@@ -185,6 +188,10 @@ export type DeliverOutboundPayloadsCoreParams = {
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
   /** @internal Canonical post-policy batch used by queue recovery and physical delivery. */
   preparedBatch?: PreparedOutboundBatch;
+  /** @internal Host-owned root policy applied after modifying hooks, before durable custody. */
+  rootReplyOnly?: true;
+  /** @internal Synchronous host authority check after staging, before durable queue insertion. */
+  assertBeforeQueueAdmission?: () => void;
   reply?: OutboundReplyFacts;
   formatting?: OutboundDeliveryFormattingOptions;
   threadId?: string | number | null;

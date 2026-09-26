@@ -16,12 +16,14 @@ import {
   failDelivery,
   failDeliveryAfterPlatformSend,
   failDeliveryBeforePlatformSend,
+  loadUnfinishedDelivery,
   loadPendingDelivery,
   markDeliveryPlatformOutcomeUnknown,
   markDeliveryPlatformSendDispatched,
   markDeliveryPlatformSendAttemptStarted,
   moveToFailed,
   reserveDeliveryAttempt,
+  stageDeliveryFailureSettlement,
   type QueuedDelivery,
 } from "./delivery-queue-storage.js";
 import {
@@ -239,6 +241,38 @@ describe("delivery-queue storage", () => {
       });
 
       expect(readQueuedEntry(tmpDir(), id).maxRetries).toBe(45);
+    });
+
+    it("retains the rollback route fence through retry and replaces it for a real settlement", async () => {
+      const routeAuthority = {
+        agentId: "main",
+        storePath: path.join(tmpDir(), "sessions.json"),
+        sessionKey: "agent:main:slack:channel:c123",
+        channel: "slack",
+        to: "channel:C123",
+      };
+      const id = "routed-rollback-fence";
+      await enqueueDeliveryOnce(
+        { channel: "slack", to: routeAuthority.to, routeAuthority, payloads: [{ text: "safe" }] },
+        id,
+        tmpDir(),
+      );
+      expect(await reserveDeliveryAttempt(id, 5, tmpDir())).toMatchObject({ status: "reserved" });
+      await failDeliveryBeforePlatformSend(id, "no dispatch", tmpDir());
+      expect(readQueuedEntry(tmpDir(), id).settlement).toMatchObject({
+        routeAuthorityRecoveryRequired: true,
+      });
+      const pending = await loadUnfinishedDelivery(id, tmpDir());
+      if (!pending) {
+        throw new Error("Routed row must remain pending before real settlement");
+      }
+      const staged = await stageDeliveryFailureSettlement(
+        pending,
+        { outcome: "failed", error: "genuine failure" },
+        tmpDir(),
+      );
+      expect(staged?.settlement).toEqual({ outcome: "failed", error: "genuine failure" });
+      expect(readStatus(id)).toBe("failed");
     });
 
     it("projects process-local hook metadata out before JSON custody", async () => {

@@ -3432,6 +3432,31 @@ describe("deliverOutboundPayloads", () => {
     expect(requireMockCallArg(sendText, "sendText").text).toBe("before  after");
   });
 
+  it("does not enqueue or fall back to a live send when a host route expires during modification", async () => {
+    let routeCurrent = true;
+    hookMocks.runner.hasHooks.mockImplementation((name) => name === "message_sending");
+    hookMocks.runner.runMessageSending.mockImplementationOnce(async () => {
+      routeCurrent = false;
+      return undefined;
+    });
+    const sendText = vi.fn(async () => ({ channel: "matrix", messageId: "forbidden-send" }));
+    await expect(
+      deliverMatrix({
+        deps: { matrix: sendText },
+        assertBeforeQueueAdmission: () => {
+          if (!routeCurrent) {
+            throw new Error("persisted route changed");
+          }
+        },
+        queuePolicy: "best_effort",
+      }),
+    ).rejects.toThrow(/persisted route changed/);
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledOnce();
+    expect(queueMocks.enqueueDelivery).not.toHaveBeenCalled();
+    expect(queueMocks.enqueueDeliveryOnce).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
   it("runs reply payload hooks before the final message_sending policy pass", async () => {
     hookMocks.runner.hasHooks.mockImplementation(
       (hookName?: string) => hookName === "reply_payload_sending" || hookName === "message_sending",

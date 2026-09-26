@@ -1,0 +1,131 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { after, afterEach, describe, it } from "node:test";
+
+const tempState = fs.mkdtempSync(path.join(os.tmpdir(), "slack-guard-final-"));
+const guard = await import("../index.js");
+const SESSION = "agent:main:slack:channel:c012mutex";
+const hooks = new Map();
+guard.default({
+  pluginConfig: { auditLog: path.join(tempState, "guard.jsonl") },
+  runtime: {
+    agent: {
+      session: {
+        getSessionEntry: () => ({
+          deliveryContext: { channel: "slack", to: "channel:C012MUTEX", accountId: "default" },
+        }),
+      },
+    },
+  },
+  on: (name, handler) => hooks.set(name, handler),
+  registerAgentToolResultMiddleware: (handler, options) => {
+    assert.deepEqual(options, { runtimes: ["openclaw"] });
+    hooks.set("tool_result", handler);
+  },
+});
+
+function final(runId, text, kind = "final", channel = "slack") {
+  return hooks.get("reply_payload_sending")(
+    { payload: { text }, kind, channel, sessionKey: SESSION, runId },
+    { channelId: channel, sessionKey: SESSION, runId },
+  );
+}
+
+function sentToolResult() {
+  return {
+    content: [{ type: "text", text: "Message sent" }],
+    details: {
+      channel: "slack",
+      deliveryStatus: "sent",
+      dryRun: false,
+      result: { receipt: { primaryPlatformMessageId: "1700000000.000001" } },
+      messageDelivery: { status: "settled", partialDelivery: false },
+    },
+  };
+}
+
+function toolSent(runId, message) {
+  return hooks.get("tool_result")(
+    {
+      toolName: "message",
+      args: {
+        action: "send",
+        channel: "slack",
+        target: "C012MUTEX",
+        accountId: "default",
+        message,
+      },
+      result: sentToolResult(),
+    },
+    { runtime: "openclaw", sessionKey: SESSION, runId },
+  );
+}
+
+afterEach(() => guard._resetStateForTests());
+after(() => fs.rmSync(tempState, { recursive: true, force: true }));
+
+describe("final reply generation gate", () => {
+  it("leaves a fresh final to core host delivery", () => {
+    assert.equal(final("run-fresh", "Fresh answer."), undefined);
+  });
+
+  it("suppresses an immediate paraphrase after a proven message-tool send", async () => {
+    await toolSent("run-one", "Answer sent.");
+    assert.equal(final("run-one", "In summary, answer sent.")?.cancel, true);
+    assert.equal(final("run-two", "In summary, answer sent."), undefined);
+  });
+
+  it("also suppresses a duplicate from webchat-origin Slack session without adapter re-send", async () => {
+    await toolSent("run-web", "Delivered by tool.");
+    assert.equal(final("run-web", "Delivered by tool.", "final", "webchat")?.cancel, true);
+    assert.equal(hooks.has("message_sending"), false);
+    assert.equal(hooks.has("message_sent"), false);
+  });
+
+  it("preserves finals carrying recipient-visible content beyond their text", async () => {
+    await toolSent("run-rich", "Working.");
+    for (const extra of [
+      { presentation: { blocks: [{ type: "text", text: "Result" }] } },
+      { interactive: { blocks: [{ type: "text", text: "Result" }] } },
+      { channelData: { slack: { blocks: [{ type: "section", text: "Result" }] } } },
+      { location: { latitude: 51.5, longitude: -0.1 } },
+      { fallbackText: { text: "Native result" } },
+      { btw: { question: "Would you like the result?" } },
+    ]) {
+      const result = hooks.get("reply_payload_sending")(
+        {
+          payload: { text: "Done.", ...extra },
+          kind: "final",
+          sessionKey: SESSION,
+          runId: "run-rich",
+        },
+        { sessionKey: SESSION, runId: "run-rich" },
+      );
+      assert.equal(result, undefined, `non-text final ${Object.keys(extra)[0]} was cancelled`);
+    }
+  });
+
+  it("does not cancel streamed blocks, media payloads, or a final after real work", async () => {
+    await toolSent("run-progress", "Working.");
+    assert.equal(final("run-progress", "Working.", "block"), undefined);
+    assert.equal(
+      hooks.get("reply_payload_sending")(
+        {
+          payload: { text: "See attachment", mediaUrl: "file:///plot.png" },
+          kind: "final",
+          sessionKey: SESSION,
+          runId: "run-progress",
+        },
+        { sessionKey: SESSION, runId: "run-progress" },
+      ),
+      undefined,
+    );
+    await hooks.get("tool_result")(
+      { toolName: "read", args: {}, result: { content: [], details: { ok: true } } },
+      { runtime: "openclaw", sessionKey: SESSION, runId: "run-progress" },
+    );
+    assert.equal(final("run-progress", "Done."), undefined);
+  });
+});
