@@ -1142,6 +1142,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const resultContexts = sourceResultEvidenceContexts(
         preparedMessages.map(extractMessageText),
         persistedResults,
+        Math.floor(possibleArtifactChars * AUDITED_IDENTIFIER_CONTENT_SHARE),
       );
       // Keep the no-LLM legacy migration when the quality guard is disabled.
       const fallbackResults = messagesToSummarize.length === 0 ? persistedResults : [];
@@ -1164,6 +1165,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             }
           : undefined;
 
+      let promotedFullSource = false;
       for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
         let splitTurnSectionLocal = "";
         let splitTurnSummaryLocal = "";
@@ -1237,11 +1239,12 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           producerLosses,
           qualityRetentionFor(unbudgetedSummary),
         );
-        if (!includePreservedContext && !finalized.preservedTurnsRetained) {
+        if (!includePreservedContext && !promotedFullSource && !finalized.preservedTurnsRetained) {
           // A short producer-local section can still lose whole earlier turns
           // after the actual body and all suffix sections are fitted. Re-run
           // only this history summary with those turns, not the split-prefix
           // summary; never commit a boundary that silently dropped them.
+          promotedFullSource = true;
           messagesToSummarize = repairSummaryMessages(fullSourceMessages, discardedResults);
           const fullRatio = await computeAdaptiveChunkRatioWithWorker({
             messages: [...messagesToSummarize, ...turnPrefixMessages],
