@@ -1006,10 +1006,8 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     }
     const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
     const fileOpsSummary = formatFileOperations(readFiles, modifiedFiles);
-    const toolFailures = collectToolFailures([
-      ...baseMessagesToSummarize,
-      ...baseTurnPrefixMessages,
-    ]);
+    const preparedMessages = [...baseMessagesToSummarize, ...baseTurnPrefixMessages];
+    const toolFailures = collectToolFailures(preparedMessages);
     const toolFailureSection = formatToolFailuresSection(toolFailures);
 
     // Model resolution: ctx.model is undefined in compact.ts workflow (extensionRunner.initialize() is never called).
@@ -1098,9 +1096,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const compactionProvider: CompactionProvider | undefined = getCompactionProvider(providerId);
       if (compactionProvider) {
         try {
-          // Give the provider ALL messages — no pruning, no chunking, no split-turn splitting.
+          // Give the provider the full window, repairing interrupted tool frames for strict replay.
           const providerResult = await compactionProvider.summarize({
-            messages: [...baseMessagesToSummarize, ...turnPrefixMessages],
+            messages: repairToolUseResultPairing(preparedMessages).messages,
             signal,
             customInstructions: structuredInstructions,
             summarizationInstructions,
@@ -1265,6 +1263,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const identifiers = extractOpaqueIdentifiers(
         oracleMessages.slice(-10).map(extractMessageText).filter(Boolean).join("\n"),
       );
+      messagesToSummarize = repairToolUseResultPairing(messagesToSummarize).messages;
       const {
         summarizableMessages: summaryTargetMessages,
         preservedMessages: preservedRecentMessages,
@@ -1285,13 +1284,12 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           (summaryTargetMessages.length > 0 ||
             !preservedTurnsSectionLocal.text.includes(requiredAskContext)));
       messagesToSummarize = includePreservedContext ? messagesToSummarize : summaryTargetMessages;
-      const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
 
       // Use adaptive chunk ratio based on message sizes, reserving headroom for
       // the summarization prompt, system prompt, previous summary, and reasoning budget
       // that generateSummary adds on top of the serialized conversation chunk.
       const adaptiveRatio = await computeAdaptiveChunkRatioWithWorker({
-        messages: allMessages,
+        messages: [...messagesToSummarize, ...turnPrefixMessages],
         contextWindow: contextWindowTokens,
         signal,
       });
