@@ -152,8 +152,12 @@ describe("plugin embedded-agent lazy import ownership", () => {
       });
       let enter!: () => void;
       let release!: () => void;
-      const entered = new Promise<void>((resolve) => (enter = resolve));
-      const waiting = new Promise<void>((resolve) => (release = resolve));
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve;
+      });
       const originalRun = runtime.agent.runEmbeddedAgent;
       Object.defineProperty(runtime.agent, "runEmbeddedAgent", {
         configurable: true,
