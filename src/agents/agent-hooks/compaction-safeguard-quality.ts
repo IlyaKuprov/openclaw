@@ -17,6 +17,7 @@ export {
   AUDITED_IDENTIFIER_CONTENT_SHARE,
   extractOpaqueIdentifiers,
   extractResultEvidenceAnchors,
+  sourceResultEvidenceContexts,
   selectAuditedIdentifiers,
 } from "./compaction-safeguard-identifiers.js";
 
@@ -239,6 +240,7 @@ export function createSummaryQualityRetentionPlan(
   params: {
     auditSummary?: string;
     identifiers: string[];
+    resultContexts?: ReadonlyMap<string, string>;
     latestAsk: string | null;
     latestAskInRetainedTurn?: boolean;
     latestUnresolvedUserRequest?: string;
@@ -264,10 +266,16 @@ export function createSummaryQualityRetentionPlan(
     return null;
   }
   const enforceIdentifiers = (params.identifierPolicy ?? "strict") === "strict";
-  const auditedIdentifiers = enforceIdentifiers ? params.identifiers : [];
+  // Contextual results already preserve their exact literals in Results; a
+  // second bare copy in Exact identifiers would erase the source's status.
+  const auditedIdentifiers = enforceIdentifiers
+    ? params.identifiers.filter((identifier) => !params.resultContexts?.has(identifier))
+    : [];
   const auditedResults = params.identifiers.filter((identifier) =>
     isResultEvidenceAnchor(identifier),
   );
+  const resultLine = (identifier: string) => params.resultContexts?.get(identifier) ?? identifier;
+  const resultLines = (results: string[]) => uniqueStrings(results.map(resultLine));
   const marker = truncatedMarker.trim();
   const pendingAsk = contents[PENDING_ASK_SECTION_INDEX] ?? "";
   const protectedAskContext = latestUnresolvedUserRequest
@@ -280,7 +288,7 @@ export function createSummaryQualityRetentionPlan(
       : "";
   const protectedTails = REQUIRED_SUMMARY_SECTIONS.map((_, index) =>
     index === RESULTS_SECTION_INDEX
-      ? auditedResults.join("\n")
+      ? resultLines(auditedResults).join("\n")
       : index === PENDING_ASK_SECTION_INDEX
         ? protectedAskContext
         : index === EXACT_IDENTIFIERS_SECTION_INDEX
@@ -314,7 +322,7 @@ export function createSummaryQualityRetentionPlan(
       const missing = auditedResults.filter(
         (identifier) => !summaryIncludesIdentifier(optional, identifier),
       );
-      return [optional, ...missing].filter(Boolean).join("\n");
+      return [optional, ...resultLines(missing)].filter(Boolean).join("\n");
     }
     if (index === PENDING_ASK_SECTION_INDEX) {
       const leading = normalizedSummaryLines(optional)[0] ?? "";
@@ -395,7 +403,8 @@ export function createSummaryQualityRetentionPlan(
         (identifier) => !summaryIncludesIdentifier(retainedResults, identifier),
       );
       const recoveredResultChars =
-        (protectedTails[RESULTS_SECTION_INDEX]?.length ?? 0) - remainingResults.join("\n").length;
+        (protectedTails[RESULTS_SECTION_INDEX]?.length ?? 0) -
+        resultLines(remainingResults).join("\n").length;
       const optionalBudget = Math.max(
         0,
         contentBudget -

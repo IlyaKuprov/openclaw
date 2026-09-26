@@ -262,6 +262,63 @@ function expectCompactionResult(result: {
 }
 
 describe("compaction-safeguard quality audit and structured summaries", () => {
+  it.each([
+    ["corrected", "strict"],
+    ["corrected", "off"],
+    ["corrected", "custom"],
+    ["independent", "off"],
+  ] as const)("keeps sourced %s results under %s policy", async (scenario, identifierPolicy) => {
+    const correction =
+      "Correction: the 17.3 Hz linewidth was invalidated; corrected linewidth is 18.1 Hz.";
+    const independent = "Independent samples: A measured 17.3 Hz; B measured 18.1 Hz.";
+    const isCorrection = scenario === "corrected";
+    const source = isCorrection ? correction : independent;
+    const currentResult = isCorrection
+      ? "Corrected linewidth is 18.1 Hz."
+      : "Sample B measured 18.1 Hz.";
+    mockSummarizeInStages
+      .mockReset()
+      .mockResolvedValue(
+        [
+          "## Decisions\nCompare measurements.",
+          `## Results and evidence\n${currentResult}`,
+          "## Open TODOs\nNone.",
+          "## Constraints/Rules\nNone.",
+          "## Pending user asks\nNone.",
+          "## Exact identifiers\n18.1 Hz",
+        ].join("\n\n"),
+      );
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 0,
+      identifierPolicy,
+    });
+    const event = createCompactionEvent({ messageText: source, tokensBefore: 1_500 });
+    event.preparation.messagesToSummarize.unshift({
+      role: "user",
+      content: "Earlier measurement: linewidth 17.3 Hz.",
+      timestamp: 0,
+    });
+    Object.assign(event.preparation, {
+      previousSummary: "## Results and evidence\nMeasured linewidth 17.3 Hz.",
+      settings: { reserveTokens: 4_000 },
+      isSplitTurn: false,
+    });
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+    const summary = expectCompactionResult(result).summary;
+    const resultsSection = summary.split("## Results and evidence\n")[1]?.split("## Open TODOs")[0];
+    expect(resultsSection).toContain(currentResult);
+    expect(resultsSection).toContain(source);
+    if (isCorrection) {
+      expect(summary).not.toMatch(/(?:^|\n)17\.3 Hz(?:\n|$)/u);
+    }
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+  });
+
   it.each(["strict", "off", "custom"] as const)(
     "audits raw non-result identifiers discarded by history pruning under %s policy",
     async (identifierPolicy) => {

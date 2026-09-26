@@ -56,6 +56,27 @@ export function extractResultEvidenceAnchors(text: string): string[] {
   return extractOpaqueIdentifiers(text).filter(isResultEvidenceAnchor);
 }
 
+/** Retain source context for multiple results together without guessing their relationship. */
+export function sourceResultEvidenceContexts(
+  messages: readonly string[],
+  results: readonly string[],
+): ReadonlyMap<string, string> {
+  const contexts = new Map<string, string>();
+  for (const message of messages) {
+    for (const line of message.split(/\r?\n/u)) {
+      const source = line.trim();
+      const matching = results.filter((result) => summaryIncludesIdentifier(source, result));
+      if (matching.length === 0 || extractResultEvidenceAnchors(source).length < 2) {
+        continue;
+      }
+      for (const result of matching) {
+        contexts.set(result, `Source message: ${source}`);
+      }
+    }
+  }
+  return contexts;
+}
+
 function auditedIdentifierPriority(identifier: string): number {
   return isResultEvidenceAnchor(identifier)
     ? 0
