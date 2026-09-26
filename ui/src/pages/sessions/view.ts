@@ -1,8 +1,4 @@
-import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
-import {
-  normalizeLowercaseStringOrEmpty,
-  normalizeOptionalString,
-} from "@openclaw/normalization-core/string-coerce";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { html, nothing } from "lit";
 import type { SessionsSearchHit } from "../../../../packages/gateway-protocol/src/index.js";
 import type {
@@ -58,11 +54,7 @@ import {
 } from "../../lib/sessions/route-navigation.ts";
 import { formatSessionArchiveReason } from "../../lib/sessions/session-archive-reason.ts";
 import { parseAgentSessionKey, parseSessionKeyParts } from "../../lib/sessions/session-key.ts";
-import {
-  SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES,
-  SESSIONS_PAGE_DEFAULT_LIMIT,
-  SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT,
-} from "../../lib/sessions/session-requests.ts";
+import { hasActiveRosterFilters, rosterFilterDefaults } from "./roster-filter-defaults.ts";
 
 type TranscriptSearchState =
   | { status: "idle" }
@@ -584,35 +576,6 @@ function paginateRows<T>(rows: T[], page: number, pageSize: number): T[] {
   return rows.slice(start, start + pageSize);
 }
 
-/**
- * The filter values a freshly routed page opens with: the compact roster
- * window for the active view, no window and the documented page limit for the
- * archived and all-status views. Deviations from these count as user filters.
- */
-function rosterFilterDefaults(statusFilter: SessionArchivedFilter): {
-  activeMinutes: string;
-  limit: string;
-} {
-  return statusFilter === "active"
-    ? {
-        activeMinutes: String(SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES),
-        limit: String(SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT),
-      }
-    : { activeMinutes: "", limit: String(SESSIONS_PAGE_DEFAULT_LIMIT) };
-}
-
-function hasActiveFilters(props: SessionsProps): boolean {
-  // An unparsable window is ignored by the query, so it is not a filter; a
-  // parsable one counts only when it differs from the status-specific default.
-  const activeMinutes = parseStrictPositiveInteger(props.activeMinutes);
-  return (
-    normalizeLowercaseStringOrEmpty(props.searchQuery).length > 0 ||
-    (activeMinutes !== undefined &&
-      String(activeMinutes) !== rosterFilterDefaults(props.statusFilter).activeMinutes) ||
-    !props.includeGlobal
-  );
-}
-
 const CHECKPOINT_REASON_LABELS = {
   manual: "sessionsView.manual",
   "auto-threshold": "sessionsView.autoThreshold",
@@ -991,7 +954,7 @@ export function renderSessions(props: SessionsProps) {
       : null;
   const displayRows = groups ? groups.flatMap((group) => group.rows) : sorted;
   const paginated = paginateRows(displayRows, page, props.pageSize);
-  const emptyBecauseFiltered = rawRows.length === 0 && hasActiveFilters(props);
+  const emptyBecauseFiltered = rawRows.length === 0 && hasActiveRosterFilters(props);
   const liveCount = rawRows.filter((row) => isSessionRunActive(row)).length;
   const archivedCount = rawRows.filter((row) => row.archived === true).length;
   const emptyMessage =
