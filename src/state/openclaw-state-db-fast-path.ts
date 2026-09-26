@@ -1,4 +1,3 @@
-import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { assertSqliteIntegrity, assertSqliteIntegrityExcept } from "../infra/sqlite-integrity.js";
@@ -10,6 +9,7 @@ import {
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { hasLegacyCronRunLogs } from "../infra/state-migrations.cron-run-logs.js";
 import { VERSION } from "../version.js";
+import { isOpenClawStateAuditIntegrityVerifierRegistered } from "./openclaw-state-audit-verifier-registration.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import { assertOpenClawStateDatabaseForMaintenance } from "./openclaw-state-db-maintenance.js";
 import {
@@ -27,25 +27,6 @@ import {
 } from "./openclaw-state-schema-compatibility.js";
 
 const OPEN_PATH_DEFERRED_LEDGER_TABLES = ["audit_events"] as const;
-const activeBackgroundVerifiers = new Map<string, number>();
-
-/** Only a verifier targeting this state file may defer its audit index proof. */
-export function registerOpenClawStateAuditIntegrityVerifier(pathname: string): () => void {
-  const target = path.resolve(pathname);
-  activeBackgroundVerifiers.set(target, (activeBackgroundVerifiers.get(target) ?? 0) + 1);
-  let released = false;
-  return () => {
-    if (!released) {
-      released = true;
-      const remaining = (activeBackgroundVerifiers.get(target) ?? 1) - 1;
-      if (remaining > 0) {
-        activeBackgroundVerifiers.set(target, remaining);
-      } else {
-        activeBackgroundVerifiers.delete(target);
-      }
-    }
-  };
-}
 
 export function needsOpenClawStateDatabaseSchemaRepair(pathname: string): boolean {
   let database: DatabaseSync | undefined;
@@ -87,7 +68,7 @@ export function isOpenClawStateSchemaFastPathEligible(
     }
     // A direct-local opener has no Gateway-owned background verifier. Prove its
     // audit indexes before writing; only the active Gateway may defer them.
-    if (activeBackgroundVerifiers.has(pathname)) {
+    if (isOpenClawStateAuditIntegrityVerifierRegistered(pathname)) {
       assertSqliteIntegrityExcept(database, pathname, OPEN_PATH_DEFERRED_LEDGER_TABLES);
     } else {
       assertSqliteIntegrity(database, pathname);

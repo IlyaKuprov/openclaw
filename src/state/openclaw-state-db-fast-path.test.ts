@@ -1,12 +1,11 @@
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
-import {
-  isOpenClawStateSchemaFastPathEligible,
-  registerOpenClawStateAuditIntegrityVerifier,
-} from "./openclaw-state-db-fast-path.js";
+import { registerOpenClawStateAuditIntegrityVerifier } from "./openclaw-state-audit-verifier-registration.js";
+import { isOpenClawStateSchemaFastPathEligible } from "./openclaw-state-db-fast-path.js";
+import { corruptIndexContent } from "./openclaw-state-db-fast-path.test-support.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -19,50 +18,6 @@ const dirs = useAutoCleanupTempDirTracker((cleanup) =>
     cleanup();
   }),
 );
-
-/** Rewrite the stored CREATE INDEX text in place; equal widths keep the file well formed. */
-function repointIndexColumn(
-  databasePath: string,
-  indexName: string,
-  fromColumn: string,
-  toColumn: string,
-): void {
-  if (fromColumn.length !== toColumn.length) {
-    throw new Error("Rewriting the schema in place requires equal-width column names");
-  }
-  const buffer = readFileSync(databasePath);
-  const named = buffer.indexOf(Buffer.from(indexName, "latin1"));
-  const target = buffer.indexOf(Buffer.from(`(${fromColumn}`, "latin1"), named);
-  if (named < 0 || target < 0) {
-    throw new Error(`Could not locate ${indexName}(${fromColumn}) in ${databasePath}`);
-  }
-  buffer.write(`(${toColumn}`, target, "latin1");
-  writeFileSync(databasePath, buffer);
-}
-
-/**
- * Detach an index from the rows it indexes while leaving the canonical schema
- * text intact: rebuild it against a decoy column of the same width, then
- * restore the declaration. No page is damaged, so quick_check and the
- * canonical index contract both still pass and only the table-scoped
- * integrity_check can see the mismatch.
- */
-function corruptIndexContent(
-  databasePath: string,
-  indexName: string,
-  canonicalColumn: string,
-  decoyColumn: string,
-): void {
-  repointIndexColumn(databasePath, indexName, canonicalColumn, decoyColumn);
-  const rebuild = new DatabaseSync(databasePath);
-  try {
-    rebuild.exec(`REINDEX ${indexName};`);
-    rebuild.exec("PRAGMA wal_checkpoint(TRUNCATE);");
-  } finally {
-    rebuild.close();
-  }
-  repointIndexColumn(databasePath, indexName, decoyColumn, canonicalColumn);
-}
 
 describe("state schema fast-path integrity proof", () => {
   it.each([

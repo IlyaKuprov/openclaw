@@ -1,5 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
+import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { prepareCorruptAuditIndex } from "../state/openclaw-state-db-fast-path.test-support.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -54,6 +56,36 @@ it("defers audit integrity on the direct Gateway first state open and restores f
     }
   } finally {
     sqlSpy.mockRestore();
+    closeOpenClawStateDatabaseForTest();
+    await state.cleanup();
+  }
+});
+
+it("refuses the cached Gateway state handle after a failed pre-adoption bootstrap", async () => {
+  const state = await createOpenClawTestState({
+    label: "gateway-failed-bootstrap-audit-cache",
+    layout: "home",
+    env: { OPENCLAW_TEST_MINIMAL_GATEWAY: undefined, VITEST: "1" },
+  });
+  state.applyEnv();
+  const bootstrapModule = await import("./server-startup-bootstrap.js");
+  const pathname = prepareCorruptAuditIndex(process.env);
+  const failure = new Error("synthetic pre-adoption bootstrap failure");
+  const bootstrap = vi
+    .spyOn(bootstrapModule, "prepareGatewayServerBootstrap")
+    .mockImplementation(async () => {
+      const opened = openOpenClawStateDatabase({ env: process.env });
+      expect(() => assertSqliteIntegrity(opened.db, pathname)).toThrow(/integrity_check failed/u);
+      throw failure;
+    });
+  try {
+    await expect(createGatewayKernel()).rejects.toThrow(failure);
+    // This must not rely on a test-only close: the shared handle stays cached.
+    expect(() => openOpenClawStateDatabase({ env: process.env })).toThrow(
+      /integrity_check failed/u,
+    );
+  } finally {
+    bootstrap.mockRestore();
     closeOpenClawStateDatabaseForTest();
     await state.cleanup();
   }

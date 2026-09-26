@@ -37,6 +37,7 @@ import {
   type OpenClawStateDatabaseAsyncResource,
   type OpenClawStateDatabaseReadAdmission,
 } from "./openclaw-state-db-async-lifecycle.js";
+import { assertOpenClawStateAuditIntegrity as checkAudit } from "./openclaw-state-db-audit-integrity.js";
 import {
   assertStateDatabaseBorrowersReleased,
   createStateDatabaseRetainer,
@@ -318,6 +319,7 @@ function getCachedOpenClawStateDatabase(pathname: string): OpenClawStateDatabase
   if (database && borrowers.get(database.db)?.retiring) {
     throw new Error(`OpenClaw state database native borrower cleanup is pending: ${pathname}`);
   }
+  checkAudit(database, recordOpenClawStateDatabaseOpenFailure);
   return database;
 }
 
@@ -544,7 +546,6 @@ export function closeOpenClawStateDatabaseByPath(
   );
 }
 
-/** Close all cached shared state database handles. */
 export function closeOpenClawStateDatabase(options?: OpenClawStateDatabaseCloseOptions): void {
   retireOpenClawStateDatabaseHandles(undefined, options);
 }
@@ -588,7 +589,6 @@ export async function closeOpenClawStateDatabaseAsync(
   );
 }
 
-/** Test whether a cached shared state database handle is still open, optionally at one path. */
 export function isOpenClawStateDatabaseOpen(pathname?: string): boolean {
   if (pathname !== undefined) {
     return cachedDatabases.get(path.resolve(pathname))?.db.isOpen === true;
