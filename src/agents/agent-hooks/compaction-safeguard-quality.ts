@@ -491,7 +491,7 @@ const NUMERIC_RESULT_ANCHOR =
   /^\d+\s+(?:tests?|checks?|assertions?|cases?)\s+(?:passed|failed|succeeded)$/iu;
 // Only numerical values paired with recognizable measurement units are source
 // results; a decimal in prose or inside an ID is not evidence by itself.
-const MEASURED_VALUE_SOURCE = String.raw`(?<![A-Za-z0-9._/\\-])(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?[ \t]*(?:Hz|kHz|MHz|GHz|mT|T|G|ppm|ms|[µμu]s|ns|s|K)(?![A-Za-z0-9_-])`;
+const MEASURED_VALUE_SOURCE = String.raw`(?<![A-Za-z0-9._/\\-])(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?[ \t]*(?:Hz|kHz|MHz|GHz|mT|T|G|ppm|ms|[µμu]s|ns|s|K|%|[KMGT]i?B|B|°[CF])(?![A-Za-z0-9_-])`;
 const MEASURED_VALUE_ANCHOR = new RegExp(`^${MEASURED_VALUE_SOURCE}$`, "u");
 
 function isResultEvidenceAnchor(identifier: string): boolean {

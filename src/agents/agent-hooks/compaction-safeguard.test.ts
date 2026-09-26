@@ -3305,6 +3305,59 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
 
+  it.each(["strict", "off", "custom"] as const)(
+    "audits measurements from before the last ten oracle messages under %s policy",
+    async (identifierPolicy) => {
+      mockSummarizeInStages.mockReset();
+      const latestAsk = "report system health";
+      const measurements = ["85%", "512 MB", "23 °C"];
+      const generatedSummary = [
+        "## Decisions\nSystem health reviewed.",
+        "## Results and evidence\nNone captured.",
+        "## Open TODOs\nNone.",
+        "## Constraints/Rules\nNone.",
+        `## Pending user asks\n${latestAsk}`,
+        "## Exact identifiers\nNone captured.",
+      ].join("\n\n");
+      mockSummarizeInStages.mockResolvedValue(summaryResult(generatedSummary));
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 0,
+        qualityGuardEnabled: true,
+        qualityGuardMaxRetries: 0,
+        identifierPolicy,
+        ...(identifierPolicy === "custom"
+          ? { identifierInstructions: "Preserve ticket IDs exactly." }
+          : {}),
+      });
+      const event = createCompactionEvent({ messageText: latestAsk, tokensBefore: 1_500 });
+      (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+        reserveTokens: 4_000,
+      };
+      event.preparation.messagesToSummarize.unshift(
+        castAgentMessage(
+          timestampedTextAssistant(
+            "Measured 85% utilization, 512 MB memory, and 23 °C ambient.",
+            1,
+          ),
+        ),
+        ...Array.from({ length: 11 }, (_, index) =>
+          castAgentMessage(
+            timestampedTextAssistant(`No other results in turn ${index}.`, index + 2),
+          ),
+        ),
+      );
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+      const summary = expectCompactionResult(result).summary;
+      expect(summary).toMatch(
+        /## Results and evidence[\s\S]*85%[\s\S]*512 MB[\s\S]*23 °C[\s\S]*## Open TODOs/u,
+      );
+      expect(mockAuditSummaryQuality.mock.calls.at(-1)?.[0].identifiers).toEqual(measurements);
+      expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+    },
+  );
+
   it("selects audited literals from the actual small compaction budget", async () => {
     mockSummarizeInStages.mockReset();
     const urls = Array.from(
