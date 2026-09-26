@@ -79,6 +79,7 @@ import {
   createSummaryQualityRetentionPlan,
   extractOpaqueIdentifiers,
   extractResultEvidenceAnchors,
+  isResultEvidenceAnchor,
   nestRequiredSummaryHeadings,
   selectAuditedIdentifiers,
   sourceResultEvidenceContexts,
@@ -1162,7 +1163,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         contextWindow: contextWindowTokens,
         signal,
       });
-      const maxChunkTokens = Math.max(
+      let maxChunkTokens = Math.max(
         1,
         Math.floor(contextWindowTokens * adaptiveRatio) - SUMMARIZATION_OVERHEAD_TOKENS,
       );
@@ -1180,7 +1181,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       ];
       const resultContexts = sourceResultEvidenceContexts(
         preparedMessages.map(extractMessageText),
-        persistedResults,
+        [...new Set([...persistedResults, ...identifierCandidates.filter(isResultEvidenceAnchor)])],
         Math.floor(possibleArtifactChars * AUDITED_IDENTIFIER_CONTENT_SHARE),
       );
       // Keep the no-LLM legacy migration when the quality guard is disabled.
@@ -1290,13 +1291,14 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             contextWindow: contextWindowTokens,
             signal,
           });
+          maxChunkTokens = Math.max(
+            1,
+            Math.floor(contextWindowTokens * fullRatio) - SUMMARIZATION_OVERHEAD_TOKENS,
+          );
           historySummary = await summarizeViaLLM({
             ...llmSummaryParams,
             messages: messagesToSummarize,
-            maxChunkTokens: Math.max(
-              1,
-              Math.floor(contextWindowTokens * fullRatio) - SUMMARIZATION_OVERHEAD_TOKENS,
-            ),
+            maxChunkTokens,
             summaryPrompt: { kind: "custom", instructions: structuredInstructions },
             customInstructions: correctiveInstructions,
             previousSummary: effectivePreviousSummary,
