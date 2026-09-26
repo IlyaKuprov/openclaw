@@ -85,7 +85,7 @@ import { prepareArchiveOutcome } from "./archive-outcome.ts";
 import { rememberSessionCustomGroup, sessionCategoryNames } from "./custom-groups.ts";
 import { buildSessionsListQuery } from "./list-query.ts";
 import { loadStoredGroupBy, saveStoredGroupBy } from "./page-state.ts";
-import { rosterFilterDefaults } from "./roster-filter-defaults.ts";
+import { routeRosterFilters } from "./roster-filter-defaults.ts";
 import type { SessionsRouteData } from "./route.ts";
 import { renderSessions, type SessionsProps } from "./view.ts";
 
@@ -424,11 +424,7 @@ class SessionsPage extends OpenClawLightDomElement {
       return;
     }
     this.statusFilter = data.statusFilter;
-    const defaults = rosterFilterDefaults(data.statusFilter);
-    this.activeMinutes = data.expandedSessionKey ? "" : defaults.activeMinutes;
-    this.limit = data.expandedSessionKey ? String(SESSIONS_PAGE_DEFAULT_LIMIT) : defaults.limit;
-    this.includeGlobal = true;
-    this.includeUnknown = Boolean(data.expandedSessionKey);
+    Object.assign(this, routeRosterFilters(data.statusFilter, Boolean(data.expandedSessionKey)));
     if (data.expandedSessionKey) {
       this.searchQuery = "";
       this.page = 0;
@@ -705,10 +701,12 @@ class SessionsPage extends OpenClawLightDomElement {
       return;
     }
     this.statusFilter = statusFilter;
+    Object.assign(this, routeRosterFilters(statusFilter));
     this.clearSearchTimer();
     this.page = 0;
     this.selectedKeys = new Set();
     this.deepLinkSessionKey = null;
+    this.routeDataEnabled = false;
     // Route navigation changes the managed query; mask the old view's rows
     // until its current list subscription publishes.
     this.loading = true;
@@ -1312,6 +1310,7 @@ class SessionsPage extends OpenClawLightDomElement {
     const leavingDeepLink = this.deepLinkSessionKey !== null;
     this.deepLinkSessionKey = null;
     if (leavingDeepLink) {
+      Object.assign(this, routeRosterFilters(this.statusFilter));
       void this.refreshSessionList();
     }
     if (this.expandedSessionKey === sessionKey) {

@@ -1728,7 +1728,7 @@ describe("sessions view", () => {
 
   it.each([
     { activeMinutes: "60minutes", limit: "1e2", filtered: false },
-    { activeMinutes: "+30", limit: "060", filtered: true },
+    { activeMinutes: "+30", limit: "060", filtered: false },
   ])("keeps numeric-filter empty state consistent: $activeMinutes / $limit", async (testCase) => {
     const container = document.createElement("div");
     render(

@@ -20,19 +20,28 @@ export function rosterFilterDefaults(statusFilter: SessionArchivedFilter): {
     : { activeMinutes: "", limit: String(SESSIONS_PAGE_DEFAULT_LIMIT) };
 }
 
+export function routeRosterFilters(statusFilter: SessionArchivedFilter, deepLink = false) {
+  const defaults = rosterFilterDefaults(statusFilter);
+  return {
+    activeMinutes: deepLink ? "" : defaults.activeMinutes,
+    limit: deepLink ? String(SESSIONS_PAGE_DEFAULT_LIMIT) : defaults.limit,
+    includeGlobal: true,
+    includeUnknown: deepLink,
+  };
+}
+
 export function hasActiveRosterFilters(filters: {
   activeMinutes: string;
   searchQuery: string;
   includeGlobal: boolean;
   statusFilter: SessionArchivedFilter;
 }): boolean {
-  // An unparsable window is ignored by the query, so it is not a filter; a
-  // parsable one counts only when it differs from the status-specific default.
+  // The default active window can hide every older session; offer Show all
+  // even when the user did not edit it. Archived/all queries ignore recency.
   const activeMinutes = parseStrictPositiveInteger(filters.activeMinutes);
   return (
     normalizeLowercaseStringOrEmpty(filters.searchQuery).length > 0 ||
-    (activeMinutes !== undefined &&
-      String(activeMinutes) !== rosterFilterDefaults(filters.statusFilter).activeMinutes) ||
+    (filters.statusFilter === "active" && activeMinutes !== undefined) ||
     !filters.includeGlobal
   );
 }
