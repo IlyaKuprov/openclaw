@@ -6,7 +6,11 @@ import {
   setupCronRegressionFixtures,
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { requestHeartbeatAndWait, setHeartbeatWakeHandler } from "../../infra/heartbeat-wake.js";
+import {
+  requestHeartbeatAndWait,
+  setHeartbeatWakeHandler,
+  type HeartbeatRunResult,
+} from "../../infra/heartbeat-wake.js";
 import {
   enqueueSystemEventWithReceipt,
   peekSystemEventEntries,
@@ -198,7 +202,7 @@ describe("cron heartbeat watchdog", () => {
             transition = { onQueued, onAttemptStarted };
             onQueued?.();
             heartbeatQueued.resolve();
-            return await new Promise((resolve) => {
+            return await new Promise<HeartbeatRunResult>((resolve) => {
               abortSignal?.addEventListener(
                 "abort",
                 () => resolve({ status: "failed" as const, reason: "heartbeat wake cancelled" }),
