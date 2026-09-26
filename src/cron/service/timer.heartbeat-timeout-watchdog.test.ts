@@ -7,6 +7,7 @@ import {
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
+  getHeartbeatWakeAbortSignal,
   requestHeartbeatAndWait,
   setHeartbeatWakeHandler,
   type HeartbeatRunResult,
@@ -34,6 +35,68 @@ function requireJob(state: { store?: { jobs?: CronJob[] } | null }, id: string):
 }
 
 describe("cron heartbeat watchdog", () => {
+  it("aborts an admitted turn at the original cron deadline after queueing", async () => {
+    vi.useFakeTimers();
+    setHeartbeatWakeHandler(null);
+    const releaseTurn = createDeferred();
+    try {
+      const store = heartbeatWatchdogFixtures.makeStorePath();
+      const scheduledAt = Date.parse("2026-09-02T12:00:00.000Z");
+      const job = createIsolatedRegressionJob({
+        id: "admitted-monitor",
+        name: "admitted monitor",
+        scheduledAt,
+        schedule: { kind: "every", everyMs: 60_000, anchorMs: scheduledAt - 60_000 },
+        payload: { kind: "heartbeat" },
+        state: { nextRunAtMs: scheduledAt },
+      });
+      job.sessionTarget = "main";
+      await saveCronStore(store.storePath, { version: 1, jobs: [job] });
+      vi.setSystemTime(scheduledAt);
+      const queued = createDeferred();
+      const state = createCronRegressionState({
+        storePath: store.storePath,
+        nowMs: () => Date.now(),
+        defaultAgentId: "main",
+        resolveHeartbeatTimeoutMs: () => 30 * 60_000,
+        requestHeartbeatAndWait: (wake, lifecycle) => {
+          const result = requestHeartbeatAndWait({ ...wake, coalesceMs: 0 }, lifecycle);
+          queued.resolve();
+          return result;
+        },
+        runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+      });
+      const run = onTimer(state);
+      await queued.promise;
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      const started = createDeferred();
+      let admittedSignal: AbortSignal | undefined;
+      const lateDelivery = vi.fn();
+      setHeartbeatWakeHandler(async () => {
+        admittedSignal = getHeartbeatWakeAbortSignal();
+        started.resolve();
+        await releaseTurn.promise;
+        if (!admittedSignal?.aborted) {
+          lateDelivery();
+        }
+        return { status: "ran", durationMs: 1 };
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      await started.promise;
+      expect(admittedSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await run;
+      expect(requireJob(state, job.id).state.lastError).toContain("timed out");
+      expect(admittedSignal?.aborted).toBe(true);
+      releaseTurn.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lateDelivery).not.toHaveBeenCalled();
+    } finally {
+      releaseTurn.resolve();
+      setHeartbeatWakeHandler(null);
+      vi.useRealTimers();
+    }
+  });
   it("cancels its queued monitor wake when the cron watchdog expires", async () => {
     vi.useFakeTimers();
     setHeartbeatWakeHandler(null);
