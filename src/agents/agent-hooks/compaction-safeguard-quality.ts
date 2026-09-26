@@ -1,4 +1,5 @@
 /** Quality contract, fallback, and audit helpers for compaction safeguard summaries. */
+import { CHARS_PER_TOKEN_ESTIMATE } from "@openclaw/normalization-core/cjk-chars";
 import { localeLowercasePreservingWhitespace } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
@@ -84,15 +85,30 @@ export function buildCompactionStructureInstructions(
   customInstructions?: string,
   summarizationInstructions?: CompactionSummarizationInstructions,
   latestUnresolvedUserRequest?: string,
+  maxSummaryOutputTokens?: number,
 ): string {
   const identifierSectionInstruction =
     resolveExactIdentifierSectionInstruction(summarizationInstructions);
   const strictIdentifiers = (summarizationInstructions?.identifierPolicy ?? "strict") === "strict";
+  // Scope the requested length with the compaction owner's token-to-character
+  // estimate; actual tokenization can differ from this estimate.
+  const maxSummaryChars =
+    maxSummaryOutputTokens !== undefined &&
+    Number.isFinite(maxSummaryOutputTokens) &&
+    maxSummaryOutputTokens > 0
+      ? Math.floor(maxSummaryOutputTokens * CHARS_PER_TOKEN_ESTIMATE)
+      : undefined;
+  const lengthInstruction =
+    maxSummaryChars === undefined
+      ? ""
+      : maxSummaryChars < 6000
+        ? `Aim for up to ${maxSummaryChars} characters of summary text; prioritize all required headings and facts.`
+        : `Aim for 6000 to ${Math.min(10000, maxSummaryChars)} characters of summary text; spend them on facts, not prose.`;
   const sectionsTemplate = [
     "Produce a complete, factual summary with these exact section headings:",
     ...REQUIRED_SUMMARY_SECTIONS,
     identifierSectionInstruction,
-    "Aim for 6000 to 10000 characters of summary text; spend them on facts, not prose.",
+    lengthInstruction,
     "In ## Results and evidence, record every numerical result with its units and evidence source; the working hypothesis with evidence for and against it; and the exact next step.",
     ...(strictIdentifiers
       ? [
@@ -103,7 +119,9 @@ export function buildCompactionStructureInstructions(
     "Do not omit unresolved asks from the user.",
     "Record completed requests outside ## Pending user asks; list only unresolved user requests there.",
     "When prior compaction summaries are present, re-distill them with new messages and remove stale duplicate detail.",
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
   const latestRequestBlock = latestUnresolvedUserRequest
     ? wrapUntrustedInstructionBlock("Latest unresolved user request", latestUnresolvedUserRequest)
     : "";
@@ -445,7 +463,7 @@ function summaryIncludesIdentifier(summary: string, identifier: string): boolean
   if (isPureHexIdentifier(identifier)) {
     return summary.toUpperCase().includes(identifier.toUpperCase());
   }
-  if (/^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/u.test(identifier)) {
+  if (/^(?:#\d+|PR\s+#\d+|(?:job|message|msg)(?:[-_#]|\s+id\b))/iu.test(identifier)) {
     const literal = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     return new RegExp(`(?<![A-Za-z0-9_#])${literal}(?![A-Za-z0-9_-])`, "u").test(summary);
   }
