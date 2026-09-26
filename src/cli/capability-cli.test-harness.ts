@@ -80,6 +80,9 @@ const mocks = vi.hoisted(() => ({
     if (method === "tts.status") {
       return { enabled: true, provider: "openai" };
     }
+    if (method === "agents.list") {
+      return { defaultId: "main", selectionRequired: false, agents: [{ id: "main" }] };
+    }
     if (method === "agent") {
       return {
         result: {
@@ -592,6 +595,9 @@ export function resetCapabilityCliMocks(): void {
         outputFormat: "mp3",
         voiceCompatible: false,
       };
+    }
+    if (method === "agents.list") {
+      return { defaultId: "main", selectionRequired: false, agents: [{ id: "main" }] };
     }
     if (method === "agent") {
       return {

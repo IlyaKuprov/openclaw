@@ -140,7 +140,7 @@ describe("capability cli", () => {
 
   function firstGatewayCall() {
     const calls = mocks.callGateway.mock.calls as unknown as Array<[GatewayCall]>;
-    return calls[0]?.[0];
+    return calls.find(([call]) => call.method === "agent")?.[0] ?? calls[0]?.[0];
   }
 
   function firstCompletionCall() {
@@ -989,7 +989,7 @@ describe("capability cli", () => {
     await runCapability("model", "run", "--prompt", "again", "--gateway", "--json");
 
     const gatewayCalls = mocks.callGateway.mock.calls as unknown as Array<[GatewayCall]>;
-    const nextGatewayCall = gatewayCalls[1]?.[0];
+    const nextGatewayCall = gatewayCalls.filter(([call]) => call.method === "agent")[1]?.[0];
     const nextSessionId = nextGatewayCall?.params?.sessionId;
     expect(nextGatewayCall?.method).toBe("agent");
     expect(typeof nextSessionId).toBe("string");
@@ -1022,7 +1022,16 @@ describe("capability cli", () => {
       },
     } as never);
 
-    await runCapability("model", "run", "--prompt", "hello", "--gateway", "--json");
+    await runCapability(
+      "model",
+      "run",
+      "--agent",
+      "main",
+      "--prompt",
+      "hello",
+      "--gateway",
+      "--json",
+    );
 
     const payload = firstJsonOutput();
     const attempts = payload?.attempts as Array<Record<string, unknown>>;
@@ -1055,6 +1064,94 @@ describe("capability cli", () => {
     expect(gatewayCall?.params?.model).toBe("claude-haiku-4-5");
     expect(gatewayCall?.params?.modelRun).toBe(true);
     expect(gatewayCall?.params?.promptMode).toBe("none");
+  });
+
+  it("sends a bare gateway alias to its owner without resolving a conflicting local alias", async () => {
+    mocks.loadConfig.mockReturnValue({
+      agents: {
+        ownership: "explicit",
+        entries: { main: { models: { "local/wrong": { alias: "remote-only" } } } },
+      },
+    });
+
+    await runCapability(
+      "model",
+      "run",
+      "--agent",
+      "remote",
+      "--model",
+      "remote-only",
+      "--prompt",
+      "hello",
+      "--gateway",
+      "--json",
+    );
+
+    expect(firstGatewayCall()).toMatchObject({
+      method: "agent",
+      scopes: ["operator.admin"],
+      params: { agentId: "remote", modelAlias: "remote-only", modelRun: true },
+    });
+    expect(firstGatewayCall()?.params).not.toHaveProperty("provider");
+    expect(firstGatewayCall()?.params).not.toHaveProperty("model");
+  });
+
+  it("selects the remote default rather than a conflicting local default", async () => {
+    mocks.loadConfig.mockReturnValue({ agents: { entries: { local: {} } } });
+    mocks.callGateway.mockResolvedValueOnce({
+      defaultId: "remote",
+      selectionRequired: false,
+      agents: [{ id: "remote" }],
+    } as never);
+    await runCapability(
+      "model",
+      "run",
+      "--model",
+      "remote-only",
+      "--prompt",
+      "hello",
+      "--gateway",
+      "--json",
+    );
+    expect(firstGatewayCall()?.params).toMatchObject({
+      agentId: "remote",
+      modelAlias: "remote-only",
+    });
+    expect(firstGatewayCall()?.params?.sessionKey).toMatch(/^agent:remote:explicit:model-run-/);
+  });
+
+  it("fails closed when the Gateway cannot prove an unselected default", async () => {
+    mocks.callGateway.mockImplementation(async () => ({
+      defaultId: "main",
+      selectionRequired: true,
+      agents: [{ id: "main" }, { id: "work" }],
+    }));
+    await expect(
+      runCapability("model", "run", "--prompt", "hi", "--gateway", "--json"),
+    ).rejects.toThrow("exit 1");
+    expectRuntimeErrorContains("Pass --agent <id>");
+    expect(mocks.callGateway.mock.calls.map(([call]) => call.method)).toEqual(["agents.list"]);
+  });
+
+  it("does not retry a bare alias as a locally resolved model against an older Gateway", async () => {
+    mocks.callGateway.mockRejectedValueOnce(new Error("invalid agent params: modelAlias"));
+    await expect(
+      runCapability(
+        "model",
+        "run",
+        "--agent",
+        "main",
+        "--model",
+        "remote-only",
+        "--prompt",
+        "hi",
+        "--gateway",
+        "--json",
+      ),
+    ).rejects.toThrow("exit 1");
+    expectRuntimeErrorContains("invalid agent params: modelAlias");
+    expect(mocks.callGateway).toHaveBeenCalledTimes(1);
+    expect(firstGatewayCall()?.params?.modelAlias).toBe("remote-only");
   });
 
   it("passes thinking overrides to gateway model probes", async () => {

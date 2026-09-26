@@ -12,6 +12,7 @@ import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
+import type { AgentsListResult } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { resolveAgentDir, resolveAgentEffectiveModelPrimary } from "../../agents/agent-scope.js";
 import {
   listProfilesForProvider,
@@ -216,6 +217,22 @@ function normalizeModelRunThinking(value: unknown): ThinkLevel | undefined {
   return normalized;
 }
 
+async function resolveGatewayModelRunAgentId(): Promise<string> {
+  const selection = await callGateway<Partial<AgentsListResult>>({
+    method: "agents.list",
+    params: {},
+  });
+  const agentId = normalizeOptionalString(selection.defaultId);
+  if (
+    selection.selectionRequired !== false ||
+    !agentId ||
+    !selection.agents?.some((entry) => entry.id === agentId)
+  ) {
+    throw new Error("Gateway agent selection is ambiguous. Pass --agent <id> for model run.");
+  }
+  return agentId;
+}
+
 async function runModelRun(params: {
   prompt: string;
   files?: string[];
@@ -230,16 +247,28 @@ async function runModelRun(params: {
           commandName: "infer model run",
           targetIds: getModelsCommandSecretTargetIds(),
         })
-      : getRuntimeConfig();
-  const agentId = resolveCapabilityProviderAgentId(cfg, params.agent, "infer model run");
-  const modelRef = await canonicalizeModelRunRef({
-    raw: params.model,
-    cfg,
-    agentId,
-    preserveAuthProfile: params.transport === "local",
-  });
-  // Validated after canonicalization so a configured bare alias resolves first;
-  // every other override still has to arrive as <provider/model>.
+      : undefined;
+  const localAgentId =
+    cfg && resolveCapabilityProviderAgentId(cfg, params.agent, "infer model run");
+  const agentId = localAgentId ?? (cfg ? undefined : params.agent?.trim() || undefined);
+  if (params.agent !== undefined && !agentId) {
+    throw new Error("--agent must not be blank");
+  }
+  const modelAlias =
+    params.transport === "gateway" && params.model && !params.model.includes("/")
+      ? normalizeOptionalString(params.model)
+      : undefined;
+  const modelRef =
+    cfg && localAgentId
+      ? await canonicalizeModelRunRef({
+          raw: params.model,
+          cfg,
+          agentId: localAgentId,
+          preserveAuthProfile: true,
+        })
+      : modelAlias
+        ? undefined
+        : normalizeOptionalString(params.model);
   const hasExplicitProviderModelOverride = Boolean(requireProviderModelOverride(modelRef));
   const imageFiles = await readModelRunImageFiles(params.files);
   const messageContent =
@@ -253,15 +282,15 @@ async function runModelRun(params: {
           })),
         ]
       : params.prompt;
-  if (params.transport === "local") {
+  if (cfg && localAgentId) {
     const callerResult = createDeferredCore<CapabilityEnvelope>();
     const trackOwner = captureAsyncWorkTracker();
     // Command completion can precede response callbacks and cancellation drainage.
     void trackOwner(async () => {
-      await prepareLocalCapabilityAccountSecrets({ cfg, agentId });
+      await prepareLocalCapabilityAccountSecrets({ cfg, agentId: localAgentId });
       const prepared = await acquireSimpleCompletionModelForAgent({
         cfg,
-        agentId,
+        agentId: localAgentId,
         modelRef,
         allowMissingApiKeyModes: ["aws-sdk"],
         ...(hasExplicitProviderModelOverride ? { allowBundledStaticCatalogFallback: true } : {}),
@@ -352,11 +381,13 @@ async function runModelRun(params: {
   }
 
   const { provider, model } = requireProviderModelOverride(modelRef) ?? {};
+  // Remote defaults must be read from the Gateway, never inferred from the CLI's config.
+  const remoteAgentId = agentId ?? (await resolveGatewayModelRunAgentId());
   // Provider/model overrides require trusted-operator scope. Use the backend
   // shared-secret lane so local gateway smokes do not depend on paired CLI device scopes.
-  const hasModelOverride = Boolean(provider || model);
+  const hasModelOverride = Boolean(provider || model || modelAlias);
   const sessionId = `model-run-${randomUUID()}`;
-  const sessionKey = buildExplicitSessionIdSessionKey({ agentId, sessionId });
+  const sessionKey = buildExplicitSessionIdSessionKey({ agentId: remoteAgentId, sessionId });
   const response: {
     result?: {
       payloads?: Array<{ text?: string; mediaUrl?: string | null; mediaUrls?: string[] }>;
@@ -371,7 +402,7 @@ async function runModelRun(params: {
   } = await callGateway({
     method: "agent",
     params: {
-      agentId,
+      agentId: remoteAgentId,
       sessionId,
       sessionKey,
       message: params.prompt,
@@ -384,8 +415,8 @@ async function runModelRun(params: {
               content: image.data,
             }))
           : undefined,
-      provider,
-      model,
+      ...(provider && model ? { provider, model } : {}),
+      ...(modelAlias ? { modelAlias } : {}),
       ...(params.thinking ? { thinking: params.thinking } : {}),
       modelRun: true,
       promptMode: "none",
@@ -533,7 +564,7 @@ export function registerModelCapabilityCommands(capability: Command): void {
     .option("--file <path>", "Image file", collectOption, [])
     .option(
       "--model <provider/model|alias>",
-      "Model override: provider/model, or a bare alias configured under agents.defaults.models",
+      "Model override: provider/model, or a bare alias configured for the selected agent",
     )
     .option("--thinking <level>", "Thinking level override")
     .option("--local", "Force local execution", false)

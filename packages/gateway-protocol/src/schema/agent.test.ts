@@ -86,6 +86,17 @@ const subagentCompletionEvent: AgentInternalEvent = {
 };
 
 describe("AgentParamsSchema", () => {
+  it("accepts an additive alias-only model-run override", () => {
+    expect(
+      Value.Check(AgentParamsSchema, {
+        message: "probe",
+        agentId: "main",
+        modelRun: true,
+        modelAlias: "remote-only",
+        idempotencyKey: "alias-1",
+      }),
+    ).toBe(true);
+  });
   it("accepts the backend expected-session binding", () => {
     expect(
       Value.Check(AgentParamsSchema, {

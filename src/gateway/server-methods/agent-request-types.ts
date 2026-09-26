@@ -6,6 +6,7 @@ export type AgentRunRequest = {
   agentId?: string;
   provider?: string;
   model?: string;
+  modelAlias?: string;
   to?: string;
   replyTo?: string;
   sessionId?: string;
