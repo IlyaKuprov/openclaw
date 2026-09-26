@@ -46,6 +46,7 @@ import {
   type AgentMessage,
   type SessionTreeEntry as CoreSessionTreeEntry,
 } from "../runtime/index.js";
+import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 import { repairToolUseResultPairing } from "../session-transcript-repair.js";
 import type { SessionModelUsageSink } from "../sessions/compaction/runtime.js";
 import type { ExtensionAPI, ExtensionContext } from "../sessions/index.js";
@@ -90,6 +91,7 @@ const MAX_RECENT_TURNS_PRESERVE = 12;
 const MAX_QUALITY_GUARD_MAX_RETRIES = 3;
 const MAX_RECENT_TURN_TEXT_CHARS = 1_500;
 const MAX_RAW_SPLIT_TURN_TEXT_CHARS = 600;
+const MAX_UNPAIRED_RESULT_CONTEXT_CHARS = 4_000;
 const MAX_REQUIRED_ASK_CONTEXT_CHARS = 2_000;
 const REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER = "\n[... split-turn ask context truncated ...]\n";
 const PREVIOUS_SUMMARY_REDISTILL_PREFIX =
@@ -600,6 +602,45 @@ function extractMessageText(message: AgentMessage): string {
     : "";
 }
 
+/** Replay needs paired frames, but a result whose call preceded the prepared window is still evidence. */
+function repairSummaryMessages(
+  messages: AgentMessage[],
+  previouslyDiscarded: AgentMessage[] = [],
+): AgentMessage[] {
+  const repaired = repairToolUseResultPairing(messages);
+  const receiptText = [...previouslyDiscarded, ...repaired.discarded]
+    .filter(
+      (message): message is Extract<AgentMessage, { role: "toolResult" }> =>
+        message.role === "toolResult" && !message.isError,
+    )
+    .map((message) => {
+      const text = extractMessageText(message);
+      if (!text) {
+        return "";
+      }
+      const name = typeof message.toolName === "string" ? message.toolName : "tool";
+      return `${truncateUtf16Safe(name, 80)}: ${truncateUtf16Safe(text, 900)}`;
+    })
+    .filter(Boolean)
+    .slice(0, 8)
+    .join("\n");
+  if (!receiptText) {
+    return repaired.messages;
+  }
+  const content = wrapUntrustedPromptDataBlock({
+    label: "Unpaired tool results from the compaction window",
+    text: receiptText,
+    maxChars: MAX_UNPAIRED_RESULT_CONTEXT_CHARS,
+    maxEscapedChars: MAX_UNPAIRED_RESULT_CONTEXT_CHARS,
+    truncationMarker: "\n[more tool output omitted]",
+  });
+  const lastTimestamp = messages.at(-1)?.timestamp;
+  return [
+    ...repaired.messages,
+    { role: "user", content, timestamp: typeof lastTimestamp === "number" ? lastTimestamp : 0 },
+  ];
+}
+
 function formatNonTextPlaceholder(content: unknown): string | null {
   if (content == null || typeof content === "string") {
     return null;
@@ -629,7 +670,11 @@ function formatNonTextPlaceholder(content: unknown): string | null {
 function splitPreservedRecentTurns(params: {
   messages: AgentMessage[];
   recentTurnsPreserve: number;
-}): { summarizableMessages: AgentMessage[]; preservedMessages: AgentMessage[] } {
+}): {
+  summarizableMessages: AgentMessage[];
+  preservedMessages: AgentMessage[];
+  discardedResults?: AgentMessage[];
+} {
   const preserveTurns = clampNonNegativeInt(
     params.recentTurnsPreserve,
     0,
@@ -691,9 +736,11 @@ function splitPreservedRecentTurns(params: {
   }
   // Preserving recent assistant turns can orphan downstream toolResult messages.
   // Repair pairings here so compaction summarization doesn't trip strict providers.
+  const repaired = repairToolUseResultPairing(summarizableMessages);
   return {
-    summarizableMessages: repairToolUseResultPairing(summarizableMessages).messages,
+    summarizableMessages: repaired.messages,
     preservedMessages,
+    discardedResults: repaired.discarded,
   };
 }
 
@@ -1112,7 +1159,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         try {
           // Give the provider the full window, repairing interrupted tool frames for strict replay.
           const providerResult = await compactionProvider.summarize({
-            messages: repairToolUseResultPairing(preparedMessages).messages,
+            messages: repairSummaryMessages(preparedMessages),
             signal,
             customInstructions: structuredInstructions,
             summarizationInstructions,
@@ -1259,7 +1306,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                 );
                 droppedSummary = await summarizeViaLLM({
                   ...llmSummaryParams,
-                  messages: pruned.droppedMessagesList,
+                  messages: repairSummaryMessages(pruned.droppedMessagesList),
                   maxChunkTokens: droppedMaxChunkTokens,
                   summaryPrompt: { kind: "custom", instructions: structuredInstructions },
                   previousSummary,
@@ -1285,10 +1332,12 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const identifiers = extractOpaqueIdentifiers(
         oracleMessages.slice(-10).map(extractMessageText).filter(Boolean).join("\n"),
       );
-      messagesToSummarize = repairToolUseResultPairing(messagesToSummarize).messages;
+      const preparedPairing = repairToolUseResultPairing(messagesToSummarize);
+      messagesToSummarize = preparedPairing.messages;
       const {
         summarizableMessages: summaryTargetMessages,
         preservedMessages: preservedRecentMessages,
+        discardedResults: partitionDiscardedResults,
       } = splitPreservedRecentTurns({
         messages: messagesToSummarize,
         recentTurnsPreserve,
@@ -1311,7 +1360,10 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           Boolean(latestPreparedAsk) &&
           (summaryTargetMessages.length > 0 ||
             !preservedTurnsSectionLocal.text.includes(requiredAskContext)));
-      messagesToSummarize = includePreservedContext ? messagesToSummarize : summaryTargetMessages;
+      messagesToSummarize = repairSummaryMessages(
+        includePreservedContext ? messagesToSummarize : summaryTargetMessages,
+        [...preparedPairing.discarded, ...(partitionDiscardedResults ?? [])],
+      );
 
       // Use adaptive chunk ratio based on message sizes, reserving headroom for
       // the summarization prompt, system prompt, previous summary, and reasoning budget
@@ -1358,7 +1410,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             );
             const prefixSummary = await summarizeViaLLM({
               ...llmSummaryParams,
-              messages: turnPrefixMessages,
+              messages: repairSummaryMessages(turnPrefixMessages),
               maxChunkTokens,
               summaryPrompt: { kind: "turn-prefix" },
               customInstructions: [splitTurnFocus, correctiveInstructions]
