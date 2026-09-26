@@ -1088,4 +1088,47 @@ describe("session-store-runtime compatibility surface", () => {
         .filter((file) => file.startsWith("lifecycle-owned-discard.jsonl.deleted.")),
     ).toHaveLength(0);
   });
+
+  it.each(["patch", "upsert", "update", "delete"] as const)(
+    "snapshots the checked public key for %s before targeting the store",
+    async (method) => {
+      const publicKey = "agent:main:ordinary-write";
+      const internalKey = "agent:main:internal-session-effects:guarded-write";
+      await seedSessionEntry(publicKey, {
+        sessionId: "ordinary-write",
+        model: "ordinary",
+        updatedAt: 1,
+      });
+      await seedSessionEntry(internalKey, {
+        sessionId: "guarded-write",
+        model: "protected",
+        updatedAt: 1,
+      });
+      let reads = 0;
+      const target = {
+        agentId: "main",
+        storePath,
+        entry: { sessionId: "ordinary-write", model: "changed", updatedAt: 2 },
+        update: () => ({ model: "changed" }),
+        get sessionKey() {
+          reads += 1;
+          return reads === 1 ? publicKey : internalKey;
+        },
+      };
+
+      if (method === "patch") {
+        await patchSessionEntry(target);
+      } else if (method === "upsert") {
+        await upsertSessionEntry(target);
+      } else if (method === "update") {
+        await updateSessionStoreEntry(target);
+      } else {
+        await deleteSessionEntry(target);
+      }
+      expect(reads).toBe(1);
+      expect(loadInternalSessionEntry({ sessionKey: internalKey, storePath })?.model).toBe(
+        "protected",
+      );
+    },
+  );
 });

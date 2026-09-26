@@ -92,6 +92,19 @@ function assertPublicSessionWriteTarget(sessionKey: string): void {
   }
 }
 
+function toPublicSessionWriteScope(params: SessionStoreReadParams) {
+  const sessionKey = params.sessionKey;
+  assertPublicSessionWriteTarget(sessionKey);
+  return toSessionAccessScope({
+    sessionKey,
+    agentId: params.agentId,
+    env: params.env,
+    hydrateSkillPromptRefs: params.hydrateSkillPromptRefs,
+    readConsistency: params.readConsistency,
+    storePath: params.storePath,
+  });
+}
+
 type SessionStoreListParams = Partial<Omit<SessionStoreReadParams, "sessionKey">>;
 
 type SessionStoreEntrySummary = {
@@ -502,9 +515,8 @@ export function resolveTranscriptSessionKeyBySessionId(params: {
 export async function patchSessionEntry(
   params: PatchSessionEntryParams,
 ): Promise<SessionEntry | null> {
-  assertPublicSessionWriteTarget(params.sessionKey);
   const entry = await patchAccessorSessionEntry(
-    toSessionAccessScope(params),
+    toPublicSessionWriteScope(params),
     async (internalEntry, context) => {
       const persistedEntry = internalEntry as InternalSessionEntry;
       const patch = await params.update(projectPluginSessionEntry(internalEntry), {
@@ -553,9 +565,10 @@ export function readAmbientTranscriptWatermark(
 export async function updateSessionStoreEntry(
   params: UpdateSessionStoreEntryParams,
 ): Promise<SessionEntry | null> {
-  assertPublicSessionWriteTarget(params.sessionKey);
+  const sessionKey = params.sessionKey;
+  assertPublicSessionWriteTarget(sessionKey);
   const entry = await updateSessionEntry(
-    { sessionKey: params.sessionKey, storePath: params.storePath },
+    { sessionKey, storePath: params.storePath },
     async (internalEntry) => {
       const patch = await params.update(projectPluginSessionEntry(internalEntry));
       if (!patch) {
@@ -575,10 +588,9 @@ export async function updateSessionStoreEntry(
 
 /** Replaces or creates one session entry by agent/session identity. */
 export async function upsertSessionEntry(params: UpsertSessionEntryParams): Promise<void> {
-  assertPublicSessionWriteTarget(params.sessionKey);
   const publicEntry = projectPluginSessionEntry(params.entry);
   await patchAccessorSessionEntry(
-    toSessionAccessScope(params),
+    toPublicSessionWriteScope(params),
     (internalEntry) => {
       const persistedEntry = internalEntry as InternalSessionEntry;
       return preserveGenerationPrivateFields(persistedEntry, publicEntry);
@@ -589,8 +601,9 @@ export async function upsertSessionEntry(params: UpsertSessionEntryParams): Prom
 
 /** Deletes one session entry by agent/session identity. */
 export async function deleteSessionEntry(params: DeleteSessionEntryParams): Promise<boolean> {
-  assertPublicSessionWriteTarget(params.sessionKey);
-  const agentId = params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey);
+  const sessionKey = params.sessionKey;
+  assertPublicSessionWriteTarget(sessionKey);
+  const agentId = params.agentId ?? resolveAgentIdFromSessionKey(sessionKey);
   const storePath =
     params.storePath ??
     resolveSessionStorePathCore(undefined, {
@@ -608,8 +621,8 @@ export async function deleteSessionEntry(params: DeleteSessionEntryParams): Prom
       : {}),
     storePath,
     target: {
-      canonicalKey: params.sessionKey,
-      storeKeys: [params.sessionKey],
+      canonicalKey: sessionKey,
+      storeKeys: [sessionKey],
     },
   });
   return result.deleted;
