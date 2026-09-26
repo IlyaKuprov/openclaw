@@ -73,10 +73,12 @@ suite.define(() => {
       .filter({ hasText: "All agents" })
       .evaluate((item) => (item as HTMLElement).click());
     const allAgentsQuery = {
+      activeMinutes: 2880,
+      activeMinutesBy: "activity",
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: false,
-      limit: 50,
+      limit: 20,
     };
     await expect
       .poll(async () =>
@@ -122,11 +124,13 @@ suite.define(() => {
   it("keeps the Sessions page query stable when the startup roster completes", async () => {
     const visibleLabel = "Visible page-owned session";
     const pageQueryParams = {
+      activeMinutes: 2880,
+      activeMinutesBy: "activity",
       agentId: "main",
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: false,
-      limit: 50,
+      limit: 20,
     };
     const visibleResponse = {
       count: 1,
@@ -255,7 +259,17 @@ suite.define(() => {
         "sessions.list": {
           cases: [
             {
-              match: { activeMinutes: 60 },
+              match: { activeMinutes: 2880, activeMinutesBy: "activity" },
+              response: {
+                count: 0,
+                defaults: populatedResponse.defaults,
+                path: "",
+                sessions: [],
+                ts: 2,
+              },
+            },
+            {
+              match: { activeMinutes: 60, activeMinutesBy: "activity" },
               response: {
                 count: 0,
                 defaults: populatedResponse.defaults,
@@ -285,20 +299,31 @@ suite.define(() => {
 
     await currentPage.goto(`${suite.server?.baseUrl ?? ""}sessions`);
     const sessionsPage = currentPage.locator("openclaw-sessions-page");
-    await sessionsPage.getByText(sessionLabel, { exact: true }).waitFor({ timeout: 10_000 });
+    await expect
+      .poll(async () =>
+        (await gateway.getRequests("sessions.list")).some(
+          (request) =>
+            (request.params as { includeUnknown?: unknown } | undefined)?.includeUnknown === false,
+        ),
+      )
+      .toBe(true);
     const initialPageRequests = await gateway.getRequests("sessions.list");
     const initialPageParams = initialPageRequests.find(
       (request) =>
         (request.params as { includeUnknown?: unknown } | undefined)?.includeUnknown === false,
     )?.params as Record<string, unknown> | undefined;
-    expect(initialPageParams).toMatchObject({ limit: 50 });
-    expect(initialPageParams).not.toHaveProperty("activeMinutes");
+    expect(initialPageParams).toMatchObject({
+      activeMinutes: 2880,
+      activeMinutesBy: "activity",
+      limit: 20,
+    });
+    await expect.poll(() => sessionsPage.getByText(sessionLabel, { exact: true }).count()).toBe(0);
 
     await openSessionFilters(currentPage);
-    const activeMinutes = sessionsPage.getByLabel("Updated within");
+    const activeMinutes = sessionsPage.getByLabel("Activity within");
     const limit = sessionsPage.getByLabel("Limit");
-    await expect.poll(() => activeMinutes.inputValue()).toBe("");
-    await expect.poll(() => limit.inputValue()).toBe("50");
+    await expect.poll(() => activeMinutes.inputValue()).toBe("2880");
+    await expect.poll(() => limit.inputValue()).toBe("20");
 
     let requestCount = initialPageRequests.length;
     await activeMinutes.fill("60");
@@ -308,7 +333,11 @@ suite.define(() => {
     const filteredParams = (await gateway.getRequests("sessions.list")).at(-1)?.params as
       | Record<string, unknown>
       | undefined;
-    expect(filteredParams).toMatchObject({ activeMinutes: 60, limit: 50 });
+    expect(filteredParams).toMatchObject({
+      activeMinutes: 60,
+      activeMinutesBy: "activity",
+      limit: 20,
+    });
     await expect.poll(() => sessionsPage.getByText(sessionLabel, { exact: true }).count()).toBe(0);
 
     requestCount = (await gateway.getRequests("sessions.list")).length;
@@ -346,14 +375,22 @@ suite.define(() => {
     await currentPage.goto(`${suite.server?.baseUrl ?? ""}sessions`);
     await gateway.waitForRequest("sessions.list");
     await openSessionFilters(currentPage);
-    const activeMinutes = currentPage.getByLabel("Updated within");
+    const activeMinutes = currentPage.getByLabel("Activity within");
     const limit = currentPage.getByLabel("Limit");
     const cases = [
       { activeMinutes: "60minutes", limit: "70junk", expected: { limit: 50 } },
       { activeMinutes: "12.5", limit: "1e2", expected: { limit: 50 } },
       { activeMinutes: "9007199254740993", limit: "9007199254740993", expected: { limit: 50 } },
-      { activeMinutes: "+30", limit: "060", expected: { activeMinutes: 30, limit: 60 } },
-      { activeMinutes: " 80 ", limit: " 090 ", expected: { activeMinutes: 80, limit: 90 } },
+      {
+        activeMinutes: "+30",
+        limit: "060",
+        expected: { activeMinutes: 30, activeMinutesBy: "activity", limit: 60 },
+      },
+      {
+        activeMinutes: " 80 ",
+        limit: " 090 ",
+        expected: { activeMinutes: 80, activeMinutesBy: "activity", limit: 90 },
+      },
     ];
     for (const testCase of cases) {
       const requestCount = (await gateway.getRequests("sessions.list")).length;
@@ -367,9 +404,13 @@ suite.define(() => {
           const params = (await gateway.getRequests("sessions.list")).at(-1)?.params as
             | Record<string, unknown>
             | undefined;
-          return { activeMinutes: params?.activeMinutes, limit: params?.limit };
+          return {
+            activeMinutes: params?.activeMinutes,
+            activeMinutesBy: params?.activeMinutesBy,
+            limit: params?.limit,
+          };
         })
-        .toEqual({ activeMinutes: undefined, ...testCase.expected });
+        .toEqual({ activeMinutes: undefined, activeMinutesBy: undefined, ...testCase.expected });
     }
   });
 });
