@@ -2664,7 +2664,37 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(identifiersSection.length).toBeLessThanOrEqual(maxChars * 0.25 + 100);
   });
 
-  it("caps an identifier list that outgrew its share while the summary still fits", async () => {
+  it("finalizes fitting evidence intact even when the section exceeds its share", async () => {
+    mockSummarizeInStages.mockReset();
+    const evidence = `${"e".repeat(5_000)}\nSource: measurement log; exact next step: inspect the peak.`;
+    const generatedSummary = [
+      `## Decisions\n${"d".repeat(2_700)}`,
+      `## Results and evidence\n${evidence}`,
+      "## Open TODOs\nInspect the peak.",
+      "## Constraints/Rules\nPreserve units.",
+      "## Pending user asks\nReport the measurement.",
+      "## Exact identifiers\nNone captured.",
+    ].join("\n\n");
+    expect(generatedSummary.length).toBeLessThan(MAX_COMPACTION_SUMMARY_CHARS);
+    mockSummarizeInStages.mockResolvedValue(summaryResult(generatedSummary));
+    const sessionManager = createQualityGuardSessionManager();
+    const event = createCompactionEvent({
+      messageText: "Report the measurement.",
+      tokensBefore: 1_500,
+    });
+    (event.preparation as { settings?: { reserveTokens: number } }).settings = {
+      reserveTokens: 4_000,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+
+    const summary = expectCompactionResult(result).summary;
+    expect(summary).toContain(evidence);
+    expect(summary).not.toContain(SUMMARY_TRUNCATED_MARKER.trim());
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+  });
+
+  it("keeps a fitting identifier list intact without budget pressure", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "preserve the pending deployment status";
     const identifier = "/tmp/source-only-compaction-id.log";
@@ -2701,12 +2731,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     const summary = expectCompactionResult(result).summary;
     expect(summary).toContain("Deployment stays paused until the backup is verified.");
-    expect(summary).toContain(identifier);
-    expect(summary).not.toContain("run-199/output.log");
-    const identifiersSection = summary.slice(summary.indexOf("## Exact identifiers"));
-    expect(identifiersSection.length).toBeLessThanOrEqual(
-      MAX_COMPACTION_SUMMARY_CHARS * 0.25 + 200,
-    );
+    expect(summary).toContain(`${identifier}\n${hoardedIdentifiers}`);
     expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
 
@@ -3563,6 +3588,49 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(summary).toContain(latestAsk);
     expect(summary).toContain(identifier);
     expect(mockSummarizeInStages).not.toHaveBeenCalled();
+  });
+
+  it("compacts a persisted five-section summary with no messages requiring an LLM", async () => {
+    mockSummarizeInStages.mockReset();
+    const previousSummary = [
+      "## Decisions\nKeep the measured result.",
+      "## Open TODOs\nInspect the peak next.",
+      "## Constraints/Rules\nPreserve units.",
+      "## Pending user asks\nReport deployment status.",
+      "## Exact identifiers\n/tmp/peak.log",
+    ].join("\n\n");
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 12,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 1,
+    });
+    const event = {
+      preparation: {
+        ...createCompactionEvent({ messageText: "Report deployment status.", tokensBefore: 1_500 })
+          .preparation,
+        previousSummary,
+        settings: { reserveTokens: 4_000 },
+        isSplitTurn: false,
+      },
+    };
+
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event,
+      apiKey: "***",
+      latestUnresolvedUserRequest: true,
+    });
+
+    const summary = expectCompactionResult(result).summary;
+    expectCanonicalSummaryHeadingsOnce(summary);
+    expect(summary).toContain("Keep the measured result.");
+    expect(summary).toContain("Inspect the peak next.");
+    expect(summary).toContain("/tmp/peak.log");
+    expect(summary).toContain("## Results and evidence\nNone captured.");
+    expect(mockSummarizeInStages).not.toHaveBeenCalled();
+    expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
   });
 
   it("ignores numeric tool-result noise in strict all-preserved audits", async () => {
