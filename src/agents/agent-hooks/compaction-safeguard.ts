@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+import { CHARS_PER_TOKEN_ESTIMATE } from "@openclaw/normalization-core/cjk-chars";
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   capCompactionSummary,
@@ -58,6 +59,7 @@ import {
 } from "../workspace-bootstrap-read.js";
 import { resolveCompactionInstructions } from "./compaction-instructions.js";
 import {
+  AUDITED_IDENTIFIER_CONTENT_SHARE,
   appendSummarySection,
   auditSummaryQuality,
   buildCompactionStructureInstructions,
@@ -65,6 +67,7 @@ import {
   createSummaryQualityRetentionPlan,
   extractOpaqueIdentifiers,
   nestRequiredSummaryHeadings,
+  selectAuditedIdentifiers,
   wrapUntrustedInstructionBlock,
 } from "./compaction-safeguard-quality.js";
 import {
@@ -516,39 +519,58 @@ function budgetCompactionSummary(
 ) {
   const suffix = normalizeCompactionSuffix(suffixInput);
   const joined = `${summaryBody}${suffix.text}`;
-  // A body that fits still goes through the retention plan when it omits an
-  // audited identifier or lets an audit section outgrow its cap; both would
-  // re-distill into the next summary otherwise.
+  // Fund headings and the pending ask first; select audited source literals
+  // from the body slot the token-aware fit actually offers, not the 16K cap.
+  const baselinePlan = qualityRetention
+    ? createSummaryQualityRetentionPlan(summaryBody, SUMMARY_TRUNCATED_MARKER, {
+        ...qualityRetention,
+        identifiers: [],
+      })
+    : null;
+  const bodyCapacity = baselinePlan ? maxChars : summaryBody.length;
+  const bodyFloor = Math.min(
+    bodyCapacity,
+    maxChars,
+    Math.max(1, Math.ceil(maxChars / 2), baselinePlan?.minimumChars ?? 0),
+  );
+  const suffixReservation = Math.min(suffix.text.length, maxChars);
+  const bodySlot = Math.min(bodyCapacity, Math.max(bodyFloor, maxChars - suffixReservation));
+  const availableBodyChars = Math.max(0, bodySlot - (baselinePlan?.minimumChars ?? 0));
+  const identifiers = qualityRetention
+    ? selectAuditedIdentifiers(
+        qualityRetention.identifiers,
+        Math.floor(availableBodyChars * AUDITED_IDENTIFIER_CONTENT_SHARE),
+        availableBodyChars,
+      )
+    : [];
+  // A fitting body still needs repair when it omits a selected source fact.
   const retentionPlan = qualityRetention
-    ? createSummaryQualityRetentionPlan(summaryBody, SUMMARY_TRUNCATED_MARKER, qualityRetention)
+    ? createSummaryQualityRetentionPlan(summaryBody, SUMMARY_TRUNCATED_MARKER, {
+        ...qualityRetention,
+        identifiers,
+      })
     : null;
   if (maxChars <= 0 || (joined.length <= maxChars && !retentionPlan?.needsRebuild(maxChars))) {
     return {
       summary: joined,
       structuralSummary: summaryBody,
       bodyBudget: maxChars,
+      identifiers,
       bodyTrimmed: false,
       suffixTrimmed: false,
       qualityRetentionInfeasible: false,
     };
   }
-
-  const bodyCapacity = retentionPlan ? maxChars : summaryBody.length;
-  const bodyFloor = Math.min(
-    bodyCapacity,
-    maxChars,
-    Math.max(1, Math.ceil(maxChars / 2), retentionPlan?.minimumChars ?? 0),
-  );
-  const suffixReservation = Math.min(suffix.text.length, maxChars);
-  const bodySlot = Math.min(bodyCapacity, Math.max(bodyFloor, maxChars - suffixReservation));
-  const rendered = retentionPlan?.render(bodySlot);
-  const cappedBody = rendered?.text ?? capCompactionSummary(summaryBody, bodySlot);
+  const requiredBodySlot = Math.min(maxChars, Math.max(bodySlot, retentionPlan?.minimumChars ?? 0));
+  const rendered = retentionPlan?.render(requiredBodySlot);
+  const cappedBody = rendered?.text ?? capCompactionSummary(summaryBody, requiredBodySlot);
   const suffixBudget = Math.max(0, maxChars - cappedBody.length);
   const cappedSuffix = capCompactionSuffix(suffix, suffixBudget);
   return {
     summary: `${cappedBody}${cappedSuffix}`,
     structuralSummary: cappedBody,
-    bodyBudget: bodySlot,
+    bodyBudget: requiredBodySlot,
+    identifiers,
     bodyTrimmed: rendered ? rendered.trimmed : cappedBody.length < summaryBody.length,
     suffixTrimmed: cappedSuffix.length < suffix.text.length,
     qualityRetentionInfeasible: retentionPlan !== null && retentionPlan.minimumChars > maxChars,
@@ -1100,8 +1122,16 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         fileOpsSummary,
         workspaceContext: await workspaceContextPromise,
       });
-      const fitted = fitCompactionSummary(preparation.summaryTokenBudget, (maxChars) =>
-        budgetCompactionSummary(body, suffix, maxChars, qualityRetention),
+      const tokenBudget = preparation.summaryTokenBudget;
+      const fitted = fitCompactionSummary(tokenBudget, (maxChars) =>
+        budgetCompactionSummary(
+          body,
+          suffix,
+          typeof tokenBudget === "number" && Number.isFinite(tokenBudget)
+            ? Math.min(maxChars, Math.max(0, Math.floor(tokenBudget * CHARS_PER_TOKEN_ESTIMATE)))
+            : maxChars,
+          qualityRetention,
+        ),
       );
       if (!fitted.ok) {
         throw fitted.error;
@@ -1314,8 +1344,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         ? extractLatestUserAsk(turnPrefixMessages)
         : null;
       const latestUserAsk = splitUserAsk ?? extractLatestUserAsk(messagesToSummarize);
-      const identifiers = extractOpaqueIdentifiers(
+      const identifierCandidates = extractOpaqueIdentifiers(
         oracleMessages.slice(-10).map(extractMessageText).filter(Boolean).join("\n"),
+        Number.POSITIVE_INFINITY,
       );
       const preparedPairing = repairToolUseResultPairing(messagesToSummarize);
       messagesToSummarize = preparedPairing.messages;
@@ -1443,7 +1474,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           qualityGuardEnabled
             ? {
                 auditSummary: unbudgetedSummary,
-                identifiers,
+                identifiers: identifierCandidates,
                 latestAsk: latestUserAsk,
                 latestAskInRetainedTurn: splitUserAsk !== null,
                 latestUnresolvedUserRequest: latestUnresolvedUserRequest ?? undefined,
@@ -1462,7 +1493,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         if (finalized.qualityRetentionInfeasible) {
           log.warn(
             "Compaction safeguard: required quality facts exceed finalized artifact budget; " +
-              `requiredChars>${MAX_COMPACTION_SUMMARY_CHARS} identifierCount=${identifiers.length}`,
+              `requiredChars>${finalized.bodyBudget} identifierCount=${finalized.identifiers.length}`,
           );
           setCompactionSafeguardCancellation(
             ctx.sessionManager,
@@ -1474,7 +1505,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           summary: finalized.summary,
           structuralSummary: finalized.structuralSummary,
           sourceSummaries: [historySummary, splitTurnSummaryLocal].filter(Boolean),
-          identifiers,
+          identifiers: finalized.identifiers,
           latestAsk: latestUserAsk,
           latestUnresolvedUserRequest: latestUnresolvedUserRequest ?? undefined,
           retainedTurnSummary: splitUserAsk !== null ? splitTurnSummaryLocal : undefined,

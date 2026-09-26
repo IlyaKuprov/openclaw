@@ -6,6 +6,7 @@ import {
   buildStructuredFallbackSummary,
   createSummaryQualityRetentionPlan,
   extractOpaqueIdentifiers,
+  selectAuditedIdentifiers,
 } from "./compaction-safeguard-quality.js";
 
 describe("compaction summary quality contract", () => {
@@ -219,6 +220,15 @@ describe("compaction summary quality contract", () => {
     expect(identifiers).toContain("17.3 Hz");
     expect(identifiers).toContain(urls.at(-1));
     expect(identifiers).not.toContain(urls[0]);
+  });
+
+  it("keeps one individually fitting recent literal when none fits its preferred share", () => {
+    const urls = [
+      "https://example.com/" + "a".repeat(700),
+      "https://example.com/" + "b".repeat(700),
+    ];
+    expect(selectAuditedIdentifiers(urls, 500, 2_000)).toEqual([urls[1]]);
+    expect(selectAuditedIdentifiers(["PR #47", ...urls], 500, 600)).toEqual(["PR #47", ...urls]);
   });
 
   it("audits short PR, job, and message references without classifying ordinary counts", () => {
