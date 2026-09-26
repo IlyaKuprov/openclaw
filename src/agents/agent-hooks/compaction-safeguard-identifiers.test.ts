@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_AUDITED_IDENTIFIER_CHARS,
   extractOpaqueIdentifiers,
   extractResultEvidenceAnchors,
   isResultEvidenceAnchor,
@@ -102,7 +103,7 @@ describe("signed measurement evidence", () => {
     expect(identifiers).toContain(urls.at(-1));
     expect(identifiers).not.toContain(urls[0]);
     expect(identifiers.reduce((sum, value) => sum + value.length + 1, 0)).toBeLessThanOrEqual(
-      4_000,
+      MAX_AUDITED_IDENTIFIER_CHARS,
     );
   });
 });
