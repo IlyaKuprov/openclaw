@@ -133,7 +133,7 @@ describe("AgentSession compaction", () => {
       };
       const summary = recovers
         ? [
-            "## Decisions\nThe old prompt was answered.",
+            "## Decisions\nThe old prompt was answered.\n\n## Results and evidence\nNone captured.",
             "## Open TODOs\nNone.",
             "## Constraints/Rules\nPreserve the session history.",
             "## Pending user asks\nNone.",
