@@ -89,6 +89,7 @@ const DEFAULT_QUALITY_GUARD_MAX_RETRIES = 1;
 const MAX_RECENT_TURNS_PRESERVE = 12;
 const MAX_QUALITY_GUARD_MAX_RETRIES = 3;
 const MAX_RECENT_TURN_TEXT_CHARS = 1_500;
+const MAX_RAW_SPLIT_TURN_TEXT_CHARS = 600;
 const MAX_REQUIRED_ASK_CONTEXT_CHARS = 2_000;
 const REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER = "\n[... split-turn ask context truncated ...]\n";
 const PREVIOUS_SUMMARY_REDISTILL_PREFIX =
@@ -707,10 +708,9 @@ function formatContextMessage(message: AgentMessage, textOnly = false): string |
   if (!rendered) {
     return null;
   }
+  const maxChars = textOnly ? MAX_RECENT_TURN_TEXT_CHARS : MAX_RAW_SPLIT_TURN_TEXT_CHARS;
   const trimmed =
-    rendered.length > MAX_RECENT_TURN_TEXT_CHARS
-      ? `${truncateUtf16Safe(rendered, MAX_RECENT_TURN_TEXT_CHARS)}...`
-      : rendered;
+    rendered.length > maxChars ? `${truncateUtf16Safe(rendered, maxChars)}...` : rendered;
   return `- ${roleLabel}: ${trimmed}`;
 }
 

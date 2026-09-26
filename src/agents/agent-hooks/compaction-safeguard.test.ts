@@ -4320,6 +4320,78 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(compactionLogger.warn).not.toHaveBeenCalled();
   });
 
+  it("keeps paired raw split-turn receipts within their own cap while preserving longer spoken text", async () => {
+    const providerSummarize = vi.fn().mockResolvedValue("source summary body");
+    installCompactionProviderForTest({
+      id: "receipt-cap-provider",
+      label: "Receipt Cap Provider",
+      summarize: providerSummarize,
+    });
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      provider: "receipt-cap-provider",
+      recentTurnsPreserve: 1,
+    });
+    const recentSpokenText = `recent spoken request ${"s".repeat(1_350)} SPOKEN-END`;
+    const messagesToSummarize: AgentMessage[] = [
+      { role: "user", content: "older source request", timestamp: 1 },
+      castAgentMessage(timestampedTextAssistant("older source reply", 2)),
+      { role: "user", content: recentSpokenText, timestamp: 3 },
+    ];
+    const toolCalls = Array.from({ length: 6 }, (_, index) => ({
+      type: "toolCall" as const,
+      id: `raw_receipt_${index}`,
+      name: "read",
+      arguments: {},
+    }));
+    const turnPrefixMessages: AgentMessage[] = [
+      { role: "user", content: "split-turn source request", timestamp: 4 },
+      castAgentMessage({ role: "assistant", content: toolCalls, timestamp: 5 }),
+      ...toolCalls.map((call, index) =>
+        castAgentMessage({
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: "read",
+          content: [{ type: "text", text: `raw-output-${index}-${"r".repeat(1_380)}` }],
+          timestamp: 6 + index,
+        }),
+      ),
+      castAgentMessage(timestampedTextAssistant("split-turn terminal reply", 12)),
+    ];
+    const event = {
+      preparation: {
+        messagesToSummarize,
+        turnPrefixMessages,
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 20_000,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+        isSplitTurn: true,
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test" });
+
+    const providerInput = requireRecord(mockCallArg(providerSummarize));
+    expect(providerInput.messages).toEqual([...messagesToSummarize, ...turnPrefixMessages]);
+    const summary = expectCompactionResult(result).summary;
+    const rawSection = summary
+      .split("**Turn Context (split turn):**\n")[1]
+      ?.split("## Recent turns preserved verbatim")[0];
+    const verbatimSection = summary.split("## Recent turns preserved verbatim")[1];
+    expect(rawSection).toContain("- User: split-turn source request");
+    expect(rawSection).toContain("- Assistant: split-turn terminal reply");
+    expect(rawSection).not.toContain("[Earlier split-turn messages truncated]");
+    for (let index = 0; index < toolCalls.length; index += 1) {
+      expect(rawSection).toContain(`- Tool result (read): raw-output-${index}-`);
+      expect(verbatimSection).not.toContain(`raw-output-${index}-`);
+    }
+    expect(verbatimSection).toContain(recentSpokenText);
+    expect(compactionLogger.warn).not.toHaveBeenCalled();
+  });
+
   it("emits one redacted provider warning when the preserved-turn producer truncates", async () => {
     const sensitiveSentinel = "preserved-secret-never-log";
     const providerSummarize = vi.fn().mockResolvedValue("provider summary body");
