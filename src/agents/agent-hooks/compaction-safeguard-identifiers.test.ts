@@ -225,7 +225,7 @@ describe("strict history literals", () => {
     expect(identifiers).not.toContain(urls[0]);
     expect(identifiers.at(-1)).toBe("-5%");
     expect(identifiers.reduce((sum, value) => sum + value.length + 1, 0)).toBeLessThanOrEqual(
-      4_000,
+      MAX_AUDITED_IDENTIFIER_CHARS,
     );
   });
 
