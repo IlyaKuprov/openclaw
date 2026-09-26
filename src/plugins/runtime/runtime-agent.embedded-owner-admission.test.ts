@@ -14,7 +14,9 @@ const runCore = vi.hoisted(() => vi.fn());
 vi.mock("../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: runCore }));
 
 describe("registered plugin embedded-agent admission fence", () => {
-  async function preparePendingRun(options: { legacyInternal?: boolean } = {}) {
+  async function preparePendingRun(
+    options: { legacyInternal?: boolean; missingTargetAgent?: boolean } = {},
+  ) {
     const runtime = createPluginRuntime();
     const registry = createRuntimeTestRegistry(runtime);
     const record = createPluginRecord({
@@ -26,9 +28,10 @@ describe("registered plugin embedded-agent admission fence", () => {
     });
     const api = registry.createApi(record, { config: {} as OpenClawConfig });
     const agentId = "main";
-    const sessionKey = options.legacyInternal
-      ? "agent:main:internal-session-effects:active-memory:legacy-admission"
-      : "agent:main:telegram:direct:owner:active-memory:recall-admission";
+    const sessionKey =
+      options.legacyInternal || options.missingTargetAgent
+        ? "agent:main:internal-session-effects:active-memory:legacy-admission"
+        : "agent:main:telegram:direct:owner:active-memory:recall-admission";
     const sessionId = "same-child-id";
     const storePath = runtime.agent.session.resolveStorePath(undefined, { agentId });
     const scope = { agentId, sessionKey, storePath };
@@ -73,12 +76,18 @@ describe("registered plugin embedded-agent admission fence", () => {
       runId: sessionId,
       sessionId,
       sessionKey,
-      agentId,
-      ...(options.legacyInternal ? {} : { sessionTarget: { ...scope, sessionId } }),
+      ...(options.missingTargetAgent ? {} : { agentId }),
+      ...(options.legacyInternal
+        ? {}
+        : {
+            sessionTarget: options.missingTargetAgent
+              ? { sessionKey, sessionId, storePath }
+              : { ...scope, sessionId },
+          }),
       workspaceDir: "/tmp/workspace",
       timeoutMs: 1000,
     });
-    if (options.legacyInternal) {
+    if (options.legacyInternal || options.missingTargetAgent) {
       // The fixed wrapper rejects before the runner; the old one reaches the
       // paused runner and can race with a same-ID replacement.
       await Promise.race([
@@ -125,6 +134,25 @@ describe("registered plugin embedded-agent admission fence", () => {
       await create();
       release();
       await expect(pending).rejects.toThrow(/exact session target identity/);
+    });
+  });
+
+  it("rejects an internal target without an agent ID before a same-ID replacement can reach admission", async () => {
+    await withOpenClawTestState({ label: "plugin-admission-incomplete-target" }, async () => {
+      const { pending, release, scope, create } = await preparePendingRun({
+        missingTargetAgent: true,
+      });
+      await deleteSessionEntryLifecycle({
+        agentId: scope.agentId,
+        archiveTranscript: false,
+        deleteTranscriptWithoutArchive: true,
+        storePath: scope.storePath,
+        target: { canonicalKey: scope.sessionKey, storeKeys: [scope.sessionKey] },
+      });
+      await create();
+      release();
+      await expect(pending).rejects.toThrow(/exact session target identity/);
+      expect(runCore).not.toHaveBeenCalled();
     });
   });
 
