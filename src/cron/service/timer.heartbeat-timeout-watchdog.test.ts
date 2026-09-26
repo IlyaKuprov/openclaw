@@ -79,8 +79,11 @@ describe("cron heartbeat watchdog", () => {
       let elapsedMs = 0;
       for (const { atMs, phase } of transitions) {
         await vi.advanceTimersByTimeAsync(atMs - elapsedMs);
-        if (phase === "attempt") transition?.onAttemptStarted?.();
-        else transition?.onQueued?.();
+        if (phase === "attempt") {
+          transition?.onAttemptStarted?.();
+        } else {
+          transition?.onQueued?.();
+        }
         elapsedMs = atMs;
       }
       await vi.advanceTimersByTimeAsync(30 * 60_000 + 1 - elapsedMs);
