@@ -42,7 +42,7 @@ describe("capability cli model resolution", () => {
     const calls = mocks.callGateway.mock.calls as unknown as Array<
       [{ method?: unknown; params?: Record<string, unknown> }]
     >;
-    return calls[0]?.[0];
+    return calls.find(([call]) => call.method === "agent")?.[0];
   }
 
   function firstPreparedModelParams() {
@@ -57,8 +57,14 @@ describe("capability cli model resolution", () => {
       const slash = modelRef.indexOf("/");
       const gatewayCall = firstGatewayCall();
       expect(gatewayCall?.method).toBe("agent");
-      expect(gatewayCall?.params?.provider).toBe(modelRef.slice(0, slash));
-      expect(gatewayCall?.params?.model).toBe(modelRef.slice(slash + 1));
+      if (slash === -1) {
+        expect(gatewayCall?.params?.modelAlias).toBe(modelRef);
+        expect(gatewayCall?.params?.provider).toBeUndefined();
+        expect(gatewayCall?.params?.model).toBeUndefined();
+      } else {
+        expect(gatewayCall?.params?.provider).toBe(modelRef.slice(0, slash));
+        expect(gatewayCall?.params?.model).toBe(modelRef.slice(slash + 1));
+      }
       return;
     }
     expect(firstPreparedModelParams()?.modelRef).toBe(modelRef);
@@ -71,7 +77,7 @@ describe("capability cli model resolution", () => {
   }
 
   it.each(["local", "gateway"] as const)(
-    "canonicalizes case-only catalog model refs before %s dispatch",
+    "handles case-only catalog model refs before %s dispatch",
     async (transport) => {
       mocks.loadModelCatalog.mockResolvedValueOnce([
         { id: "claude-opus-4-7", provider: "anthropic", name: "Claude Opus 4.7" },
@@ -83,8 +89,15 @@ describe("capability cli model resolution", () => {
         [{ readOnly?: unknown }]
       >;
       const catalogParams = catalogCalls[0]?.[0];
-      expect(catalogParams?.readOnly).toBe(true);
-      expectModelRunDispatch(transport, "anthropic/claude-opus-4-7");
+      if (transport === "local") {
+        expect(catalogParams?.readOnly).toBe(true);
+      } else {
+        expect(catalogCalls).toHaveLength(0);
+      }
+      expectModelRunDispatch(
+        transport,
+        transport === "gateway" ? "Anthropic/CLAUDE-OPUS-4-7" : "anthropic/claude-opus-4-7",
+      );
     },
   );
 
@@ -175,18 +188,20 @@ describe("capability cli model resolution", () => {
 
       await runModelRunWithModel("gpt-5.5-codex", transport);
 
-      expectModelRunDispatch(transport, "openai/gpt-5.5");
+      expectModelRunDispatch(
+        transport,
+        transport === "gateway" ? "gpt-5.5-codex" : "openai/gpt-5.5",
+      );
     },
   );
 
-  it("keeps an explicit profile suffix out of configured alias resolution before dispatch", async () => {
+  it("forwards profile-shaped Gateway aliases without local configuration inference", async () => {
     mockConfiguredModelAlias();
 
-    await expect(runModelRunWithModel("gpt-5.5-codex@work", "gateway")).rejects.toThrow("exit 1");
+    await runModelRunWithModel("gpt-5.5-codex@work", "gateway");
 
-    expectRuntimeErrorContains("Model overrides must use the form <provider/model>.");
+    expectModelRunDispatch("gateway", "gpt-5.5-codex@work");
     expect(mocks.acquireSimpleCompletionModelForAgent).not.toHaveBeenCalled();
-    expect(mocks.callGateway).not.toHaveBeenCalled();
   });
 
   it("resolves configured bare aliases for model inspection", async () => {
@@ -196,6 +211,28 @@ describe("capability cli model resolution", () => {
 
     await runCap("capability", "model", "inspect", "--model", "gpt-5.5-codex", "--json");
 
+    expect(mocks.runtime.writeJson).toHaveBeenCalledWith(catalogEntry);
+  });
+
+  it("inspects an alias configured only for the implicitly selected sole agent", async () => {
+    const catalogEntry = { id: "gpt-5.5", provider: "openai", name: "GPT-5.5" };
+    mocks.loadConfig.mockReturnValue({
+      agents: {
+        entries: {
+          main: {
+            model: { primary: "openai/gpt-5.4" },
+            models: { "openai/gpt-5.5": { alias: "agent-only" } },
+          },
+        },
+      },
+    });
+    mocks.loadModelCatalog.mockResolvedValueOnce([catalogEntry] as never);
+
+    await runCap("capability", "model", "inspect", "--model", "agent-only", "--json");
+
+    expect(mocks.loadModelCatalog).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "main", readOnly: true }),
+    );
     expect(mocks.runtime.writeJson).toHaveBeenCalledWith(catalogEntry);
   });
 

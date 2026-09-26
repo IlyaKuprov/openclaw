@@ -275,7 +275,7 @@ describe("capability cli", () => {
 
     expect(mocks.loadModelCatalog).toHaveBeenCalledWith({
       config: mocks.loadConfig(),
-      ...(command === "providers" ? { agentId: "main" } : {}),
+      ...(command !== "list" ? { agentId: "main" } : {}),
       readOnly: true,
     });
   });
@@ -1118,6 +1118,21 @@ describe("capability cli", () => {
       modelAlias: "remote-only",
     });
     expect(firstGatewayCall()?.params?.sessionKey).toMatch(/^agent:remote:explicit:model-run-/);
+  });
+
+  it("accepts a legacy Gateway default with no selectionRequired flag", async () => {
+    mocks.callGateway.mockResolvedValueOnce({
+      defaultId: "remote",
+      agents: [{ id: "remote" }],
+    } as never);
+
+    await runCapability("model", "run", "--prompt", "hello", "--gateway", "--json");
+
+    expect(mocks.callGateway.mock.calls.map(([call]) => call.method)).toEqual([
+      "agents.list",
+      "agent",
+    ]);
+    expect(firstGatewayCall()?.params).toMatchObject({ agentId: "remote", modelRun: true });
   });
 
   it("fails closed when the Gateway cannot prove an unselected default", async () => {
