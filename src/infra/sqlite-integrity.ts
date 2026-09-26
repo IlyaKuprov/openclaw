@@ -193,7 +193,7 @@ export function assertSqliteIntegrityExcept(
 ): SqliteIntegrityChecks {
   runSqliteCheck(database, databaseLabel, "quick_check");
   const tables = database
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'")
     .all();
   for (const { name } of tables) {
     if (typeof name !== "string") {
