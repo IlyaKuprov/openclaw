@@ -1276,6 +1276,129 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(summary).not.toContain("- Tool result (read):");
   });
 
+  it.each(["built-in", "provider"])(
+    "keeps successful orphan receipt facts in the %s summary input without unpaired replay",
+    async (route) => {
+      mockSummarizeInStages.mockReset().mockResolvedValue("result recorded");
+      const providerSummarize = vi.fn().mockResolvedValue("result recorded");
+      if (route === "provider") {
+        installCompactionProviderForTest({
+          id: "receipt-provider",
+          label: "Receipt Provider",
+          summarize: providerSummarize,
+        });
+      }
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        provider: route === "provider" ? "receipt-provider" : undefined,
+        recentTurnsPreserve: 1,
+      });
+      const orphan = castAgentMessage({
+        role: "toolResult",
+        toolCallId: "call-before-boundary",
+        toolName: "read",
+        content: [{ type: "text", text: "Measured linewidth 17.3 Hz at /tmp/line.txt" }],
+        isError: false,
+        timestamp: 2,
+      });
+      const event = {
+        preparation: {
+          messagesToSummarize: [
+            { role: "user", content: "Measure linewidth", timestamp: 1 },
+            orphan,
+            { role: "user", content: "Proceed with the result", timestamp: 3 },
+          ] as AgentMessage[],
+          turnPrefixMessages: [] as AgentMessage[],
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 500,
+          fileOps: { read: [], edited: [], written: [] },
+          settings: { reserveTokens: 4_000 },
+          isSplitTurn: false,
+        },
+        customInstructions: "",
+        signal: new AbortController().signal,
+      };
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+      expectCompactionResult(result);
+      const summarizer = route === "provider" ? providerSummarize : mockSummarizeInStages;
+      const messages = requireArray(
+        requireRecord(mockCallArg(summarizer)).messages,
+      ) as AgentMessage[];
+      expect(messages).not.toContain(orphan);
+      expect(messages.filter((message) => message.role === "toolResult")).toHaveLength(0);
+      expect(JSON.stringify(messages)).toContain("Measured linewidth 17.3 Hz at /tmp/line.txt");
+    },
+  );
+
+  it("keeps an orphan receipt beside a partial tool frame while synthesizing its missing result", async () => {
+    mockSummarizeInStages.mockReset().mockResolvedValue("partial frame summary");
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+    });
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "Inspect output", timestamp: 1 },
+          castAgentMessage({
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: "frame-a", name: "read", arguments: {} },
+              { type: "toolCall", id: "frame-b", name: "read", arguments: {} },
+            ],
+            timestamp: 2,
+          }),
+          castAgentMessage({
+            role: "toolResult",
+            toolCallId: "frame-a",
+            toolName: "read",
+            content: [{ type: "text", text: "paired measurement" }],
+            isError: false,
+            timestamp: 3,
+          }),
+          castAgentMessage({
+            role: "toolResult",
+            toolCallId: "before-window",
+            toolName: "read",
+            content: [{ type: "text", text: `orphaned measurement: 42 kHz ${"x".repeat(20_000)}` }],
+            isError: false,
+            timestamp: 4,
+          }),
+        ] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 300,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+    expectCompactionResult(result);
+    const messages = requireArray(
+      requireRecord(mockCallArg(mockSummarizeInStages)).messages,
+    ) as AgentMessage[];
+    expect(JSON.stringify(messages)).toContain("orphaned measurement: 42 kHz");
+    const note = messages.find(
+      (message) =>
+        message.role === "user" && String(message.content).includes("Unpaired tool results"),
+    );
+    expect(String(note?.content).length).toBeLessThan(4_200);
+    expect(messages.filter((message) => message.role === "toolResult")).toHaveLength(2);
+    expect(
+      messages
+        .filter((message) => message.role === "toolResult")
+        .map((message) => message.toolCallId),
+    ).toEqual(["frame-a", "frame-b"]);
+  });
+
   it("keeps only the spoken turns of an oversized tool interaction (HF-47)", () => {
     const toolCalls = Array.from({ length: 30 }, (_, index) => ({
       type: "toolCall",
@@ -2187,6 +2310,9 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
     const droppedCall = requireRecord(mockCallArg(mockSummarizeInStages));
     const droppedMessages = requireArray(droppedCall.messages) as AgentMessage[];
+    expect(droppedMessages).not.toContain(messagesToSummarize[1]);
+    expect(droppedMessages.filter((message) => message.role === "toolResult")).toHaveLength(0);
+    expect(JSON.stringify(droppedMessages)).toContain("orphan-result");
     expect(droppedMessages.map((message) => message.timestamp)).toEqual([1, 2]);
   });
 
