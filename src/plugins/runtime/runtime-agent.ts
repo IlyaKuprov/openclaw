@@ -704,11 +704,19 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
     () => async (params: Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0]) => {
       const requestScope = getPluginRuntimeGatewayRequestScope();
       const pluginId = requestScope?.pluginId;
-      const target = params.sessionTarget;
+      // Snapshot plugin-controlled arguments before lazy import; fence and
+      // dispatch the same owned target, never the caller's nested object.
+      const request = { ...params };
+      const target = request.sessionTarget
+        ? Object.freeze({ ...request.sessionTarget })
+        : undefined;
       const scope =
         pluginId && target?.agentId && target.sessionKey && target.storePath
           ? { agentId: target.agentId, sessionKey: target.sessionKey, storePath: target.storePath }
           : undefined;
+      if (pluginId && target && (!scope || !target.sessionId)) {
+        throw new Error("Plugin embedded-agent execution requires exact session target identity.");
+      }
       // Capture the persisted child before the lazy import can yield. A key and
       // session ID alone can name a different plugin's replacement afterward.
       const original = scope ? loadExactSessionEntryReadOnly(scope)?.entry : undefined;
@@ -753,7 +761,7 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
         };
         assertCurrent();
         return await withPluginRuntimeEmbeddedRunSessionScope(assertCurrent, () =>
-          runtime.runPluginEmbeddedAgent(params),
+          runtime.runPluginEmbeddedAgent({ ...request, sessionTarget: target }),
         );
       } finally {
         unsubscribe?.();
