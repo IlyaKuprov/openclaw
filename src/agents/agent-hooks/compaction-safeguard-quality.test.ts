@@ -148,6 +148,45 @@ describe("compaction summary quality contract", () => {
     ).toBe(true);
   });
 
+  it("captures the value after copular ID labels rather than the copula", () => {
+    const identifiers = extractOpaqueIdentifiers("Message ID is abc; Job ID was 42.");
+    expect(identifiers).toEqual(["Message ID is abc", "Job ID was 42"]);
+    expect(extractOpaqueIdentifiers("Message ID is; Job ID was.")).toEqual([]);
+
+    const longer = buildStructuredFallbackSummary("Message ID is abcd; Job ID was 420");
+    expect(
+      auditSummaryQuality({
+        summary: longer,
+        structuralSummary: longer,
+        identifiers,
+        latestAsk: null,
+      }).reasons,
+    ).toContain("missing_identifiers:Message ID is abc,Job ID was 42");
+    const repaired = createSummaryQualityRetentionPlan(longer, "[truncated]", {
+      identifiers,
+      latestAsk: null,
+    })?.render(16_000)?.text;
+    expect(repaired).toContain("Message ID is abc");
+    expect(repaired).toContain("Job ID was 42");
+  });
+
+  it.each(["off", "custom"] as const)(
+    "audits numerical results in Results and evidence with identifier policy %s",
+    (identifierPolicy) => {
+      const identifiers = extractOpaqueIdentifiers("42 tests passed");
+      const summary = buildStructuredFallbackSummary("42 tests passed");
+      const quality = auditSummaryQuality({
+        summary,
+        structuralSummary: summary,
+        identifiers,
+        latestAsk: null,
+        identifierPolicy,
+      });
+      expect(quality.reasons).toContain("missing_result_evidence:42 tests passed");
+      expect(quality.reasons).not.toContain("missing_identifiers:42 tests passed");
+    },
+  );
+
   it("sets a feasible length target from the generation output budget", () => {
     const low = buildCompactionStructureInstructions(undefined, undefined, undefined, 819);
     expect(low).toContain("## Exact identifiers");

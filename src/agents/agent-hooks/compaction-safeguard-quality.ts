@@ -494,7 +494,7 @@ export function extractOpaqueIdentifiers(text: string): string[] {
     [
       ...Array.from(
         text.matchAll(
-          /((?<![A-Za-z0-9_])#\d+\b|\b(?:PR\s+#\d+|(?:job|message|msg)(?:[-_#][A-Za-z0-9_-]+|\s+id\s*[:#]?\s*[A-Za-z0-9_-]+))\b)|(https?:\/\/\S+|(?<![A-Za-z0-9._-])\/[\w.-]{2,}(?:\/[\w.-]+)+|[A-Za-z]:\\[\w\\.-]+|(?<![A-Za-z0-9._-])[A-Za-z0-9._-]+\.[A-Za-z0-9._/-]+:\d{1,5})|(?:(?:(?:\d+\.\d+|\.\d+)(?:[eE][+-]?\d+)?|\d+\.[eE][+-]?\d+|\d+\.?[eE][+-]\d+|(?![A-Fa-f0-9]{8,}(?![A-Fa-f0-9]))\d+\.?[eE]\d+)(?:(?=[A-Za-z]+(?![A-Za-z0-9]))(?=[A-Za-z]*[G-Zg-z])[A-Za-z]+)?(?![A-Za-z0-9])|(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*(?:[A-Fa-f0-9]{8,}|\d{6,}))([A-Za-z0-9_-]+))/gi,
+          /((?<![A-Za-z0-9_])#\d+\b|\b(?:PR\s+#\d+|(?:job|message|msg)(?:[-_#][A-Za-z0-9_-]+|\s+id(?:\s+(?:is|was)\s+|\s*[:#]?\s*)(?!(?:is|was)\b)[A-Za-z0-9_-]+))\b)|(https?:\/\/\S+|(?<![A-Za-z0-9._-])\/[\w.-]{2,}(?:\/[\w.-]+)+|[A-Za-z]:\\[\w\\.-]+|(?<![A-Za-z0-9._-])[A-Za-z0-9._-]+\.[A-Za-z0-9._/-]+:\d{1,5})|(?:(?:(?:\d+\.\d+|\.\d+)(?:[eE][+-]?\d+)?|\d+\.[eE][+-]?\d+|\d+\.?[eE][+-]\d+|(?![A-Fa-f0-9]{8,}(?![A-Fa-f0-9]))\d+\.?[eE]\d+)(?:(?=[A-Za-z]+(?![A-Za-z0-9]))(?=[A-Za-z]*[G-Zg-z])[A-Za-z]+)?(?![A-Za-z0-9])|(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*(?:[A-Fa-f0-9]{8,}|\d{6,}))([A-Za-z0-9_-]+))/gi,
         ),
         (match) => ({ index: match.index, value: match[1] ?? match[2] ?? match[3] ?? "" }),
       ),
@@ -592,18 +592,18 @@ export function auditSummaryQuality(params: {
     if (missingIdentifiers.length > 0) {
       reasons.push(`missing_identifiers:${missingIdentifiers.slice(0, 3).join(",")}`);
     }
-    // This checks a literal result anchor in the actual results section, not
-    // whether the generated explanation or its evidence is semantically complete.
-    const resultsSection = parseRequiredSummarySectionContents(params.structuralSummary)?.[
-      RESULTS_SECTION_INDEX
-    ];
-    if (resultsSection !== undefined) {
-      const missingResults = params.identifiers
-        .filter((identifier) => NUMERIC_RESULT_ANCHOR.test(identifier))
-        .filter((identifier) => !summaryIncludesIdentifier(resultsSection, identifier));
-      if (missingResults.length > 0) {
-        reasons.push(`missing_result_evidence:${missingResults.slice(0, 3).join(",")}`);
-      }
+  }
+  // Result placement is required by ## Results and evidence regardless of the
+  // configured literal-identifier policy.
+  const resultsSection = parseRequiredSummarySectionContents(params.structuralSummary)?.[
+    RESULTS_SECTION_INDEX
+  ];
+  if (resultsSection !== undefined) {
+    const missingResults = params.identifiers
+      .filter((identifier) => NUMERIC_RESULT_ANCHOR.test(identifier))
+      .filter((identifier) => !summaryIncludesIdentifier(resultsSection, identifier));
+    if (missingResults.length > 0) {
+      reasons.push(`missing_result_evidence:${missingResults.slice(0, 3).join(",")}`);
     }
   }
   const leadingPendingAsk = extractLeadingPendingAsk(params.structuralSummary);

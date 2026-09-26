@@ -1894,6 +1894,39 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(quality.ok).toBe(true);
   });
 
+  it.each(["off", "custom"] as const)(
+    "rejects a misplaced source test result through the compaction handler with policy %s",
+    async (identifierPolicy) => {
+      const sourceResult = "42 tests passed";
+      const summary = buildStructuredFallbackSummary(sourceResult);
+      mockSummarizeInStages.mockReset();
+      mockSummarizeInStages.mockResolvedValue(summaryResult(summary));
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 0,
+        qualityGuardEnabled: true,
+        qualityGuardMaxRetries: 0,
+        identifierPolicy,
+      });
+      const event = createCompactionEvent({ messageText: sourceResult, tokensBefore: 1_500 });
+      (
+        event.preparation as { settings?: { reserveTokens: number }; isSplitTurn?: boolean }
+      ).settings = { reserveTokens: 4_000 };
+      (event.preparation as { isSplitTurn?: boolean }).isSplitTurn = false;
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+
+      expect(result).toEqual({ cancel: true });
+      expect(mockAuditSummaryQuality).toHaveBeenCalledWith(
+        expect.objectContaining({ identifierPolicy, identifiers: [sourceResult] }),
+      );
+      expect(consumeCompactionSafeguardCancellation(sessionManager)?.reason).toBe(
+        "Compaction safeguard finalized summary failed quality checks.",
+      );
+    },
+  );
+
   it("does not force strict identifier retention for custom policy", () => {
     const quality = auditSummaryQuality({
       summary: [
