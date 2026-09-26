@@ -29,11 +29,11 @@ const RESULTS_SECTION_INDEX = 1;
 const QUALITY_PROTECTED_SECTION_START = 4;
 const PENDING_ASK_SECTION_INDEX = 4;
 const EXACT_IDENTIFIERS_SECTION_INDEX = 5;
-const PROTECTED_SECTION_INDEXES: readonly number[] = [
+const PROTECTED_SECTION_INDEXES = new Set([
   RESULTS_SECTION_INDEX,
   PENDING_ASK_SECTION_INDEX,
   EXACT_IDENTIFIERS_SECTION_INDEX,
-];
+]);
 const MAX_PROTECTED_SECTION_CONTENT_SHARE = 0.25;
 const LATEST_USER_REQUEST_CONTEXT_LABEL = "Latest user request context:";
 const STRICT_EXACT_IDENTIFIERS_INSTRUCTION =
@@ -215,8 +215,9 @@ function isEmptyPendingAsk(value: string): boolean {
 /**
  * Plan truncation that keeps the audit facts and lets everything else shrink.
  * Only the headings, the bounded latest-ask context, and the audited source
- * identifiers are untrimmable. Model-written section text — including the
- * "## Exact identifiers" list — is optional content; protecting it verbatim let
+ * identifiers (including numeric outcomes inside Results) are untrimmable.
+ * Model-written section text — including the "## Exact identifiers" list —
+ * is optional content; protecting it verbatim let
  * a re-distilled identifier dump grow past the whole artifact budget while the
  * real sections were starved to empty headings.
  */
@@ -252,6 +253,9 @@ export function createSummaryQualityRetentionPlan(
   }
   const enforceIdentifiers = (params.identifierPolicy ?? "strict") === "strict";
   const auditedIdentifiers = enforceIdentifiers ? params.identifiers : [];
+  const auditedResults = params.identifiers.filter((identifier) =>
+    NUMERIC_RESULT_ANCHOR.test(identifier),
+  );
   const marker = truncatedMarker.trim();
   const pendingAsk = contents[PENDING_ASK_SECTION_INDEX] ?? "";
   const protectedAskContext = latestUnresolvedUserRequest
@@ -263,14 +267,19 @@ export function createSummaryQualityRetentionPlan(
       ? `${LATEST_USER_REQUEST_CONTEXT_LABEL}\n${JSON.stringify(requiredAskContext)}`
       : "";
   const protectedTails = REQUIRED_SUMMARY_SECTIONS.map((_, index) =>
-    index === PENDING_ASK_SECTION_INDEX
-      ? protectedAskContext
-      : index === EXACT_IDENTIFIERS_SECTION_INDEX
-        ? auditedIdentifiers.join("\n")
-        : "",
+    index === RESULTS_SECTION_INDEX
+      ? auditedResults.join("\n")
+      : index === PENDING_ASK_SECTION_INDEX
+        ? protectedAskContext
+        : index === EXACT_IDENTIFIERS_SECTION_INDEX
+          ? auditedIdentifiers.join("\n")
+          : "",
   );
   const bodyHasIdentifiers = auditedIdentifiers.every((identifier) =>
     summaryIncludesIdentifier(summary, identifier),
+  );
+  const bodyHasResults = auditedResults.every((identifier) =>
+    summaryIncludesIdentifier(contents[RESULTS_SECTION_INDEX] ?? "", identifier),
   );
   const bodyHasRequiredAskContext = latestUnresolvedUserRequest
     ? extractLeadingPendingAsk(parsedSummary) === protectedAskContext
@@ -288,6 +297,12 @@ export function createSummaryQualityRetentionPlan(
     const tail = protectedTails[index] ?? "";
     if (!tail) {
       return optional;
+    }
+    if (index === RESULTS_SECTION_INDEX) {
+      const missing = auditedResults.filter(
+        (identifier) => !summaryIncludesIdentifier(optional, identifier),
+      );
+      return [optional, ...missing].filter(Boolean).join("\n");
     }
     if (index === PENDING_ASK_SECTION_INDEX) {
       const leading = normalizedSummaryLines(optional)[0] ?? "";
@@ -331,9 +346,15 @@ export function createSummaryQualityRetentionPlan(
     needsRebuild: () =>
       (!latestUnresolvedUserRequest && !bodyHasLatestAsk) ||
       !bodyHasRequiredAskContext ||
-      !bodyHasIdentifiers,
+      !bodyHasIdentifiers ||
+      !bodyHasResults,
     render(maxChars) {
-      if (summary.length <= maxChars && bodyHasRequiredAskContext && bodyHasIdentifiers) {
+      if (
+        summary.length <= maxChars &&
+        bodyHasRequiredAskContext &&
+        bodyHasIdentifiers &&
+        bodyHasResults
+      ) {
         return { text: summary, trimmed: false };
       }
       const completeSections = contents.map((content, index) => joinSectionContent(index, content));
@@ -350,14 +371,14 @@ export function createSummaryQualityRetentionPlan(
       const contentBudget = maxChars - minimumSummary.length;
       const protectedCap = protectedCapFor(maxChars);
       const allocations = contents.map((content, index) =>
-        PROTECTED_SECTION_INDEXES.includes(index) ? Math.min(content.length, protectedCap) : 0,
+        PROTECTED_SECTION_INDEXES.has(index) ? Math.min(content.length, protectedCap) : 0,
       );
       const optionalBudget = Math.max(
         0,
         contentBudget - allocations.reduce((total, chars) => total + chars, 0),
       );
       const optionalIndexes = contents.flatMap((_, index) =>
-        PROTECTED_SECTION_INDEXES.includes(index) ? [] : [index],
+        PROTECTED_SECTION_INDEXES.has(index) ? [] : [index],
       );
       const optionalTotal = optionalIndexes.reduce(
         (total, index) => total + (contents[index]?.length ?? 0),
