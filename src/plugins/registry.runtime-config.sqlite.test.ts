@@ -55,6 +55,111 @@ describe("plugin registry SQLite session ownership", () => {
     });
   });
 
+  it.each(["revoked", "replaced"] as const)(
+    "rejects an upsert when its plugin runtime is %s after the callback but before SQLite commit",
+    async (change) => {
+      await withTempHome(async () => {
+        const agentId = "main";
+        const sessionKey = "agent:main:internal-session-effects:commit-edge-child";
+        const storePath = resolveSessionStorePathCore(undefined, { agentId });
+        const scope = { agentId, sessionKey, storePath };
+        const original = {
+          sessionId: "owned-child",
+          pluginOwnerId: "active-memory",
+          updatedAt: 1,
+          label: "before",
+        };
+        try {
+          await replaceSessionEntry(scope, original);
+          const runtime = createPluginRuntime();
+          const originalPatch = runtime.agent.session.patchSessionEntry;
+          const registry = createRuntimeTestRegistry(runtime);
+          const recordParams = {
+            id: "active-memory",
+            source: "/plugins/active-memory/index.js",
+            origin: "bundled" as const,
+            enabled: true,
+            configSchema: false,
+          };
+          const record = createPluginRecord(recordParams);
+          const api = registry.createApi(record, { config: {} as OpenClawConfig });
+          let callbackFinished = false;
+          Object.defineProperty(runtime.agent.session, "patchSessionEntry", {
+            configurable: true,
+            value: (params: Parameters<typeof originalPatch>[0]) =>
+              originalPatch({
+                ...params,
+                update: async (entry, context) => {
+                  const patch = await params.update(entry, context);
+                  callbackFinished = true;
+                  registry.registry.plugins.splice(registry.registry.plugins.indexOf(record), 1);
+                  if (change === "replaced") {
+                    registry.createApi(createPluginRecord(recordParams), {
+                      config: {} as OpenClawConfig,
+                    });
+                  }
+                  return patch;
+                },
+              }),
+          });
+          await expect(
+            api.runtime.agent.session.upsertSessionEntry({
+              ...scope,
+              entry: { ...original, label: "stale" },
+            }),
+          ).rejects.toThrow(/runtime is no longer active/);
+          expect(callbackFinished).toBe(true);
+          expect(loadSessionEntryReadOnly(scope)).toMatchObject(original);
+        } finally {
+          closeOpenClawAgentDatabasesForTest();
+        }
+      });
+    },
+  );
+
+  it("upserts current-owner metadata on only the addressed store and session", async () => {
+    await withTempHome(async (home) => {
+      const agentId = "main";
+      const sessionKey = "agent:main:internal-session-effects:metadata-child";
+      const storePath = resolveSessionStorePathCore(undefined, { agentId });
+      const scope = { agentId, sessionKey, storePath };
+      const otherSession = { ...scope, sessionKey: `${sessionKey}-other` };
+      const otherStore = { ...scope, storePath: path.join(home, "alternate-sessions.sqlite") };
+      const owner = { sessionId: "owned", pluginOwnerId: "active-memory", updatedAt: 1 };
+      const foreign = { sessionId: "foreign", pluginOwnerId: "other-plugin", updatedAt: 1 };
+      try {
+        await replaceSessionEntry(scope, owner);
+        await replaceSessionEntry(otherSession, foreign);
+        await replaceSessionEntry(otherStore, foreign);
+        const registry = createRuntimeTestRegistry(createPluginRuntime());
+        const api = registry.createApi(
+          createPluginRecord({
+            id: "active-memory",
+            source: "/plugins/active-memory/index.js",
+            origin: "bundled",
+            enabled: true,
+            configSchema: false,
+          }),
+          { config: {} as OpenClawConfig },
+        );
+        await expect(
+          api.runtime.agent.session.upsertSessionEntry({
+            ...scope,
+            entry: { ...owner, label: "fresh metadata" },
+          }),
+        ).resolves.toBeUndefined();
+        expect(loadSessionEntryReadOnly(scope)).toMatchObject({
+          ...owner,
+          label: "fresh metadata",
+        });
+        expect(loadSessionEntryReadOnly(otherSession)).toMatchObject(foreign);
+        expect(loadSessionEntryReadOnly(otherStore)).toMatchObject(foreign);
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+      }
+    });
+  });
+
   it("does not let a foreign plugin forge a new internal child's ownership proof", async () => {
     await withTempHome(async () => {
       const agentId = "main";
