@@ -276,6 +276,10 @@ export function createSummaryQualityRetentionPlan(
   );
   const resultLine = (identifier: string) => params.resultContexts?.get(identifier) ?? identifier;
   const resultLines = (results: string[]) => uniqueStrings(results.map(resultLine));
+  const containsResult = (text: string, identifier: string) => {
+    const context = params.resultContexts?.get(identifier);
+    return context ? text.includes(context) : summaryIncludesIdentifier(text, identifier);
+  };
   const marker = truncatedMarker.trim();
   const pendingAsk = contents[PENDING_ASK_SECTION_INDEX] ?? "";
   const protectedAskContext = latestUnresolvedUserRequest
@@ -299,7 +303,7 @@ export function createSummaryQualityRetentionPlan(
     summaryIncludesIdentifier(summary, identifier),
   );
   const bodyHasResults = auditedResults.every((identifier) =>
-    summaryIncludesIdentifier(contents[RESULTS_SECTION_INDEX] ?? "", identifier),
+    containsResult(contents[RESULTS_SECTION_INDEX] ?? "", identifier),
   );
   const bodyHasRequiredAskContext = latestUnresolvedUserRequest
     ? extractLeadingPendingAsk(parsedSummary) === protectedAskContext
@@ -319,9 +323,7 @@ export function createSummaryQualityRetentionPlan(
       return optional;
     }
     if (index === RESULTS_SECTION_INDEX) {
-      const missing = auditedResults.filter(
-        (identifier) => !summaryIncludesIdentifier(optional, identifier),
-      );
+      const missing = auditedResults.filter((identifier) => !containsResult(optional, identifier));
       return [optional, ...resultLines(missing)].filter(Boolean).join("\n");
     }
     if (index === PENDING_ASK_SECTION_INDEX) {
@@ -400,7 +402,7 @@ export function createSummaryQualityRetentionPlan(
       // The minimum reserved the entire audited tail; a result already in the
       // retained prefix is not appended again, so return its reservation.
       const remainingResults = auditedResults.filter(
-        (identifier) => !summaryIncludesIdentifier(retainedResults, identifier),
+        (identifier) => !containsResult(retainedResults, identifier),
       );
       const recoveredResultChars =
         (protectedTails[RESULTS_SECTION_INDEX]?.length ?? 0) -

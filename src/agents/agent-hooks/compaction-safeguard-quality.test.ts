@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { MAX_COMPACTION_SUMMARY_CHARS } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
 import {
+  AUDITED_IDENTIFIER_CONTENT_SHARE,
   auditSummaryQuality,
   buildCompactionStructureInstructions,
   buildStructuredFallbackSummary,
   createSummaryQualityRetentionPlan,
   extractOpaqueIdentifiers,
   selectAuditedIdentifiers,
+  sourceResultEvidenceContexts,
 } from "./compaction-safeguard-quality.js";
 
 describe("compaction summary quality contract", () => {
@@ -588,6 +590,39 @@ describe("compaction summary quality contract", () => {
       "## Results and evidence\nmeasured 17.3 Hz from /tmp/result.log",
     );
     expect(budgeted?.text.length).toBeLessThanOrEqual(1000);
+  });
+
+  it("requires source correction status even if both measured literals appear in Results", () => {
+    const source = "Correction: 17.3 Hz was invalidated; corrected linewidth is 18.1 Hz.";
+    const summary = [
+      "## Decisions\nKeep measuring.",
+      "## Results and evidence\n17.3 Hz; 18.1 Hz",
+      "## Open TODOs\nNone.",
+      "## Constraints/Rules\nNone.",
+      "## Pending user asks\nNone.",
+      "## Exact identifiers\nNone.",
+    ].join("\n\n");
+    const plan = createSummaryQualityRetentionPlan(summary, "[truncated]", {
+      identifiers: ["17.3 Hz", "18.1 Hz"],
+      resultContexts: new Map([["17.3 Hz", `Source message: ${source}`]]),
+      latestAsk: null,
+    });
+
+    expect(plan?.needsRebuild(1000)).toBe(true);
+    const rendered = plan?.render(1000);
+    expect(rendered?.text).toContain(source);
+    expect(rendered?.text).not.toMatch(/(?:^|\n)17\.3 Hz(?:\n|$)/u);
+  });
+
+  it("bounds a long single-line source while retaining both results and correction status", () => {
+    const source = `Correction: 17.3 Hz was invalidated; corrected linewidth is 18.1 Hz. ${"x".repeat(50_000)}`;
+    const context = sourceResultEvidenceContexts([source], ["17.3 Hz"]).get("17.3 Hz");
+    expect(context?.length).toBeLessThanOrEqual(
+      MAX_COMPACTION_SUMMARY_CHARS * AUDITED_IDENTIFIER_CONTENT_SHARE,
+    );
+    expect(context).toContain("17.3 Hz was invalidated");
+    expect(context).toContain("corrected linewidth is 18.1 Hz");
+    expect(context).not.toContain("x".repeat(1_000));
   });
 
   it("does not demand literal identifiers or artifact paths when policy is off or custom", () => {

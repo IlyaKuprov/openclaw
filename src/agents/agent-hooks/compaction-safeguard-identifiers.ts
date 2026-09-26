@@ -60,18 +60,50 @@ export function extractResultEvidenceAnchors(text: string): string[] {
 export function sourceResultEvidenceContexts(
   messages: readonly string[],
   results: readonly string[],
+  maxChars = MAX_AUDITED_IDENTIFIER_CHARS,
 ): ReadonlyMap<string, string> {
   const contexts = new Map<string, string>();
-  for (const message of messages) {
-    for (const line of message.split(/\r?\n/u)) {
+  const sources = messages.flatMap((message) =>
+    message.split(/\r?\n/u).flatMap((line) => {
       const source = line.trim();
       const matching = results.filter((result) => summaryIncludesIdentifier(source, result));
-      if (matching.length === 0 || extractResultEvidenceAnchors(source).length < 2) {
-        continue;
+      if (matching.length === 0) {
+        return [];
       }
-      for (const result of matching) {
-        contexts.set(result, `Source message: ${source}`);
-      }
+      const anchors = extractResultEvidenceAnchors(source);
+      return anchors.length > 1 ? [{ source, matching, anchors }] : [];
+    }),
+  );
+  const perSourceChars = Math.floor(Math.max(0, maxChars) / Math.max(1, sources.length));
+  for (const { source, matching, anchors } of sources) {
+    const complete = `Source message: ${source}`;
+    const last = anchors.at(-1) ?? "";
+    const lastEnd = source.lastIndexOf(last) + last.length;
+    const sentenceEnd = source.indexOf(". ", lastEnd);
+    const relevantEnd = sentenceEnd < 0 ? lastEnd : sentenceEnd + 1;
+    const excerpt = `Source excerpt: ${source.slice(0, relevantEnd)}`;
+    const separator = " … ";
+    const label = "Source excerpts: ";
+    const perAnchorChars = Math.max(
+      ...anchors.map((anchor) => anchor.length),
+      Math.floor(
+        (perSourceChars - label.length - separator.length * (anchors.length - 1)) / anchors.length,
+      ),
+    );
+    const snippets = anchors.map((anchor) => {
+      const at = source.indexOf(anchor);
+      const before = Math.floor((perAnchorChars - anchor.length) / 2);
+      const start = Math.max(0, at - before);
+      return source.slice(start, start + perAnchorChars);
+    });
+    const context =
+      complete.length <= perSourceChars
+        ? complete
+        : excerpt.length <= perSourceChars
+          ? excerpt
+          : `${label}${snippets.join(separator)}`;
+    for (const result of matching) {
+      contexts.set(result, context);
     }
   }
   return contexts;
