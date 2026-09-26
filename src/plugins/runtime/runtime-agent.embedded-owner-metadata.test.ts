@@ -28,7 +28,7 @@ vi.mock("./runtime-embedded-agent.runtime.js", async (importOriginal) => {
 vi.mock("../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: runCore }));
 
 describe("plugin embedded-agent session authority", () => {
-  it("allows a metadata-only update during lazy load when owner and session identity remain current", async () => {
+  it("allows metadata changes but rejects a same-owner generation change during lazy load", async () => {
     await withOpenClawTestState({ label: "plugin-embedded-owner-metadata" }, async () => {
       const runtime = createPluginRuntime();
       const registry = createEmptyPluginRegistry();
@@ -58,6 +58,36 @@ describe("plugin embedded-agent session authority", () => {
           }),
         registry,
       );
+      const generationSessionKey =
+        "agent:main:internal-session-effects:active-memory:new-generation";
+      const generationSessionId = "new-generation";
+      const generationScope = { agentId, sessionKey: generationSessionKey, storePath };
+      await runtime.agent.session.patchSessionEntry({
+        ...generationScope,
+        fallbackEntry: {
+          sessionId: generationSessionId,
+          pluginOwnerId: "active-memory",
+          lifecycleRevision: "original-generation",
+          updatedAt: 1,
+        },
+        update: (entry) => entry,
+      });
+      const staleGeneration = withPluginRuntimePluginScope(
+        { pluginId: "active-memory" },
+        () =>
+          runtime.agent.runEmbeddedAgent({
+            config: {},
+            prompt: "stale generation",
+            runId: generationSessionId,
+            sessionId: generationSessionId,
+            sessionKey: generationSessionKey,
+            agentId,
+            sessionTarget: { ...generationScope, sessionId: generationSessionId },
+            workspaceDir: "/tmp/workspace",
+            timeoutMs: 1000,
+          }),
+        registry,
+      );
       await importGate.entered;
       await runtime.agent.session.patchSessionEntry({
         ...scope,
@@ -66,8 +96,16 @@ describe("plugin embedded-agent session authority", () => {
       expect(loadExactSessionEntryReadOnly(scope)?.entry?.label).toBe(
         "retitled without changing authority",
       );
+      await runtime.agent.session.patchSessionEntry({
+        ...generationScope,
+        update: () => ({ lifecycleRevision: "replacement-generation" }),
+      });
+      expect(loadExactSessionEntryReadOnly(generationScope)?.entry?.lifecycleRevision).toBe(
+        "replacement-generation",
+      );
       importGate.release();
       await expect(pending).resolves.toEqual({ payloads: [] });
+      await expect(staleGeneration).rejects.toThrow(/owner|session/i);
       expect(runCore).toHaveBeenCalledOnce();
     });
   });
