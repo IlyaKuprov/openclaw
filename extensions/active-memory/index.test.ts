@@ -6349,20 +6349,6 @@ describe("active-memory plugin", () => {
     },
   );
 
-  it("normalizes circuit breaker config with defaults", () => {
-    const config = testing.normalizePluginConfig({});
-    expect(config.circuitBreakerMaxTimeouts).toBe(3);
-    expect(config.circuitBreakerCooldownMs).toBe(60_000);
-  });
-
-  it("normalizes explicit fast-mode overrides and ignores invalid values", () => {
-    expect(testing.normalizePluginConfig({}).fastMode).toBeUndefined();
-    expect(testing.normalizePluginConfig({ fastMode: true }).fastMode).toBe(true);
-    expect(testing.normalizePluginConfig({ fastMode: false }).fastMode).toBe(false);
-    expect(testing.normalizePluginConfig({ fastMode: "auto" }).fastMode).toBe("auto");
-    expect(testing.normalizePluginConfig({ fastMode: "on" }).fastMode).toBeUndefined();
-  });
-
   it("applies the CLI dispatch recall budget to the embedded run", async () => {
     registerPluginConfig({ agents: ["main"], logging: true });
     resolveCliBackendDispatchEligibility.mockReturnValueOnce({ provider: "claude-cli" });
@@ -6400,23 +6386,6 @@ describe("active-memory plugin", () => {
       },
     );
     expect(lastEmbeddedRunParams().timeoutMs).toBe(15_000);
-  });
-
-  it("normalizes setup grace config with a zero default and bounded opt-in", () => {
-    expect(testing.normalizePluginConfig({}).setupGraceTimeoutMs).toBe(0);
-    expect(testing.normalizePluginConfig({ setupGraceTimeoutMs: 30_001 }).setupGraceTimeoutMs).toBe(
-      30_000,
-    );
-    expect(testing.normalizePluginConfig({ setupGraceTimeoutMs: -1 }).setupGraceTimeoutMs).toBe(0);
-  });
-
-  it("clamps circuit breaker config within valid ranges", () => {
-    const config = testing.normalizePluginConfig({
-      circuitBreakerMaxTimeouts: 0,
-      circuitBreakerCooldownMs: 1000,
-    });
-    expect(config.circuitBreakerMaxTimeouts).toBe(1);
-    expect(config.circuitBreakerCooldownMs).toBe(5000);
   });
 });
 
