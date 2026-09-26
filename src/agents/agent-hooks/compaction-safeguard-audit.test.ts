@@ -262,6 +262,69 @@ function expectCompactionResult(result: {
 }
 
 describe("compaction-safeguard quality audit and structured summaries", () => {
+  it.each(["strict", "off"] as const)(
+    "audits original result evidence across a lossy history-prune summary (%s)",
+    async (identifierPolicy) => {
+      mockSummarizeInStages.mockReset();
+      mockSummarizeInStages
+        .mockResolvedValueOnce("## Results and evidence\nNone captured.")
+        .mockResolvedValueOnce(
+          [
+            "## Decisions\nStatus reviewed.",
+            "## Results and evidence\nNone captured.",
+            "## Open TODOs\nReport status.",
+            "## Constraints/Rules\nPreserve evidence.",
+            "## Pending user asks\nReport status.",
+            "## Exact identifiers\nNone captured.",
+          ].join("\n\n"),
+        );
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture({ contextWindow: 2_000 }),
+        maxHistoryShare: 0.5,
+        recentTurnsPreserve: 0,
+        qualityGuardEnabled: true,
+        qualityGuardMaxRetries: 0,
+        identifierPolicy,
+      });
+      const event = {
+        preparation: {
+          messagesToSummarize: [
+            {
+              role: "user",
+              content: `Measured linewidth 17.3 Hz. ${"x".repeat(4_000)}`,
+              timestamp: 1,
+            },
+            { role: "user", content: "y".repeat(4_000), timestamp: 2 },
+            { role: "user", content: "Report status.", timestamp: 3 },
+          ] as AgentMessage[],
+          previousSummary: "## Results and evidence\nMeasured signal 19.2 Hz.",
+          turnPrefixMessages: [] as AgentMessage[],
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 10_000,
+          fileOps: { read: [], edited: [], written: [] },
+          settings: { reserveTokens: 4_000 },
+          summaryTokenBudget: 650,
+          isSplitTurn: false,
+        },
+      };
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "***" });
+      const summary = expectCompactionResult(result).summary;
+      expect(mockSummarizeInStages).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(mockSummarizeInStages.mock.calls[0]?.[0].messages)).toContain(
+        "17.3 Hz",
+      );
+      const resultsSection = summary
+        .split("## Results and evidence\n")[1]
+        ?.split("## Open TODOs")[0];
+      expect(resultsSection).toContain("17.3 Hz");
+      expect(resultsSection).toContain("19.2 Hz");
+      expect(summary.length).toBeLessThanOrEqual(650 * 4);
+      expect(consumeCompactionSafeguardCancellation(sessionManager)).toBeNull();
+    },
+  );
+
   it("extracts opaque identifiers and audits summary quality", () => {
     const identifiers = extractOpaqueIdentifiers(
       "Track id a1b2c3d4e5f6 plus A1B2C3D4E5F6 and URL https://example.com/a and /tmp/x.log plus port host.local:18789",
