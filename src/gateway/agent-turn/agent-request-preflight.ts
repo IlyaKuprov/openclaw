@@ -84,12 +84,13 @@ export function prepareAgentRequestPreflight(params: {
     params.io.emitAcceptance([false, undefined, bareSessionAgent.error]);
     return undefined;
   }
-  const selectedAgentId = requestSessionKey
+  const selectedAgentIdRaw = requestSessionKey
     ? (parsedRequestSessionKey?.agentId ??
       bareSessionAgent?.agentId ??
       normalizeOptionalString(request.agentId) ??
       tryResolveLegacyCompatibilityAgentId(cfg))
     : (normalizeOptionalString(request.agentId) ?? tryResolveLegacyCompatibilityAgentId(cfg));
+  const selectedAgentId = selectedAgentIdRaw ? normalizeAgentId(selectedAgentIdRaw) : undefined;
   const refusal = selectedAgentId ? readAgentDatabaseAdmissionRefusal(selectedAgentId) : undefined;
   if (refusal) {
     params.io.emitAcceptance([

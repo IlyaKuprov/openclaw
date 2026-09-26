@@ -22,6 +22,7 @@ import { updateAuthProfileStoreWithLock } from "../../agents/auth-profiles/store
 import { buildExplicitSessionIdSessionKey } from "../../agents/command/session.js";
 import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
 import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
+import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
 import {
   buildModelAliasIndex,
   canonicalizeCaseOnlyCatalogModelRef,
@@ -621,21 +622,17 @@ export function registerModelCapabilityCommands(capability: Command): void {
         const cfg = getRuntimeConfig();
         const rawAgentId = resolveCapabilityAgentOption(command, opts.agent);
         const agentId = resolveCapabilityProviderAgentId(cfg, rawAgentId);
-        const aliasRef = resolveConfiguredModelAliasRef({
-          raw: target,
-          cfg,
-          agentId,
-        });
+        const aliasRef = resolveConfiguredModelAliasRef({ raw: target, cfg, agentId });
         const catalog = await loadModelCatalogForInspection(cfg, agentId);
-        // A resolved alias names exactly one target: never fall back to reading the
-        // alias text as a catalog id, which could silently report another model.
-        const aliasSeparator = aliasRef?.indexOf("/") ?? -1;
+        // A resolved alias must not fall back to an unrelated catalog ID.
+        const catalogAliasRef = aliasRef ? splitTrailingAuthProfile(aliasRef).model : undefined;
+        const aliasSeparator = catalogAliasRef?.indexOf("/") ?? -1;
         const entry =
-          aliasRef && aliasSeparator > 0
+          catalogAliasRef && aliasSeparator > 0
             ? findModelInCatalog(
                 catalog,
-                aliasRef.slice(0, aliasSeparator),
-                aliasRef.slice(aliasSeparator + 1),
+                catalogAliasRef.slice(0, aliasSeparator),
+                catalogAliasRef.slice(aliasSeparator + 1),
               )
             : (catalog.find((candidate) => `${candidate.provider}/${candidate.id}` === target) ??
               catalog.find((candidate) => candidate.id === target));
