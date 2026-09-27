@@ -147,6 +147,7 @@ export function buildPluginApi(params: BuildPluginApiParams): OpenClawPluginApi 
     registrationMode: params.registrationMode,
     config: params.config,
     pluginConfig: params.pluginConfig,
+    outboundRouteDecisionContract: 1,
     runtime: params.runtime,
     logger: params.logger,
     ...registrations,

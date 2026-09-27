@@ -123,6 +123,7 @@ export async function deliverPrivateCommandReply(params: {
       agentId: params.commandParams.agentId,
       sessionKey: params.commandParams.sessionKey,
       policyConversationType: "direct",
+      ownerPrivateCommandRoute: true,
       mirror: false,
       isGroup: false,
       replyKind: "final",

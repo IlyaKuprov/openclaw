@@ -942,6 +942,54 @@ describe("deliverFollowupDecision", () => {
     }
   });
 
+  it("allows the latest same-channel dispatcher to recover a route failure", async () => {
+    const onBlockReply = vi.fn(async (_payload: ReplyPayload) => {});
+    deliveryState.routeReply.mockReset();
+    deliveryState.routeReply.mockResolvedValue({
+      ok: false,
+      delivered: false,
+      error: "offline",
+    });
+    const turn = createTurn();
+    turn.queued.run.messageProvider = "discord";
+
+    await deliverFollowupDecision({
+      decision: { kind: "deliver", payloads: [{ text: "same-channel reply" }] },
+      turn,
+      defaults: createDefaults(onBlockReply),
+      runId: "run-1",
+      runFollowup: vi.fn(async () => {}),
+    });
+
+    expect(onBlockReply).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "same-channel reply" }),
+    );
+  });
+
+  it("does not use the same-channel dispatcher after host route admission fails", async () => {
+    const onBlockReply = vi.fn(async (_payload: ReplyPayload) => {});
+    deliveryState.routeReply.mockReset().mockResolvedValue({
+      ok: false,
+      delivered: false,
+      routeDecisionControlled: true,
+      error: "outbound_route_decision timed out",
+    });
+    const turn = createTurn();
+    turn.queued.run.messageProvider = "discord";
+
+    await deliverFollowupDecision({
+      decision: { kind: "deliver", payloads: [{ text: "must not fall back" }] },
+      turn,
+      defaults: createDefaults(onBlockReply),
+      runId: "run-1",
+      runFollowup: vi.fn(async () => {}),
+      kind: "block",
+    });
+
+    expect(deliveryState.routeReply).toHaveBeenCalledOnce();
+    expect(onBlockReply).not.toHaveBeenCalled();
+  });
+
   it("keeps block-status delivery out of the assistant transcript", async () => {
     deliveryState.routeReply.mockReset();
     deliveryState.routeReply.mockResolvedValue({ ok: true, delivered: true });

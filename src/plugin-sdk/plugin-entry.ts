@@ -173,6 +173,8 @@ export type {
   PluginHookLocation,
   PluginHookMediaFact,
   PluginHookMessageReceivedEvent,
+  PluginHookOutboundRouteDecisionEvent,
+  PluginHookOutboundRouteDecisionResult,
   PluginHookProviderUpdate,
   PluginHookSkillArtifact,
   PluginHookSkillBundleFile,

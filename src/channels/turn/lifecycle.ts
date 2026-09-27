@@ -53,6 +53,10 @@ import {
   type DurableInboundReplyDeliveryParams,
 } from "./durable-delivery.js";
 import { runPreparedChannelTurnCore } from "./execution.js";
+import {
+  createFinalOutboundRouteDispatch,
+  deliverDecidedFinalOutboundRoute,
+} from "./outbound-route-delivery.js";
 import { applyRouteDmScope } from "./route-dm-scope.js";
 import type {
   AssembledChannelTurn,
@@ -398,6 +402,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
     params.admission?.kind === "observeOnly" ? createObserveOnlyDeliveryAdapter() : params.delivery;
   const pendingDeliveryAttempts: PendingChannelDeliveryAttempt[] = [];
   const normalizationSuppressionAttempts: PendingChannelDeliveryAttempt[] = [];
+  const routeDispatch = createFinalOutboundRouteDispatch(params, delivery.onError);
   let agentRun: [runId?: string, executionIdentityToken?: ExecutionToken] = [];
   const onAgentRunStart = replyPipeline.replyOptions?.onAgentRunStart;
   const replyOptions: NonNullable<AssembledChannelTurn["replyOptions"]> = {
@@ -472,6 +477,33 @@ async function dispatchChannelTurnWithDeliveryOwner(
     info: ChannelDeliveryInfo,
     operation: ChannelDeliveryOperation<T>,
   ): Promise<ChannelDeliveryResult | void> {
+    // The route is chosen once per turn, before source preparation can flush deferred
+    // provider media. Only finals travel on a decided route; intermediate output is
+    // suppressed rather than leaked through the original provider.
+    const outboundRoute =
+      params.admission?.kind === "observeOnly" ? undefined : await routeDispatch.decide(info);
+    if (outboundRoute) {
+      if (info.kind !== "final") {
+        const suppression = createSuppressedChannelDeliveryResult({ reason: "no_visible_result" });
+        await runChannelDeliveryObserver({
+          onDelivered: delivery.onDelivered,
+          payload,
+          info,
+          result: suppression,
+        });
+        return suppression;
+      }
+      const routed = await deliverDecidedFinalOutboundRoute({
+        turn: params,
+        route: outboundRoute,
+        payload,
+        info,
+        executionIdentityToken: agentRun[1],
+      });
+      // Host-owned durable settlement must not invoke the bypassed source adapter's
+      // observer, which can have source-transport side effects.
+      return routed.delivery;
+    }
     const preparedPayloadResult = delivery.preparePayload
       ? await delivery.preparePayload(payload, info)
       : payload;
@@ -665,7 +697,7 @@ async function dispatchChannelTurnWithDeliveryOwner(
                   deliver: (payload: ReplyPayload, info: ChannelDeliveryInfo) =>
                     deliverReply(payload, info, rawOperation),
                   deliverPrepared,
-                  onError: delivery.onError,
+                  onError: routeDispatch.onError,
                 },
                 dispatchReplyFromConfig: params.dispatchReplyFromConfig,
                 toolsAllow: params.toolsAllow,

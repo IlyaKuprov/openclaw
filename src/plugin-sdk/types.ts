@@ -19,4 +19,6 @@ export type {
   PluginHookToolContext,
   PluginHookToolResultPersistEvent,
   PluginHookToolResultPersistResult,
+  PluginHookOutboundRouteDecisionEvent,
+  PluginHookOutboundRouteDecisionResult,
 } from "../plugins/hook-types.js";

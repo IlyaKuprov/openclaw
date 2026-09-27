@@ -193,6 +193,12 @@ export type OpenClawPluginApi = {
   config: OpenClawConfig;
   pluginConfig?: Record<string, unknown>;
   /**
+   * Version of the host-owned `outbound_route_decision` contract: the host dispatches
+   * the hook, validates the request against the persisted session row, and owns
+   * delivery. Plugins that depend on it check this before registering.
+   */
+  readonly outboundRouteDecisionContract: 1;
+  /**
    * In-process runtime helpers for trusted native plugins.
    *
    * This surface is broader than hooks. Prefer hooks for third-party

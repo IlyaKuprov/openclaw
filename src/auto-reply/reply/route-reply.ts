@@ -21,11 +21,13 @@ import {
   isOutboundDeliveryError,
   PlatformMessageNotDispatchedError,
 } from "../../infra/outbound/deliver-types.js";
+import { decideOutboundRoute } from "../../infra/outbound/outbound-route-decision.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import type { OutboundPayloadPlan } from "../../infra/outbound/reply-payload-parts.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { hasReplyPayloadContent } from "../../interactive/payload.js";
 import { normalizeAccountId } from "../../routing/account-id.js";
+import { parseSessionDeliveryRoute } from "../../routing/session-key.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SilentReplyConversationType } from "../../shared/silent-reply-policy.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
@@ -95,6 +97,8 @@ type RouteReplyParams = {
   policySessionKey?: string;
   /** Explicit conversation type for policy resolution when the policy key is generic. */
   policyConversationType?: SilentReplyConversationType;
+  /** Trusted owner-private command route; the session identifies the command, not its DM recipient. */
+  ownerPrivateCommandRoute?: true;
   /** Provider account id (multi-account). */
   accountId?: string;
   /** Originating sender id for sender-scoped outbound media policy. */
@@ -139,6 +143,8 @@ type RouteReplyResult = {
   /** True when the adapter may have sent but returned no delivery identity. */
   ambiguous?: boolean;
   queueCustody?: "held" | "released";
+  /** Host routing owns this outcome; callers must not try an original-surface fallback. */
+  routeDecisionControlled?: true;
   /** True when a hook intentionally suppressed provider delivery. */
   suppressed?: boolean;
   /** Delivery disposition reason when additional caller context is useful. */
@@ -227,25 +233,59 @@ async function routeReplyOperation(
       reason: "reasoning_payload_not_external",
     };
   }
-  const normalizedChannel = normalizeMessageChannel(channel);
-  const channelId =
-    normalizeChannelId(channel) ?? normalizeOptionalLowercaseString(channel) ?? null;
-  const loadedPlugin = channelId ? getLoadedChannelPlugin(channelId) : undefined;
-  const bundledPlugin = channelId && !loadedPlugin ? getBundledChannelPlugin(channelId) : undefined;
-  const messaging = loadedPlugin?.messaging ?? bundledPlugin?.messaging;
-  const threading = loadedPlugin?.threading ?? bundledPlugin?.threading;
   const resolvedAgentId = resolveSessionAgentId({
     sessionKey: params.sessionKey,
     config: cfg,
     fallbackAgentId: params.agentId,
   });
-
+  // Followups may originate elsewhere while their session belongs to a Slack channel.
+  // An owner-private command instead carries an independently resolved DM target;
+  // rerouting by the command's group session would disclose its contents there.
+  let decidedRoute: Awaited<ReturnType<typeof decideOutboundRoute>>;
+  try {
+    decidedRoute =
+      params.sessionKey && !params.ownerPrivateCommandRoute
+        ? await decideOutboundRoute({
+            cfg,
+            agentId: resolvedAgentId,
+            event: {
+              sessionKey: params.sessionKey,
+              original: { channel, to, accountId, threadId },
+            },
+          })
+        : undefined;
+  } catch (error) {
+    const message = `Failed to decide reply route: ${formatErrorMessage(error)}`;
+    return {
+      ok: false,
+      delivered: false,
+      routeDecisionControlled: true,
+      error: message,
+      cause: new PlatformMessageNotDispatchedError(message, { cause: error }),
+    };
+  }
+  const deliveryChannel = decidedRoute?.decision.channel ?? channel;
+  const deliveryTo = decidedRoute?.decision.to ?? to;
+  const deliveryAccountId = decidedRoute?.decision.accountId ?? accountId;
+  const normalizedChannel = normalizeMessageChannel(deliveryChannel);
+  const channelId =
+    normalizeChannelId(deliveryChannel) ??
+    normalizeOptionalLowercaseString(deliveryChannel) ??
+    null;
+  const loadedPlugin = channelId ? getLoadedChannelPlugin(channelId) : undefined;
+  const bundledPlugin = channelId && !loadedPlugin ? getBundledChannelPlugin(channelId) : undefined;
+  const messaging = loadedPlugin?.messaging ?? bundledPlugin?.messaging;
+  const threading = loadedPlugin?.threading ?? bundledPlugin?.threading;
   // Debug: `pnpm test src/auto-reply/reply/route-reply.test.ts`
   const responsePrefix = resolveEffectiveMessagesConfig(cfg, resolvedAgentId, {
     channel: normalizedChannel,
-    accountId,
+    accountId: deliveryAccountId,
   }).responsePrefix;
-  const transformReplyPayload = createChannelReplyTransform({ messaging, cfg, accountId });
+  const transformReplyPayload = createChannelReplyTransform({
+    messaging,
+    cfg,
+    accountId: deliveryAccountId,
+  });
   const normalization = normalizeReplyPayloadOutcome(payload, {
     responsePrefix,
     responsePrefixContext: params.responsePrefixContext,
@@ -305,7 +345,7 @@ async function routeReplyOperation(
     error,
     cause: new PlatformMessageNotDispatchedError(error, { cause: undefined }),
   });
-  if (channel === INTERNAL_MESSAGE_CHANNEL) {
+  if (deliveryChannel === INTERNAL_MESSAGE_CHANNEL) {
     return rejectBeforeSend("Webchat routing not supported for queued replies");
   }
   if (!channelId) {
@@ -327,35 +367,52 @@ async function routeReplyOperation(
           accountId,
         })
       : false;
-  const replyDelivery = payloadPolicyMatchesRoute
-    ? payloadReplyDelivery
-    : (params.replyDelivery ?? payloadReplyDelivery);
-  const replyTransport =
-    threading?.resolveReplyTransport?.({
-      cfg,
-      accountId,
-      threadId,
-      replyToId,
-      currentMessageId: params.currentMessageId,
-      replyToIsExplicit: Boolean(
-        payloadMetadata?.replyToIdExplicit || normalized.replyToTag || normalized.replyToCurrent,
-      ),
-      replyToCurrent: normalized.replyToCurrent,
-      replyDelivery,
-    }) ?? null;
+  const decidedPeerKind = decidedRoute
+    ? parseSessionDeliveryRoute(params.sessionKey)?.peerKind
+    : undefined;
+  const decidedIsGroup = decidedPeerKind === "channel" || decidedPeerKind === "group";
+  const decidedConversationType =
+    decidedPeerKind === "direct" || decidedPeerKind === "dm" ? "direct" : "group";
+  const replyDelivery = decidedRoute
+    ? ({ chatType: decidedConversationType, replyToMode: "off" } as const)
+    : payloadPolicyMatchesRoute
+      ? payloadReplyDelivery
+      : (params.replyDelivery ?? payloadReplyDelivery);
+  const replyTransport = decidedRoute
+    ? null
+    : (threading?.resolveReplyTransport?.({
+        cfg,
+        accountId: deliveryAccountId,
+        threadId,
+        replyToId,
+        currentMessageId: params.currentMessageId,
+        replyToIsExplicit: Boolean(
+          payloadMetadata?.replyToIdExplicit || normalized.replyToTag || normalized.replyToCurrent,
+        ),
+        replyToCurrent: normalized.replyToCurrent,
+        replyDelivery,
+      }) ?? null);
   const resolvedReplyToId =
-    replyTransport?.replyToId === null
+    decidedRoute || replyTransport?.replyToId === null
       ? undefined
       : (replyTransport?.replyToId ?? replyToId ?? undefined);
-  const resolvedThreadId =
-    replyTransport && Object.hasOwn(replyTransport, "threadId")
+  const resolvedThreadId = decidedRoute
+    ? null
+    : replyTransport && Object.hasOwn(replyTransport, "threadId")
       ? (replyTransport.threadId ?? null)
       : (threadId ?? null);
   const inferredReplyTarget = replyTransport?.replyToIdSource === "implicit";
-  const deliveryPayload = copyReplyPayloadMetadata(normalized, {
-    ...externalPayload,
-    replyToId: inferredReplyTarget ? undefined : resolvedReplyToId,
-  });
+  const deliveryPayload = copyReplyPayloadMetadata(
+    normalized,
+    decidedRoute
+      ? {
+          ...externalPayload,
+          replyToId: undefined,
+          replyToCurrent: undefined,
+          replyToTag: undefined,
+        }
+      : { ...externalPayload, replyToId: inferredReplyTarget ? undefined : resolvedReplyToId },
+  );
 
   try {
     // Provider docking: this is an execution boundary (we're about to send).
@@ -369,8 +426,8 @@ async function routeReplyOperation(
       cfg,
       agentId: resolvedAgentId,
       sessionKey: params.sessionKey,
-      policySessionKey: params.policySessionKey,
-      conversationType: params.policyConversationType,
+      policySessionKey: decidedRoute ? params.sessionKey : params.policySessionKey,
+      conversationType: decidedRoute ? decidedConversationType : params.policyConversationType,
       isGroup:
         params.policySessionKey || params.policyConversationType ? undefined : params.isGroup,
       requesterSenderId: params.requesterSenderId,
@@ -381,8 +438,8 @@ async function routeReplyOperation(
     const sendParams = {
       cfg,
       channel: channelId,
-      to,
-      accountId: accountId ?? undefined,
+      to: deliveryTo,
+      accountId: deliveryAccountId ?? undefined,
       replyPayloadSendingHook: {
         kind: params.replyKind,
         channel: channelId,
@@ -390,8 +447,8 @@ async function routeReplyOperation(
         ...(params.runId ? { runId: params.runId } : {}),
         context: {
           channelId,
-          ...(accountId ? { accountId } : {}),
-          conversationId: to,
+          ...(deliveryAccountId ? { accountId: deliveryAccountId } : {}),
+          conversationId: deliveryTo,
           ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
           ...(params.requesterSenderId ? { senderId: params.requesterSenderId } : {}),
           ...(params.runId ? { runId: params.runId } : {}),
@@ -400,6 +457,7 @@ async function routeReplyOperation(
       replyToId: resolvedReplyToId ?? null,
       ...(inferredReplyTarget ? { replyToMode: replyDelivery?.replyToMode ?? "all" } : {}),
       threadId: resolvedThreadId,
+      ...(decidedRoute ? { replyToMode: "off" as const } : {}),
       session: outboundSession,
       signal: abortSignal,
       ...(params.deliveryIntentId
@@ -417,8 +475,15 @@ async function routeReplyOperation(
               agentId: resolvedAgentId,
               text,
               mediaUrls,
-              ...(params.isGroup != null ? { isGroup: params.isGroup } : {}),
-              ...(params.groupId ? { groupId: params.groupId } : {}),
+              ...(decidedRoute
+                ? {
+                    isGroup: decidedIsGroup,
+                    ...(decidedIsGroup ? { groupId: deliveryTo } : {}),
+                  }
+                : {
+                    ...(params.isGroup != null ? { isGroup: params.isGroup } : {}),
+                    ...(params.groupId ? { groupId: params.groupId } : {}),
+                  }),
             }
           : undefined,
     } satisfies Omit<Parameters<typeof sendDurableMessageBatchCore>[0], "payloads">;
@@ -436,7 +501,8 @@ async function routeReplyOperation(
       return {
         ok: false,
         delivered: delivery.delivered,
-        error: `Failed to route reply to ${channel}: ${formatErrorMessage(send.error)}`,
+        ...(decidedRoute ? { routeDecisionControlled: true } : {}),
+        error: `Failed to route reply to ${deliveryChannel}: ${formatErrorMessage(send.error)}`,
         cause: send.error,
         messageId: delivery.messageId,
         ...(!delivery.delivered && durableMessageBatchMayHaveReachedRecipient(send)
@@ -482,13 +548,14 @@ async function routeReplyOperation(
     return {
       ok: false,
       delivered: false,
+      ...(decidedRoute ? { routeDecisionControlled: true } : {}),
       ...(isOutboundDeliveryError(err)
         ? {
             queueCustody: err.queueCustody,
             ...(err.sentBeforeError ? { ambiguous: true } : {}),
           }
         : {}),
-      error: `Failed to route reply to ${channel}: ${message}`,
+      error: `Failed to route reply to ${deliveryChannel}: ${message}`,
       cause: err,
     };
   }

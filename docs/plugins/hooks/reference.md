@@ -99,6 +99,10 @@ The standard runner applies these defaults **per handler**:
 | Other asynchronous hooks, including claim hooks                                                                | No runner timeout unless configured | Log and continue                                                 |
 | `tool_result_persist`, `before_message_write`                                                                  | No asynchronous timeout             | Synchronous errors are logged; failed results are ignored        |
 
+`outbound_route_decision` also has a 15-second per-handler default, but unlike
+content-modifying delivery hooks, it rejects on error or timeout rather than
+falling through to an unverified route.
+
 An emitter can impose a tighter overall lifecycle budget, such as the
 shutdown `session_end` drain below. A timeout only bounds an asynchronous
 await; it cannot interrupt synchronous JavaScript. For a policy requirement,
@@ -159,6 +163,7 @@ contracts above; a modifying hook is not an observation hook.
 | `channel_pairing_requested` | Observe       | Observe newly created DM pairing requests                                  |
 | `message_received`          | Observe       | Observe inbound content, sender, thread, and metadata                      |
 | `message_sending`           | Modify / gate | Rewrite outbound content or cancel delivery                                |
+| `outbound_route_decision`   | Modify / gate | Request a channel-validated root route before host delivery takes custody  |
 | `reply_payload_sending`     | Modify / gate | Mutate or cancel normalized reply payloads before delivery                 |
 | `message_sent`              | Observe       | Observe outbound delivery success or failure                               |
 | `before_dispatch`           | Claim         | Handle an inbound message before the normal model dispatch                 |
