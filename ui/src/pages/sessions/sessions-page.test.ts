@@ -94,6 +94,47 @@ afterEach(() => {
 });
 
 describe("sessions page lifecycle", () => {
+  it.each([
+    {
+      name: "active roster opens on the two-day, twenty-row window",
+      statusFilter: "active" as const,
+      expandedSessionKey: null,
+      expected: { activeMinutes: 2880 as number | undefined, limit: 20 },
+    },
+    {
+      name: "archived view stays unbounded",
+      statusFilter: "archived" as const,
+      expandedSessionKey: null,
+      expected: { limit: 50 },
+    },
+    {
+      name: "session deep link keeps its unbounded search",
+      statusFilter: "active" as const,
+      expandedSessionKey: "agent:main:deep",
+      expected: { limit: 50, search: "agent:main:deep" },
+    },
+  ])("$name", async ({ statusFilter, expandedSessionKey, expected }) => {
+    const { gateway } = createGateway({} as GatewayBrowserClient);
+    const managed = createManagedSessions();
+    const context = createContext(gateway, managed.sessions);
+    await createRenderedPage(
+      context,
+      {
+        ts: Date.now(),
+        path: "",
+        count: 0,
+        defaults: { modelProvider: null, model: null, contextTokens: null },
+        sessions: [],
+      },
+      statusFilter,
+      expandedSessionKey,
+    );
+
+    const query = managed.subscribeList.mock.calls[0]?.[0];
+    expect(query).toMatchObject(expected);
+    expect(query?.activeMinutes).toBe(expected.activeMinutes);
+  });
+
   it("switches between Active and Archived with the route parameter", async () => {
     const { gateway } = createGateway({} as GatewayBrowserClient);
     const context = createContext(gateway, createSessions());

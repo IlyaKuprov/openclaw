@@ -71,6 +71,11 @@ export function sessionProgressTargetQuery(agentId?: string | null): SessionList
  *  field, kept separate from the roster page so tuning one never moves the other. */
 export const SESSIONS_PAGE_DEFAULT_LIMIT = 50;
 
+/** The routed active roster opens compactly: sessions active within the last
+ *  two days, twenty at a time. Archived and all views keep the page default. */
+export const SESSIONS_PAGE_DEFAULT_ACTIVE_MINUTES = 2880;
+export const SESSIONS_PAGE_ROSTER_DEFAULT_LIMIT = 20;
+
 function buildSessionRequestParams(
   key: string,
   agentId?: string | null,

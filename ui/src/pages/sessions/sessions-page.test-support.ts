@@ -11,7 +11,7 @@ import { createSessionArchiveState } from "../../lib/sessions/session-archive-st
 import type { SessionRefreshOptions } from "../../lib/sessions/session-capability.ts";
 import { createSessionRowProvenance } from "../../lib/sessions/session-row-provenance.ts";
 import { sessionMutationGatewayHello } from "../../test-helpers/gateway-methods.ts";
-import { buildSessionsListQuery } from "./list-query.ts";
+import { buildSessionsListQuery, rosterFilterDefaults } from "./list-query.ts";
 import type { SessionsRouteData } from "./route.ts";
 import "./sessions-page.ts";
 
@@ -223,8 +223,10 @@ export async function createRenderedPage(
   statusFilter: "active" | "archived" | "all" = "active",
   expandedSessionKey: string | null = null,
 ): Promise<TestSessionsPage> {
+  const defaults = rosterFilterDefaults(statusFilter);
   const query = buildSessionsListQuery(context, {
-    limit: 50,
+    activeMinutes: Number(defaults.activeMinutes) || undefined,
+    limit: Number(defaults.limit),
     includeGlobal: true,
     includeUnknown: false,
     statusFilter,

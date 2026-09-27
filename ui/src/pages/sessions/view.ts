@@ -56,7 +56,7 @@ import {
 } from "../../lib/sessions/route-navigation.ts";
 import { formatSessionArchiveReason } from "../../lib/sessions/session-archive-reason.ts";
 import { parseAgentSessionKey, parseSessionKeyParts } from "../../lib/sessions/session-key.ts";
-import { SESSIONS_PAGE_DEFAULT_LIMIT } from "../../lib/sessions/session-requests.ts";
+import { rosterFilterDefaults } from "./list-query.ts";
 import { renderTranscriptSearch, type TranscriptSearchProps } from "./transcript-search-view.ts";
 
 export type SessionsProps = TranscriptSearchProps & {
@@ -847,9 +847,10 @@ function renderSessionsAdvancedFilters(props: SessionsProps) {
     key: keyof Parameters<SessionsProps["onFiltersChange"]>[0],
     value: string | boolean,
   ) => props.onFiltersChange({ activeMinutes, limit, includeGlobal, includeUnknown, [key]: value });
+  const defaults = rosterFilterDefaults(props.statusFilter);
   const active =
-    activeMinutes.trim() !== "" ||
-    limit.trim() !== String(SESSIONS_PAGE_DEFAULT_LIMIT) ||
+    activeMinutes.trim() !== defaults.activeMinutes ||
+    limit.trim() !== defaults.limit ||
     !includeGlobal ||
     includeUnknown ||
     props.groupBy !== "none";

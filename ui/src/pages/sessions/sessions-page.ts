@@ -68,7 +68,7 @@ import { runControlUiPluginAction } from "../../plugins/control-ui-actions.ts";
 import { sessionAgentIdentityById, sessionAgentIds } from "./agent-scope.ts";
 import { prepareArchiveOutcome } from "./archive-outcome.ts";
 import { rememberSessionCustomGroup, sessionCategoryNames } from "./custom-groups.ts";
-import { buildSessionsListQuery } from "./list-query.ts";
+import { buildSessionsListQuery, rosterFilterDefaults } from "./list-query.ts";
 import { loadStoredGroupBy, saveStoredGroupBy } from "./page-state.ts";
 import type { SessionsRouteData } from "./route.ts";
 import { renderSessionManagementMenu } from "./session-menu.ts";
@@ -112,8 +112,8 @@ class SessionsPage extends OpenClawLightDomElement {
   @state() private loading = false;
   @state() private refreshing = false;
   @state() private error: string | null = null;
-  @state() private activeMinutes = "";
-  @state() private limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
+  @state() private activeMinutes = rosterFilterDefaults("active").activeMinutes;
+  @state() private limit = rosterFilterDefaults("active").limit;
   @state() private includeGlobal = true;
   @state() private includeUnknown = false;
   @state() private statusFilter: SessionArchivedFilter = "active";
@@ -378,8 +378,7 @@ class SessionsPage extends OpenClawLightDomElement {
       this.page = 0;
       this.selectedKeys = new Set();
     } else {
-      this.activeMinutes = "";
-      this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
+      Object.assign(this, rosterFilterDefaults(data.statusFilter));
       this.includeGlobal = true;
       this.includeUnknown = false;
     }
@@ -1494,8 +1493,7 @@ class SessionsPage extends OpenClawLightDomElement {
           deleteSelectedDisabledReason: this.selectedDeleteDisabledReason(),
           onFiltersChange: (next) => this.updateFilters(next),
           onClearFilters: () => {
-            this.activeMinutes = "";
-            this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
+            Object.assign(this, rosterFilterDefaults(this.statusFilter));
             this.includeGlobal = true;
             this.includeUnknown = false;
             this.searchQuery = "";

@@ -73,10 +73,11 @@ suite.define(() => {
       .filter({ hasText: "All agents" })
       .evaluate((item) => (item as HTMLElement).click());
     const allAgentsQuery = {
+      activeMinutes: 2880,
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: false,
-      limit: 50,
+      limit: 20,
     };
     await expect
       .poll(async () =>
@@ -122,11 +123,12 @@ suite.define(() => {
   it("keeps the Sessions page query stable when the startup roster completes", async () => {
     const visibleLabel = "Visible page-owned session";
     const pageQueryParams = {
+      activeMinutes: 2880,
       agentId: "main",
       configuredAgentsOnly: true,
       includeGlobal: true,
       includeUnknown: false,
-      limit: 50,
+      limit: 20,
     };
     const visibleResponse = {
       count: 1,
@@ -291,14 +293,13 @@ suite.define(() => {
       (request) =>
         (request.params as { includeUnknown?: unknown } | undefined)?.includeUnknown === false,
     )?.params as Record<string, unknown> | undefined;
-    expect(initialPageParams).toMatchObject({ limit: 50 });
-    expect(initialPageParams).not.toHaveProperty("activeMinutes");
+    expect(initialPageParams).toMatchObject({ activeMinutes: 2880, limit: 20 });
 
     await openSessionFilters(currentPage);
     const activeMinutes = sessionsPage.getByLabel("Updated within");
     const limit = sessionsPage.getByLabel("Limit");
-    await expect.poll(() => activeMinutes.inputValue()).toBe("");
-    await expect.poll(() => limit.inputValue()).toBe("50");
+    await expect.poll(() => activeMinutes.inputValue()).toBe("2880");
+    await expect.poll(() => limit.inputValue()).toBe("20");
 
     let requestCount = initialPageRequests.length;
     await activeMinutes.fill("60");
@@ -308,7 +309,7 @@ suite.define(() => {
     const filteredParams = (await gateway.getRequests("sessions.list")).at(-1)?.params as
       | Record<string, unknown>
       | undefined;
-    expect(filteredParams).toMatchObject({ activeMinutes: 60, limit: 50 });
+    expect(filteredParams).toMatchObject({ activeMinutes: 60, limit: 20 });
     await expect.poll(() => sessionsPage.getByText(sessionLabel, { exact: true }).count()).toBe(0);
 
     requestCount = (await gateway.getRequests("sessions.list")).length;
@@ -320,10 +321,9 @@ suite.define(() => {
     const resetParams = (await gateway.getRequests("sessions.list")).at(-1)?.params as
       | Record<string, unknown>
       | undefined;
-    expect(resetParams).toMatchObject({ includeUnknown: false, limit: 50 });
-    expect(resetParams).not.toHaveProperty("activeMinutes");
-    await expect.poll(() => activeMinutes.inputValue()).toBe("");
-    await expect.poll(() => limit.inputValue()).toBe("50");
+    expect(resetParams).toMatchObject({ includeUnknown: false, activeMinutes: 2880, limit: 20 });
+    await expect.poll(() => activeMinutes.inputValue()).toBe("2880");
+    await expect.poll(() => limit.inputValue()).toBe("20");
   });
 
   it("omits noncanonical numeric filters from sessions.list requests", async () => {

@@ -140,7 +140,7 @@ describe("sessions page managed roster", () => {
       await vi.waitFor(() =>
         expect(request).toHaveBeenCalledWith(
           "sessions.list",
-          expect.objectContaining({ search: "server-only metadata", limit: 50 }),
+          expect.objectContaining({ search: "server-only metadata", limit: 20 }),
         ),
       );
       await vi.waitFor(() => expect(page.result?.sessions).toHaveLength(50));
@@ -153,7 +153,7 @@ describe("sessions page managed roster", () => {
       await vi.waitFor(() => expect(page.result?.sessions).toHaveLength(57));
       expect(request).toHaveBeenCalledWith(
         "sessions.list",
-        expect.objectContaining({ search: "server-only metadata", offset: 50, limit: 50 }),
+        expect.objectContaining({ search: "server-only metadata", offset: 50, limit: 20 }),
       );
       await page.updateComplete;
       button("Next").click();
@@ -361,7 +361,8 @@ describe("sessions page managed roster", () => {
     await vi.waitFor(() => expect(managed.subscribeList).toHaveBeenCalledOnce());
     const selectedQuery = vi.mocked(managed.subscribeList).mock.calls[0]?.[0];
     expect(selectedQuery).toEqual({
-      limit: 50,
+      activeMinutes: 2880,
+      limit: 20,
       includeGlobal: true,
       includeUnknown: false,
       includeDerivedTitles: false,
