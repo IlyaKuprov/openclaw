@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { validateSlackSessionRoutePeer } from "../../../extensions/slack/src/outbound-route-peer.js";
+import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createHookRunnerWithRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
@@ -12,6 +12,17 @@ import {
   expectDispatched,
   type DurableSendRequest,
 } from "./run-channel-turn.delivery.test-helpers.js";
+
+// Stand-in for a channel's outbound.validateSessionRoutePeer (Slack shape: channel:<ID>).
+const validateChannelRoutePeer = ({
+  peerKind,
+  peerId,
+  to,
+}: {
+  peerKind: string;
+  peerId: string;
+  to: string;
+}) => peerKind === "channel" && to === `channel:${peerId.toUpperCase()}`;
 
 const loadExactSessionEntryReadOnly = vi.hoisted(() => vi.fn());
 const getGlobalHookRunner = vi.hoisted(() => vi.fn());
@@ -76,7 +87,7 @@ function createMultiStageDispatch(kinds: Array<"block" | "tool" | "final">) {
 }
 
 describe("channel lifecycle outbound route decision", () => {
-  let decide: ReturnType<typeof vi.fn>;
+  let decide: ReturnType<typeof vi.fn<(...args: unknown[]) => unknown>>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -89,7 +100,7 @@ describe("channel lifecycle outbound route decision", () => {
             id: "slack",
             outbound: {
               deliveryMode: "direct",
-              validateSessionRoutePeer: validateSlackSessionRoutePeer,
+              validateSessionRoutePeer: validateChannelRoutePeer,
             },
           }),
         },
@@ -125,7 +136,7 @@ describe("channel lifecycle outbound route decision", () => {
       createMultiStageDispatch(["final"]),
     );
     const direct = vi.fn(async () => ({ messageIds: ["wrong-surface"] }));
-    const preparePayload = vi.fn(async (payload: unknown) => payload);
+    const preparePayload = vi.fn(async (payload: ReplyPayload) => payload);
     const onError = vi.fn();
 
     const result = await dispatchRoutedChannelTurn({

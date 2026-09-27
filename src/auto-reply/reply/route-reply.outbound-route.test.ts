@@ -1,6 +1,5 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { validateSlackSessionRoutePeer } from "../../../extensions/slack/src/outbound-route-peer.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { installDeliveryQueueTmpDirHooks } from "../../infra/outbound/delivery-queue.test-helpers.js";
 import { createHookRunnerWithRegistry } from "../../plugins/hooks.test-fixtures.js";
@@ -9,6 +8,17 @@ import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../p
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { routeReply } from "./route-reply.js";
+
+// Stand-in for a channel's outbound.validateSessionRoutePeer (Slack shape: channel:<ID>).
+const validateChannelRoutePeer = ({
+  peerKind,
+  peerId,
+  to,
+}: {
+  peerKind: string;
+  peerId: string;
+  to: string;
+}) => peerKind === "channel" && to === `channel:${peerId.toUpperCase()}`;
 
 const mocks = vi.hoisted(() => ({
   deliverOutboundPayloads: vi.fn(),
@@ -43,7 +53,7 @@ function lastDelivery(): Record<string, unknown> {
 describe("routeReply host outbound route decision", () => {
   const fixtures = installDeliveryQueueTmpDirHooks();
   let cfg: { session: { store: string } };
-  let decide: ReturnType<typeof vi.fn>;
+  let decide: ReturnType<typeof vi.fn<(...args: unknown[]) => unknown>>;
 
   beforeEach(async () => {
     const stateDir = fixtures.tmpDir();
@@ -64,6 +74,7 @@ describe("routeReply host outbound route decision", () => {
             thread: { id: threadId },
           },
           context: { ...canonical, threadId },
+          origin: { provider: "slack", surface: "slack", chatType: "channel", to: canonical.to },
         },
       },
     );
@@ -82,7 +93,7 @@ describe("routeReply host outbound route decision", () => {
             id: "slack",
             outbound: {
               deliveryMode: "direct",
-              validateSessionRoutePeer: validateSlackSessionRoutePeer,
+              validateSessionRoutePeer: validateChannelRoutePeer,
               sendText: async () => ({ channel: "slack", messageId: "unused" }),
             },
           }),
