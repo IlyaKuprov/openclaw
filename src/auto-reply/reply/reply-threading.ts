@@ -161,7 +161,11 @@ export function createReplyDeliveryContext(
   };
 }
 
-function suppressReplyTarget(payload: ReplyPayload): ReplyPayload {
+/**
+ * Strip every reply target and mark the payload so later payload hooks cannot
+ * reintroduce one; the marker travels with the payload through preparation.
+ */
+export function suppressReplyTarget(payload: ReplyPayload): ReplyPayload {
   return setReplyPayloadMetadata(
     copyReplyPayloadMetadata(payload, {
       ...payload,

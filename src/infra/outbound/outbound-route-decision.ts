@@ -13,6 +13,18 @@ export type DecidedOutboundRoute = {
   decision: PluginHookOutboundRouteDecisionResult;
 };
 
+const PROOF_FIELDS = ["sessionKey", "channel", "to", "accountId", "threadId"] as const;
+
+function sameRouteProof(
+  before: PersistedOutboundRouteProof | undefined,
+  after: PersistedOutboundRouteProof | undefined,
+): boolean {
+  if (!before || !after) {
+    return before === after;
+  }
+  return PROOF_FIELDS.every((field) => before[field] === after[field]);
+}
+
 /**
  * Ask registered plugins for a route decision and validate it against the exact
  * persisted session row. Returns undefined when no plugin is registered or no
@@ -33,27 +45,37 @@ export async function decideOutboundRoute(params: {
     params.storePath ??
     resolveSessionStorePathCore(params.cfg.session?.store, { agentId: params.agentId });
   // This is an exact physical-row probe, never an alias or a last-channel inference.
-  const stored = loadExactSessionEntryReadOnly({
-    sessionKey: params.event.sessionKey,
-    storePath,
-    agentId: params.agentId,
-  });
-  let persisted: PersistedOutboundRouteProof | undefined;
-  if (stored) {
+  const readPersisted = (): PersistedOutboundRouteProof | undefined => {
+    const stored = loadExactSessionEntryReadOnly({
+      sessionKey: params.event.sessionKey,
+      storePath,
+      agentId: params.agentId,
+    });
+    if (!stored) {
+      return undefined;
+    }
     const context = deliveryContextFromSession(stored.entry);
-    persisted = {
+    return {
       sessionKey: stored.sessionKey,
       channel: context?.channel,
       to: context?.to,
       accountId: context?.accountId,
       threadId: context?.threadId,
     };
-  }
+  };
+  const persisted = readPersisted();
   const requested = await runner.runOutboundRouteDecision(
     params.event,
     { channelId: persisted?.channel ?? "" },
     persisted,
     getChannelPlugin(persisted?.channel ?? "")?.outbound?.validateSessionRoutePeer,
   );
-  return requested ? { decision: requested } : undefined;
+  if (!requested) {
+    return undefined;
+  }
+  // Handlers may run for seconds; the row the decision was proven against must still hold.
+  if (!sameRouteProof(persisted, readPersisted())) {
+    throw new Error("outbound route decision is stale: persisted session route changed");
+  }
+  return { decision: requested };
 }

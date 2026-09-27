@@ -1,17 +1,20 @@
 // Host-owned route decision and durable delivery for inbound final replies.
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
-import { copyReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
+import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
+import { suppressReplyTarget } from "../../auto-reply/reply/reply-threading.js";
 import {
   deriveInboundMessageHookContext,
   resolveInboundReplyHookTarget,
 } from "../../hooks/message-hook-mappers.js";
+import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
 import {
   decideOutboundRoute,
   type DecidedOutboundRoute,
 } from "../../infra/outbound/outbound-route-decision.js";
 import { parseSessionDeliveryRoute } from "../../routing/session-key.js";
 import {
-  deliverInboundReplyWithMessageSendContextCore,
+  type deliverInboundReplyWithMessageSendContextCore,
+  type DurableInboundReplyDeliveryParams,
   isDurableInboundReplyDeliveryHandled,
   throwIfDurableInboundReplyDeliveryFailed,
 } from "./durable-delivery.js";
@@ -81,13 +84,21 @@ export function createFinalOutboundRouteDispatch(
   };
 }
 
-/** A decided route has no direct/provider fallback, including unsupported durable preflight. */
+/**
+ * Deliver a final on its decided route through the caller's own durable owner, so
+ * that structured plans survive. A decided route has no direct or provider fallback,
+ * including an unsupported durable preflight.
+ */
 export async function deliverDecidedFinalOutboundRoute(params: {
   turn: OutboundRouteTurn;
   route: DecidedOutboundRoute;
   payload: ReplyPayload;
   info: ChannelDeliveryInfo;
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
+  deliverDurable: (
+    payload: ReplyPayload,
+    context: Omit<DurableInboundReplyDeliveryParams, "payload">,
+  ) => ReturnType<typeof deliverInboundReplyWithMessageSendContextCore>;
 }): Promise<{ payload: ReplyPayload; delivery: ChannelDeliveryResult }> {
   const { turn, route, payload, info } = params;
   const { decision } = route;
@@ -99,15 +110,14 @@ export async function deliverDecidedFinalOutboundRoute(params: {
   }
   const destinationChatType =
     destinationPeer.peerKind === "dm" ? "direct" : destinationPeer.peerKind;
-  const { replyToId: _inheritedReplyToId, ...withoutReply } = payload;
-  const rootedPayload = copyReplyPayloadMetadata(payload, withoutReply);
-  const routed = await deliverInboundReplyWithMessageSendContextCore({
+  // Owner-held suppression: the root decision survives reply_payload_sending hooks.
+  const rootedPayload = suppressReplyTarget(payload);
+  const routed = await params.deliverDurable(rootedPayload, {
     cfg: turn.cfg,
     channel: decision.channel,
     accountId: decision.accountId,
     agentId: turn.agentId,
     ctxPayload: { ...turn.ctxPayload, ChatType: destinationChatType },
-    payload: rootedPayload,
     info,
     executionIdentityToken: params.executionIdentityToken,
     to: decision.to,
@@ -117,8 +127,12 @@ export async function deliverDecidedFinalOutboundRoute(params: {
   });
   throwIfDurableInboundReplyDeliveryFailed(routed);
   if (!isDurableInboundReplyDeliveryHandled(routed)) {
-    throw new Error(
-      `outbound route decision cannot deliver via ${decision.channel}: ${"reason" in routed ? routed.reason : routed.status}`,
+    // Nothing reached the platform: report it as a pre-dispatch refusal so the
+    // lifecycle classifies it like any other undelivered final.
+    const reason = "reason" in routed ? routed.reason : "unsupported";
+    throw new PlatformMessageNotDispatchedError(
+      `outbound route decision cannot deliver via ${decision.channel}: ${reason}`,
+      { cause: new Error(reason), retryable: false },
     );
   }
   return { payload: rootedPayload, delivery: routed.delivery };

@@ -11,6 +11,7 @@ import type { FollowupRun } from "./queue/types.js";
 const deliveryState = vi.hoisted(() => ({
   followupRoute: undefined as { route: "dispatcher" | "origin" | "drop" } | undefined,
   routeReply: vi.fn(),
+  hasRouteDecisionHook: false,
   runtimeError: vi.fn(),
   enqueue: vi.fn(),
 }));
@@ -34,6 +35,13 @@ vi.mock("../../agents/runtime-plan/build.js", () => ({
 
 vi.mock("../../runtime.js", () => ({
   defaultRuntime: { error: (...args: unknown[]) => deliveryState.runtimeError(...args) },
+}));
+
+vi.mock("../../plugins/hook-runner-global.js", () => ({
+  getGlobalHookRunner: () => ({
+    hasHooks: (name: string) =>
+      name === "outbound_route_decision" && deliveryState.hasRouteDecisionHook,
+  }),
 }));
 
 vi.mock("./route-reply.js", () => ({
@@ -987,6 +995,36 @@ describe("deliverFollowupDecision", () => {
     });
 
     expect(deliveryState.routeReply).toHaveBeenCalledOnce();
+    expect(onBlockReply).not.toHaveBeenCalled();
+  });
+
+  it("offers a webchat-origin followup to host route admission when a route hook is registered", async () => {
+    const onBlockReply = vi.fn(async (_payload: ReplyPayload) => {});
+    deliveryState.hasRouteDecisionHook = true;
+    deliveryState.routeReply.mockReset().mockResolvedValue({ ok: true, delivered: true });
+    const turn = createTurn();
+    turn.queued.originatingChannel = "webchat";
+    turn.queued.originatingTo = "webchat-client";
+    turn.queued.run.messageProvider = "webchat";
+
+    try {
+      await deliverFollowupDecision({
+        decision: { kind: "deliver", payloads: [{ text: "final" }] },
+        turn,
+        defaults: createDefaults(onBlockReply),
+        runId: "run-1",
+        runFollowup: vi.fn(async () => {}),
+        kind: "final",
+      });
+    } finally {
+      deliveryState.hasRouteDecisionHook = false;
+    }
+
+    expect(deliveryState.routeReply).toHaveBeenCalledOnce();
+    expect(deliveryState.routeReply.mock.calls[0]?.[0]).toMatchObject({
+      channel: "webchat",
+      to: "webchat-client",
+    });
     expect(onBlockReply).not.toHaveBeenCalled();
   });
 

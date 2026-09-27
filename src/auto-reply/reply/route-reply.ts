@@ -44,6 +44,7 @@ import {
   formatBtwTextForExternalDelivery,
   shouldSuppressReasoningPayload,
 } from "./reply-payloads.js";
+import { suppressReplyTarget } from "./reply-threading.js";
 import type { ResponsePrefixContext } from "./response-prefix-template.js";
 
 const messageRuntimeLoader = createLazyImportLoader(
@@ -206,6 +207,16 @@ function summarizeVisibleRouteReplyDelivery(
  * back to the originating channel when OriginatingChannel/OriginatingTo
  * are set.
  */
+/** `kind:ID` targets project to `ID` when the id is the session peer; other targets pass through. */
+function nativePeerIdFromTarget(to: string, peerId: string | undefined): string {
+  const separator = to.indexOf(":");
+  if (!peerId || separator <= 0) {
+    return to;
+  }
+  const candidate = to.slice(separator + 1);
+  return candidate.toLowerCase() === peerId.toLowerCase() ? candidate : to;
+}
+
 export async function routeReply(params: RouteReplyParams): Promise<RouteReplyResult> {
   const { payload, ...route } = params;
   return await routeReplyOperation(route, { kind: "raw", payload });
@@ -243,8 +254,10 @@ async function routeReplyOperation(
   // rerouting by the command's group session would disclose its contents there.
   let decidedRoute: Awaited<ReturnType<typeof decideOutboundRoute>>;
   try {
+    // An already-cancelled reply must not run plugin route handlers; the
+    // pre-send cancellation check below rejects it.
     decidedRoute =
-      params.sessionKey && !params.ownerPrivateCommandRoute
+      params.sessionKey && !params.ownerPrivateCommandRoute && !abortSignal?.aborted
         ? await decideOutboundRoute({
             cfg,
             agentId: resolvedAgentId,
@@ -266,7 +279,9 @@ async function routeReplyOperation(
   }
   const deliveryChannel = decidedRoute?.decision.channel ?? channel;
   const deliveryTo = decidedRoute?.decision.to ?? to;
-  const deliveryAccountId = decidedRoute?.decision.accountId ?? accountId;
+  // A decision's account is used verbatim, including undefined: the originating
+  // surface's account has no meaning on the decided channel.
+  const deliveryAccountId = decidedRoute ? decidedRoute.decision.accountId : accountId;
   const normalizedChannel = normalizeMessageChannel(deliveryChannel);
   const channelId =
     normalizeChannelId(deliveryChannel) ??
@@ -367,10 +382,14 @@ async function routeReplyOperation(
           accountId,
         })
       : false;
-  const decidedPeerKind = decidedRoute
-    ? parseSessionDeliveryRoute(params.sessionKey)?.peerKind
-    : undefined;
+  const decidedPeer = decidedRoute ? parseSessionDeliveryRoute(params.sessionKey) : undefined;
+  const decidedPeerKind = decidedPeer?.peerKind;
   const decidedIsGroup = decidedPeerKind === "channel" || decidedPeerKind === "group";
+  // Mirror records carry the native conversation id, as channel monitors pass it,
+  // not the transport target form (`channel:C123`).
+  const decidedGroupId = decidedIsGroup
+    ? nativePeerIdFromTarget(deliveryTo, decidedPeer?.peerId)
+    : undefined;
   const decidedConversationType =
     decidedPeerKind === "direct" || decidedPeerKind === "dm" ? "direct" : "group";
   const replyDelivery = decidedRoute
@@ -402,17 +421,14 @@ async function routeReplyOperation(
       ? (replyTransport.threadId ?? null)
       : (threadId ?? null);
   const inferredReplyTarget = replyTransport?.replyToIdSource === "implicit";
-  const deliveryPayload = copyReplyPayloadMetadata(
-    normalized,
-    decidedRoute
-      ? {
-          ...externalPayload,
-          replyToId: undefined,
-          replyToCurrent: undefined,
-          replyToTag: undefined,
-        }
-      : { ...externalPayload, replyToId: inferredReplyTarget ? undefined : resolvedReplyToId },
-  );
+  // A decided root route carries owner-held suppression so that later payload
+  // hooks cannot reintroduce a reply target.
+  const deliveryPayload = decidedRoute
+    ? suppressReplyTarget(copyReplyPayloadMetadata(normalized, externalPayload))
+    : copyReplyPayloadMetadata(normalized, {
+        ...externalPayload,
+        replyToId: inferredReplyTarget ? undefined : resolvedReplyToId,
+      });
 
   try {
     // Provider docking: this is an execution boundary (we're about to send).
@@ -478,7 +494,7 @@ async function routeReplyOperation(
               ...(decidedRoute
                 ? {
                     isGroup: decidedIsGroup,
-                    ...(decidedIsGroup ? { groupId: deliveryTo } : {}),
+                    ...(decidedGroupId ? { groupId: decidedGroupId } : {}),
                   }
                 : {
                     ...(params.isGroup != null ? { isGroup: params.isGroup } : {}),

@@ -97,6 +97,9 @@ validated decision in `routeReply` and in channel-turn final delivery: the reply
 is sent to the decided target at the conversation root with reply threading off,
 intermediate (non-final) channel-turn output is suppressed, and a rejected or
 failed decision stops delivery without falling back to the original surface.
+The payload itself is the one the originating surface's dispatcher produced: response
+prefix, chunking, and other channel-specific normalization are those of the source
+channel, not re-applied for the decided channel.
 
 For audio-only TTS replies, `content` may contain the hidden spoken
 transcript even when the channel payload has no visible text/caption.

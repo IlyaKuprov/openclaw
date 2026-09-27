@@ -54,6 +54,13 @@ describe("routeReply host outbound route decision", () => {
   const fixtures = installDeliveryQueueTmpDirHooks();
   let cfg: { session: { store: string } };
   let decide: ReturnType<typeof vi.fn<(...args: unknown[]) => unknown>>;
+  let extraHooks: Array<{ hookName: string; handler: (...args: unknown[]) => unknown }>;
+  const installRunner = () => {
+    mocks.hookRunner = createHookRunnerWithRegistry([
+      { hookName: "outbound_route_decision", handler: decide, pluginId: "slack-thread-guard" },
+      ...extraHooks.map((hook) => ({ ...hook, pluginId: "other-plugin" })),
+    ]).runner;
+  };
 
   beforeEach(async () => {
     const stateDir = fixtures.tmpDir();
@@ -80,6 +87,7 @@ describe("routeReply host outbound route decision", () => {
     );
     decide = vi.fn(() => rootDecision);
     // A real hook runner: the plugin's request passes through host validation.
+    extraHooks = [];
     mocks.hookRunner = createHookRunnerWithRegistry([
       { hookName: "outbound_route_decision", handler: decide, pluginId: "slack-thread-guard" },
     ]).runner;
@@ -249,5 +257,67 @@ describe("routeReply host outbound route decision", () => {
     expect(decide).not.toHaveBeenCalled();
     expect(result).toMatchObject({ ok: true, delivered: true });
     expect(lastDelivery()).toMatchObject({ channel: "telegram", to: "owner-dm" });
+  });
+  it("keeps the root even when a later payload hook reintroduces a reply target", async () => {
+    extraHooks.push({
+      hookName: "reply_payload_sending",
+      handler: (event) => ({
+        payload: { ...(event as { payload: object }).payload, replyToId: "1712345678.424242" },
+      }),
+    });
+    installRunner();
+    const result = await routeReply({
+      cfg: cfg as never,
+      sessionKey,
+      channel: "slack",
+      to: canonical.to,
+      accountId: canonical.accountId,
+      threadId,
+      replyKind: "final",
+      payload: { text: "hook tries to thread" },
+    });
+
+    expect(result).toMatchObject({ ok: true, delivered: true });
+    const payloads = lastDelivery().payloads as Array<{ replyToId?: string }>;
+    expect(payloads[0]?.replyToId).toBeUndefined();
+    expect(lastDelivery()).toMatchObject({ threadId: null, replyToId: null });
+  });
+
+  it("rejects a decision whose persisted row changed while the plugin was deciding", async () => {
+    decide.mockImplementation(async () => {
+      await replaceSessionEntry(
+        { agentId: "main", sessionKey, storePath: cfg.session.store },
+        {
+          sessionId: "route-owner",
+          updatedAt: Date.now(),
+          delivery: {
+            kind: "external",
+            route: { channel: "slack", accountId: "other", target: { to: "channel:C999" } },
+            context: { channel: "slack", to: "channel:C999", accountId: "other" },
+            origin: {
+              provider: "slack",
+              surface: "slack",
+              chatType: "channel",
+              to: "channel:C999",
+            },
+          },
+        },
+      );
+      return rootDecision;
+    });
+    const result = await routeReply({
+      cfg: cfg as never,
+      sessionKey,
+      channel: "slack",
+      to: canonical.to,
+      accountId: canonical.accountId,
+      threadId,
+      replyKind: "final",
+      payload: { text: "row moved underneath" },
+    });
+
+    expect(result).toMatchObject({ ok: false, delivered: false, routeDecisionControlled: true });
+    expect(result.error).toContain("stale");
+    expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalled();
   });
 });

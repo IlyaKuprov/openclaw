@@ -13,6 +13,7 @@ import {
 } from "../../agents/reply-completion.js";
 import { buildAgentRuntimeDeliveryPlan } from "../../agents/runtime-plan/build.js";
 import { logVerbose } from "../../globals.js";
+import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { defaultRuntime } from "../../runtime.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
@@ -390,7 +391,17 @@ async function sendFollowupPayloads(params: {
 }): Promise<ReplyPayload[]> {
   const { turn, defaults } = params;
   const { originatingChannel, originatingTo } = turn.queued;
-  const originRoutable = Boolean(isRoutableChannel(originatingChannel) && originatingTo);
+  // A registered outbound_route_decision hook may move a non-routable origin such
+  // as webchat onto the session's decided channel, so routeReply must see it first;
+  // an undecided route still fails there and falls back to the dispatcher below.
+  const routeDecisionMayApply = Boolean(
+    turn.queued.run.sessionKey && getGlobalHookRunner()?.hasHooks("outbound_route_decision"),
+  );
+  const originRoutable = Boolean(
+    originatingChannel &&
+    originatingTo &&
+    (isRoutableChannel(originatingChannel) || routeDecisionMayApply),
+  );
   const deliveryPlan = buildAgentRuntimeDeliveryPlan({
     provider: params.resolved?.provider ?? turn.queued.run.provider,
     modelId: params.resolved?.model ?? turn.queued.run.model,
@@ -464,7 +475,7 @@ async function sendFollowupPayloads(params: {
     await typing.signalTextDelta(payload.text);
     if (route !== "origin") {
       await dispatchPayload(payload);
-    } else if (isRoutableChannel(originatingChannel) && originatingTo) {
+    } else if (originRoutable && originatingChannel && originatingTo) {
       const metadata = getReplyPayloadMetadata(payload);
       const result = await routeReply({
         payload,

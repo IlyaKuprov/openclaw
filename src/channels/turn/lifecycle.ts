@@ -499,6 +499,18 @@ async function dispatchChannelTurnWithDeliveryOwner(
         payload,
         info,
         executionIdentityToken: agentRun[1],
+        // The caller's durable owner keeps prepared plans intact on the decided route.
+        deliverDurable: (rootedPayload, context) => {
+          const preparedValue = operation.prepare(rootedPayload);
+          if (!preparedValue) {
+            return Promise.resolve({
+              status: "handled_no_send" as const,
+              reason: "no_visible_result" as const,
+              delivery: createSuppressedChannelDeliveryResult({ reason: "no_visible_payload" }),
+            });
+          }
+          return operation.deliverDurable(preparedValue, context);
+        },
       });
       // Host-owned durable settlement must not invoke the bypassed source adapter's
       // observer, which can have source-transport side effects.
