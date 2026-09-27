@@ -291,4 +291,53 @@ describe("channel lifecycle outbound route decision", () => {
     expect(sendDurableMessageBatch).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
   });
+  it("rejects a final whose persisted route moved after the turn's early decision", async () => {
+    dispatchReplyWithRoutedChannelDispatcherCore.mockImplementation(
+      createMultiStageDispatch(["block", "final"]),
+    );
+    // The block decides the route; before the final takes custody the row is re-pointed.
+    decide.mockImplementation(() => {
+      loadExactSessionEntryReadOnly.mockReturnValueOnce({
+        sessionKey: slackSessionKey,
+        entry: {
+          delivery: {
+            kind: "external",
+            route: { channel: "slack", accountId: "work", target: { to: "channel:C123" } },
+            context: { ...slackRoute, threadId: "1712345678.123456" },
+          },
+        },
+      });
+      loadExactSessionEntryReadOnly.mockReturnValue({
+        sessionKey: slackSessionKey,
+        entry: {
+          delivery: {
+            kind: "external",
+            route: { channel: "slack", accountId: "other", target: { to: "channel:C999" } },
+            context: { channel: "slack", to: "channel:C999", accountId: "other" },
+          },
+        },
+      });
+      return { ...slackRoute, threadPolicy: "root" as const };
+    });
+    const direct = vi.fn(async () => ({ messageIds: ["wrong-surface"] }));
+
+    await expect(
+      dispatchRoutedChannelTurn({
+        cfg,
+        channel: "slack",
+        accountId: "work",
+        route: { agentId: "main", sessionKey: slackSessionKey },
+        ctxPayload: createCtx({
+          SessionKey: slackSessionKey,
+          Surface: "slack",
+          OriginatingTo: "channel:C123",
+          MessageThreadId: "1712345678.123456",
+        }),
+        delivery: { deliver: direct },
+      }),
+    ).rejects.toThrow("stale");
+
+    expect(direct).not.toHaveBeenCalled();
+    expect(sendDurableMessageBatch).not.toHaveBeenCalled();
+  });
 });

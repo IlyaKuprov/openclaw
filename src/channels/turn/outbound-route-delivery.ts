@@ -110,6 +110,8 @@ export async function deliverDecidedFinalOutboundRoute(params: {
   }
   const destinationChatType =
     destinationPeer.peerKind === "dm" ? "direct" : destinationPeer.peerKind;
+  // The decision may be a whole model run old by the time the final takes custody.
+  route.assertCurrent();
   // Owner-held suppression: the root decision survives reply_payload_sending hooks.
   const rootedPayload = suppressReplyTarget(payload);
   const routed = await params.deliverDurable(rootedPayload, {

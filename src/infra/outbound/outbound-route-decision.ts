@@ -11,6 +11,8 @@ import { deliveryContextFromSession } from "../../utils/delivery-context.read.js
 
 export type DecidedOutboundRoute = {
   decision: PluginHookOutboundRouteDecisionResult;
+  /** Re-read the exact persisted row; throws when it no longer matches the proven route. */
+  assertCurrent: () => void;
 };
 
 const PROOF_FIELDS = ["sessionKey", "channel", "to", "accountId", "threadId"] as const;
@@ -73,9 +75,13 @@ export async function decideOutboundRoute(params: {
   if (!requested) {
     return undefined;
   }
-  // Handlers may run for seconds; the row the decision was proven against must still hold.
-  if (!sameRouteProof(persisted, readPersisted())) {
-    throw new Error("outbound route decision is stale: persisted session route changed");
-  }
-  return { decision: requested };
+  // Handlers may run for seconds, and a channel turn may hold the decision until
+  // its final: the row the decision was proven against must still hold at send time.
+  const assertCurrent = () => {
+    if (!sameRouteProof(persisted, readPersisted())) {
+      throw new Error("outbound route decision is stale: persisted session route changed");
+    }
+  };
+  assertCurrent();
+  return { decision: requested, assertCurrent };
 }

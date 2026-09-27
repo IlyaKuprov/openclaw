@@ -207,14 +207,20 @@ function summarizeVisibleRouteReplyDelivery(
  * back to the originating channel when OriginatingChannel/OriginatingTo
  * are set.
  */
-/** `kind:ID` targets project to `ID` when the id is the session peer; other targets pass through. */
+/**
+ * Project a transport target to the native conversation id when it names the session
+ * peer: `channel:C123` with peer `c123`, or the qualified `team:T1:channel:C123` with
+ * peer `team:t1:channel:c123`, both become `C123`; anything else passes through.
+ */
 function nativePeerIdFromTarget(to: string, peerId: string | undefined): string {
-  const separator = to.indexOf(":");
-  if (!peerId || separator <= 0) {
+  if (!peerId) {
     return to;
   }
-  const candidate = to.slice(separator + 1);
-  return candidate.toLowerCase() === peerId.toLowerCase() ? candidate : to;
+  const lowerTo = to.toLowerCase();
+  const lowerPeer = peerId.toLowerCase();
+  const namesPeer = lowerTo === lowerPeer || lowerTo.endsWith(`:${lowerPeer}`);
+  const separator = to.lastIndexOf(":");
+  return namesPeer && separator >= 0 ? to.slice(separator + 1) : to;
 }
 
 export async function routeReply(params: RouteReplyParams): Promise<RouteReplyResult> {
