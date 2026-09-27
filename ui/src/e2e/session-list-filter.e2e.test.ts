@@ -321,9 +321,10 @@ suite.define(() => {
     const resetParams = (await gateway.getRequests("sessions.list")).at(-1)?.params as
       | Record<string, unknown>
       | undefined;
-    expect(resetParams).toMatchObject({ includeUnknown: false, activeMinutes: 2880, limit: 20 });
-    await expect.poll(() => activeMinutes.inputValue()).toBe("2880");
-    await expect.poll(() => limit.inputValue()).toBe("20");
+    expect(resetParams).toMatchObject({ includeUnknown: false, limit: 50 });
+    expect(resetParams).not.toHaveProperty("activeMinutes");
+    await expect.poll(() => activeMinutes.inputValue()).toBe("");
+    await expect.poll(() => limit.inputValue()).toBe("50");
   });
 
   it("omits noncanonical numeric filters from sessions.list requests", async () => {

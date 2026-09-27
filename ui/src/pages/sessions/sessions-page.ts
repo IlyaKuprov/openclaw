@@ -215,7 +215,7 @@ class SessionsPage extends OpenClawLightDomElement {
       } = await searchVisibleSessionTranscripts({
         client,
         query,
-        listOptions: this.sessionListOptions(context, ""),
+        listOptions: this.transcriptSearchOptions(context),
         // Task retirement must stop later RPCs, not only hide their eventual results.
         isCurrent: () => !signal.aborted,
       });
@@ -423,6 +423,13 @@ class SessionsPage extends OpenClawLightDomElement {
     });
   }
 
+  /** Transcript search covers the roster's membership scope; the activity
+   *  window is a browsing filter and neither restricts nor invalidates it. */
+  private transcriptSearchOptions(context: ApplicationContext) {
+    const { activeMinutes: _activeMinutes, ...scope } = this.sessionListOptions(context, "");
+    return scope;
+  }
+
   private bindSessionList(refreshMissing = true): SessionsPageListBinding | undefined {
     const context = this.context;
     if (!context || !this.isConnected) {
@@ -432,7 +439,7 @@ class SessionsPage extends OpenClawLightDomElement {
     const query = this.sessionListOptions(context);
     const key = JSON.stringify(query);
     const current = this.listBinding;
-    const transcriptKey = JSON.stringify(this.sessionListOptions(context, ""));
+    const transcriptKey = JSON.stringify(this.transcriptSearchOptions(context));
     if (current?.sessions !== sessions || current.key !== key) {
       // An event refresh can already own the old query's request.
       if (current?.sessions === sessions && sessions.listSnapshot(current.query).loading) {
@@ -1493,7 +1500,8 @@ class SessionsPage extends OpenClawLightDomElement {
           deleteSelectedDisabledReason: this.selectedDeleteDisabledReason(),
           onFiltersChange: (next) => this.updateFilters(next),
           onClearFilters: () => {
-            Object.assign(this, rosterFilterDefaults(this.statusFilter));
+            this.activeMinutes = "";
+            this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
             this.includeGlobal = true;
             this.includeUnknown = false;
             this.searchQuery = "";

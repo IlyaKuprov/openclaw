@@ -17,11 +17,9 @@ export async function searchVisibleSessionTranscripts(params: {
   if (params.isCurrent && !params.isCurrent()) {
     return { results: [], sessions: [] };
   }
-  // Roster pagination, the activity window, and row enrichment never restrict
-  // the searchable corpus. The Gateway applies membership and sharing before
-  // its bounded FTS result.
+  // Roster pagination and row enrichment never restrict the searchable corpus.
+  // The Gateway applies membership and sharing before its bounded FTS result.
   const {
-    activeMinutes: _activeMinutes,
     limit: _limit,
     offset: _offset,
     includeDerivedTitles: _titles,
