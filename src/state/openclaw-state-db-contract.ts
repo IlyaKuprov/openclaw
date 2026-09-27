@@ -101,6 +101,12 @@ export const LAZY_ADDITIVE_STATE_INDEXES = [
 ] as const;
 /** Maximum time one synchronous SQLite call may wait for a lock. */
 export const OPENCLAW_SQLITE_BUSY_TIMEOUT_MS = 5_000;
+/**
+ * Append-only ledgers the open path never reads; their index proof stays with
+ * the Gateway's background verifier (5 min after boot, then daily) instead of
+ * running on every physical open of the state database.
+ */
+export const OPEN_PATH_DEFERRED_LEDGER_TABLES = ["audit_events"] as const;
 /** User-facing guide for schema refusals; lives here so error sites avoid import cycles. */
 export const OPENCLAW_DATABASE_SCHEMA_DOCS_URL =
   "https://docs.openclaw.ai/reference/database-schemas";

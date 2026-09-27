@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync-cache-state.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { assertSqliteIntegrity, assertSqliteIntegrityExcept } from "../infra/sqlite-integrity.js";
 import { readSqliteSchemaCookie } from "../infra/sqlite-schema-contract.js";
 import {
   runSqliteDeferredTransactionSync,
@@ -10,6 +10,7 @@ import {
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import { configureSqlitePreSchemaPragmas } from "../infra/sqlite-wal.js";
 import {
+  OPEN_PATH_DEFERRED_LEDGER_TABLES,
   OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db-contract.js";
@@ -141,7 +142,7 @@ export function withOpenClawStateStartupCheckpointConnection<T>(
           busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
         });
         const operate = () => {
-          assertSqliteIntegrity(db, pathname);
+          assertSqliteIntegrityExcept(db, pathname, OPEN_PATH_DEFERRED_LEDGER_TABLES);
           const schemaCookie = options.atomic ? readSqliteSchemaCookie(db) : undefined;
           if (isUninitializedNativeStartupDatabase(db)) {
             initializeCanonicalSchema(db, pathname, env);
@@ -150,7 +151,7 @@ export function withOpenClawStateStartupCheckpointConnection<T>(
           // Bootstrap/additive repair is a separate mutation boundary. Only unchanged
           // schema can share the initial proof with a subsequent lease claim.
           if (options.atomic && readSqliteSchemaCookie(db) !== schemaCookie) {
-            assertSqliteIntegrity(db, pathname);
+            assertSqliteIntegrityExcept(db, pathname, OPEN_PATH_DEFERRED_LEDGER_TABLES);
           }
           return callback(db);
         };

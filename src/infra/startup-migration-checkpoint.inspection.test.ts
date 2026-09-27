@@ -55,7 +55,7 @@ function parameters() {
   };
 }
 function integrityScans(prepare: MockInstance<DatabaseSync["prepare"]>) {
-  return prepare.mock.calls.filter(([sql]) => sql === "PRAGMA integrity_check;").length;
+  return prepare.mock.calls.filter(([sql]) => sql === "PRAGMA quick_check;").length;
 }
 
 describe("startup checkpoint inspection and lease", () => {
@@ -95,14 +95,14 @@ describe("startup checkpoint inspection and lease", () => {
         CREATE TABLE parent (id INTEGER PRIMARY KEY);
         CREATE TABLE child (parent_id INTEGER REFERENCES parent(id));
       `);
-      const assertIntegrity = sqliteIntegrity.assertSqliteIntegrity;
+      const assertIntegrity = sqliteIntegrity.assertSqliteIntegrityExcept;
       let committed = false;
       const checker = vi
-        .spyOn(sqliteIntegrity, "assertSqliteIntegrity")
-        .mockImplementation((db, label, check) => {
+        .spyOn(sqliteIntegrity, "assertSqliteIntegrityExcept")
+        .mockImplementation((db, label, deferred) => {
           const prepare = db.prepare.bind(db);
           vi.spyOn(db, "prepare").mockImplementation((sql) => {
-            // Keep both real native checks. Commit between them, after integrity_check
+            // Keep both real native checks. Commit between them, after quick_check
             // established the snapshot, to exercise SQLite's stale-writer refusal.
             if (sql === "PRAGMA foreign_key_check;" && !committed) {
               expect(db.isTransaction).toBe(true);
@@ -115,7 +115,7 @@ describe("startup checkpoint inspection and lease", () => {
             }
             return prepare(sql);
           });
-          return assertIntegrity(db, label, check);
+          return assertIntegrity(db, label, deferred);
         });
       let lease: Awaited<ReturnType<typeof inspectStartupMigrationCheckpointWithLease>>["lease"];
       try {
@@ -151,13 +151,13 @@ describe("startup checkpoint inspection and lease", () => {
       readStartupMigrationVersion(env);
       const peer = new DatabaseSync(resolveOpenClawStateSqlitePath(env));
       peer.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 0;");
-      const assertIntegrity = sqliteIntegrity.assertSqliteIntegrity;
+      const assertIntegrity = sqliteIntegrity.assertSqliteIntegrityExcept;
       let started = false;
       let clock = 0;
       const checker = vi
-        .spyOn(sqliteIntegrity, "assertSqliteIntegrity")
-        .mockImplementation((db, label, check) => {
-          const result = assertIntegrity(db, label, check);
+        .spyOn(sqliteIntegrity, "assertSqliteIntegrityExcept")
+        .mockImplementation((db, label, deferred) => {
+          const result = assertIntegrity(db, label, deferred);
           if (!started) {
             peer.exec(
               "BEGIN IMMEDIATE; UPDATE schema_meta SET updated_at = updated_at + 1 WHERE meta_key = 'primary'",
@@ -211,11 +211,11 @@ describe("startup checkpoint inspection and lease", () => {
       peer.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 0;");
       let nowMs = Date.now();
       let committed = false;
-      const assertIntegrity = sqliteIntegrity.assertSqliteIntegrity;
+      const assertIntegrity = sqliteIntegrity.assertSqliteIntegrityExcept;
       const checker = vi
-        .spyOn(sqliteIntegrity, "assertSqliteIntegrity")
-        .mockImplementation((db, label, check) => {
-          const result = assertIntegrity(db, label, check);
+        .spyOn(sqliteIntegrity, "assertSqliteIntegrityExcept")
+        .mockImplementation((db, label, deferred) => {
+          const result = assertIntegrity(db, label, deferred);
           // Advance the injected lease clock, not real timers, after native verification.
           nowMs += STARTUP_MIGRATION_LEASE_TTL_MS + 1;
           if (invalidateSnapshot && !committed) {
@@ -275,12 +275,12 @@ describe("startup checkpoint inspection and lease", () => {
       } finally {
         fixture.close();
       }
-      const assertIntegrity = sqliteIntegrity.assertSqliteIntegrity;
+      const assertIntegrity = sqliteIntegrity.assertSqliteIntegrityExcept;
       let invalidated = false;
       const checker = vi
-        .spyOn(sqliteIntegrity, "assertSqliteIntegrity")
-        .mockImplementation((db, label, check) => {
-          const result = assertIntegrity(db, label, check);
+        .spyOn(sqliteIntegrity, "assertSqliteIntegrityExcept")
+        .mockImplementation((db, label, deferred) => {
+          const result = assertIntegrity(db, label, deferred);
           if (invalidateSnapshot && !invalidated) {
             const peer = new DatabaseSync(pathname);
             try {
@@ -309,7 +309,7 @@ describe("startup checkpoint inspection and lease", () => {
         });
       try {
         await expect(inspectStartupMigrationCheckpointWithLease(parameters())).rejects.toThrow(
-          "integrity_check failed",
+          "quick_check failed",
         );
       } finally {
         repair.mockRestore();
@@ -336,11 +336,11 @@ describe("startup checkpoint inspection and lease", () => {
 
   it("rolls back a conditional claim when the combined operation cannot commit", async () => {
     readStartupMigrationVersion(env);
-    const assertIntegrity = sqliteIntegrity.assertSqliteIntegrity;
+    const assertIntegrity = sqliteIntegrity.assertSqliteIntegrityExcept;
     const spy = vi
-      .spyOn(sqliteIntegrity, "assertSqliteIntegrity")
-      .mockImplementation((db, label, check) => {
-        const verified = assertIntegrity(db, label, check);
+      .spyOn(sqliteIntegrity, "assertSqliteIntegrityExcept")
+      .mockImplementation((db, label, deferred) => {
+        const verified = assertIntegrity(db, label, deferred);
         const exec = db.exec.bind(db);
         vi.spyOn(db, "exec").mockImplementation((sql) => {
           if (sql === "COMMIT") {

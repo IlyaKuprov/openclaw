@@ -1,11 +1,16 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
+import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
+import { isOpenClawStateSchemaFastPathEligible } from "./openclaw-state-db-fast-path.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   repairOpenClawStateDatabaseSchema,
+  withOpenClawStateStartupMigrationCheckpointDatabase,
 } from "./openclaw-state-db.js";
 
 const dirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -180,4 +185,107 @@ describe("state schema fast-path failure settlement", () => {
       expect(foreignKeysAtClose).toBe(0);
     },
   );
+});
+
+/** Equal-width schema rewrite keeps the database file structurally valid. */
+function repointIndexColumn(
+  databasePath: string,
+  indexName: string,
+  fromColumn: string,
+  toColumn: string,
+): void {
+  if (fromColumn.length !== toColumn.length) {
+    throw new Error("Rewriting the schema in place requires equal-width column names");
+  }
+  const buffer = readFileSync(databasePath);
+  const named = buffer.indexOf(Buffer.from(indexName, "latin1"));
+  const target = buffer.indexOf(Buffer.from(`(${fromColumn}`, "latin1"), named);
+  if (named < 0 || target < 0) {
+    throw new Error(`Could not locate ${indexName}(${fromColumn}) in ${databasePath}`);
+  }
+  buffer.write(`(${toColumn}`, target, "latin1");
+  writeFileSync(databasePath, buffer);
+}
+
+/** Rebuild an index against a decoy column, then restore its canonical declaration. */
+function corruptIndexContent(
+  databasePath: string,
+  indexName: string,
+  canonicalColumn: string,
+  decoyColumn: string,
+): void {
+  repointIndexColumn(databasePath, indexName, canonicalColumn, decoyColumn);
+  const rebuild = new DatabaseSync(databasePath);
+  try {
+    rebuild.exec(`REINDEX ${indexName};`);
+    rebuild.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+  } finally {
+    rebuild.close();
+  }
+  repointIndexColumn(databasePath, indexName, decoyColumn, canonicalColumn);
+}
+
+describe("state schema fast-path integrity proof", () => {
+  it.each([
+    {
+      name: "defers audit ledger index corruption to the background verifier",
+      index: "idx_audit_events_direction_sequence",
+      from: "direction",
+      to: "channel  ",
+      refused: false,
+    },
+    {
+      name: "refuses a corrupt index on a table the open path reads",
+      index: "idx_state_leases_owner",
+      from: "owner",
+      to: "scope",
+      refused: true,
+    },
+  ])("$name", ({ index, from, to, refused }) => {
+    const env = { OPENCLAW_STATE_DIR: dirs.make("state-fast-path-integrity-") };
+    const opened = openOpenClawStateDatabase({ env });
+    const pathname = realpathSync(opened.path);
+    opened.db.exec(`
+      INSERT INTO audit_events (
+        event_id, source_id, source_sequence, occurred_at, kind, action, status,
+        actor_type, actor_id, direction, channel
+      ) VALUES
+        ('event-1', 'source-1', 1, 1, 'message', 'send', 'ok', 'system', 'talos', 'inbound', 'slack'),
+        ('event-2', 'source-2', 2, 2, 'message', 'send', 'ok', 'system', 'talos', 'outbound', 'discord');
+      INSERT INTO state_leases (scope, lease_key, owner, created_at, updated_at) VALUES
+        ('scope-a', 'key-1', 'owner-1', 1, 1),
+        ('scope-b', 'key-2', 'owner-2', 2, 2);
+    `);
+    closeOpenClawStateDatabaseForTest();
+    // The rewrite targets the main database file, so fold the WAL back in first.
+    const checkpoint = new DatabaseSync(pathname);
+    checkpoint.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    checkpoint.close();
+    corruptIndexContent(pathname, index, from, to);
+    const failure = new RegExp(`integrity_check failed for .*${index}`, "u");
+    const database = new DatabaseSync(pathname);
+    try {
+      // The whole-file page structure stays provable; only index content drifted.
+      expect(database.prepare("PRAGMA quick_check;").all()).toEqual([{ quick_check: "ok" }]);
+      // The background verifier keeps the full proof and still sees the damage.
+      expect(() => assertSqliteIntegrity(database, pathname)).toThrow(failure);
+      if (refused) {
+        expect(() => isOpenClawStateSchemaFastPathEligible(database, pathname)).toThrow(failure);
+      } else {
+        expect(isOpenClawStateSchemaFastPathEligible(database, pathname)).toBe(true);
+      }
+    } finally {
+      database.close();
+    }
+    const claim = () =>
+      withOpenClawStateStartupMigrationCheckpointDatabase((db) => readSqliteUserVersion(db), {
+        env,
+        atomic: true,
+      });
+    if (refused) {
+      expect(claim).toThrow(failure);
+    } else {
+      expect(claim()).toBe(OPENCLAW_STATE_SCHEMA_VERSION);
+    }
+  });
 });

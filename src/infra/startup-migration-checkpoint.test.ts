@@ -237,7 +237,7 @@ describe("startup migration checkpoint", () => {
         identity: migrationIdentity,
       }),
     ).toBe("stale");
-    expect(prepare.mock.calls.filter(([sql]) => sql === "PRAGMA integrity_check;")).toHaveLength(1);
+    expect(prepare.mock.calls.filter(([sql]) => sql === "PRAGMA quick_check;")).toHaveLength(1);
     prepare.mockRestore();
 
     recordSuccessfulStartupMigrations({

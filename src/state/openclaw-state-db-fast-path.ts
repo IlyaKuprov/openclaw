@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { assertSqliteIntegrity, assertSqliteIntegrityExcept } from "../infra/sqlite-integrity.js";
 import {
   collectSqliteSchemaIssues,
   createSqliteTableContractReader,
@@ -8,7 +8,10 @@ import {
 } from "../infra/sqlite-schema-contract.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { hasLegacyCronRunLogs } from "../infra/state-migrations.cron-run-logs.js";
-import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
+import {
+  OPEN_PATH_DEFERRED_LEDGER_TABLES,
+  OPENCLAW_STATE_SCHEMA_VERSION,
+} from "./openclaw-state-db-contract.js";
 import { assertOpenClawStateDatabaseForMaintenance } from "./openclaw-state-db-maintenance.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import {
@@ -77,7 +80,7 @@ export function isOpenClawStateSchemaFastPathEligible(
     if (readStateSchemaMigrationVersion(database) !== OPENCLAW_STATE_SCHEMA_VERSION) {
       return false;
     }
-    assertSqliteIntegrity(database, pathname);
+    assertSqliteIntegrityExcept(database, pathname, OPEN_PATH_DEFERRED_LEDGER_TABLES);
     // Both policies see this read transaction; repair must collect fresh facts after it ends.
     const readTable = createSqliteTableContractReader(database);
     assertCurrentStateRuntimeSchema(database, pathname, readTable);
