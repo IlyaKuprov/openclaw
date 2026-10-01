@@ -27,6 +27,7 @@ import type {
 import { copyAttemptDeliveryState } from "./attempt-delivery-state.js";
 import {
   hasAttemptTerminalState,
+  isReplaySafeCapacityFailure,
   resolveCurrentAttemptAssistant,
   shouldContinueInteractiveAcceptedSessionSpawns,
 } from "./attempt-terminal-evidence.js";
@@ -366,11 +367,11 @@ export async function resolveEmbeddedRunTerminal(input: {
   const incompleteTurnFallbackSafe = Boolean(
     incompleteTurnText &&
     !terminalInterrupted &&
-    !promptError &&
-    !attempt.lastToolError &&
     !hasAttemptTerminalState(attempt) &&
-    !terminalAssistantError &&
-    !input.replayState.hadPotentialSideEffects,
+    !input.replayState.hadPotentialSideEffects &&
+    ((!input.replayState.replayInvalid &&
+      isReplaySafeCapacityFailure(attempt, input.activeErrorContext.provider)) ||
+      (!promptError && !terminalAssistantError)),
   );
   const terminalToolPresentation = incompleteTurnFallbackSafe
     ? availableTerminalToolPresentation

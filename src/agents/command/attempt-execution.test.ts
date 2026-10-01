@@ -59,7 +59,7 @@ describe("resolveFallbackRetryPrompt", () => {
       priorContextPrelude: prelude,
     });
     expect(result).toBe(
-      `${prelude}\n\n[Retry after the previous model attempt failed or timed out]\n\n${originalBody}`,
+      `${prelude}\n\n[Continue after the previous model attempt failed or timed out. Use the existing transcript and completed tool results; inspect any interrupted action before retrying it. Do not repeat completed actions or deliveries. Original request for reference:]\n\n${originalBody}`,
     );
   });
 
@@ -300,7 +300,9 @@ describe("sessionTranscriptHasContent", () => {
     expect(sessionHasHistory).toBe(true);
     expect(
       resolveFallbackRetryPrompt({ body: "continue", isFallbackRetry: true, sessionHasHistory }),
-    ).toBe("[Retry after the previous model attempt failed or timed out]\n\ncontinue");
+    ).toBe(
+      "[Continue after the previous model attempt failed or timed out. Use the existing transcript and completed tool results; inspect any interrupted action before retrying it. Do not repeat completed actions or deliveries. Original request for reference:]\n\ncontinue",
+    );
   });
 
   it("ignores abandoned assistants and clears history at reset boundaries", async () => {

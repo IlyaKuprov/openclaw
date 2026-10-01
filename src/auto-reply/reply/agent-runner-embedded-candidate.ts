@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
+import { resolveFallbackRetryPrompt } from "../../agents/command/attempt-execution.helpers.js";
 import type {
   CompactionAccountingFact,
   RunEmbeddedAgentInternalParams,
@@ -149,7 +150,11 @@ export async function runEmbeddedFallbackCandidate(
         fastModeAutoProgressState: params.fastModeAutoProgressState,
         isFinalFallbackAttempt: params.isFinalFallbackAttempt,
         sandboxSessionKey: turn.runtimePolicySessionKey,
-        prompt: turn.commandBody,
+        prompt: resolveFallbackRetryPrompt({
+          body: turn.commandBody,
+          isFallbackRetry: params.isFallbackRetry,
+          sessionHasHistory: params.suppressQueuedUserPersistenceForCandidate,
+        }),
         transcriptPrompt: turn.transcriptCommandBody,
         media: turn.followupRun.media,
         userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,

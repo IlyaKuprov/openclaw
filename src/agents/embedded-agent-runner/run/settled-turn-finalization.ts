@@ -13,6 +13,8 @@ import {
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { appendAssistantMirrorMessageByIdentity } from "../../../plugin-sdk/session-transcript-runtime.js";
 import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
+import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
+import { classifyFailoverReason } from "../../failover/classify.js";
 import { runAgentHarnessSettledTurnFinalization } from "../../harness/selection.js";
 import { resolveSettledTurnFinalizationText } from "../../harness/settled-turn-finalization-result.js";
 import type {
@@ -166,7 +168,13 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   // and report an aborted run as a delivered success.
   const preserveOriginalTerminal =
     Boolean(initial.attempt.lastToolError) ||
-    isEmbeddedRunTerminalTimeout(initial.terminalState.outcome);
+    isEmbeddedRunTerminalTimeout(initial.terminalState.outcome) ||
+    classifyFailoverReason(
+      formatErrorMessage(
+        projectAgentRunAttemptTerminal(initial.attempt.terminal).promptError ?? "",
+      ),
+      { provider: errorContext.provider },
+    ) === "overloaded";
   const terminalFallbackAllowed =
     input.finalization.preparedAttempt.silentExpected !== true && !preserveOriginalTerminal;
   log.warn(

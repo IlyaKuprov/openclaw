@@ -6,6 +6,7 @@ import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
+import { classifyEmbeddedAgentRunResultForModelFallback } from "../result-fallback-classifier.js";
 import {
   markEmbeddedRunAuthProfileSuccess,
   reportEmbeddedRunSuccessfulAuthBinding,
@@ -33,6 +34,56 @@ const REASONING_ONLY_RETRY_INSTRUCTION =
 
 describe("terminal resolution", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it.each(["clean", "tools", "compaction", "pending", "replay-invalid"] as const)(
+    "certifies capacity fallback only before tool work (%s)",
+    async (state) => {
+      const error = new Error("Selected model is at capacity. Please try a different model.");
+      const attempt = makeEmbeddedRunnerAttempt({
+        terminal: {
+          kind: "failed",
+          source: state === "compaction" ? "compaction" : "prompt",
+          error,
+        },
+        assistantTexts: [],
+        lastAssistant: undefined,
+        currentAttemptAssistant: undefined,
+        replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        toolMetas: state === "tools" ? [{ toolName: "read", replaySafe: true }] : [],
+        itemLifecycle: {
+          startedCount: state === "tools" ? 1 : 0,
+          completedCount: state === "tools" ? 1 : 0,
+          activeCount: 0,
+        },
+        ...(state === "pending" ? { clientToolCalls: [{ name: "read", params: {} }] } : {}),
+      });
+      const resolved = await resolveEmbeddedRunTerminal(
+        makeTerminalInput({
+          attempt,
+          replayState: {
+            hadPotentialSideEffects: false,
+            replayInvalid: state === "replay-invalid",
+          },
+        }),
+      );
+      expect(resolved.action).toBe("complete");
+      if (resolved.action !== "complete") {
+        throw new Error("expected complete");
+      }
+      const classification = classifyEmbeddedAgentRunResultForModelFallback({
+        provider: "openai",
+        model: "primary",
+        result: resolved.result,
+      });
+      if (state === "clean") {
+        expect(resolved.result.meta.error?.fallbackSafe).toBe(true);
+        expect(classification).toMatchObject({ reason: "overloaded", code: "incomplete_overload" });
+      } else {
+        expect(resolved.result.meta.error?.fallbackSafe).toBe(false);
+        expect(classification).toBeNull();
+      }
+    },
+  );
 
   it.each([false, true])(
     "resolves an empty post-tool turn using committed media delivery (delivered: %s)",
