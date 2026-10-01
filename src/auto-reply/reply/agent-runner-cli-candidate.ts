@@ -13,6 +13,7 @@ import {
   getCliSessionBinding,
   shouldClearFailedCliSessionBinding,
 } from "../../agents/cli-session.js";
+import { resolveFallbackRetryPrompt } from "../../agents/command/attempt-execution.helpers.js";
 import { resolveDelegationCapability } from "../../agents/delegation-capability.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
 import {
@@ -364,7 +365,11 @@ export async function runCliFallbackCandidate(
             cwd: turn.followupRun.run.cwd,
             config: params.runtimeConfig,
             toolOverrides: turn.followupRun.run.toolOverrides,
-            prompt: turn.commandBody,
+            prompt: resolveFallbackRetryPrompt({
+              body: turn.commandBody,
+              isFallbackRetry: params.isFallbackRetry,
+              sessionHasHistory: params.suppressQueuedUserPersistenceForCandidate,
+            }),
             transcriptPrompt: turn.transcriptCommandBody,
             media: turn.followupRun.media,
             suppressNextUserMessagePersistence: params.suppressQueuedUserPersistenceForCandidate,

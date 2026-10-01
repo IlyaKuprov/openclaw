@@ -5,6 +5,8 @@ import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../failover/user-copy.js";
 import type { ModelFallbackResultClassification } from "../model-fallback-attempt.js";
 import {
   hasCommittedOutboundDeliveryEvidence,
+  hasCompletedSourceReplyDeliveryEvidence,
+  hasOutboundDeliveryEvidence,
   hasVisibleAgentPayload,
 } from "./delivery-evidence.js";
 import {
@@ -208,6 +210,28 @@ export function classifyEmbeddedAgentRunResultForModelFallback(params: {
   }
   if (hasCommittedOutboundDeliveryEvidence(params.result)) {
     return null;
+  }
+  // Capacity failures may retry only when the terminal owner certified replay safety.
+  // CLI fallback cannot yet carry completed tool work across native session boundaries.
+  const capacityError = incompleteTurn ? params.result.meta.error?.message : undefined;
+  if (
+    capacityError &&
+    classifyFailoverReason(capacityError, { provider: params.provider }) === "overloaded"
+  ) {
+    if (
+      !fallbackSafeIncompleteTurn ||
+      hasOutboundDeliveryEvidence(params.result) ||
+      hasCompletedSourceReplyDeliveryEvidence(params.result) ||
+      hasDeliverableAssistantPayload(params.result)
+    ) {
+      return null;
+    }
+    return {
+      message: capacityError,
+      reason: "overloaded",
+      code: "incomplete_overload",
+      preserveResultOnExhaustion: true,
+    };
   }
   if (params.result.meta.error?.kind === "hook_block") {
     // Hook blocks intentionally suppress normal agent output. Retrying on another model would

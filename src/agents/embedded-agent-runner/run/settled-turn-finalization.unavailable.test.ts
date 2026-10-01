@@ -125,6 +125,16 @@ describe("unavailable finalization through the real core backend", () => {
       expect(finalize).toHaveBeenCalledWith(expect.objectContaining({ settledAttempt: attempt }));
       expect(runAttempt).not.toHaveBeenCalled();
       expect(result.finalizationOutcome).toBe(trigger === "cron" ? "silent-fallback" : "failed");
+      if (terminal === "failed") {
+        expect(result.attempt).toBe(attempt);
+        expect(result.attempt.terminal).toMatchObject({
+          kind: "failed",
+          error: expect.objectContaining({ message: "The provider is overloaded" }),
+        });
+        expect(result.prepared.payloadsWithToolMedia).toEqual([]);
+        expect(await readVisibleSessionTranscriptMessageEntries(target)).toEqual(prefix);
+        return;
+      }
       expect(result.prepared.failureSignal).toBeUndefined();
       if (toolFailed) {
         expect(result.attempt).toBe(attempt);

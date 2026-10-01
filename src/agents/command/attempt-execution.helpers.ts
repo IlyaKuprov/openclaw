@@ -269,7 +269,7 @@ export function resolveFallbackRetryPrompt(params: {
     return params.body;
   }
   // Retain the original task: failed history may not contain enough context to reconstruct it. (#65760)
-  const retryMarked = `[Retry after the previous model attempt failed or timed out]\n\n${params.body}`;
+  const retryMarked = `[Continue after the previous model attempt failed or timed out. Use the existing transcript and completed tool results; inspect any interrupted action before retrying it. Do not repeat completed actions or deliveries. Original request for reference:]\n\n${params.body}`;
   return prelude ? `${prelude}\n\n${retryMarked}` : retryMarked;
 }
 

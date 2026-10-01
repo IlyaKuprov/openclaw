@@ -1,8 +1,11 @@
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
+import { formatErrorMessage } from "../../../infra/errors.js";
 import {
   hasAcceptedSessionSpawn,
   hasCompletionMessageSessionSpawn,
 } from "../../accepted-session-spawn.js";
+import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
+import { classifyFailoverReason } from "../../failover/classify.js";
 import { hasMessagingToolDeliveryEvidence } from "../delivery-evidence.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
@@ -101,6 +104,26 @@ export function hasAttemptTerminalState(attempt: TerminalAttemptState): boolean 
     hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) ||
     hasAsyncActivity(attempt.toolMetas) ||
     (attempt.successfulCronAdds ?? 0) > 0,
+  );
+}
+
+/** Capacity retry cannot rely on native CLI history to carry already-started tools. */
+export function isReplaySafeCapacityFailure(
+  attempt: TerminalAttemptState &
+    Pick<EmbeddedRunAttemptResult, "terminal" | "replayMetadata" | "itemLifecycle" | "toolMetas">,
+  provider: string,
+): boolean {
+  const terminal = projectAgentRunAttemptTerminal(attempt.terminal);
+  return Boolean(
+    terminal.promptError &&
+    terminal.promptErrorSource === "prompt" &&
+    classifyFailoverReason(formatErrorMessage(terminal.promptError), { provider }) ===
+      "overloaded" &&
+    attempt.replayMetadata.replaySafe &&
+    !hasAttemptTerminalState(attempt) &&
+    attempt.toolMetas.length === 0 &&
+    attempt.itemLifecycle.startedCount === 0 &&
+    attempt.itemLifecycle.activeCount === 0,
   );
 }
 

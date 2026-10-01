@@ -9,6 +9,7 @@ import {
   createMockTypingSignaler,
   createFollowupRun,
   initialFallbackAttemptOptions,
+  fallbackAttemptOptions,
   requireRecord,
   requireMockCall,
   expectMockCallArgFields,
@@ -19,6 +20,47 @@ import type { FallbackRunnerParams } from "./agent-runner-execution.test-support
 const state = await setupAgentRunnerExecutionTestState();
 
 describe("executeAgentTurn: runtime selection", () => {
+  it("sends a continuation prompt to the channel fallback after user-message persistence", async () => {
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+      await params.run("openai", "primary", initialFallbackAttemptOptions(params));
+      return {
+        result: await params.run(
+          "openai",
+          "fallback",
+          fallbackAttemptOptions(params, "overloaded"),
+        ),
+        provider: "openai",
+        model: "fallback",
+        attempts: [],
+      };
+    });
+    state.runEmbeddedAgentMock.mockImplementationOnce(
+      async (params: {
+        prompt: string;
+        onUserMessagePersisted?: (message: {
+          role: "user";
+          content: string;
+          timestamp: number;
+        }) => void;
+      }) => {
+        params.onUserMessagePersisted?.({ role: "user", content: params.prompt, timestamp: 1 });
+        return { payloads: [], meta: {} };
+      },
+    );
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "Continued" }],
+      meta: {},
+    });
+    const executeAgentTurn = await getExecuteAgentTurnForTest();
+    const result = await executeAgentTurn(createMinimalRunAgentTurnParams());
+    const first = state.runEmbeddedAgentMock.mock.calls[0]?.[0];
+    const fallback = state.runEmbeddedAgentMock.mock.calls[1]?.[0];
+    expect(result.kind).toBe("success");
+    expect(fallback.prompt).toContain("Do not repeat completed actions or deliveries");
+    expect(fallback.prompt).toContain(first.prompt);
+    expect(fallback.suppressNextUserMessagePersistence).toBe(true);
+  });
+
   it.each(["group", "channel"] as const)(
     "forwards authoritative %s type through CLI fallback for opaque session keys",
     async (chatType) => {

@@ -643,6 +643,67 @@ describe("classifyEmbeddedAgentRunResultForModelFallback", () => {
     expect(result).toBeNull();
   });
 
+  it.each(["final-delivery", "aborted", "final-answer", "tool-work", "uncertified"] as const)(
+    "does not continue a capacity error after %s",
+    (terminal) => {
+      const capacity = "Selected model is at capacity. Please try a different model.";
+      expect(
+        classifyEmbeddedAgentRunResultForModelFallback({
+          provider: "openai",
+          model: "primary",
+          result: {
+            payloads: [{ isError: true, text: capacity }],
+            ...(terminal === "final-delivery"
+              ? { sourceReplyDeliveryState: "delivered" as const }
+              : {}),
+            meta: {
+              durationMs: 1,
+              replayInvalid: true,
+              ...(terminal === "aborted" ? { aborted: true } : {}),
+              ...(terminal === "final-answer" ? { finalAssistantVisibleText: "Finished" } : {}),
+              ...(terminal === "tool-work" ? { toolSummary: { calls: 1 } } : {}),
+              error: {
+                kind: "incomplete_turn",
+                message: capacity,
+                fallbackSafe: terminal !== "uncertified",
+              },
+            },
+          },
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("uses the configured fallback after a certified replay-safe capacity failure", async () => {
+    const capacity = "Selected model is at capacity. Please try a different model.";
+    const runs: string[] = [];
+    const result = await runWithModelFallback({
+      cfg: undefined,
+      provider: "external",
+      model: "primary",
+      fallbacksOverride: ["external/fallback"],
+      skipAuthProfileRuntime: true,
+      run: async (_provider, model) => {
+        runs.push(model);
+        return model === "primary"
+          ? {
+              payloads: [{ isError: true, text: capacity }],
+              meta: {
+                durationMs: 1,
+                replayInvalid: true,
+                error: { kind: "incomplete_turn" as const, message: capacity, fallbackSafe: true },
+              },
+            }
+          : { payloads: [{ text: "Continued from saved work" }], meta: { durationMs: 1 } };
+      },
+      classifyResult: ({ result: runResult, provider, model }) =>
+        classifyEmbeddedAgentRunResultForModelFallback({ result: runResult, provider, model }),
+    });
+    expect(runs).toEqual(["primary", "fallback"]);
+    expect(result.result.payloads).toEqual([{ text: "Continued from saved work" }]);
+    expect(result.attempts[0]?.reason).toBe("overloaded");
+  });
+
   it("keeps side-effecting incomplete tool turns out of fallback before harness classification", () => {
     const result = classifyEmbeddedAgentRunResultForModelFallback({
       provider: "openai",
