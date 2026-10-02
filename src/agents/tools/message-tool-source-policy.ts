@@ -41,7 +41,7 @@ const SOURCE_REPLY_ONLY_RUNTIME_ARG_NAMES = new Set(["to", "channelId", "final"]
 const SOURCE_REPLY_FINAL_PROPERTY = Type.Optional(
   Type.Boolean({
     description:
-      "For source replies, set false for progress; set true, or omit, for a completed send. For react, set true only when the user explicitly requested the reaction to the current source message as the complete response; omit or set false for acknowledgements or reactions followed by more work.",
+      "For source replies, false marks progress and does not satisfy the required reply. Set true, or omit, for the completed send; a later silent or private final answer cannot complete a progress send. For react, set true only when the user explicitly requested the reaction to the current source message as the complete response; omit or set false for acknowledgements or reactions followed by more work.",
   }),
 );
 
