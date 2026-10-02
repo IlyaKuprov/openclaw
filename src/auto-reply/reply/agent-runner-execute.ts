@@ -26,6 +26,7 @@ import {
   buildRecoverablePendingFinalDeliveryText,
   normalizePendingFinalDeliveryPayloads,
 } from "./pending-final-delivery.js";
+import { startFollowupRunPreAdoptionHeartbeat } from "./queue/lifecycle.js";
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 import { recordReplyOperationAgentTurn } from "./reply-operation-run-state.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
@@ -135,21 +136,29 @@ export async function executePreparedReplyAgentRun(
     followupRun.userTurnTranscriptRecorder,
   );
   const checkpointMemory = async (entry: SessionEntry) => {
-    const flushed = await traceAgentPhase("reply.memory_flush", () =>
-      runMemoryFlushIfNeeded({
-        ...context,
-        preflightAdmission,
-        promptForEstimate: followupRun.prompt,
-        sessionEntry: entry,
-        sessionStore: activeSessionStore,
-      }),
+    const stopHeartbeat = startFollowupRunPreAdoptionHeartbeat(
+      turnAdoptionLifecycle,
+      replyOperation.abortSignal,
     );
-    setActiveSessionEntry(flushed.sessionEntry);
-    replyOperation.abortSignal.throwIfAborted();
-    if (flushed.outcome === "exhausted") {
-      await sendDirectCompactionNotice?.("memory_flush_degraded");
+    try {
+      const flushed = await traceAgentPhase("reply.memory_flush", () =>
+        runMemoryFlushIfNeeded({
+          ...context,
+          preflightAdmission,
+          promptForEstimate: followupRun.prompt,
+          sessionEntry: entry,
+          sessionStore: activeSessionStore,
+        }),
+      );
+      setActiveSessionEntry(flushed.sessionEntry);
+      replyOperation.abortSignal.throwIfAborted();
+      if (flushed.outcome === "exhausted") {
+        await sendDirectCompactionNotice?.("memory_flush_degraded");
+      }
+      return flushed.sessionEntry;
+    } finally {
+      stopHeartbeat?.();
     }
-    return flushed.sessionEntry;
   };
 
   const prePreflightCompactionCount = activeSessionEntry?.compactionCount ?? 0;

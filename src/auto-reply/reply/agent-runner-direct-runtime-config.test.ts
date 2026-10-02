@@ -460,9 +460,19 @@ describe("runReplyAgent runtime config", () => {
     }
   });
 
-  it.each(["success", "failure", "abort", "operation abort", "no compaction"] as const)(
-    "keeps preflight compaction live and stops its heartbeat after %s",
-    async (outcome) => {
+  it.each([
+    ["compaction", "success"],
+    ["compaction", "failure"],
+    ["compaction", "abort"],
+    ["compaction", "operation abort"],
+    ["compaction", "no compaction"],
+    ["memory checkpoint", "success"],
+    ["memory checkpoint", "failure"],
+    ["memory checkpoint", "abort"],
+    ["memory checkpoint", "operation abort"],
+  ] as const)(
+    "keeps preflight %s live and stops its heartbeat after %s",
+    async (stage, outcome) => {
       const memory = await vi.importActual<typeof import("./agent-runner-memory.js")>(
         "./agent-runner-memory.js",
       );
@@ -514,14 +524,24 @@ describe("runReplyAgent runtime config", () => {
             contextTokens: 100_000,
           }),
         );
-        runMemoryFlushIfNeededMock.mockResolvedValue({ sessionEntry, outcome: "skipped" });
         const entered = createDeferred();
         const release = createDeferred();
-        compactEmbeddedAgentSessionMock.mockReset().mockImplementation(async () => {
+        const waitForMaintenance = async () => {
           entered.resolve();
           await release.promise;
           if (outcome === "failure") {
             throw new Error("Preflight compaction required but failed: test failure");
+          }
+        };
+        runMemoryFlushIfNeededMock.mockImplementation(async () => {
+          if (stage === "memory checkpoint") {
+            await waitForMaintenance();
+          }
+          return { sessionEntry, outcome: "skipped" };
+        });
+        compactEmbeddedAgentSessionMock.mockReset().mockImplementation(async () => {
+          if (stage === "compaction") {
+            await waitForMaintenance();
           }
           return { ok: true, compacted: true, result: { tokensAfter: 42 } };
         });
