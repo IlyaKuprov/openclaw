@@ -29,7 +29,7 @@ export function buildHarnessVisibleReplyGuidance(params: {
 }): string {
   const deliveryGuidance = messageToolOwnsVisibleReply(params)
     ? params.messageToolAvailable
-      ? "Visible source replies are not automatically delivered for this run. Use `message(action=send)` for user-visible source-channel output. For progress, set `final=false`. Set `final=true`, or omit it, for the completed reply to the current source conversation; OpenClaw stops after confirming delivery. Do not repeat visible message content in your final answer."
+      ? "Visible source replies are not automatically delivered for this run. Use `message(action=send)` for user-visible source-channel output. For progress, set `final=false`. Set `final=true`, or omit it, for the completed reply to the current source conversation; OpenClaw stops after confirming delivery. Progress sends do not complete the required source reply, even if followed by `NO_REPLY` or private final text. Do not repeat visible message content in your final answer."
       : "No source-conversation reply can be sent from this turn. Final assistant text remains private and returns to the invoking workflow; it is not automatically delivered to the source conversation."
     : params.messageToolAvailable
       ? "You can participate in the conversation throughout your work. Use `message` when you have something worth saying; you don’t need to wait until you’re finished, and sending a message doesn’t end your task. OpenClaw delivers your final response automatically."
